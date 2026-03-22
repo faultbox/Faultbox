@@ -1,0 +1,118 @@
+# Lima VM template for Faultbox PoC development
+# Full Linux kernel with seccomp-notify, eBPF, FUSE, network namespaces, ptrace
+#
+# Usage:
+#   limactl create --name=faultbox-dev lima/faultbox-dev.yaml --tty=false
+#   limactl start faultbox-dev
+#   limactl shell faultbox-dev
+
+# Use Apple Virtualization.framework for near-native performance
+vmType: vz
+
+# VM resources
+cpus: 4
+memory: 8GiB
+disk: 30GiB
+
+# Ubuntu 24.04 LTS (ARM64 for Apple Silicon)
+images:
+  - location: https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img
+    arch: aarch64
+
+# Mount the project directory with virtiofs (fast, native)
+mounts:
+  - location: "~"
+    writable: true
+    mountPoint: /host-home
+# Rosetta for running x86_64 binaries (optional, useful for some tools)
+vmOpts:
+  vz:
+    rosetta:
+      enabled: true
+      binfmt: true
+
+# Network: use shared (vzNAT) for simplicity
+networks:
+  - vzNAT: true
+
+# Provisioning: install all tools needed for PoC
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      export DEBIAN_FRONTEND=noninteractive
+
+      # Update package index
+      apt-get update -qq
+
+      # === Core build tools ===
+      apt-get install -y -qq \
+        build-essential \
+        pkg-config \
+        git \
+        curl \
+        wget \
+        jq
+
+      # === Go (match go.mod version) ===
+      GO_VERSION="1.26.1"
+      if ! go version 2>/dev/null | grep -q "$GO_VERSION"; then
+        curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz" | tar -C /usr/local -xzf -
+        echo 'export PATH=/usr/local/go/bin:$PATH' > /etc/profile.d/go.sh
+      fi
+
+      # === eBPF toolchain ===
+      apt-get install -y -qq \
+        clang \
+        llvm \
+        libbpf-dev \
+        linux-headers-$(uname -r) \
+        linux-tools-common \
+        bpfcc-tools \
+        bpftrace
+
+      # === FUSE ===
+      apt-get install -y -qq \
+        fuse3 \
+        libfuse3-dev
+
+      # === Network tools ===
+      apt-get install -y -qq \
+        iproute2 \
+        iptables \
+        iputils-ping \
+        tcpdump \
+        nftables
+
+      # === seccomp ===
+      apt-get install -y -qq \
+        libseccomp-dev \
+        libseccomp2
+
+      # === Misc dev tools ===
+      apt-get install -y -qq \
+        strace \
+        ltrace \
+        htop
+
+      # Ensure FUSE is loaded
+      modprobe fuse || true
+
+      echo "=== Faultbox dev environment provisioned ==="
+
+  - mode: user
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      # Add Go to user PATH
+      echo 'export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH' >> ~/.bashrc
+
+      # Verify key tools
+      /usr/local/go/bin/go version
+      clang --version | head -1
+      bpftrace --version || true
+
+      echo "=== User environment ready ==="
