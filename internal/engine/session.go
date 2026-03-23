@@ -35,6 +35,8 @@ type SessionConfig struct {
 	Stderr io.Writer
 	// Namespaces to create for isolation.
 	Namespaces NamespaceConfig
+	// FaultRules to apply via seccomp-notify interception.
+	FaultRules []FaultRule
 }
 
 // NamespaceConfig controls which Linux namespaces are created.
@@ -105,6 +107,11 @@ func (s *Session) setState(state State) {
 }
 
 func (s *Session) run(ctx context.Context) (*Result, error) {
+	// If fault rules are present, use the seccomp-notify path (Linux only).
+	if len(s.cfg.FaultRules) > 0 {
+		return s.runWithFaults(ctx)
+	}
+
 	start := time.Now()
 
 	s.log.Info("starting session",
