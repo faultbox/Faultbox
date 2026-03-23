@@ -52,14 +52,14 @@ env-shell:
 
 # Run a command inside the VM. Usage: make env-exec CMD="uname -a"
 env-exec:
-	limactl shell $(LIMA_VM) -- bash -c 'cd $(VM_PROJECT) && $(CMD)'
+	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- $(CMD)
 
 env-status:
 	@limactl list $(LIMA_VM) 2>/dev/null || echo "VM '$(LIMA_VM)' does not exist. Run 'make env-create'."
 
 # Verify all required kernel features are available
 env-verify:
-	limactl shell $(LIMA_VM) -- bash -c '\
+	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- bash -c '\
 		set -e; \
 		echo "=== Faultbox Dev Environment Verification ==="; \
 		echo; \
