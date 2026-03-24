@@ -61,6 +61,11 @@ func run() int {
 		case args[0] == "--fault" && len(args) > 1:
 			faultSpecs = append(faultSpecs, args[1])
 			args = args[1:] // consume the value
+		case strings.HasPrefix(args[0], "--fs-fault="):
+			faultSpecs = append(faultSpecs, expandFsFault(strings.TrimPrefix(args[0], "--fs-fault="))...)
+		case args[0] == "--fs-fault" && len(args) > 1:
+			faultSpecs = append(faultSpecs, expandFsFault(args[1])...)
+			args = args[1:]
 		case strings.HasPrefix(args[0], "--env="):
 			envVars = append(envVars, strings.TrimPrefix(args[0], "--env="))
 		case args[0] == "--env" && len(args) > 1:
@@ -129,6 +134,42 @@ doneFlags:
 	return result.ExitCode
 }
 
+// expandFsFault maps --fs-fault operation names to the correct syscall fault specs.
+// e.g., "open=ENOENT:100%:/data/*" → ["openat=ENOENT:100%:/data/*"]
+//
+//	"sync=EIO:100%:after=2"  → ["fsync=EIO:100%:after=2"]
+func expandFsFault(spec string) []string {
+	parts := strings.SplitN(spec, "=", 2)
+	if len(parts) != 2 {
+		return []string{spec} // let the parser produce the error
+	}
+	op := strings.TrimSpace(parts[0])
+	rest := parts[1]
+
+	syscalls, ok := fsFaultMap[op]
+	if !ok {
+		// Pass through as-is — the parser will validate the syscall name.
+		return []string{spec}
+	}
+
+	result := make([]string, len(syscalls))
+	for i, sc := range syscalls {
+		result[i] = sc + "=" + rest
+	}
+	return result
+}
+
+var fsFaultMap = map[string][]string{
+	"open":   {"openat"},
+	"read":   {"read", "readv"},
+	"write":  {"write", "writev"},
+	"sync":   {"fsync"},
+	"fsync":  {"fsync"},
+	"mkdir":  {"mkdirat"},
+	"delete": {"unlinkat"},
+	"stat":   {"fstatat"},
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage: faultbox run [flags] <binary> [args...]
 
@@ -136,14 +177,18 @@ Flags:
   --log-format=console   Force colored console output
   --log-format=json      Force JSON lines output
   --debug                Enable debug logging
-  --fault "spec"         Inject fault: syscall=ERRNO:PROB%[:PATH_GLOB]
+  --fault "spec"         Inject fault: syscall=ACTION:PROB%[:PATH][:TRIGGER]
+  --fs-fault "spec"      Filesystem fault (maps op to syscalls)
   --env KEY=VALUE        Set environment variable for the target
 
 Fault examples:
-  --fault "openat=ENOENT:50%"             Fail 50% of openat() with ENOENT
+  --fault "openat=ENOENT:50%"             Fail 50% of openat()
   --fault "openat=ENOENT:100%:/data/*"    Fail opens under /data/ only
-  --fault "write=EIO:100%"                Fail every write() with EIO
-  --fault "connect=ECONNREFUSED:10%"
+  --fault "write=EIO:100%"                Fail every write()
+  --fault "connect=delay:200ms:100%"      Delay connect() by 200ms
+  --fault "fsync=EIO:100%:after=2"        Fail fsyncs after first 2 succeed
+  --fault "openat=ENOENT:100%:nth=3"      Fail only the 3rd openat()
+  --fs-fault "sync=EIO:100%:after=2"      Same as --fault "fsync=EIO:100%:after=2"
 
 Example:
   faultbox run ./my-service

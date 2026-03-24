@@ -35,13 +35,13 @@ Inject a fault on a specific syscall. Can be specified multiple times.
 **Deny format (return an error):**
 
 ```
---fault "SYSCALL=ERRNO:PROBABILITY%[:PATH_GLOB]"
+--fault "SYSCALL=ERRNO:PROBABILITY%[:PATH_GLOB][:TRIGGER]"
 ```
 
 **Delay format (sleep then allow):**
 
 ```
---fault "SYSCALL=delay:DURATION:PROBABILITY%"
+--fault "SYSCALL=delay:DURATION:PROBABILITY%[:TRIGGER]"
 ```
 
 | Part | Description | Example |
@@ -52,6 +52,15 @@ Inject a fault on a specific syscall. Can be specified multiple times.
 | `DURATION` | Go duration string | `200ms`, `1s`, `500us` |
 | `PROBABILITY%` | Chance the fault fires (0-100) | `100%` = always, `50%` = half, `1%` = rare |
 | `PATH_GLOB` | *(Optional, deny only)* Glob pattern for file syscalls | `/data/*`, `/tmp/test-*` |
+| `TRIGGER` | *(Optional)* Stateful trigger | `nth=3`, `after=5` |
+
+**Triggers:**
+
+| Trigger | Description | Example |
+|---|---|---|
+| *(omitted)* | Fire on every matching call | Default behavior |
+| `nth=N` | Fire only on the Nth matching call (1-indexed) | `nth=3` = fail 3rd call only |
+| `after=N` | Allow first N calls, fail all subsequent | `after=2` = first 2 succeed, rest fail |
 
 Both `--fault "spec"` and `--fault="spec"` syntax are supported.
 
@@ -87,6 +96,12 @@ faultbox run \
   --fault "connect=ECONNREFUSED:30%" \
   --fault "connect=delay:200ms:70%" \
   ./my-service
+
+# Fail fsync after first 2 succeed (classic WAL durability test)
+faultbox run --fault "fsync=EIO:100%:after=2" ./my-service
+
+# Fail only the 3rd open under /data/
+faultbox run --fault "openat=ENOENT:100%:/data/*:nth=3" ./my-service
 ```
 
 #### Path Filtering
@@ -307,6 +322,32 @@ faultbox run --env DB_URL=postgres://localhost/db --env PORT=8080 ./my-service
 ```
 
 Both `--env KEY=VALUE` and `--env=KEY=VALUE` syntax are supported.
+
+---
+
+### `--fs-fault "SPEC"`
+
+Convenience flag that maps filesystem operation names to the correct syscall(s).
+Same syntax as `--fault` but with human-friendly operation names.
+
+| fs-fault op | Maps to syscall(s) |
+|---|---|
+| `open` | `openat` |
+| `read` | `read`, `readv` |
+| `write` | `write`, `writev` |
+| `sync` / `fsync` | `fsync` |
+| `mkdir` | `mkdirat` |
+| `delete` | `unlinkat` |
+| `stat` | `fstatat` |
+
+```bash
+# These are equivalent:
+faultbox run --fs-fault "sync=EIO:100%:after=2" ./my-service
+faultbox run --fault "fsync=EIO:100%:after=2" ./my-service
+
+# "write" expands to both write and writev:
+faultbox run --fs-fault "write=EIO:10%" ./my-service
+```
 
 ---
 

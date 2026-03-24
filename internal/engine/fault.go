@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -37,6 +38,18 @@ const (
 	ActionDelay
 )
 
+// FaultTrigger controls when a stateful fault fires relative to a call count.
+type FaultTrigger int
+
+const (
+	// TriggerAlways fires on every matching call (default).
+	TriggerAlways FaultTrigger = iota
+	// TriggerNth fires only on the Nth matching call (1-indexed).
+	TriggerNth
+	// TriggerAfter fires on all matching calls after the first N succeed.
+	TriggerAfter
+)
+
 // FaultRule describes a fault to inject on a specific syscall.
 type FaultRule struct {
 	// Syscall name (e.g., "open", "openat", "write", "connect").
@@ -53,6 +66,26 @@ type FaultRule struct {
 	// If set, only syscalls targeting paths matching the glob are faulted.
 	// If empty, all paths are faulted (with system path exclusion).
 	PathGlob string
+	// Trigger controls when the fault fires based on call count.
+	Trigger FaultTrigger
+	// TriggerN is the count parameter for Nth/After triggers.
+	TriggerN int
+	// counter tracks matching calls for stateful triggers (thread-safe).
+	counter atomic.Int64
+}
+
+// ShouldFire checks stateful triggers and returns true if the fault should
+// fire on this call. Must be called once per matching call (increments counter).
+func (r *FaultRule) ShouldFire() bool {
+	n := r.counter.Add(1)
+	switch r.Trigger {
+	case TriggerNth:
+		return n == int64(r.TriggerN)
+	case TriggerAfter:
+		return n > int64(r.TriggerN)
+	default:
+		return true
+	}
 }
 
 // SystemPathPrefixes are paths excluded from file-related faults by default.
@@ -70,17 +103,20 @@ var SystemPathPrefixes = []string{
 
 // ParseFaultRule parses a fault rule string.
 //
-// Deny format:  "syscall=ERRNO:PROBABILITY%[:PATH_GLOB]"
-// Delay format: "syscall=delay:DURATION:PROBABILITY%"
+// Deny format:  "syscall=ERRNO:PROBABILITY%[:PATH_GLOB][:TRIGGER]"
+// Delay format: "syscall=delay:DURATION:PROBABILITY%[:TRIGGER]"
+//
+// Triggers: nth=N (fire on Nth call), after=N (fire after N calls succeed)
 //
 // Examples:
 //
-//	"open=ENOENT:50%"              → fail open() with ENOENT 50% of the time
-//	"write=EIO:100%"               → fail every write() with EIO
-//	"openat=ENOENT:100%:/data/*"   → fail opens under /data/ only
-//	"connect=ECONNREFUSED:10%"     → reject 10% of connections
-//	"connect=delay:200ms:100%"     → delay every connect() by 200ms
-//	"sendto=delay:50ms:20%"        → delay 20% of sends by 50ms
+//	"open=ENOENT:50%"                  → fail open() with ENOENT 50% of the time
+//	"write=EIO:100%"                   → fail every write() with EIO
+//	"openat=ENOENT:100%:/data/*"       → fail opens under /data/ only
+//	"connect=ECONNREFUSED:10%"         → reject 10% of connections
+//	"connect=delay:200ms:100%"         → delay every connect() by 200ms
+//	"fsync=EIO:100%:after=2"           → allow first 2 fsyncs, fail the rest
+//	"openat=ENOENT:100%:/data/*:nth=3" → fail only the 3rd open under /data/
 func ParseFaultRule(s string) (FaultRule, error) {
 	// Split on '='
 	parts := strings.SplitN(s, "=", 2)
@@ -94,24 +130,25 @@ func ParseFaultRule(s string) (FaultRule, error) {
 	}
 
 	// Split into segments: ACTION:PARAM1[:PARAM2...]
-	rest := strings.SplitN(parts[1], ":", 4)
+	// Allow up to 5 segments for deny+path+trigger or delay+trigger
+	rest := strings.SplitN(parts[1], ":", 5)
 	if len(rest) < 2 {
 		return FaultRule{}, fmt.Errorf("invalid fault rule %q: expected ACTION:PARAMS after '='", s)
 	}
 
 	actionStr := strings.TrimSpace(rest[0])
 
-	// Check if this is a delay rule: "delay:DURATION:PROB%"
+	// Check if this is a delay rule: "delay:DURATION:PROB%[:TRIGGER]"
 	if strings.ToLower(actionStr) == "delay" {
 		return parseDelayRule(s, syscallName, rest[1:])
 	}
 
-	// Otherwise it's a deny rule: "ERRNO:PROB%[:PATH_GLOB]"
+	// Otherwise it's a deny rule: "ERRNO:PROB%[:PATH_GLOB][:TRIGGER]"
 	return parseDenyRule(s, syscallName, rest)
 }
 
 func parseDelayRule(raw, syscallName string, segments []string) (FaultRule, error) {
-	// segments: [DURATION, PROB%]
+	// segments: [DURATION, PROB%, TRIGGER?]
 	if len(segments) < 2 {
 		return FaultRule{}, fmt.Errorf("invalid fault rule %q: delay requires DURATION:PROB%%", raw)
 	}
@@ -137,16 +174,24 @@ func parseDelayRule(raw, syscallName string, segments []string) (FaultRule, erro
 		return FaultRule{}, fmt.Errorf("invalid fault rule %q: probability must be 0-100%%", raw)
 	}
 
+	// Parse optional trigger.
+	trigger, triggerN, err := parseTriggerFromSegments(raw, segments[2:])
+	if err != nil {
+		return FaultRule{}, err
+	}
+
 	return FaultRule{
 		Syscall:     syscallName,
 		Action:      ActionDelay,
 		Delay:       delay,
 		Probability: prob,
+		Trigger:     trigger,
+		TriggerN:    triggerN,
 	}, nil
 }
 
 func parseDenyRule(raw, syscallName string, segments []string) (FaultRule, error) {
-	// segments: [ERRNO, PROB%, PATH_GLOB?]
+	// segments: [ERRNO, PROB%, PATH_GLOB?, TRIGGER?]
 	errnoStr := strings.TrimSpace(segments[0])
 	errno, ok := errnoByName(errnoStr)
 	if !ok {
@@ -165,9 +210,22 @@ func parseDenyRule(raw, syscallName string, segments []string) (FaultRule, error
 		return FaultRule{}, fmt.Errorf("invalid fault rule %q: probability must be 0-100%%", raw)
 	}
 
+	// Parse remaining segments: could be path glob, trigger, or both.
 	var pathGlob string
-	if len(segments) >= 3 {
-		pathGlob = strings.TrimSpace(segments[2])
+	var triggerSegments []string
+
+	for _, seg := range segments[2:] {
+		seg = strings.TrimSpace(seg)
+		if isTriggerSegment(seg) {
+			triggerSegments = append(triggerSegments, seg)
+		} else if seg != "" {
+			pathGlob = seg
+		}
+	}
+
+	trigger, triggerN, err := parseTriggerFromSegments(raw, triggerSegments)
+	if err != nil {
+		return FaultRule{}, err
 	}
 
 	return FaultRule{
@@ -176,7 +234,39 @@ func parseDenyRule(raw, syscallName string, segments []string) (FaultRule, error
 		Errno:       errno,
 		Probability: prob,
 		PathGlob:    pathGlob,
+		Trigger:     trigger,
+		TriggerN:    triggerN,
 	}, nil
+}
+
+// isTriggerSegment returns true if the segment looks like a trigger (nth=N or after=N).
+func isTriggerSegment(s string) bool {
+	return strings.HasPrefix(s, "nth=") || strings.HasPrefix(s, "after=")
+}
+
+// parseTriggerFromSegments extracts a trigger from remaining segments.
+func parseTriggerFromSegments(raw string, segments []string) (FaultTrigger, int, error) {
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		if strings.HasPrefix(seg, "nth=") {
+			n, err := strconv.Atoi(strings.TrimPrefix(seg, "nth="))
+			if err != nil || n < 1 {
+				return TriggerAlways, 0, fmt.Errorf("invalid fault rule %q: bad nth value %q (must be >= 1)", raw, seg)
+			}
+			return TriggerNth, n, nil
+		}
+		if strings.HasPrefix(seg, "after=") {
+			n, err := strconv.Atoi(strings.TrimPrefix(seg, "after="))
+			if err != nil || n < 0 {
+				return TriggerAlways, 0, fmt.Errorf("invalid fault rule %q: bad after value %q (must be >= 0)", raw, seg)
+			}
+			return TriggerAfter, n, nil
+		}
+	}
+	return TriggerAlways, 0, nil
 }
 
 // ParseFaultRules parses multiple fault rule strings.
@@ -193,16 +283,23 @@ func ParseFaultRules(rules []string) ([]FaultRule, error) {
 }
 
 func (r FaultRule) String() string {
+	var s string
 	switch r.Action {
 	case ActionDelay:
-		return fmt.Sprintf("%s=delay:%s:%.0f%%", r.Syscall, r.Delay, r.Probability*100)
+		s = fmt.Sprintf("%s=delay:%s:%.0f%%", r.Syscall, r.Delay, r.Probability*100)
 	default:
-		s := fmt.Sprintf("%s=%s:%.0f%%", r.Syscall, errnoName(r.Errno), r.Probability*100)
+		s = fmt.Sprintf("%s=%s:%.0f%%", r.Syscall, errnoName(r.Errno), r.Probability*100)
 		if r.PathGlob != "" {
 			s += ":" + r.PathGlob
 		}
-		return s
 	}
+	switch r.Trigger {
+	case TriggerNth:
+		s += fmt.Sprintf(":nth=%d", r.TriggerN)
+	case TriggerAfter:
+		s += fmt.Sprintf(":after=%d", r.TriggerN)
+	}
+	return s
 }
 
 // IsFileSyscall returns true if the syscall inspects file paths (openat, etc.).

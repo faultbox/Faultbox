@@ -8,9 +8,9 @@ import (
 
 func TestParseFaultRule(t *testing.T) {
 	tests := []struct {
-		input   string
-		want    FaultRule
-		wantErr bool
+		input    string
+		want     FaultRule
+		wantErr  bool
 	}{
 		{
 			input: "open=ENOENT:50%",
@@ -78,6 +78,31 @@ func TestParseFaultRule(t *testing.T) {
 			input:   "connect=delay:200ms",
 			wantErr: true,
 		},
+		// Trigger rules
+		{
+			input: "fsync=EIO:100%:after=2",
+			want:  FaultRule{Syscall: "fsync", Action: ActionDeny, Errno: syscall.EIO, Probability: 1.0, Trigger: TriggerAfter, TriggerN: 2},
+		},
+		{
+			input: "openat=ENOENT:100%:nth=3",
+			want:  FaultRule{Syscall: "openat", Action: ActionDeny, Errno: syscall.ENOENT, Probability: 1.0, Trigger: TriggerNth, TriggerN: 3},
+		},
+		{
+			input: "openat=ENOENT:100%:/data/*:after=5",
+			want:  FaultRule{Syscall: "openat", Action: ActionDeny, Errno: syscall.ENOENT, Probability: 1.0, PathGlob: "/data/*", Trigger: TriggerAfter, TriggerN: 5},
+		},
+		{
+			input: "connect=delay:200ms:100%:nth=1",
+			want:  FaultRule{Syscall: "connect", Action: ActionDelay, Delay: 200 * time.Millisecond, Probability: 1.0, Trigger: TriggerNth, TriggerN: 1},
+		},
+		{
+			input:   "fsync=EIO:100%:nth=0",
+			wantErr: true,
+		},
+		{
+			input:   "fsync=EIO:100%:nth=abc",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -97,7 +122,9 @@ func TestParseFaultRule(t *testing.T) {
 				got.Errno != tt.want.Errno ||
 				got.Delay != tt.want.Delay ||
 				got.Probability != tt.want.Probability ||
-				got.PathGlob != tt.want.PathGlob {
+				got.PathGlob != tt.want.PathGlob ||
+				got.Trigger != tt.want.Trigger ||
+				got.TriggerN != tt.want.TriggerN {
 				t.Errorf("ParseFaultRule(%q) = %+v, want %+v", tt.input, got, tt.want)
 			}
 		})
@@ -177,6 +204,42 @@ func TestMatchPath(t *testing.T) {
 				t.Errorf("MatchPath(%q) with glob %q = %v, want %v", tt.path, tt.glob, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestShouldFire(t *testing.T) {
+	// TriggerAlways — always fires
+	r1 := &FaultRule{Trigger: TriggerAlways}
+	for i := 0; i < 5; i++ {
+		if !r1.ShouldFire() {
+			t.Errorf("TriggerAlways: call %d should fire", i+1)
+		}
+	}
+
+	// TriggerNth — fires only on Nth call
+	r2 := &FaultRule{Trigger: TriggerNth, TriggerN: 3}
+	results := make([]bool, 5)
+	for i := 0; i < 5; i++ {
+		results[i] = r2.ShouldFire()
+	}
+	expected := []bool{false, false, true, false, false}
+	for i, want := range expected {
+		if results[i] != want {
+			t.Errorf("TriggerNth(3): call %d = %v, want %v", i+1, results[i], want)
+		}
+	}
+
+	// TriggerAfter — fires after N calls succeed
+	r3 := &FaultRule{Trigger: TriggerAfter, TriggerN: 2}
+	results = make([]bool, 5)
+	for i := 0; i < 5; i++ {
+		results[i] = r3.ShouldFire()
+	}
+	expected = []bool{false, false, true, true, true}
+	for i, want := range expected {
+		if results[i] != want {
+			t.Errorf("TriggerAfter(2): call %d = %v, want %v", i+1, results[i], want)
+		}
 	}
 }
 

@@ -134,10 +134,10 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	}
 	s.log.Info("target started", logFields...)
 
-	// Build rule lookup: syscall nr → applicable rules
-	ruleMap := make(map[int32][]FaultRule)
-	for _, r := range rules {
-		ruleMap[r.nr] = append(ruleMap[r.nr], r.rule)
+	// Build rule lookup: syscall nr → applicable rules (pointers for atomic counters).
+	ruleMap := make(map[int32][]*FaultRule)
+	for i := range rules {
+		ruleMap[rules[i].nr] = append(ruleMap[rules[i].nr], &rules[i].rule)
 	}
 
 	// If we have a seccomp listener, run the notification loop.
@@ -215,7 +215,7 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	return &Result{SessionID: s.ID, ExitCode: exitCode, Duration: duration}, nil
 }
 
-func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap map[int32][]FaultRule, stop <-chan struct{}) error {
+func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap map[int32][]*FaultRule, stop <-chan struct{}) error {
 	// WaitGroup tracks in-flight notification handlers (needed for delays).
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -260,7 +260,7 @@ func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap 
 
 // handleNotification processes a single seccomp notification: reads path args,
 // checks fault rules, and responds with allow, deny, or delay-then-allow.
-func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, ruleMap map[int32][]FaultRule) {
+func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, ruleMap map[int32][]*FaultRule) {
 	syscallName := seccomp.SyscallName(req.Data.Nr)
 
 	// For file syscalls, read the path argument for filtering and logging.
@@ -296,6 +296,11 @@ func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, rule
 						break
 					}
 				}
+			}
+
+			// Check stateful trigger (nth/after) — always increments counter.
+			if !rule.ShouldFire() {
+				continue
 			}
 
 			if rand.Float64() < rule.Probability {
