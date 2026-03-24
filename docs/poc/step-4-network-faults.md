@@ -251,9 +251,11 @@ poc/target/main.go               → Timing output for observing delays
   syscall but has no destination filtering (e.g., "delay connect to 10.0.0.5 only").
   This would require reading sockaddr from `/proc/pid/mem` — similar to path
   reading for file syscalls. Deferred to Step 7 (message ordering).
-- **Long delays and kernel timeout:** Not tested with delays >5s. The kernel's
-  seccomp notification may have a timeout or SIGKILL behavior for very long pauses.
-  Need to verify for timeout simulation (30s+ connect timeout).
+- **Long delays and kernel timeout:** Tested with 10s and 30s delays — both work
+  correctly. The kernel does NOT impose a timeout or SIGKILL on seccomp-notified
+  syscalls waiting for a supervisor response. The target's thread is simply paused
+  until we respond. This means we can simulate arbitrarily long timeouts (e.g.,
+  30s connect timeout) without any special handling. Confirmed on kernel 6.8.
 
 ---
 
