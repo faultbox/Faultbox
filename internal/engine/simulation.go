@@ -17,26 +17,27 @@ import (
 
 // SimulationResult captures the outcome of running all traces.
 type SimulationResult struct {
-	SimulationID string                    `json:"simulation_id"`
-	DurationMs   int64                     `json:"duration_ms"`
-	Traces       []TraceResult             `json:"traces"`
-	Pass         int                       `json:"pass"`
-	Fail         int                       `json:"fail"`
+	SimulationID string        `json:"simulation_id"`
+	DurationMs   int64         `json:"duration_ms"`
+	Traces       []TraceResult `json:"traces"`
+	Pass         int           `json:"pass"`
+	Fail         int           `json:"fail"`
 }
 
 // TraceResult captures the outcome of a single trace execution.
 type TraceResult struct {
-	Name       string                    `json:"name"`
-	Result     string                    `json:"result"` // "pass" or "fail"
-	Reason     string                    `json:"reason,omitempty"`
-	DurationMs int64                     `json:"duration_ms"`
-	Services   map[string]ServiceResult  `json:"services"`
+	Name       string                   `json:"name"`
+	Result     string                   `json:"result"` // "pass" or "fail"
+	Reason     string                   `json:"reason,omitempty"`
+	DurationMs int64                    `json:"duration_ms"`
+	Services   map[string]ServiceResult `json:"services"`
+	Steps      []StepResult             `json:"steps,omitempty"`
 }
 
 // ServiceResult captures per-service outcome in a trace.
 type ServiceResult struct {
-	ExitCode      int  `json:"exit_code"`
-	FaultsApplied int  `json:"faults_applied"`
+	ExitCode      int `json:"exit_code"`
+	FaultsApplied int `json:"faults_applied"`
 }
 
 // RunSimulation executes all traces from a spec against a topology.
@@ -106,7 +107,7 @@ func (e *Engine) RunSimulation(ctx context.Context, topo *config.TopologyConfig,
 	return result, nil
 }
 
-// runTrace starts all services, applies faults, waits, checks assertions.
+// runTrace starts all services, runs steps, checks assertions.
 func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name string, trace *config.TraceConfig, log *slog.Logger) (*TraceResult, error) {
 	traceStart := time.Now()
 
@@ -127,10 +128,10 @@ func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name
 
 	// Start services in dependency order.
 	type runningService struct {
-		name    string
+		name   string
 		session *Session
-		cancel  context.CancelFunc
-		done    chan *Result
+		cancel context.CancelFunc
+		done   chan *Result
 	}
 	var running []runningService
 
@@ -150,17 +151,17 @@ func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name
 
 		// Build fault rules for this service in this trace.
 		var faultRules []FaultRule
-		if faultSpecs, ok := trace.Faults[svcName]; ok {
-			faultRules, err = ParseFaultRules(faultSpecs)
+		if faultSet, ok := trace.Faults[svcName]; ok {
+			faultRules, err = ParseFaultRules(faultSet.ToRuleStrings())
 			if err != nil {
 				return nil, fmt.Errorf("service %q faults: %w", svcName, err)
 			}
 		}
 
-		// Build env vars.
-		var envVars []string
-		for k, v := range svcCfg.Env {
-			envVars = append(envVars, k+"="+v)
+		// Resolve env vars with auto-injection and templates.
+		envVars, err := config.ResolveEnv(topo, svcName)
+		if err != nil {
+			return nil, fmt.Errorf("service %q env: %w", svcName, err)
 		}
 
 		// Multi-service: skip NET namespace (shared host network).
@@ -201,8 +202,12 @@ func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name
 		})
 
 		// Wait for readiness.
-		if svcCfg.Ready != "" {
-			if err := waitReady(traceCtx, svcCfg.Ready, 10*time.Second, svcLog); err != nil {
+		if svcCfg.Healthcheck != nil {
+			hcTimeout := svcCfg.Healthcheck.Timeout.Duration
+			if hcTimeout <= 0 {
+				hcTimeout = 10 * time.Second
+			}
+			if err := waitReady(traceCtx, svcCfg.Healthcheck.Test, hcTimeout, svcLog); err != nil {
 				return &TraceResult{
 					Name:       name,
 					Result:     "fail",
@@ -210,53 +215,85 @@ func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name
 					DurationMs: time.Since(traceStart).Milliseconds(),
 				}, nil
 			}
-			svcLog.Info("service ready", slog.String("check", svcCfg.Ready))
+			svcLog.Info("service ready", slog.String("check", svcCfg.Healthcheck.Test))
 		}
 	}
 
-	// All services are running. Run assertions while services are alive.
+	// All services are running.
 	trResult := &TraceResult{
 		Name:     name,
 		Result:   "pass",
 		Services: make(map[string]ServiceResult),
 	}
 
-	for _, a := range trace.Assert {
-		if a.Eventually != nil && a.Eventually.HTTP != nil {
-			check := a.Eventually.HTTP
-			evTimeout := 5 * time.Second
-			if a.Eventually.Timeout.Duration > 0 {
-				evTimeout = a.Eventually.Timeout.Duration
+	// Run steps (active scenario driver).
+	if len(trace.Steps) > 0 {
+		stepLog := log.With(slog.String("phase", "steps"))
+		stepResults, err := RunSteps(traceCtx, topo, trace.Steps, stepLog)
+		trResult.Steps = stepResults
+		if err != nil {
+			trResult.Result = "fail"
+			trResult.Reason = fmt.Sprintf("step execution error: %v", err)
+		} else {
+			// Check if any step failed.
+			for _, sr := range stepResults {
+				if !sr.Success {
+					trResult.Result = "fail"
+					trResult.Reason = fmt.Sprintf("step %q failed: %s", sr.Action, sr.Error)
+					break
+				}
 			}
-			if err := waitHTTP(traceCtx, check.URL, check.Status, evTimeout); err != nil {
-				trResult.Result = "fail"
-				trResult.Reason = fmt.Sprintf("assertion: eventually http %s status=%d: %v",
-					check.URL, check.Status, err)
-				break
+		}
+	}
+
+	// Run eventually assertions (while services are still alive).
+	if trResult.Result == "pass" {
+		for _, a := range trace.Assert {
+			if a.Eventually != nil && a.Eventually.HTTP != nil {
+				check := a.Eventually.HTTP
+				evTimeout := 5 * time.Second
+				if a.Eventually.Timeout.Duration > 0 {
+					evTimeout = a.Eventually.Timeout.Duration
+				}
+				if err := waitHTTP(traceCtx, check.URL, check.Status, evTimeout); err != nil {
+					trResult.Result = "fail"
+					trResult.Reason = fmt.Sprintf("assertion: eventually http %s status=%d: %v",
+						check.URL, check.Status, err)
+					break
+				}
 			}
 		}
 	}
 
 	// Stop all services and collect exit codes.
-	// Services that were still running when we stop them are considered successful
-	// (they didn't crash — we intentionally stopped them).
+	// First, check which services already exited on their own (before we kill them).
+	alreadyExited := make(map[string]*Result)
+	for _, rs := range running {
+		select {
+		case r := <-rs.done:
+			alreadyExited[rs.name] = r
+		default:
+			// Still running — will be killed below.
+		}
+	}
 	for _, rs := range running {
 		rs.cancel()
 	}
 	for _, rs := range running {
-		exitCode := 0 // default: still-running = success
-		select {
-		case r := <-rs.done:
+		exitCode := 0
+		if r, exited := alreadyExited[rs.name]; exited {
+			// Service exited on its own before we cancelled — use real exit code.
 			if r != nil {
-				// If service exited on its own before we cancelled, use its real exit code.
-				// If it was killed by our cancel (signal), treat as 0 (orderly shutdown).
-				if r.ExitCode > 0 && r.ExitCode < 128 {
-					exitCode = r.ExitCode
-				}
-				// exit codes 128+ are signal kills (from our cancel) → treat as 0
+				exitCode = r.ExitCode
 			}
-		case <-time.After(5 * time.Second):
-			exitCode = 0 // timed out stopping = still considered ok
+		} else {
+			// Service was still running — we killed it. Wait for it to finish.
+			select {
+			case <-rs.done:
+			case <-time.After(5 * time.Second):
+			}
+			// Killed by us = orderly shutdown = exit code 0.
+			exitCode = 0
 		}
 		faultCount := 0
 		if faults, ok := trace.Faults[rs.name]; ok {
@@ -267,7 +304,6 @@ func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name
 			FaultsApplied: faultCount,
 		}
 	}
-	// Clear running so defer doesn't double-stop.
 	running = nil
 
 	// Check exit code assertions (after services stopped).
@@ -369,19 +405,24 @@ func generateSimID() (string, error) {
 	return id, nil
 }
 
-// waitPortsFree waits until all service ports are available (no lingering listeners).
+// waitPortsFree waits until all service ports are available.
 func waitPortsFree(topo *config.TopologyConfig, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		allFree := true
 		for _, svc := range topo.Services {
-			if svc.Port > 0 {
-				conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", svc.Port), 100*time.Millisecond)
-				if err == nil {
-					conn.Close()
-					allFree = false
-					break
+			for _, iface := range svc.Interfaces {
+				if iface.Port > 0 {
+					conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", iface.Port), 100*time.Millisecond)
+					if err == nil {
+						conn.Close()
+						allFree = false
+						break
+					}
 				}
+			}
+			if !allFree {
+				break
 			}
 		}
 		if allFree {
@@ -396,7 +437,6 @@ func sortedKeys[V any](m map[string]V) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	// Sort for deterministic order.
 	for i := 0; i < len(keys); i++ {
 		for j := i + 1; j < len(keys); j++ {
 			if keys[i] > keys[j] {

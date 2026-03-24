@@ -151,6 +151,15 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 		close(notifDone)
 	}
 
+	// Kill child when context is cancelled.
+	go func() {
+		<-ctx.Done()
+		// Send SIGTERM first, then SIGKILL after 2s.
+		unix.Kill(childPid, unix.SIGTERM)
+		time.Sleep(2 * time.Second)
+		unix.Kill(childPid, unix.SIGKILL)
+	}()
+
 	// Wait for the child process.
 	exitCode := 0
 	var waitErr error

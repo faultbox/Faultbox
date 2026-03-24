@@ -6,17 +6,65 @@ traces:
     description: "Normal operation — API and DB both healthy"
     faults: {}
     timeout: "15s"
+    steps:
+      - db.main.send:
+          data: "PING"
+          expect:
+            equals: "PONG"
+      - api.public.post:
+          path: /data/testkey
+          body: "hello"
+          expect:
+            status: 200
+            body_contains: "stored"
+      - api.public.get:
+          path: /data/testkey
+          expect:
+            status: 200
+            body_contains: "hello"
     assert:
       - exit_code:
           service: api
           equals: 0
 
   db-slow-response:
-    description: "DB response delayed — API should still work"
+    description: "DB response delayed — API should handle gracefully"
     faults:
       db:
-        - "write=delay:500ms:100%"
+        - syscall: write
+          action: delay
+          delay: 500ms
+          probability: "100%"
     timeout: "15s"
+    steps:
+      - api.public.post:
+          path: /data/slowkey
+          body: "value1"
+          expect:
+            status: 200
+      - api.public.get:
+          path: /data/slowkey
+          expect:
+            status: 200
+            body_contains: "value1"
+    assert:
+      - exit_code:
+          service: api
+          equals: 0
+
+  api-cannot-reach-db:
+    description: "API cannot connect to DB — returns 500"
+    faults:
+      api:
+        - "connect=ECONNREFUSED:100%"
+    timeout: "15s"
+    steps:
+      - api.public.post:
+          path: /data/failkey
+          body: "value1"
+          expect:
+            status: 500
+            body_contains: "db error"
     assert:
       - exit_code:
           service: api
