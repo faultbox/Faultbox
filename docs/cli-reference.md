@@ -32,18 +32,26 @@ faultbox run --debug -- ./my-service --port 8080
 
 Inject a fault on a specific syscall. Can be specified multiple times.
 
-**Format:**
+**Deny format (return an error):**
 
 ```
 --fault "SYSCALL=ERRNO:PROBABILITY%[:PATH_GLOB]"
+```
+
+**Delay format (sleep then allow):**
+
+```
+--fault "SYSCALL=delay:DURATION:PROBABILITY%"
 ```
 
 | Part | Description | Example |
 |---|---|---|
 | `SYSCALL` | Linux syscall name to intercept | `openat`, `write`, `connect` |
 | `ERRNO` | Error code to return (case-insensitive) | `EIO`, `ENOENT`, `ECONNREFUSED` |
+| `delay` | Delay action keyword | `delay` (literal) |
+| `DURATION` | Go duration string | `200ms`, `1s`, `500us` |
 | `PROBABILITY%` | Chance the fault fires (0-100) | `100%` = always, `50%` = half, `1%` = rare |
-| `PATH_GLOB` | *(Optional)* Glob pattern for file syscalls | `/data/*`, `/tmp/test-*` |
+| `PATH_GLOB` | *(Optional, deny only)* Glob pattern for file syscalls | `/data/*`, `/tmp/test-*` |
 
 Both `--fault "spec"` and `--fault="spec"` syntax are supported.
 
@@ -62,11 +70,22 @@ faultbox run --fault "write=EIO:20%" ./my-service
 # Reject all outbound connections
 faultbox run --fault "connect=ECONNREFUSED:100%" ./my-service
 
-# Multiple faults at once
+# Delay every connect() by 200ms (simulates slow network)
+faultbox run --fault "connect=delay:200ms:100%" ./my-service
+
+# Delay 20% of sends by 50ms
+faultbox run --fault "sendto=delay:50ms:20%" ./my-service
+
+# Combination: slow file opens + occasional disk errors
 faultbox run \
-  --fault "openat=ENOSPC:10%:/data/*" \
+  --fault "openat=delay:100ms:100%:/data/*" \
   --fault "write=EIO:5%" \
-  --fault "connect=ETIMEDOUT:30%" \
+  ./my-service
+
+# Combination: reject 30% of connections, delay the rest
+faultbox run \
+  --fault "connect=ECONNREFUSED:30%" \
+  --fault "connect=delay:200ms:70%" \
   ./my-service
 ```
 
@@ -206,13 +225,15 @@ to intercept syscalls with zero overhead on non-targeted syscalls:
 1. Faultbox installs a BPF filter in the target process (before exec)
 2. Target calls openat("/data/file", ...)
 3. Kernel pauses the target, notifies Faultbox
-4. Faultbox checks fault rules:
+4. Faultbox checks fault rules (in a goroutine per notification):
    a. File syscall? Read path from /proc/pid/mem
    b. Path glob set? Check path matches glob
    c. No glob? Check path against system exclusion list
-   d. Match? Roll probability → deny with errno OR allow
+   d. Match? Roll probability:
+      - Deny rule → return errno immediately
+      - Delay rule → sleep(duration), then allow
    e. No match? Allow (kernel handles normally)
-5. Target resumes (sees either success or errno)
+5. Target resumes (sees either success, errno, or delayed success)
 ```
 
 Only the syscalls you specify in `--fault` are intercepted. All others run at
@@ -269,7 +290,7 @@ faultbox run --fault "openat=EIO:10%" --log-format=json ./my-service 2>&1 | \
 | `state` | string | Session state: `starting`, `running`, `stopped`, `failed` |
 | `name` | string | Syscall name (on interception events) |
 | `pid` | int | Target process PID |
-| `decision` | string | `allow`, `allow (system path)`, or `deny(errno description)` |
+| `decision` | string | `allow`, `allow (system path)`, `deny(errno description)`, or `delay(duration)` |
 | `path` | string | File path (on file syscall interception events) |
 | `exit_code` | int | Target's exit code (on completion) |
 | `duration` | int | Session duration in nanoseconds |

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // MatchPath checks if the given path matches the fault rule's path glob.
@@ -26,12 +27,26 @@ func (r FaultRule) MatchPath(path string) bool {
 	return false
 }
 
+// FaultAction describes what kind of fault to inject.
+type FaultAction int
+
+const (
+	// ActionDeny returns an errno to the caller (existing behavior).
+	ActionDeny FaultAction = iota
+	// ActionDelay sleeps for a duration then allows the syscall to proceed.
+	ActionDelay
+)
+
 // FaultRule describes a fault to inject on a specific syscall.
 type FaultRule struct {
 	// Syscall name (e.g., "open", "openat", "write", "connect").
 	Syscall string
-	// Errno to return when the fault fires (e.g., syscall.ENOENT).
+	// Action to take when the fault fires.
+	Action FaultAction
+	// Errno to return when Action is ActionDeny.
 	Errno syscall.Errno
+	// Delay duration when Action is ActionDelay.
+	Delay time.Duration
 	// Probability of the fault firing, 0.0 to 1.0.
 	Probability float64
 	// PathGlob is an optional glob pattern for file syscalls (openat, etc.).
@@ -53,18 +68,24 @@ var SystemPathPrefixes = []string{
 	"/etc/ld.so.",
 }
 
-// ParseFaultRule parses a fault rule string: "syscall=ERRNO:PROBABILITY%[:PATH_GLOB]"
+// ParseFaultRule parses a fault rule string.
+//
+// Deny format:  "syscall=ERRNO:PROBABILITY%[:PATH_GLOB]"
+// Delay format: "syscall=delay:DURATION:PROBABILITY%"
+//
 // Examples:
 //
 //	"open=ENOENT:50%"              → fail open() with ENOENT 50% of the time
 //	"write=EIO:100%"               → fail every write() with EIO
 //	"openat=ENOENT:100%:/data/*"   → fail opens under /data/ only
-//	"connect=ECONNREFUSED:10%"
+//	"connect=ECONNREFUSED:10%"     → reject 10% of connections
+//	"connect=delay:200ms:100%"     → delay every connect() by 200ms
+//	"sendto=delay:50ms:20%"        → delay 20% of sends by 50ms
 func ParseFaultRule(s string) (FaultRule, error) {
 	// Split on '='
 	parts := strings.SplitN(s, "=", 2)
 	if len(parts) != 2 {
-		return FaultRule{}, fmt.Errorf("invalid fault rule %q: expected syscall=ERRNO:PROB%%", s)
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: expected syscall=ACTION:PARAMS", s)
 	}
 
 	syscallName := strings.TrimSpace(parts[0])
@@ -72,38 +93,86 @@ func ParseFaultRule(s string) (FaultRule, error) {
 		return FaultRule{}, fmt.Errorf("invalid fault rule %q: empty syscall name", s)
 	}
 
-	// Split errno:probability[:path_glob]
-	// We need exactly 2 or 3 colon-separated segments.
-	rest := strings.SplitN(parts[1], ":", 3)
+	// Split into segments: ACTION:PARAM1[:PARAM2...]
+	rest := strings.SplitN(parts[1], ":", 4)
 	if len(rest) < 2 {
-		return FaultRule{}, fmt.Errorf("invalid fault rule %q: expected ERRNO:PROB%% after '='", s)
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: expected ACTION:PARAMS after '='", s)
 	}
 
-	errnoName := strings.TrimSpace(rest[0])
-	errno, ok := errnoByName(errnoName)
-	if !ok {
-		return FaultRule{}, fmt.Errorf("invalid fault rule %q: unknown errno %q", s, errnoName)
+	actionStr := strings.TrimSpace(rest[0])
+
+	// Check if this is a delay rule: "delay:DURATION:PROB%"
+	if strings.ToLower(actionStr) == "delay" {
+		return parseDelayRule(s, syscallName, rest[1:])
 	}
 
-	probStr := strings.TrimSpace(rest[1])
+	// Otherwise it's a deny rule: "ERRNO:PROB%[:PATH_GLOB]"
+	return parseDenyRule(s, syscallName, rest)
+}
+
+func parseDelayRule(raw, syscallName string, segments []string) (FaultRule, error) {
+	// segments: [DURATION, PROB%]
+	if len(segments) < 2 {
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: delay requires DURATION:PROB%%", raw)
+	}
+
+	durationStr := strings.TrimSpace(segments[0])
+	delay, err := time.ParseDuration(durationStr)
+	if err != nil {
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: bad duration %q: %w", raw, durationStr, err)
+	}
+	if delay < 0 {
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: delay must be positive", raw)
+	}
+
+	probStr := strings.TrimSpace(segments[1])
 	probStr = strings.TrimSuffix(probStr, "%")
 	prob, err := strconv.ParseFloat(probStr, 64)
 	if err != nil {
-		return FaultRule{}, fmt.Errorf("invalid fault rule %q: bad probability: %w", s, err)
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: bad probability: %w", raw, err)
 	}
 	prob /= 100.0
 
 	if prob < 0 || prob > 1 {
-		return FaultRule{}, fmt.Errorf("invalid fault rule %q: probability must be 0-100%%", s)
-	}
-
-	var pathGlob string
-	if len(rest) == 3 {
-		pathGlob = strings.TrimSpace(rest[2])
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: probability must be 0-100%%", raw)
 	}
 
 	return FaultRule{
 		Syscall:     syscallName,
+		Action:      ActionDelay,
+		Delay:       delay,
+		Probability: prob,
+	}, nil
+}
+
+func parseDenyRule(raw, syscallName string, segments []string) (FaultRule, error) {
+	// segments: [ERRNO, PROB%, PATH_GLOB?]
+	errnoStr := strings.TrimSpace(segments[0])
+	errno, ok := errnoByName(errnoStr)
+	if !ok {
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: unknown errno %q", raw, errnoStr)
+	}
+
+	probStr := strings.TrimSpace(segments[1])
+	probStr = strings.TrimSuffix(probStr, "%")
+	prob, err := strconv.ParseFloat(probStr, 64)
+	if err != nil {
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: bad probability: %w", raw, err)
+	}
+	prob /= 100.0
+
+	if prob < 0 || prob > 1 {
+		return FaultRule{}, fmt.Errorf("invalid fault rule %q: probability must be 0-100%%", raw)
+	}
+
+	var pathGlob string
+	if len(segments) >= 3 {
+		pathGlob = strings.TrimSpace(segments[2])
+	}
+
+	return FaultRule{
+		Syscall:     syscallName,
+		Action:      ActionDeny,
 		Errno:       errno,
 		Probability: prob,
 		PathGlob:    pathGlob,
@@ -124,11 +193,16 @@ func ParseFaultRules(rules []string) ([]FaultRule, error) {
 }
 
 func (r FaultRule) String() string {
-	s := fmt.Sprintf("%s=%s:%.0f%%", r.Syscall, errnoName(r.Errno), r.Probability*100)
-	if r.PathGlob != "" {
-		s += ":" + r.PathGlob
+	switch r.Action {
+	case ActionDelay:
+		return fmt.Sprintf("%s=delay:%s:%.0f%%", r.Syscall, r.Delay, r.Probability*100)
+	default:
+		s := fmt.Sprintf("%s=%s:%.0f%%", r.Syscall, errnoName(r.Errno), r.Probability*100)
+		if r.PathGlob != "" {
+			s += ":" + r.PathGlob
+		}
+		return s
 	}
-	return s
 }
 
 // IsFileSyscall returns true if the syscall inspects file paths (openat, etc.).

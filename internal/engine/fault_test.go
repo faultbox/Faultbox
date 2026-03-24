@@ -3,6 +3,7 @@ package engine
 import (
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestParseFaultRule(t *testing.T) {
@@ -13,24 +14,42 @@ func TestParseFaultRule(t *testing.T) {
 	}{
 		{
 			input: "open=ENOENT:50%",
-			want:  FaultRule{Syscall: "open", Errno: syscall.ENOENT, Probability: 0.5},
+			want:  FaultRule{Syscall: "open", Action: ActionDeny, Errno: syscall.ENOENT, Probability: 0.5},
 		},
 		{
 			input: "write=EIO:100%",
-			want:  FaultRule{Syscall: "write", Errno: syscall.EIO, Probability: 1.0},
+			want:  FaultRule{Syscall: "write", Action: ActionDeny, Errno: syscall.EIO, Probability: 1.0},
 		},
 		{
 			input: "connect=ECONNREFUSED:10%",
-			want:  FaultRule{Syscall: "connect", Errno: syscall.ECONNREFUSED, Probability: 0.1},
+			want:  FaultRule{Syscall: "connect", Action: ActionDeny, Errno: syscall.ECONNREFUSED, Probability: 0.1},
 		},
 		{
 			input: "openat=ENOENT:100%:/data/*",
-			want:  FaultRule{Syscall: "openat", Errno: syscall.ENOENT, Probability: 1.0, PathGlob: "/data/*"},
+			want:  FaultRule{Syscall: "openat", Action: ActionDeny, Errno: syscall.ENOENT, Probability: 1.0, PathGlob: "/data/*"},
 		},
 		{
 			input: "openat=EIO:50%:/tmp/test-*",
-			want:  FaultRule{Syscall: "openat", Errno: syscall.EIO, Probability: 0.5, PathGlob: "/tmp/test-*"},
+			want:  FaultRule{Syscall: "openat", Action: ActionDeny, Errno: syscall.EIO, Probability: 0.5, PathGlob: "/tmp/test-*"},
 		},
+		// Delay rules
+		{
+			input: "connect=delay:200ms:100%",
+			want:  FaultRule{Syscall: "connect", Action: ActionDelay, Delay: 200 * time.Millisecond, Probability: 1.0},
+		},
+		{
+			input: "sendto=delay:50ms:20%",
+			want:  FaultRule{Syscall: "sendto", Action: ActionDelay, Delay: 50 * time.Millisecond, Probability: 0.2},
+		},
+		{
+			input: "write=delay:1s:100%",
+			want:  FaultRule{Syscall: "write", Action: ActionDelay, Delay: time.Second, Probability: 1.0},
+		},
+		{
+			input: "read=delay:500us:50%",
+			want:  FaultRule{Syscall: "read", Action: ActionDelay, Delay: 500 * time.Microsecond, Probability: 0.5},
+		},
+		// Errors
 		{
 			input:   "bad",
 			wantErr: true,
@@ -47,6 +66,18 @@ func TestParseFaultRule(t *testing.T) {
 			input:   "",
 			wantErr: true,
 		},
+		{
+			input:   "connect=delay:badtime:100%",
+			wantErr: true,
+		},
+		{
+			input:   "connect=delay:200ms:200%",
+			wantErr: true,
+		},
+		{
+			input:   "connect=delay:200ms",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -61,7 +92,12 @@ func TestParseFaultRule(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseFaultRule(%q) error: %v", tt.input, err)
 			}
-			if got.Syscall != tt.want.Syscall || got.Errno != tt.want.Errno || got.Probability != tt.want.Probability || got.PathGlob != tt.want.PathGlob {
+			if got.Syscall != tt.want.Syscall ||
+				got.Action != tt.want.Action ||
+				got.Errno != tt.want.Errno ||
+				got.Delay != tt.want.Delay ||
+				got.Probability != tt.want.Probability ||
+				got.PathGlob != tt.want.PathGlob {
 				t.Errorf("ParseFaultRule(%q) = %+v, want %+v", tt.input, got, tt.want)
 			}
 		})
@@ -69,7 +105,8 @@ func TestParseFaultRule(t *testing.T) {
 }
 
 func TestFaultRuleString(t *testing.T) {
-	r := FaultRule{Syscall: "open", Errno: syscall.ENOENT, Probability: 0.5}
+	// Deny rule
+	r := FaultRule{Syscall: "open", Action: ActionDeny, Errno: syscall.ENOENT, Probability: 0.5}
 	got := r.String()
 	want := "open=ENOENT:50%"
 	if got != want {
@@ -77,11 +114,19 @@ func TestFaultRuleString(t *testing.T) {
 	}
 
 	// With path glob
-	r2 := FaultRule{Syscall: "openat", Errno: syscall.ENOENT, Probability: 1.0, PathGlob: "/data/*"}
+	r2 := FaultRule{Syscall: "openat", Action: ActionDeny, Errno: syscall.ENOENT, Probability: 1.0, PathGlob: "/data/*"}
 	got2 := r2.String()
 	want2 := "openat=ENOENT:100%:/data/*"
 	if got2 != want2 {
 		t.Errorf("FaultRule.String() = %q, want %q", got2, want2)
+	}
+
+	// Delay rule
+	r3 := FaultRule{Syscall: "connect", Action: ActionDelay, Delay: 200 * time.Millisecond, Probability: 1.0}
+	got3 := r3.String()
+	want3 := "connect=delay:200ms:100%"
+	if got3 != want3 {
+		t.Errorf("FaultRule.String() = %q, want %q", got3, want3)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -215,6 +216,10 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 }
 
 func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap map[int32][]FaultRule, stop <-chan struct{}) error {
+	// WaitGroup tracks in-flight notification handlers (needed for delays).
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -243,92 +248,102 @@ func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap 
 			return fmt.Errorf("receive notification: %w", err)
 		}
 
-		syscallName := seccomp.SyscallName(req.Data.Nr)
+		// Handle each notification in its own goroutine so that delay
+		// rules don't block processing of other intercepted syscalls.
+		wg.Add(1)
+		go func(req *seccomp.NotifReq) {
+			defer wg.Done()
+			s.handleNotification(listenerFd, req, ruleMap)
+		}(req)
+	}
+}
 
-		// For file syscalls, read the path argument for filtering and logging.
-		var path string
-		if IsFileSyscall(syscallName) {
-			// openat(dirfd, pathname, ...) — pathname is arg1.
-			// open(pathname, ...) — pathname is arg0.
-			argIdx := 1 // openat and friends: arg1 is path
-			if syscallName == "open" {
-				argIdx = 0
-			}
-			p, err := seccomp.ReadStringFromProcess(req.PID, req.Data.Args[argIdx], 256)
-			if err == nil {
-				path = p
-			}
+// handleNotification processes a single seccomp notification: reads path args,
+// checks fault rules, and responds with allow, deny, or delay-then-allow.
+func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, ruleMap map[int32][]FaultRule) {
+	syscallName := seccomp.SyscallName(req.Data.Nr)
+
+	// For file syscalls, read the path argument for filtering and logging.
+	var path string
+	if IsFileSyscall(syscallName) {
+		argIdx := 1 // openat and friends: arg1 is path
+		if syscallName == "open" {
+			argIdx = 0
 		}
+		p, err := seccomp.ReadStringFromProcess(req.PID, req.Data.Args[argIdx], 256)
+		if err == nil {
+			path = p
+		}
+	}
 
-		decision := "allow"
+	decision := "allow"
 
-		// Check fault rules for this syscall.
-		denied := false
-		if rules, ok := ruleMap[req.Data.Nr]; ok {
-			for _, rule := range rules {
-				// Path-based filtering for file syscalls.
-				if IsFileSyscall(syscallName) && path != "" {
-					if rule.PathGlob != "" {
-						// Explicit path glob — only fault matching paths.
-						if !rule.MatchPath(path) {
-							dir := filepath.Dir(path)
-							if !rule.MatchPath(dir + "/") {
-								continue
-							}
-						}
-					} else {
-						// No path glob — apply system path exclusion.
-						if IsSystemPath(path) {
-							decision = "allow (system path)"
-							break
+	// Check fault rules for this syscall.
+	if rules, ok := ruleMap[req.Data.Nr]; ok {
+		for _, rule := range rules {
+			// Path-based filtering for file syscalls.
+			if IsFileSyscall(syscallName) && path != "" {
+				if rule.PathGlob != "" {
+					if !rule.MatchPath(path) {
+						dir := filepath.Dir(path)
+						if !rule.MatchPath(dir + "/") {
+							continue
 						}
 					}
+				} else {
+					if IsSystemPath(path) {
+						decision = "allow (system path)"
+						break
+					}
 				}
+			}
 
-				if rand.Float64() < rule.Probability {
+			if rand.Float64() < rule.Probability {
+				switch rule.Action {
+				case ActionDelay:
+					decision = fmt.Sprintf("delay(%s)", rule.Delay)
+					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
+					time.Sleep(rule.Delay)
+					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
+						if !isClosedFdErr(err) {
+							s.log.Error("failed to allow syscall after delay", slog.String("error", err.Error()))
+						}
+					}
+					return
+
+				case ActionDeny:
 					decision = fmt.Sprintf("deny(%s)", rule.Errno)
-
-					logFields := []any{
-						slog.String("name", syscallName),
-						slog.Int("pid", int(req.PID)),
-						slog.String("decision", decision),
-					}
-					if path != "" {
-						logFields = append(logFields, slog.String("path", path))
-					}
-					s.log.Info("syscall intercepted", logFields...)
-
+					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
 					if err := seccomp.Deny(listenerFd, req.ID, int32(rule.Errno)); err != nil {
-						if isClosedFdErr(err) {
-							return nil
+						if !isClosedFdErr(err) {
+							s.log.Error("failed to deny syscall", slog.String("error", err.Error()))
 						}
-						s.log.Error("failed to deny syscall", slog.String("error", err.Error()))
 					}
-					denied = true
-					break
+					return
 				}
-			}
-		}
-
-		if !denied {
-			logFields := []any{
-				slog.String("name", syscallName),
-				slog.Int("pid", int(req.PID)),
-				slog.String("decision", decision),
-			}
-			if path != "" {
-				logFields = append(logFields, slog.String("path", path))
-			}
-			s.log.Debug("syscall intercepted", logFields...)
-
-			if err := seccomp.Allow(listenerFd, req.ID); err != nil {
-				if isClosedFdErr(err) {
-					return nil
-				}
-				s.log.Error("failed to allow syscall", slog.String("error", err.Error()))
 			}
 		}
 	}
+
+	// Allow: let the kernel handle the syscall.
+	s.logSyscall(slog.LevelDebug, syscallName, req.PID, decision, path)
+	if err := seccomp.Allow(listenerFd, req.ID); err != nil {
+		if !isClosedFdErr(err) {
+			s.log.Error("failed to allow syscall", slog.String("error", err.Error()))
+		}
+	}
+}
+
+func (s *Session) logSyscall(level slog.Level, name string, pid uint32, decision, path string) {
+	fields := []any{
+		slog.String("name", name),
+		slog.Int("pid", int(pid)),
+		slog.String("decision", decision),
+	}
+	if path != "" {
+		fields = append(fields, slog.String("path", path))
+	}
+	s.log.Log(context.Background(), level, "syscall intercepted", fields...)
 }
 
 func isClosedFdErr(err error) bool {
