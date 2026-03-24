@@ -467,25 +467,96 @@ to verify code changes before merge. This requires only a container image.
 6. **Invariant checking:** Outside PoC scope. Trace-first is the foundation;
    invariant exploration can generate traces later without engine changes.
 
-## Open Questions
+## Resolved: Execution Model
 
-1. **Spec trace execution model:** Run each trace sequentially (restart services
-   per trace) or run all traces against a single service lifetime?
-2. **Assertion language:** How does `expect:` work beyond exit codes? String
-   matching on stdout? Custom assertion commands?
+Faultbox is a **runtime** — services stay alive, specs are injected on demand.
+Two modes:
+
+- **Interactive:** `faultbox run --config f.yaml` → services stay up → fire
+  specs via CLI: `faultbox exec --spec trace1.yaml`, restart services, fire
+  another spec. For human exploration.
+- **CI/CD:** `faultbox test --config f.yaml --spec spec.yaml` → start, run
+  all traces, exit with results. For agents and pipelines.
+
+Runtime and spec execution are **decoupled**.
+
+## Resolved: Assertion Language
+
+### Vision (Post-PoC)
+
+Expressive DSL powered by **Starlark** (Google's sandboxed Python subset) with
+temporal operators and a lambda runtime:
+
+```yaml
+assert:
+  # Temporal: "eventually Redis has this key"
+  - eventually(timeout: 10s):
+      redis.get("localhost:6379", "order:1") != None
+
+  # Safety: "client never sees ack after failure"
+  - never(during: 3s):
+      "ack" in service("api").stdout()
+
+  # Lambda: custom check logic
+  - check:
+      name: "exactly 3 retries"
+      run: |
+        logs = service("worker").stdout()
+        retries = [l for l in logs if "retry" in l]
+        assert len(retries) == 3
+```
+
+Three temporal operators (from LTL, simplified):
+
+| Operator | Meaning | Use case |
+|---|---|---|
+| `eventually(timeout)` | Must become true within timeout | Eventual consistency, recovery |
+| `always(during)` | Must stay true for entire duration | Safety, no-regression |
+| `never(during)` | Must never become true during period | "No ack after failure" |
+
+Built-in functions: `http.get/post`, `tcp.connect`, `redis.get`, `pg.query`,
+`service(name).stdout/stderr/logs`, `file.read`. All sandboxed with timeouts.
+
+This IS ADR-021 Layer 4 (Monitors). Same assertions work against simulation
+(testing) and production (monitoring) in the future.
+
+### PoC Scope (Steps 6-8)
+
+For the PoC demo, assertions are limited to:
+
+- **`exit_code`** — check process exit code
+- **`eventually(http.get)`** — poll an HTTP endpoint until expected status
+
+```yaml
+assert:
+  - api.exit_code == 0
+  - eventually(timeout: 5s):
+      http.get("http://localhost:8080/health").status == 200
+```
+
+This covers 80% of real scenarios. Starlark runtime, temporal operators, and
+lambda functions grow incrementally in post-PoC steps.
 
 ---
 
 ## Connection to Roadmap
 
+### PoC Steps (6-10)
+
 ```
 Step 6 (this) → multi-service topology + simulation orchestrator
-  ↓
-Step 7 → spec language design (YAML, trace-first, LLM-friendly)
-Step 8 → trace executor: run spec traces, collect results
-  ↓
-Step 9 → LLM integration: prompt templates, code-to-spec
-Step 10 → deployment: container image for CI/CD, k8s considerations
-  ↓
-Post-PoC → invariant exploration, advanced assertions, container images
+Step 7  → spec language: YAML traces + assertions (exit_code + eventually)
+Step 8  → trace executor: run specs against running services, report results
+Step 9  → LLM integration: prompt templates, code-to-spec generation
+Step 10 → deployment: container image for CI/CD
+```
+
+### Post-PoC Vision
+
+```
+Starlark assertion runtime → temporal operators (always, never, eventually)
+Lambda checks              → redis.get, pg.query, service().stdout
+Invariant explorer         → auto-generate traces from high-level properties
+K8s operator               → sidecar pattern, seccomp profiles
+Production monitors        → same assertions run against live systems (ADR-021 L4)
 ```
