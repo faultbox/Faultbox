@@ -1,0 +1,23 @@
+version: "1"
+system: faultbox.yaml
+
+traces:
+  happy-path:
+    description: "Normal operation — API and DB both healthy"
+    faults: {}
+    timeout: "15s"
+    assert:
+      - exit_code:
+          service: api
+          equals: 0
+
+  db-slow-response:
+    description: "DB response delayed — API should still work"
+    faults:
+      db:
+        - "write=delay:500ms:100%"
+    timeout: "15s"
+    assert:
+      - exit_code:
+          service: api
+          equals: 0

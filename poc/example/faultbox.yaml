@@ -1,0 +1,18 @@
+version: "1"
+
+services:
+  db:
+    binary: /tmp/mock-db
+    port: 5432
+    env:
+      PORT: "5432"
+    ready: tcp://localhost:5432
+
+  api:
+    binary: /tmp/mock-api
+    port: 8080
+    env:
+      PORT: "8080"
+      DB_ADDR: "localhost:5432"
+    depends_on: [db]
+    ready: http://localhost:8080/health
