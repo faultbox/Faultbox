@@ -1,7 +1,7 @@
 # PoC Step 6: Multi-Service Architecture
 
 **Branch:** `poc/step-6-multi-service`
-**Status:** Design
+**Status:** In Progress
 **Date:** 2026-03-24
 
 ## Context
@@ -314,62 +314,45 @@ with its own SessionConfig. The Simulation handles:
 # Single service (unchanged)
 faultbox run [flags] <binary> [args...]
 
-# Multi-service: start topology, run until Ctrl+C (manual exploration)
-faultbox run --config faultbox.yaml
-
-# Multi-service with spec: start topology, execute traces, report results
-faultbox test --config faultbox.yaml --spec spec.yaml --output results.json
+# Multi-service: execute spec traces, report results, exit
+faultbox test --config faultbox.yaml --spec spec.yaml [--output results.json]
 ```
 
-Two commands:
-- **`faultbox run`** — start services and keep running (manual mode, human exploration)
-- **`faultbox test`** — start services, execute spec traces, exit with pass/fail (agent mode)
+For the PoC, only `faultbox test` is implemented for multi-service. Interactive
+mode (`faultbox run --config` with live spec injection) is post-PoC.
 
-When `--config` is specified:
-- Parse the YAML topology
-- Create a Simulation with all services
-- Start services in dependency order, wait for `ready` checks
-- `run`: keep running until Ctrl+C
-- `test`: execute each trace in spec.yaml, collect results, exit
+**`faultbox test` flow:**
+1. Parse `faultbox.yaml` (topology) and `spec.yaml` (traces)
+2. For each trace:
+   a. Start all services in dependency order, wait for `ready` checks
+   b. Apply per-service faults from the trace
+   c. Wait for services to exit (or timeout)
+   d. Check assertions (exit codes, eventually checks)
+   e. Stop all services, collect results
+   f. **Restart clean** for next trace (seccomp filters can't be removed)
+3. Write results to `--output` (if specified) and exit with code 0/1/2
+
+**Why restart per trace:** Seccomp filters persist until process exit and
+stateful trigger counters accumulate. Each trace needs a clean slate.
 
 ---
 
-### 6. Networking Detail: Shared NET Namespace
+### 6. Networking Detail: Host Network
 
-**Implementation:** The first service's NET namespace becomes the shared one.
-All subsequent services join it instead of creating their own.
-
-```go
-// First service: create NET namespace
-svc1.Cloneflags = CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWUSER
-
-// Get svc1's net namespace fd
-netNsFd = open("/proc/<svc1_pid>/ns/net")
-
-// Subsequent services: join svc1's NET namespace, create own PID/MNT/USER
-svc2.Cloneflags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUSER
-svc2.SysProcAttr.NetNsFd = netNsFd  // join existing net namespace
-```
-
-Wait — `syscall.SysProcAttr` doesn't have a `NetNsFd` field. We'd need to
-`setns()` in the shim child before exec. The shim already does setup before
-exec (seccomp filter), so this fits:
+For multi-service mode, **skip NET namespace entirely.** All services share
+the host's network stack and bind to different ports on localhost. Isolation
+comes from PID/MNT/USER namespaces only.
 
 ```go
-// In RunShimChild(), before exec:
-if cfg.JoinNetNs != "" {
-    fd, _ := unix.Open(cfg.JoinNetNs, unix.O_RDONLY, 0)
-    unix.Setns(fd, unix.CLONE_NEWNET)
-    unix.Close(fd)
-}
+// Multi-service: no CLONE_NEWNET
+svc.Cloneflags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUSER
 ```
 
-**Alternative (simpler):** Don't use NET namespace at all for multi-service.
-All services share the host's network. Isolation comes from PID/MNT/USER only.
-Network faults via seccomp.
+Network faults (delay, deny on connect/send/recv) still work via per-service
+seccomp filters. Each service has its own notification loop.
 
-This is simpler and sufficient for the PoC. Services just bind to different
-ports on localhost.
+This is sufficient for the PoC. Shared NET namespace via `setns()` can be
+added later if true network isolation between services is needed.
 
 ---
 
@@ -401,16 +384,19 @@ to verify code changes before merge. This requires only a container image.
 
 ## Implementation Plan for Step 6
 
-1. **Parse `faultbox.yaml`** — `SimulationConfig` struct, YAML loader (topology only)
-2. **Parse `spec.yaml`** — `SpecConfig` struct with traces, per-service faults, expectations
-3. **Simulation orchestrator** — start services in dependency order with health checks
-4. **Shared network** — skip NET namespace for multi-service (all share host network)
-5. **Coordinated shutdown** — signal all services on exit
-6. **CLI: `faultbox run --config`** — manual exploration mode
-7. **CLI: `faultbox test --config --spec`** — execute traces, report pass/fail
-8. **Structured results** — `--output results.json` for agent consumption
-9. **Multi-service log output** — `service` field in JSON logs, `[name]` prefix in console
-10. **Test with 2-service example** — mock API + mock DB communicating over localhost
+1. **Add `gopkg.in/yaml.v3` dependency**
+2. **Parse `faultbox.yaml`** — `SimulationConfig` struct, YAML loader (topology only)
+3. **Parse `spec.yaml`** — `SpecConfig` struct with traces, per-service faults, expectations
+4. **Simulation orchestrator** — start services in dependency order with health checks,
+   restart clean between traces, coordinated shutdown
+5. **Host network** — skip NET namespace for multi-service, PID/MNT/USER only
+6. **CLI: `faultbox test --config --spec`** — execute traces, report pass/fail
+7. **Structured results** — `--output results.json` for agent consumption
+8. **Multi-service log output** — `service` field in JSON logs, `[name]` prefix in console
+9. **Build mock services** — `poc/mock-api/` and `poc/mock-db/` for 2-service testing
+10. **Test with 2-service example** — mock API calls mock DB over localhost
+
+Interactive mode (`faultbox run --config` with live spec injection) is post-PoC.
 
 ---
 
@@ -457,7 +443,7 @@ to verify code changes before merge. This requires only a container image.
 
 ## Resolved Decisions
 
-1. **Networking:** Shared host network (no NET namespace for multi-service).
+1. **Networking:** Host network (no NET namespace for multi-service).
    Network faults via per-service seccomp filters.
 2. **Readiness:** TCP/HTTP health checks — deterministic, required for agents.
 3. **Container images:** Binary-only for PoC. Image support is post-PoC.
@@ -466,19 +452,10 @@ to verify code changes before merge. This requires only a container image.
    `spec.yaml` has faults per trace (dynamic, experimentation).
 6. **Invariant checking:** Outside PoC scope. Trace-first is the foundation;
    invariant exploration can generate traces later without engine changes.
-
-## Resolved: Execution Model
-
-Faultbox is a **runtime** — services stay alive, specs are injected on demand.
-Two modes:
-
-- **Interactive:** `faultbox run --config f.yaml` → services stay up → fire
-  specs via CLI: `faultbox exec --spec trace1.yaml`, restart services, fire
-  another spec. For human exploration.
-- **CI/CD:** `faultbox test --config f.yaml --spec spec.yaml` → start, run
-  all traces, exit with results. For agents and pipelines.
-
-Runtime and spec execution are **decoupled**.
+7. **Restart per trace:** Services are restarted between traces for clean state
+   (seccomp filters can't be removed, trigger counters accumulate).
+8. **Interactive mode:** Post-PoC. Only `faultbox test` (CI/CD batch mode) for now.
+9. **YAML dependency:** `gopkg.in/yaml.v3` for config parsing.
 
 ## Resolved: Assertion Language
 
