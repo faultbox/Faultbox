@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	// If we're the re-exec'd seccomp shim child, run that path and exit.
+	// If we're the re-exec'd shim child, run that path and exit.
 	if seccomp.IsShimChild() {
 		if err := seccomp.RunShimChild(); err != nil {
 			fmt.Fprintf(os.Stderr, "faultbox shim: %v\n", err)
@@ -46,6 +46,7 @@ func run() int {
 	logFormat := logging.FormatAuto
 	logLevel := slog.LevelInfo
 	var faultSpecs []string
+	var envVars []string
 
 	for len(args) > 0 && len(args[0]) > 0 && args[0][0] == '-' {
 		switch {
@@ -59,6 +60,11 @@ func run() int {
 			faultSpecs = append(faultSpecs, strings.TrimPrefix(args[0], "--fault="))
 		case args[0] == "--fault" && len(args) > 1:
 			faultSpecs = append(faultSpecs, args[1])
+			args = args[1:] // consume the value
+		case strings.HasPrefix(args[0], "--env="):
+			envVars = append(envVars, strings.TrimPrefix(args[0], "--env="))
+		case args[0] == "--env" && len(args) > 1:
+			envVars = append(envVars, args[1])
 			args = args[1:] // consume the value
 		case args[0] == "--":
 			args = args[1:]
@@ -102,19 +108,15 @@ doneFlags:
 
 	ctx = logging.NewContext(ctx, logger)
 
-	// Build session config.
+	// Build session config — always use namespaces + optional faults.
 	cfg := engine.SessionConfig{
 		Binary:     binary,
 		Args:       binaryArgs,
+		Env:        envVars,
 		Stdout:     os.Stdout,
 		Stderr:     os.Stderr,
 		Namespaces: engine.DefaultNamespaces(),
 		FaultRules: faultRules,
-	}
-
-	// When using fault injection, namespaces are not used (the shim handles isolation).
-	if len(faultRules) > 0 {
-		cfg.Namespaces = engine.NamespaceConfig{} // disable namespace flags
 	}
 
 	// Run the target.
@@ -134,14 +136,17 @@ Flags:
   --log-format=console   Force colored console output
   --log-format=json      Force JSON lines output
   --debug                Enable debug logging
-  --fault "spec"         Inject fault: syscall=ERRNO:PROB%
+  --fault "spec"         Inject fault: syscall=ERRNO:PROB%[:PATH_GLOB]
+  --env KEY=VALUE        Set environment variable for the target
 
 Fault examples:
-  --fault "openat=ENOENT:50%"       Fail 50% of openat() with ENOENT
-  --fault "write=EIO:100%"          Fail every write() with EIO
+  --fault "openat=ENOENT:50%"             Fail 50% of openat() with ENOENT
+  --fault "openat=ENOENT:100%:/data/*"    Fail opens under /data/ only
+  --fault "write=EIO:100%"                Fail every write() with EIO
   --fault "connect=ECONNREFUSED:10%"
 
 Example:
-  faultbox run ./my-service --port 8080
-  faultbox run --fault "write=EIO:20%" ./my-service`)
+  faultbox run ./my-service
+  faultbox run --env DB_URL=postgres://localhost/db ./my-service
+  faultbox run --fault "write=EIO:20%" -- ./my-service --port 8080`)
 }

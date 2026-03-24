@@ -35,7 +35,7 @@ Inject a fault on a specific syscall. Can be specified multiple times.
 **Format:**
 
 ```
---fault "SYSCALL=ERRNO:PROBABILITY%"
+--fault "SYSCALL=ERRNO:PROBABILITY%[:PATH_GLOB]"
 ```
 
 | Part | Description | Example |
@@ -43,6 +43,7 @@ Inject a fault on a specific syscall. Can be specified multiple times.
 | `SYSCALL` | Linux syscall name to intercept | `openat`, `write`, `connect` |
 | `ERRNO` | Error code to return (case-insensitive) | `EIO`, `ENOENT`, `ECONNREFUSED` |
 | `PROBABILITY%` | Chance the fault fires (0-100) | `100%` = always, `50%` = half, `1%` = rare |
+| `PATH_GLOB` | *(Optional)* Glob pattern for file syscalls | `/data/*`, `/tmp/test-*` |
 
 Both `--fault "spec"` and `--fault="spec"` syntax are supported.
 
@@ -52,6 +53,9 @@ Both `--fault "spec"` and `--fault="spec"` syntax are supported.
 # Fail every file open with "no such file"
 faultbox run --fault "openat=ENOENT:100%" ./my-service
 
+# Fail opens only under /data/
+faultbox run --fault "openat=ENOENT:100%:/data/*" ./my-service
+
 # Fail 20% of writes with I/O error
 faultbox run --fault "write=EIO:20%" ./my-service
 
@@ -60,11 +64,32 @@ faultbox run --fault "connect=ECONNREFUSED:100%" ./my-service
 
 # Multiple faults at once
 faultbox run \
-  --fault "openat=ENOSPC:10%" \
+  --fault "openat=ENOSPC:10%:/data/*" \
   --fault "write=EIO:5%" \
   --fault "connect=ETIMEDOUT:30%" \
   ./my-service
 ```
+
+#### Path Filtering
+
+For file-related syscalls (`openat`, `mkdirat`, `unlinkat`, etc.), an optional
+path glob can narrow which files are affected:
+
+- **With path glob:** Only syscalls targeting paths matching the glob are faulted.
+  System paths are NOT auto-excluded (the glob is your filter).
+- **Without path glob:** All paths are faulted EXCEPT system paths (see below).
+
+**System path exclusion** (automatic when no path glob is specified):
+
+| Path prefix | Why excluded |
+|---|---|
+| `/lib/`, `/lib64/`, `/usr/lib/`, `/usr/lib64/` | Shared libraries (dynamic linker) |
+| `/proc/`, `/sys/` | Virtual filesystems |
+| `/dev/` | Device nodes |
+| `/etc/ld.so.*` | Dynamic linker configuration |
+
+This means `--fault "openat=ENOENT:100%"` now works safely — the dynamic linker
+can still load shared libraries, and only application file opens are faulted.
 
 #### Supported Syscalls
 
@@ -182,8 +207,11 @@ to intercept syscalls with zero overhead on non-targeted syscalls:
 2. Target calls openat("/data/file", ...)
 3. Kernel pauses the target, notifies Faultbox
 4. Faultbox checks fault rules:
-   - Match? Roll probability → deny with errno OR allow
-   - No match? Allow (kernel handles normally)
+   a. File syscall? Read path from /proc/pid/mem
+   b. Path glob set? Check path matches glob
+   c. No glob? Check path against system exclusion list
+   d. Match? Roll probability → deny with errno OR allow
+   e. No match? Allow (kernel handles normally)
 5. Target resumes (sees either success or errno)
 ```
 
@@ -192,17 +220,16 @@ full native speed with zero overhead.
 
 #### Important Notes
 
-- **Dynamic linker:** 100% fault on `openat` will prevent the dynamic linker
-  from loading shared libraries (`libc.so.6`), killing the target before `main()`.
-  Use lower probabilities or target specific paths (future feature).
+- **Dynamic linker:** When no path glob is specified, system paths (`/lib/*`,
+  `/usr/lib/*`, `/proc/*`, etc.) are automatically excluded from file-related
+  faults. This allows `--fault "openat=ENOENT:100%"` to work safely without
+  breaking shared library loading. Use a path glob for precise targeting.
 - **Go runtime:** Faulting `futex`, `sigaction`, or `clone` can break the Go
   runtime's goroutine scheduler. Use with caution on Go targets.
 - **TOCTOU:** Path arguments (e.g., the filename in `openat`) are read from the
   target's memory via `/proc/pid/mem`. The target could theoretically modify this
   memory between Faultbox's inspection and the kernel's execution. For fault
   injection this is harmless; for security-critical use it is not sufficient.
-- **Namespaces:** When `--fault` is specified, the target runs without namespace
-  isolation (PID/NET/MNT/USER). This will be combined in a future step.
 
 ---
 
@@ -242,9 +269,23 @@ faultbox run --fault "openat=EIO:10%" --log-format=json ./my-service 2>&1 | \
 | `state` | string | Session state: `starting`, `running`, `stopped`, `failed` |
 | `name` | string | Syscall name (on interception events) |
 | `pid` | int | Target process PID |
-| `decision` | string | `allow` or `deny(errno description)` |
+| `decision` | string | `allow`, `allow (system path)`, or `deny(errno description)` |
+| `path` | string | File path (on file syscall interception events) |
 | `exit_code` | int | Target's exit code (on completion) |
 | `duration` | int | Session duration in nanoseconds |
+
+---
+
+### `--env KEY=VALUE`
+
+Set an environment variable for the target process. Can be specified multiple
+times. These are appended to the current environment.
+
+```bash
+faultbox run --env DB_URL=postgres://localhost/db --env PORT=8080 ./my-service
+```
+
+Both `--env KEY=VALUE` and `--env=KEY=VALUE` syntax are supported.
 
 ---
 
@@ -278,9 +319,12 @@ faultbox exits 42.
 
 ## Execution Modes
 
-### Namespace Isolation (default, no `--fault`)
+### Unified Launch
 
-When no fault rules are specified, the target runs in isolated Linux namespaces:
+The target always runs via a re-exec shim that sets up both namespace isolation
+and (optionally) seccomp filtering in a single launch path.
+
+**Without `--fault`** — namespace isolation only:
 
 | Namespace | Effect |
 |---|---|
@@ -294,16 +338,15 @@ faultbox run ./my-service
 # Target sees: PID 1, no network, private filesystem
 ```
 
-### Fault Injection (with `--fault`)
-
-When fault rules are specified, the target runs with a seccomp filter attached.
-Namespace isolation is currently disabled in this mode (will be combined in a
-future step).
+**With `--fault`** — namespace isolation + seccomp filter:
 
 ```bash
 faultbox run --fault "write=EIO:10%" ./my-service
-# Target runs with seccomp filter, write() fails 10% of the time
+# Target sees: PID 1, no network, private filesystem
+# AND write() fails 10% of the time with EIO
 ```
+
+Both modes are always combined — you never lose isolation when adding faults.
 
 ---
 

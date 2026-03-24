@@ -2,10 +2,29 @@ package engine
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 )
+
+// MatchPath checks if the given path matches the fault rule's path glob.
+// Returns true if:
+//   - the rule has no path glob (matches everything, but system paths are excluded separately)
+//   - the path matches the glob pattern
+func (r FaultRule) MatchPath(path string) bool {
+	if r.PathGlob == "" {
+		return true
+	}
+	matched, _ := filepath.Match(r.PathGlob, path)
+	if matched {
+		return true
+	}
+	// Also try matching just the prefix for directory globs like /data/*
+	// filepath.Match requires exact segment match, so /data/* matches /data/foo
+	// but not /data/foo/bar. For the PoC this is fine.
+	return false
+}
 
 // FaultRule describes a fault to inject on a specific syscall.
 type FaultRule struct {
@@ -15,13 +34,31 @@ type FaultRule struct {
 	Errno syscall.Errno
 	// Probability of the fault firing, 0.0 to 1.0.
 	Probability float64
+	// PathGlob is an optional glob pattern for file syscalls (openat, etc.).
+	// If set, only syscalls targeting paths matching the glob are faulted.
+	// If empty, all paths are faulted (with system path exclusion).
+	PathGlob string
 }
 
-// ParseFaultRule parses a fault rule string: "syscall=ERRNO:PROBABILITY%"
+// SystemPathPrefixes are paths excluded from file-related faults by default.
+// These protect the dynamic linker, virtual filesystems, and device nodes.
+var SystemPathPrefixes = []string{
+	"/lib/",
+	"/lib64/",
+	"/usr/lib/",
+	"/usr/lib64/",
+	"/proc/",
+	"/sys/",
+	"/dev/",
+	"/etc/ld.so.",
+}
+
+// ParseFaultRule parses a fault rule string: "syscall=ERRNO:PROBABILITY%[:PATH_GLOB]"
 // Examples:
 //
-//	"open=ENOENT:50%"     → fail open() with ENOENT 50% of the time
-//	"write=EIO:100%"      → fail every write() with EIO
+//	"open=ENOENT:50%"              → fail open() with ENOENT 50% of the time
+//	"write=EIO:100%"               → fail every write() with EIO
+//	"openat=ENOENT:100%:/data/*"   → fail opens under /data/ only
 //	"connect=ECONNREFUSED:10%"
 func ParseFaultRule(s string) (FaultRule, error) {
 	// Split on '='
@@ -35,9 +72,10 @@ func ParseFaultRule(s string) (FaultRule, error) {
 		return FaultRule{}, fmt.Errorf("invalid fault rule %q: empty syscall name", s)
 	}
 
-	// Split errno:probability
-	rest := strings.SplitN(parts[1], ":", 2)
-	if len(rest) != 2 {
+	// Split errno:probability[:path_glob]
+	// We need exactly 2 or 3 colon-separated segments.
+	rest := strings.SplitN(parts[1], ":", 3)
+	if len(rest) < 2 {
 		return FaultRule{}, fmt.Errorf("invalid fault rule %q: expected ERRNO:PROB%% after '='", s)
 	}
 
@@ -59,10 +97,16 @@ func ParseFaultRule(s string) (FaultRule, error) {
 		return FaultRule{}, fmt.Errorf("invalid fault rule %q: probability must be 0-100%%", s)
 	}
 
+	var pathGlob string
+	if len(rest) == 3 {
+		pathGlob = strings.TrimSpace(rest[2])
+	}
+
 	return FaultRule{
 		Syscall:     syscallName,
 		Errno:       errno,
 		Probability: prob,
+		PathGlob:    pathGlob,
 	}, nil
 }
 
@@ -80,7 +124,32 @@ func ParseFaultRules(rules []string) ([]FaultRule, error) {
 }
 
 func (r FaultRule) String() string {
-	return fmt.Sprintf("%s=%s:%.0f%%", r.Syscall, errnoName(r.Errno), r.Probability*100)
+	s := fmt.Sprintf("%s=%s:%.0f%%", r.Syscall, errnoName(r.Errno), r.Probability*100)
+	if r.PathGlob != "" {
+		s += ":" + r.PathGlob
+	}
+	return s
+}
+
+// IsFileSyscall returns true if the syscall inspects file paths (openat, etc.).
+func IsFileSyscall(name string) bool {
+	switch name {
+	case "open", "openat", "creat", "mkdirat", "unlinkat", "faccessat",
+		"fstatat", "readlinkat", "renameat", "renameat2", "linkat", "symlinkat":
+		return true
+	}
+	return false
+}
+
+// IsSystemPath returns true if the path is a system path that should be
+// excluded from file-related faults by default.
+func IsSystemPath(path string) bool {
+	for _, prefix := range SystemPathPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // errnoByName maps common errno names to values.

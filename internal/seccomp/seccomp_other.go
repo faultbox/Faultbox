@@ -24,9 +24,9 @@ func SyscallNumber(name string) int32 { return -1 }
 // SyscallName returns the number as a string on non-Linux.
 func SyscallName(nr int32) string { return fmt.Sprintf("syscall_%d", nr) }
 
-// InstallFilter is not supported on non-Linux.
-func InstallFilter(_ []uint32) (int, error) {
-	return -1, fmt.Errorf("seccomp requires Linux (current OS: %s)", runtime.GOOS)
+// Launch is not supported on non-Linux.
+func Launch(_ LaunchConfig) (int, int, error) {
+	return 0, -1, fmt.Errorf("launch requires Linux (current OS: %s)", runtime.GOOS)
 }
 
 // StartWithFilter is not supported on non-Linux.

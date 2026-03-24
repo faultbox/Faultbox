@@ -19,15 +19,18 @@ const ShimEnvKey = "_FAULTBOX_SECCOMP_CHILD"
 
 // ShimConfig is passed from parent to child via the shim env var.
 type ShimConfig struct {
-	// SyscallNrs to intercept.
-	SyscallNrs []uint32 `json:"syscall_nrs"`
-	// TargetBinary to exec after installing the filter.
+	// SyscallNrs to intercept (empty = no seccomp filter).
+	SyscallNrs []uint32 `json:"syscall_nrs,omitempty"`
+	// TargetBinary to exec after setup.
 	TargetBinary string `json:"target_binary"`
 	// TargetArgs for the target binary.
 	TargetArgs []string `json:"target_args"`
+	// TargetEnv is the environment for the target (replaces inherited env).
+	TargetEnv []string `json:"target_env,omitempty"`
 	// PipeFd is the write end of a pipe for signaling the parent.
 	PipeFd int `json:"pipe_fd"`
 }
+
 
 // IsShimChild returns true if this process is a re-exec'd shim child.
 func IsShimChild() bool {
@@ -35,9 +38,9 @@ func IsShimChild() bool {
 }
 
 // RunShimChild is called in the child process. It:
-// 1. Installs the seccomp filter
-// 2. Writes the listener fd number to the parent via pipe
-// 3. Execs the target binary (filter survives exec)
+// 1. Optionally installs the seccomp filter
+// 2. Writes the listener fd (or "0" if no filter) to the parent via pipe
+// 3. Execs the target binary
 func RunShimChild() error {
 	configJSON := os.Getenv(ShimEnvKey)
 	var cfg ShimConfig
@@ -49,42 +52,62 @@ func RunShimChild() error {
 	// the filter on the thread that will call exec().
 	runtime.LockOSThread()
 
-	// Required before installing a seccomp filter — tells the kernel
-	// this process won't gain new privileges (needed for unprivileged seccomp).
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return fmt.Errorf("prctl(NO_NEW_PRIVS): %w", err)
+	listenerFd := 0 // 0 means no filter
+
+	if len(cfg.SyscallNrs) > 0 {
+		// Required before installing a seccomp filter — tells the kernel
+		// this process won't gain new privileges (needed for unprivileged seccomp).
+		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+			return fmt.Errorf("prctl(NO_NEW_PRIVS): %w", err)
+		}
+
+		// Install the seccomp filter — this process gets filtered.
+		// Pass the pipe fd so write() to it is allowed (avoids deadlock).
+		fd, err := InstallFilter(cfg.SyscallNrs, cfg.PipeFd)
+		if err != nil {
+			return fmt.Errorf("install seccomp filter: %w", err)
+		}
+		listenerFd = fd
 	}
 
-	// Install the seccomp filter — this process gets filtered.
-	// Pass the pipe fd so write() to it is allowed (avoids deadlock).
-	listenerFd, err := InstallFilter(cfg.SyscallNrs, cfg.PipeFd)
-	if err != nil {
-		return fmt.Errorf("install seccomp filter: %w", err)
-	}
-
-	// Signal the parent: write the listener fd number to the pipe.
+	// Signal the parent: write the listener fd number (or "0") to the pipe.
 	msg := strconv.Itoa(listenerFd) + "\n"
 	if _, err := unix.Write(cfg.PipeFd, []byte(msg)); err != nil {
 		return fmt.Errorf("write listener fd to pipe: %w", err)
 	}
 	unix.Close(cfg.PipeFd)
 
-	// Exec the target binary — the seccomp filter survives exec().
+	// Build environment for the target.
+	env := cfg.TargetEnv
+	if len(env) == 0 {
+		env = os.Environ()
+	}
+	// Remove the shim env var so the target doesn't see it.
+	cleanEnv := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, ShimEnvKey+"=") {
+			cleanEnv = append(cleanEnv, e)
+		}
+	}
+
+	// Exec the target binary — the seccomp filter (if any) survives exec().
 	// This replaces the current process.
-	return unix.Exec(cfg.TargetBinary, append([]string{cfg.TargetBinary}, cfg.TargetArgs...), os.Environ())
+	return unix.Exec(cfg.TargetBinary, append([]string{cfg.TargetBinary}, cfg.TargetArgs...), cleanEnv)
 }
 
-// StartWithFilter launches the current binary as a child shim that installs
-// a seccomp filter, then execs the target. Returns the child PID and the
-// listener fd (in this process's fd table).
+// Launch starts the target binary via the re-exec shim pattern.
+// The child is created with the specified clone flags (namespaces) and
+// optionally installs a seccomp filter before exec'ing the target.
+//
+// Returns the child PID and the listener fd (or -1 if no filter).
 //
 // Flow:
 //  1. Parent creates a pipe
-//  2. Parent forks itself with _FAULTBOX_SECCOMP_CHILD env
-//  3. Child installs filter, writes listener fd number to pipe, execs target
-//  4. Parent reads fd number from pipe
-//  5. Parent uses pidfd_getfd() to copy the listener fd from child
-func StartWithFilter(targetBinary string, targetArgs []string, syscallNrs []uint32, extraFiles []*os.File) (pid int, listenerFd int, err error) {
+//  2. Parent ForkExecs itself with clone flags + _FAULTBOX_SECCOMP_CHILD env
+//  3. Child (in new namespaces) optionally installs filter, writes fd to pipe, execs target
+//  4. Parent reads fd from pipe
+//  5. If filter was installed, parent uses pidfd_getfd() to copy the listener fd
+func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 	// Create a pipe for child → parent communication.
 	pipeFds := [2]int{}
 	if err := unix.Pipe2(pipeFds[:], unix.O_CLOEXEC); err != nil {
@@ -93,17 +116,17 @@ func StartWithFilter(targetBinary string, targetArgs []string, syscallNrs []uint
 	pipeR, pipeW := pipeFds[0], pipeFds[1]
 	defer unix.Close(pipeR)
 
-	// The child needs the write end of the pipe. We pass it as an extra fd.
-	// Find the fd number it will get in the child (after stdin/stdout/stderr + extraFiles).
-	childPipeFd := 3 + len(extraFiles)
+	// The child gets: stdin(0), stdout(1), stderr(2), pipeW(3).
+	childPipeFd := 3
 
-	cfg := ShimConfig{
-		SyscallNrs:   syscallNrs,
-		TargetBinary: targetBinary,
-		TargetArgs:   targetArgs,
+	shimCfg := ShimConfig{
+		SyscallNrs:   cfg.SyscallNrs,
+		TargetBinary: cfg.TargetBinary,
+		TargetArgs:   cfg.TargetArgs,
+		TargetEnv:    cfg.TargetEnv,
 		PipeFd:       childPipeFd,
 	}
-	cfgJSON, err := json.Marshal(cfg)
+	cfgJSON, err := json.Marshal(shimCfg)
 	if err != nil {
 		unix.Close(pipeW)
 		return 0, -1, fmt.Errorf("marshal shim config: %w", err)
@@ -116,42 +139,60 @@ func StartWithFilter(targetBinary string, targetArgs []string, syscallNrs []uint
 		return 0, -1, fmt.Errorf("get executable path: %w", err)
 	}
 
-	// Build file descriptors: stdin, stdout, stderr, [extraFiles...], pipeW
-	fds := []uintptr{0, 1, 2}
-	for _, f := range extraFiles {
-		fds = append(fds, f.Fd())
-	}
-	fds = append(fds, uintptr(pipeW))
+	// Build file descriptors: stdin, stdout, stderr, pipeW
+	fds := []uintptr{0, 1, 2, uintptr(pipeW)}
 
 	// Build environment with shim config.
 	env := append(os.Environ(), ShimEnvKey+"="+string(cfgJSON))
+
+	// Build SysProcAttr with optional clone flags.
+	sysAttr := &syscall.SysProcAttr{}
+	if cfg.Cloneflags != 0 {
+		sysAttr.Cloneflags = cfg.Cloneflags
+		for _, m := range cfg.UidMappings {
+			sysAttr.UidMappings = append(sysAttr.UidMappings, syscall.SysProcIDMap{
+				ContainerID: m.ContainerID, HostID: m.HostID, Size: m.Size,
+			})
+		}
+		for _, m := range cfg.GidMappings {
+			sysAttr.GidMappings = append(sysAttr.GidMappings, syscall.SysProcIDMap{
+				ContainerID: m.ContainerID, HostID: m.HostID, Size: m.Size,
+			})
+		}
+	}
 
 	// Fork+exec ourselves as the child shim.
 	childPid, err := syscall.ForkExec(self, os.Args[:1], &syscall.ProcAttr{
 		Env:   env,
 		Files: fds,
+		Sys:   sysAttr,
 	})
 	if err != nil {
 		unix.Close(pipeW)
 		return 0, -1, fmt.Errorf("forkexec shim: %w", err)
 	}
 
-	// Parent: close write end of pipe, read child's listener fd number.
+	// Parent: close write end of pipe, read child's message.
 	unix.Close(pipeW)
 
 	buf := make([]byte, 32)
 	n, err := unix.Read(pipeR, buf)
 	if err != nil {
-		return childPid, -1, fmt.Errorf("read listener fd from child: %w", err)
+		return childPid, -1, fmt.Errorf("read from child shim: %w", err)
 	}
 	if n == 0 {
-		return childPid, -1, fmt.Errorf("child shim exited before sending listener fd (check child stderr)")
+		return childPid, -1, fmt.Errorf("child shim exited before signaling (check child stderr)")
 	}
 
 	fdStr := strings.TrimSpace(string(buf[:n]))
 	childListenerFd, err := strconv.Atoi(fdStr)
 	if err != nil {
 		return childPid, -1, fmt.Errorf("parse listener fd %q: %w", fdStr, err)
+	}
+
+	// "0" means no seccomp filter was installed.
+	if childListenerFd == 0 {
+		return childPid, -1, nil
 	}
 
 	// Use pidfd_getfd() to copy the listener fd from the child's fd table.
@@ -167,4 +208,14 @@ func StartWithFilter(targetBinary string, targetArgs []string, syscallNrs []uint
 	}
 
 	return childPid, localFd, nil
+}
+
+// StartWithFilter is the legacy API — launches with seccomp filter but no namespaces.
+// Deprecated: use Launch instead.
+func StartWithFilter(targetBinary string, targetArgs []string, syscallNrs []uint32, extraFiles []*os.File) (pid int, listenerFd int, err error) {
+	return Launch(LaunchConfig{
+		TargetBinary: targetBinary,
+		TargetArgs:   targetArgs,
+		SyscallNrs:   syscallNrs,
+	})
 }

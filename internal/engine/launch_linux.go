@@ -1,0 +1,345 @@
+//go:build linux
+
+package engine
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/faultbox/Faultbox/internal/seccomp"
+	"golang.org/x/sys/unix"
+)
+
+func (s *Session) launch(ctx context.Context) (*Result, error) {
+	start := time.Now()
+
+	// Resolve syscall names to numbers for the seccomp filter.
+	type resolvedRule struct {
+		nr   int32
+		rule FaultRule
+	}
+	var rules []resolvedRule
+	var syscallNrs []uint32
+	seen := make(map[int32]bool)
+
+	for _, r := range s.cfg.FaultRules {
+		nr := seccomp.SyscallNumber(r.Syscall)
+		if nr < 0 {
+			return nil, fmt.Errorf("unknown syscall %q", r.Syscall)
+		}
+		rules = append(rules, resolvedRule{nr: nr, rule: r})
+		if !seen[nr] {
+			syscallNrs = append(syscallNrs, uint32(nr))
+			seen[nr] = true
+		}
+	}
+
+	// Also intercept "openat" if "open" is requested (Go uses openat).
+	for _, r := range s.cfg.FaultRules {
+		if r.Syscall == "open" {
+			openatNr := seccomp.SyscallNumber("openat")
+			if openatNr >= 0 && !seen[openatNr] {
+				syscallNrs = append(syscallNrs, uint32(openatNr))
+				seen[openatNr] = true
+				rules = append(rules, resolvedRule{nr: openatNr, rule: r})
+			}
+		}
+	}
+
+	// Build clone flags from namespace config.
+	ns := s.cfg.Namespaces
+	var cloneflags uintptr
+	if ns.PID {
+		cloneflags |= syscall.CLONE_NEWPID
+		s.log.Info("namespace enabled", slog.String("type", "PID"))
+	}
+	if ns.Network {
+		cloneflags |= syscall.CLONE_NEWNET
+		s.log.Info("namespace enabled", slog.String("type", "NET"))
+	}
+	if ns.Mount {
+		cloneflags |= syscall.CLONE_NEWNS
+		s.log.Info("namespace enabled", slog.String("type", "MNT"))
+	}
+	if ns.User {
+		cloneflags |= syscall.CLONE_NEWUSER
+		s.log.Info("namespace enabled", slog.String("type", "USER"))
+	}
+
+	// Build uid/gid mappings for user namespace.
+	var uidMappings, gidMappings []seccomp.IDMapping
+	if ns.User {
+		uidMappings = []seccomp.IDMapping{
+			{ContainerID: 0, HostID: syscall.Getuid(), Size: 1},
+		}
+		gidMappings = []seccomp.IDMapping{
+			{ContainerID: 0, HostID: syscall.Getgid(), Size: 1},
+		}
+		s.log.Debug("user namespace mapping",
+			slog.Int("host_uid", syscall.Getuid()),
+			slog.Int("host_gid", syscall.Getgid()),
+		)
+	}
+
+	// Build target environment: inherit current + extra env vars.
+	var targetEnv []string
+	if len(s.cfg.Env) > 0 {
+		targetEnv = append(os.Environ(), s.cfg.Env...)
+	}
+
+	hasFaults := len(syscallNrs) > 0
+
+	s.log.Info("starting session",
+		slog.String("binary", s.cfg.Binary),
+		slog.Any("args", s.cfg.Args),
+		slog.Int("rule_count", len(rules)),
+		slog.Bool("namespaces", cloneflags != 0),
+		slog.Bool("seccomp", hasFaults),
+	)
+	s.setState(StateStarting)
+
+	if hasFaults {
+		s.log.Info("seccomp filter installed",
+			slog.Any("syscalls", syscallNrs),
+		)
+	}
+
+	// Launch via unified shim.
+	childPid, listenerFd, err := seccomp.Launch(seccomp.LaunchConfig{
+		TargetBinary: s.cfg.Binary,
+		TargetArgs:   s.cfg.Args,
+		TargetEnv:    targetEnv,
+		SyscallNrs:   syscallNrs,
+		Cloneflags:   cloneflags,
+		UidMappings:  uidMappings,
+		GidMappings:  gidMappings,
+	})
+	if err != nil {
+		s.setState(StateFailed)
+		return &Result{SessionID: s.ID, ExitCode: -1, Duration: time.Since(start), Error: err}, err
+	}
+	s.setState(StateRunning)
+
+	logFields := []any{slog.Int("pid", childPid)}
+	if listenerFd >= 0 {
+		logFields = append(logFields, slog.Int("listener_fd", listenerFd))
+	}
+	s.log.Info("target started", logFields...)
+
+	// Build rule lookup: syscall nr → applicable rules
+	ruleMap := make(map[int32][]FaultRule)
+	for _, r := range rules {
+		ruleMap[r.nr] = append(ruleMap[r.nr], r.rule)
+	}
+
+	// If we have a seccomp listener, run the notification loop.
+	stopNotif := make(chan struct{})
+	notifDone := make(chan error, 1)
+	if listenerFd >= 0 {
+		go func() {
+			notifDone <- s.notificationLoop(ctx, listenerFd, ruleMap, stopNotif)
+		}()
+	} else {
+		close(notifDone)
+	}
+
+	// Wait for the child process.
+	exitCode := 0
+	var waitErr error
+	waitDone := make(chan struct{})
+	go func() {
+		defer close(waitDone)
+		statusPath := fmt.Sprintf("/proc/%d/status", childPid)
+		for {
+			data, err := os.ReadFile(statusPath)
+			if os.IsNotExist(err) {
+				break
+			}
+			if err == nil {
+				if strings.Contains(string(data), "State:\tZ") {
+					break
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		var ws unix.WaitStatus
+		wpid, err := unix.Wait4(childPid, &ws, unix.WNOHANG, nil)
+		if err == nil && wpid > 0 {
+			if ws.Exited() {
+				exitCode = ws.ExitStatus()
+			} else if ws.Signaled() {
+				exitCode = 128 + int(ws.Signal())
+			}
+		}
+		if err != nil && err != unix.ECHILD {
+			waitErr = err
+		}
+	}()
+
+	<-waitDone
+
+	// Stop the notification loop and close the fd.
+	close(stopNotif)
+	if listenerFd >= 0 {
+		unix.Close(listenerFd)
+	}
+	<-notifDone
+	duration := time.Since(start)
+
+	if waitErr != nil {
+		s.setState(StateFailed)
+		return &Result{SessionID: s.ID, ExitCode: -1, Duration: duration, Error: waitErr}, waitErr
+	}
+
+	if exitCode != 0 {
+		s.log.Warn("target exited with error",
+			slog.Int("exit_code", exitCode),
+			slog.Duration("duration", duration),
+		)
+	}
+
+	s.setState(StateStopped)
+	s.log.Info("session completed",
+		slog.Int("exit_code", exitCode),
+		slog.Duration("duration", duration),
+	)
+
+	return &Result{SessionID: s.ID, ExitCode: exitCode, Duration: duration}, nil
+}
+
+func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap map[int32][]FaultRule, stop <-chan struct{}) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-stop:
+			return nil
+		default:
+		}
+
+		ready, err := seccomp.Poll(listenerFd, 10)
+		if err != nil {
+			if isClosedFdErr(err) {
+				return nil
+			}
+			return fmt.Errorf("poll listener: %w", err)
+		}
+		if !ready {
+			continue
+		}
+
+		req, err := seccomp.Receive(listenerFd)
+		if err != nil {
+			if isClosedFdErr(err) {
+				return nil
+			}
+			return fmt.Errorf("receive notification: %w", err)
+		}
+
+		syscallName := seccomp.SyscallName(req.Data.Nr)
+
+		// For file syscalls, read the path argument for filtering and logging.
+		var path string
+		if IsFileSyscall(syscallName) {
+			// openat(dirfd, pathname, ...) — pathname is arg1.
+			// open(pathname, ...) — pathname is arg0.
+			argIdx := 1 // openat and friends: arg1 is path
+			if syscallName == "open" {
+				argIdx = 0
+			}
+			p, err := seccomp.ReadStringFromProcess(req.PID, req.Data.Args[argIdx], 256)
+			if err == nil {
+				path = p
+			}
+		}
+
+		decision := "allow"
+
+		// Check fault rules for this syscall.
+		denied := false
+		if rules, ok := ruleMap[req.Data.Nr]; ok {
+			for _, rule := range rules {
+				// Path-based filtering for file syscalls.
+				if IsFileSyscall(syscallName) && path != "" {
+					if rule.PathGlob != "" {
+						// Explicit path glob — only fault matching paths.
+						if !rule.MatchPath(path) {
+							dir := filepath.Dir(path)
+							if !rule.MatchPath(dir + "/") {
+								continue
+							}
+						}
+					} else {
+						// No path glob — apply system path exclusion.
+						if IsSystemPath(path) {
+							decision = "allow (system path)"
+							break
+						}
+					}
+				}
+
+				if rand.Float64() < rule.Probability {
+					decision = fmt.Sprintf("deny(%s)", rule.Errno)
+
+					logFields := []any{
+						slog.String("name", syscallName),
+						slog.Int("pid", int(req.PID)),
+						slog.String("decision", decision),
+					}
+					if path != "" {
+						logFields = append(logFields, slog.String("path", path))
+					}
+					s.log.Info("syscall intercepted", logFields...)
+
+					if err := seccomp.Deny(listenerFd, req.ID, int32(rule.Errno)); err != nil {
+						if isClosedFdErr(err) {
+							return nil
+						}
+						s.log.Error("failed to deny syscall", slog.String("error", err.Error()))
+					}
+					denied = true
+					break
+				}
+			}
+		}
+
+		if !denied {
+			logFields := []any{
+				slog.String("name", syscallName),
+				slog.Int("pid", int(req.PID)),
+				slog.String("decision", decision),
+			}
+			if path != "" {
+				logFields = append(logFields, slog.String("path", path))
+			}
+			s.log.Debug("syscall intercepted", logFields...)
+
+			if err := seccomp.Allow(listenerFd, req.ID); err != nil {
+				if isClosedFdErr(err) {
+					return nil
+				}
+				s.log.Error("failed to allow syscall", slog.String("error", err.Error()))
+			}
+		}
+	}
+}
+
+func isClosedFdErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if os.IsNotExist(err) {
+		return true
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "bad file descriptor") ||
+		strings.Contains(errStr, syscall.EBADF.Error()) ||
+		strings.Contains(errStr, syscall.ENOENT.Error())
+}
