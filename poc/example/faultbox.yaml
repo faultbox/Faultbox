@@ -3,16 +3,26 @@ version: "1"
 services:
   db:
     binary: /tmp/mock-db
-    port: 5432
-    env:
+    interfaces:
+      main:
+        protocol: tcp
+        port: 5432
+    environment:
       PORT: "5432"
-    ready: tcp://localhost:5432
+    healthcheck:
+      test: tcp://localhost:5432
+      timeout: 10s
 
   api:
     binary: /tmp/mock-api
-    port: 8080
-    env:
+    interfaces:
+      public:
+        protocol: http
+        port: 8080
+    environment:
       PORT: "8080"
-      DB_ADDR: "localhost:5432"
+      DB_ADDR: "{{db.main.addr}}"
     depends_on: [db]
-    ready: http://localhost:8080/health
+    healthcheck:
+      test: http://localhost:8080/health
+      timeout: 10s
