@@ -65,41 +65,75 @@ communicate with each other, orchestrated by a single Faultbox process.
 **Proposal:** YAML file describing services, their configuration, and fault rules.
 
 ```yaml
-# faultbox.yaml
+# faultbox.yaml — topology only, no faults
 version: "1"
 
 services:
   api:
     binary: ./bin/api-server
     args: ["--port", "8080"]
+    port: 8080
     env:
-      DB_URL: "postgres://db:5432/myapp"
-      CACHE_URL: "redis://cache:6379"
-    faults:
-      - "connect=delay:100ms:100%"
+      DB_URL: "postgres://localhost:5432/myapp"
+      CACHE_URL: "redis://localhost:6379"
+    depends_on: [db]
+    ready: http://localhost:8080/health
 
   worker:
     binary: ./bin/worker
-    args: ["--queue-url", "amqp://broker:5672"]
+    args: ["--queue-url", "amqp://localhost:5672"]
     env:
-      DB_URL: "postgres://db:5432/myapp"
-    faults:
-      - "write=EIO:5%:/data/output/*"
-      - "fsync=EIO:100%:after=10"
+      DB_URL: "postgres://localhost:5432/myapp"
+    depends_on: [db]
 
   db:
     binary: ./bin/mock-postgres
+    port: 5432
     env:
       DATA_DIR: "/data/pgdata"
-    faults: []  # no faults on the database itself
+    ready: tcp://localhost:5432
+```
+
+Faults are NOT in the topology file — they live in `spec.yaml` (the test plan).
+This separation allows experimenting with different failure scenarios against
+the same service topology.
+
+```yaml
+# spec.yaml — traces with faults and expectations
+version: "1"
+system: faultbox.yaml
+
+traces:
+  happy-path:
+    description: "Normal operation — all services healthy"
+    faults: {}
+    expect:
+      api: {exit_code: 0}
+
+  db-write-failure:
+    description: "DB writes fail — API should handle gracefully"
+    faults:
+      db:
+        - "write=EIO:100%:after=2"
+    expect:
+      api: {exit_code: 0}
+
+  slow-db:
+    description: "DB latency spike — API should timeout"
+    faults:
+      db:
+        - "read=delay:5s:100%"
+    expect:
+      api: {exit_code: 0}
+      timeout: 10s
 ```
 
 **Key design choices:**
 
-- **Service names are DNS-resolvable** inside the Faultbox network (`api`, `worker`, `db`)
-- **Each service = one Session** with its own namespace + seccomp filter
-- **No port mapping needed** — services address each other by name
-- **Faults are per-service** — "api's connections are slow, worker's writes fail"
+- **Topology is stable, faults are dynamic** — one `faultbox.yaml`, many `spec.yaml` files
+- **Service names resolve to localhost ports** inside the shared network
+- **Each service = one Session** with its own PID/MNT/USER namespace + seccomp filter
+- **Faults are per-trace, per-service** in the spec file
 - **LLM-friendly:** flat YAML, no special syntax, clear field names
 
 **Discussion point:** Should `binary` support container images (`image: postgres:16`)
@@ -233,15 +267,27 @@ type SimulationConfig struct {
     Services map[string]ServiceConfig
 }
 
-// ServiceConfig describes one service in the topology.
+// ServiceConfig describes one service in the topology (no faults — those live in spec.yaml).
 type ServiceConfig struct {
     Binary    string
     Args      []string
     Env       map[string]string
     Port      int
-    Faults    []string          // fault rule specs
     DependsOn []string
     Ready     string            // health check URL/command
+}
+
+// TraceConfig describes one test trace from spec.yaml.
+type TraceConfig struct {
+    Description string
+    Faults      map[string][]string  // service name → fault rule specs
+    Expect      map[string]TraceExpect
+    Timeout     time.Duration
+}
+
+// TraceExpect describes expected outcomes for a service in a trace.
+type TraceExpect struct {
+    ExitCode *int  // nil = don't check
 }
 
 // Service wraps a Session with multi-service context.
@@ -268,20 +314,23 @@ with its own SessionConfig. The Simulation handles:
 # Single service (unchanged)
 faultbox run [flags] <binary> [args...]
 
-# Multi-service from manifest
+# Multi-service: start topology, run until Ctrl+C (manual exploration)
 faultbox run --config faultbox.yaml
 
-# Multi-service with spec (Step 7+)
-faultbox run --config faultbox.yaml --spec traces.yaml
+# Multi-service with spec: start topology, execute traces, report results
+faultbox test --config faultbox.yaml --spec spec.yaml --output results.json
 ```
 
+Two commands:
+- **`faultbox run`** — start services and keep running (manual mode, human exploration)
+- **`faultbox test`** — start services, execute spec traces, exit with pass/fail (agent mode)
+
 When `--config` is specified:
-- Parse the YAML manifest
+- Parse the YAML topology
 - Create a Simulation with all services
-- Start services in dependency order
-- Wait for all ready checks
-- If `--spec` is given, execute the test plan
-- Otherwise, run until Ctrl+C (manual testing mode)
+- Start services in dependency order, wait for `ready` checks
+- `run`: keep running until Ctrl+C
+- `test`: execute each trace in spec.yaml, collect results, exit
 
 ---
 
@@ -352,15 +401,16 @@ to verify code changes before merge. This requires only a container image.
 
 ## Implementation Plan for Step 6
 
-1. **Parse YAML manifest** — `SimulationConfig` struct, YAML loader
-2. **Simulation orchestrator** — start services in dependency order with health checks
-3. **Shared network** — skip NET namespace for multi-service (all share host network)
-4. **Service name → port resolution** — inject env vars (`DB_URL`, etc.)
+1. **Parse `faultbox.yaml`** — `SimulationConfig` struct, YAML loader (topology only)
+2. **Parse `spec.yaml`** — `SpecConfig` struct with traces, per-service faults, expectations
+3. **Simulation orchestrator** — start services in dependency order with health checks
+4. **Shared network** — skip NET namespace for multi-service (all share host network)
 5. **Coordinated shutdown** — signal all services on exit
-6. **Structured results** — `--output results.json` for agent consumption
-7. **CLI: `--config` flag** — route to Simulation instead of single Session
-8. **Multi-service log output** — `service` field in JSON logs, `[name]` prefix in console
-9. **Test with 2-service example** — mock API + mock DB communicating over localhost
+6. **CLI: `faultbox run --config`** — manual exploration mode
+7. **CLI: `faultbox test --config --spec`** — execute traces, report pass/fail
+8. **Structured results** — `--output results.json` for agent consumption
+9. **Multi-service log output** — `service` field in JSON logs, `[name]` prefix in console
+10. **Test with 2-service example** — mock API + mock DB communicating over localhost
 
 ---
 
@@ -405,17 +455,37 @@ to verify code changes before merge. This requires only a container image.
 
 ---
 
-## Open Questions for Discussion
+## Resolved Decisions
 
-1. **Shared net vs net namespace?** Recommendation: no NET namespace for
-   multi-service (all share host network, different ports). Simpler, sufficient
-   for PoC. Network faults via per-service seccomp.
+1. **Networking:** Shared host network (no NET namespace for multi-service).
+   Network faults via per-service seccomp filters.
+2. **Readiness:** TCP/HTTP health checks — deterministic, required for agents.
+3. **Container images:** Binary-only for PoC. Image support is post-PoC.
+4. **Service discovery:** Env var injection (`DB_HOST=localhost`, `DB_PORT=5432`).
+5. **Topology vs faults:** `faultbox.yaml` is topology only (stable).
+   `spec.yaml` has faults per trace (dynamic, experimentation).
+6. **Invariant checking:** Outside PoC scope. Trace-first is the foundation;
+   invariant exploration can generate traces later without engine changes.
 
-2. **Service readiness?** TCP/HTTP health checks — deterministic, required for
-   agent workflows (agent can't "sleep and hope").
+## Open Questions
 
-3. **Container image support (`image: postgres:16`)?** Binary-only for PoC.
-   Image support is a Step 10 concern (deployment packaging).
+1. **Spec trace execution model:** Run each trace sequentially (restart services
+   per trace) or run all traces against a single service lifetime?
+2. **Assertion language:** How does `expect:` work beyond exit codes? String
+   matching on stdout? Custom assertion commands?
 
-4. **Service name resolution:** Inject as env vars (`DB_HOST=localhost`,
-   `DB_PORT=5432`). Simpler than /etc/hosts rewrite, works in shared network.
+---
+
+## Connection to Roadmap
+
+```
+Step 6 (this) → multi-service topology + simulation orchestrator
+  ↓
+Step 7 → spec language design (YAML, trace-first, LLM-friendly)
+Step 8 → trace executor: run spec traces, collect results
+  ↓
+Step 9 → LLM integration: prompt templates, code-to-spec
+Step 10 → deployment: container image for CI/CD, k8s considerations
+  ↓
+Post-PoC → invariant exploration, advanced assertions, container images
+```
