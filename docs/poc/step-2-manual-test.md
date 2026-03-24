@@ -82,14 +82,17 @@ make env-exec CMD="/tmp/faultbox run --fault 'openat=ENOENT:100%' --log-format=j
 ## 7. Run with multiple fault rules
 
 ```bash
-make env-exec CMD="/tmp/faultbox run --fault 'openat=EACCES:100%' --fault 'write=EIO:100%' --log-format=console /tmp/faultbox-target"
+make env-exec CMD="/tmp/faultbox run --fault 'openat=EACCES:50%' --fault 'write=EIO:100%' --log-format=console /tmp/faultbox-target"
 ```
 
 **What to check:**
-- Both `openat` and `write` syscalls are intercepted
-- `openat` → denied with EACCES
-- `write` → denied with EIO
-- Separate rules applied independently
+- Both `openat` (56) and `write` (64) appear in the `syscalls` log field
+- `rule_count=2` in the starting log
+- `openat` → denied with EACCES (some calls)
+- `write` → denied with EIO (if target survives past dynamic linker)
+
+**Note:** At 100% openat fault, the dynamic linker fails before `write` is ever
+called. Use 50% openat to see both faults in action.
 
 ## 8. Verify exit code propagation with faults
 
