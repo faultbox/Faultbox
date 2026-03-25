@@ -1,156 +1,169 @@
 # Faultbox Spec Language Reference
 
-Faultbox uses two YAML files to define and test distributed systems:
-
-- **`faultbox.yaml`** — Topology: what services exist and how they communicate
-- **`spec.yaml`** — Specification: what scenarios to test and what to expect
-
-Run with:
+Faultbox uses a single Starlark file (`faultbox.star`) to define the system
+topology and test scenarios. Starlark is a Python-like language — the
+configuration is code.
 
 ```bash
-faultbox test --config faultbox.yaml --spec spec.yaml [--output results.json]
+faultbox test faultbox.star                      # run all tests
+faultbox test faultbox.star --test happy_path    # run one test
+faultbox test faultbox.star --output results.json
 ```
 
 ---
 
-## Topology (`faultbox.yaml`)
+## Quick Start
 
-The topology file describes the system under test: its services, their
-communication interfaces, dependencies, health checks, and environment.
+```python
+# faultbox.star
 
-### Minimal Example
+db = service("db", "/usr/local/bin/my-db",
+    interface("main", "tcp", 5432),
+    healthcheck = tcp("localhost:5432"),
+)
 
-```yaml
-version: "1"
+api = service("api", "/usr/local/bin/my-api",
+    interface("public", "http", 8080),
+    env = {"PORT": "8080", "DB_ADDR": db.main.addr},
+    depends_on = [db],
+    healthcheck = http("localhost:8080/health"),
+)
 
-services:
-  db:
-    binary: /usr/local/bin/my-db
-    interfaces:
-      main:
-        protocol: tcp
-        port: 5432
-    healthcheck:
-      test: tcp://localhost:5432
-      timeout: 10s
+def test_happy_path():
+    resp = api.get(path="/health")
+    assert_eq(resp.status, 200)
 
-  api:
-    binary: /usr/local/bin/my-api
-    interfaces:
-      public:
-        protocol: http
-        port: 8080
-    environment:
-      PORT: "8080"
-      DB_ADDR: "{{db.main.addr}}"
-    depends_on: [db]
-    healthcheck:
-      test: http://localhost:8080/health
-      timeout: 10s
+def test_db_down():
+    def scenario():
+        resp = api.post(path="/data/key1", body="value")
+        assert_eq(resp.status, 500)
+        assert_true("db error" in resp.body)
+    fault(api, connect=deny("ECONNREFUSED"), run=scenario)
 ```
 
-### Multi-Interface Example
+---
 
-A service can expose multiple communication interfaces. Each interface has a
-name, protocol, and port:
+## Topology
 
-```yaml
-services:
-  courier:
-    binary: ./courier-svc
-    interfaces:
-      public:
-        protocol: http
-        port: 8080
-      internal:
-        protocol: grpc
-        port: 9090
-      events:
-        protocol: kafka
-        port: 9092
-        topics: [courier.updated, courier.assigned]
-    depends_on: [db, cache]
-    healthcheck:
-      test: http://localhost:8080/health
-      timeout: 15s
+### `service(name, binary, *interfaces, ...)`
+
+Declares a service in the system under test. Returns a service object that can
+be referenced by other services and used in tests.
+
+```python
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+    env = {"PORT": "5432"},
+    depends_on = [],
+    healthcheck = tcp("localhost:5432"),
+)
 ```
 
-### Service Fields
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | **yes** | Service name (used in logs and results) |
 | `binary` | string | **yes** | Path to the executable |
-| `args` | string[] | no | Command-line arguments |
-| `interfaces` | map | **yes** | Named communication interfaces (see below) |
-| `environment` | map | no | Environment variables (supports templates) |
-| `depends_on` | string[] | no | Services that must start before this one |
-| `healthcheck` | object | no | Readiness check configuration |
+| *positional* | interface | **yes** | One or more `interface()` declarations |
+| `env` | dict | no | Environment variables |
+| `depends_on` | list | no | Services that must start first |
+| `healthcheck` | healthcheck | no | Readiness check (`tcp()` or `http()`) |
 
-### Interface Fields
+Services must be declared in dependency order — define `db` before `api` if
+`api` depends on `db`.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `protocol` | string | **yes** | Protocol type: `http`, `tcp`, `grpc`, `kafka`, etc. |
-| `port` | int | **yes** | Port number the interface listens on |
-| `topics` | string[] | no | Topic names (for async protocols like Kafka) |
+### `interface(name, protocol, port, spec=)`
+
+Declares a communication interface for a service.
+
+```python
+interface("public", "http", 8080)
+interface("main", "tcp", 5432)
+interface("internal", "grpc", 9090)
+interface("events", "kafka", 9092, spec="./events.avsc")
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | **yes** | Interface name (e.g., `"main"`, `"public"`) |
+| `protocol` | string | **yes** | Protocol type (`"http"`, `"tcp"`, `"grpc"`, etc.) |
+| `port` | int | **yes** | Port number |
+| `spec` | string | no | Path to protocol spec file (OpenAPI, protobuf, Avro, etc.) |
 
 Currently supported protocols for step execution: `http`, `tcp`.
-Other protocols can be declared for documentation and future extension.
+Other protocols can be declared for documentation and future Starlark modules.
 
-### Healthcheck Fields
+The `spec` field is a path to a file that a protocol module understands.
+Faultbox core doesn't parse it — future Starlark protocol modules will.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `test` | string | — | Check URL: `tcp://host:port` or `http://host/path` |
-| `interval` | duration | `1s` | Poll interval between checks |
-| `timeout` | duration | `10s` | Overall timeout before marking service as unhealthy |
+### Multi-Interface Services
 
-The health check runs after the service starts. If it doesn't pass within
-`timeout`, the trace fails immediately with a reason explaining which service
-wasn't ready.
+A service can expose multiple interfaces:
+
+```python
+courier = service("courier", "./courier-svc",
+    interface("public", "http", 8080),
+    interface("internal", "grpc", 9090),
+    interface("events", "kafka", 9092),
+    depends_on = [db, cache],
+    healthcheck = http("localhost:8080/health"),
+)
+```
+
+Access interfaces by name: `courier.public`, `courier.internal`, `courier.events`.
+
+### Healthchecks
+
+#### `tcp(addr, timeout=)`
+
+```python
+healthcheck = tcp("localhost:5432")
+healthcheck = tcp("localhost:5432", timeout="15s")
+```
+
+Polls a TCP connection until it succeeds.
+
+#### `http(url, timeout=)`
+
+```python
+healthcheck = http("localhost:8080/health")
+healthcheck = http("localhost:8080/ready", timeout="30s")
+```
+
+Polls an HTTP endpoint until it returns 2xx/3xx.
+
+Default timeout for both: `10s`.
 
 ### Environment Variables
 
-#### User-Defined Variables
+#### User-Defined
 
-```yaml
-environment:
-  PORT: "8080"
-  LOG_LEVEL: "debug"
+```python
+env = {"PORT": "8080", "LOG_LEVEL": "debug"}
 ```
 
-#### Template Syntax
+#### Cross-Service References
 
-Reference other services' interfaces using `{{service.interface.field}}`:
+Reference another service's interface address directly:
 
-```yaml
-environment:
-  DB_ADDR: "{{db.main.addr}}"      # → localhost:5432
-  DB_HOST: "{{db.main.host}}"      # → localhost
-  DB_PORT: "{{db.main.port}}"      # → 5432
-  CACHE_ADDR: "{{cache.addr}}"     # shorthand when service has one interface
+```python
+api = service("api", "./api",
+    interface("public", "http", 8080),
+    env = {"DB_ADDR": db.main.addr},   # → "localhost:5432"
+    depends_on = [db],
+)
 ```
 
-| Template | Resolves To |
-|----------|-------------|
-| `{{service.interface.addr}}` | `localhost:port` |
-| `{{service.interface.host}}` | `localhost` |
-| `{{service.interface.port}}` | Port number as string |
-| `{{service.field}}` | Shorthand when service has a single interface |
+Available attributes on interface references:
+
+| Attribute | Returns | Example |
+|-----------|---------|---------|
+| `.addr` | `"localhost:port"` | `db.main.addr` → `"localhost:5432"` |
+| `.host` | `"localhost"` | `db.main.host` → `"localhost"` |
+| `.port` | port number | `db.main.port` → `5432` |
 
 #### Auto-Injected Variables
 
-Faultbox automatically injects service discovery environment variables for
-every service:
-
-```
-FAULTBOX_<SERVICE>_<INTERFACE>_ADDR=localhost:<port>
-FAULTBOX_<SERVICE>_<INTERFACE>_HOST=localhost
-FAULTBOX_<SERVICE>_<INTERFACE>_PORT=<port>
-```
-
-For example, if service `db` has interface `main` on port 5432, every service
-receives:
+Faultbox injects `FAULTBOX_<SERVICE>_<INTERFACE>_*` env vars for every service:
 
 ```
 FAULTBOX_DB_MAIN_ADDR=localhost:5432
@@ -158,480 +171,308 @@ FAULTBOX_DB_MAIN_HOST=localhost
 FAULTBOX_DB_MAIN_PORT=5432
 ```
 
-User-defined variables override auto-injected ones if the same key is used.
-
-### Legacy Format
-
-The previous topology format is still accepted and auto-migrated:
-
-```yaml
-# Legacy format (still works)
-services:
-  db:
-    binary: ./my-db
-    port: 5432               # → interfaces.default.port
-    env:                      # → environment
-      PORT: "5432"
-    ready: tcp://localhost:5432  # → healthcheck.test
-```
-
-| Legacy Field | Migrates To |
-|-------------|-------------|
-| `port: N` | `interfaces: { default: { protocol: tcp, port: N } }` |
-| `env:` | `environment:` |
-| `ready: "check"` | `healthcheck: { test: "check", timeout: 10s }` |
-
 ---
 
-## Specification (`spec.yaml`)
+## Tests
 
-The spec file defines test traces — scenarios that exercise the system with
-specific faults and verify expected behavior.
+Test functions are named `test_*` and discovered automatically. Each test
+runs with fresh service instances (restarted between tests).
 
-### Minimal Example
-
-```yaml
-version: "1"
-system: faultbox.yaml
-
-traces:
-  happy-path:
-    description: "Normal operation — all services healthy"
-    faults: {}
-    timeout: "15s"
-    steps:
-      - api.get:
-          path: /health
-          expect:
-            status: 200
-    assert:
-      - exit_code: { service: api, equals: 0 }
+```python
+def test_happy_path():
+    """Normal operation — all services healthy."""
+    resp = api.get(path="/health")
+    assert_eq(resp.status, 200)
 ```
-
-### Full Example
-
-```yaml
-version: "1"
-system: faultbox.yaml
-
-traces:
-  happy-path:
-    description: "Normal operation"
-    faults: {}
-    timeout: "15s"
-    steps:
-      - db.main.send:
-          data: "PING"
-          expect:
-            equals: "PONG"
-      - api.public.post:
-          path: /data/key1
-          body: "hello"
-          expect:
-            status: 200
-            body_contains: "stored"
-      - api.public.get:
-          path: /data/key1
-          expect:
-            status: 200
-            body_equals: "hello"
-    assert:
-      - exit_code: { service: api, equals: 0 }
-
-  db-slow-writes:
-    description: "DB writes are delayed 500ms"
-    faults:
-      db:
-        - syscall: write
-          action: delay
-          delay: 500ms
-          probability: "100%"
-    timeout: "15s"
-    steps:
-      - api.public.post:
-          path: /data/key1
-          body: "value1"
-          expect:
-            status: 200
-    assert:
-      - exit_code: { service: api, equals: 0 }
-
-  api-cannot-reach-db:
-    description: "API's connections to DB are refused"
-    faults:
-      api:
-        - "connect=ECONNREFUSED:100%"
-    timeout: "15s"
-    steps:
-      - api.public.post:
-          path: /data/key1
-          body: "value1"
-          expect:
-            status: 500
-            body_contains: "db error"
-    assert:
-      - exit_code: { service: api, equals: 0 }
-```
-
-### Spec Fields
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `version` | string | no | Spec version (currently `"1"`) |
-| `system` | string | no | Reference to topology file (documentation only) |
-| `traces` | map | **yes** | Named test traces |
-
-### Trace Fields
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `description` | string | no | Human-readable description of the scenario |
-| `faults` | map | no | Per-service fault rules (see Faults below) |
-| `steps` | list | no | Ordered actions to exercise the system (see Steps below) |
-| `assert` | list | no | Post-execution assertions (see Assertions below) |
-| `timeout` | duration | no | Trace timeout (default: `30s`) |
 
 ### Execution Order
 
-For each trace, Faultbox executes in this order:
+For each test function:
 
 ```
-1. Start all services (in dependency order)
-2. Wait for health checks to pass
-3. Run steps sequentially
-4. Run eventually assertions (while services are alive)
+1. Wait for ports to be free (cleanup from previous test)
+2. Start all services in dependency order
+3. Wait for healthchecks to pass
+4. Run the test function
 5. Stop all services (SIGTERM → SIGKILL after 2s)
-6. Check exit code assertions
-7. Report results
+6. Report result
 ```
 
-Services are fully restarted between traces to ensure clean state.
+### Running Tests
 
----
-
-## Faults
-
-Faults are per-service and injected at the syscall level via seccomp-notify.
-Each service can have zero or more fault rules.
-
-### String Format
-
-Compact syntax compatible with the `--fault` CLI flag:
-
-```yaml
-faults:
-  api:
-    - "connect=ECONNREFUSED:100%"              # deny
-    - "write=delay:200ms:50%"                   # delay
-    - "openat=ENOENT:100%:/data/*:after=2"      # deny + path + trigger
-```
-
-See the [CLI Reference](cli-reference.md) for full string syntax documentation.
-
-### Object Format
-
-Structured syntax for readability and LLM generation:
-
-```yaml
-faults:
-  db:
-    - syscall: write
-      action: delay
-      delay: 500ms
-      probability: "100%"
-
-    - syscall: connect
-      action: deny
-      errno: ECONNREFUSED
-      probability: "10%"
-      trigger:
-        type: after
-        n: 2
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `syscall` | string | **yes** | Linux syscall name (`write`, `connect`, `openat`, etc.) |
-| `action` | string | **yes** | `deny` (return errno) or `delay` (sleep then allow) |
-| `errno` | string | for deny | Error code: `EIO`, `ECONNREFUSED`, etc. (default: `EIO`) |
-| `delay` | duration | for delay | Sleep duration: `500ms`, `2s`, etc. |
-| `probability` | string | **yes** | Fire probability: `"100%"`, `"50%"`, `"1%"` |
-| `path` | string | no | Glob pattern for file syscalls: `/data/*` |
-| `trigger` | object | no | Stateful trigger (see below) |
-
-### Trigger Object
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | `nth` (fire on Nth call) or `after` (fire after N calls) |
-| `n` | int | Count parameter (1-indexed for `nth`, 0-indexed for `after`) |
-
-### Mixing Formats
-
-String and object formats can be mixed in the same fault list:
-
-```yaml
-faults:
-  api:
-    - "connect=ECONNREFUSED:100%"          # string
-    - syscall: write                        # object
-      action: delay
-      delay: 200ms
-      probability: "50%"
-```
-
-### Important: Fault Targeting
-
-Faults are applied to the **service's own syscalls**, not to syscalls made by
-other services connecting to it. For example:
-
-```yaml
-# CORRECT: fault API's outbound connect() — API can't reach DB
-faults:
-  api:
-    - "connect=ECONNREFUSED:100%"
-
-# WRONG: this faults DB's own connect() calls (DB doesn't make any)
-faults:
-  db:
-    - "connect=ECONNREFUSED:100%"
-```
-
-To simulate "DB is slow to respond", fault DB's `write` syscall (which delays
-the response):
-
-```yaml
-faults:
-  db:
-    - syscall: write
-      action: delay
-      delay: 500ms
-      probability: "100%"
+```bash
+faultbox test faultbox.star                      # all tests
+faultbox test faultbox.star --test happy_path    # one test
+faultbox test faultbox.star --debug              # verbose logging
+faultbox test faultbox.star --output results.json
 ```
 
 ---
 
 ## Steps
 
-Steps are the active scenario driver — they exercise the system by sending
-requests and validating responses. Steps run sequentially after all services
-are ready.
+Steps are method calls on service interfaces that exercise the running system.
 
 ### Step Addressing
 
-Steps use `service[.interface].operation` syntax:
-
-```yaml
-steps:
-  - api.get:                   # service "api", default interface, HTTP GET
-      path: /health
-  - api.public.post:           # service "api", interface "public", HTTP POST
-      path: /data/key1
-  - db.main.send:              # service "db", interface "main", TCP send
-      data: "PING"
+```python
+api.public.post(path="/data/key")   # explicit interface
+api.post(path="/data/key")          # shorthand (single-interface service)
+db.main.send(data="PING")           # TCP interface
 ```
 
-When a service has a **single interface**, the interface name can be omitted:
-`api.get` resolves to `api.public.get` if `public` is the only interface.
-
-The operation maps to the interface's protocol:
-- `http` interface → `get`, `post`, `put`, `delete`, `patch`
-- `tcp` interface → `send`
+When a service has one interface, the interface name can be omitted.
 
 ### HTTP Steps
 
-Available when the target interface has `protocol: http`.
+Available on interfaces with `protocol: "http"`.
 
-```yaml
-- api.get:
-    path: /health
-    headers:
-      Authorization: "Bearer token123"
-    expect:
-      status: 200
-      body_contains: "ok"
+**Operations:** `get`, `post`, `put`, `delete`, `patch`
 
-- api.post:
-    path: /data/key1
-    body: "hello world"
-    expect:
-      status: 200
-      body_equals: "stored: key1=hello world"
+```python
+resp = api.get(path="/health")
+resp = api.post(path="/data/key1", body="hello world")
+resp = api.post(path="/data/key1", body="data", headers={"Authorization": "Bearer token"})
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `path` | string | no | URL path (default: `/`) |
-| `body` | string | no | Request body (for POST/PUT/PATCH) |
-| `headers` | map | no | HTTP headers |
-| `expect` | object | no | Response expectations (see below) |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | no | URL path (default: `"/"`) |
+| `body` | string | no | Request body |
+| `headers` | dict | no | HTTP headers |
 
-**HTTP operations:** `get`, `post`, `put`, `delete`, `patch`
+**Response object:**
 
-**HTTP expect fields:**
+```python
+resp = api.post(path="/data/key1", body="hello")
+resp.status       # int — HTTP status code (200, 404, 500, ...)
+resp.body         # string — response body (trimmed)
+resp.ok           # bool — True if step succeeded
+resp.error        # string — error message if step failed
+resp.duration_ms  # int — request duration in milliseconds
+```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `status` | int | Expected HTTP status code (e.g., `200`, `500`) |
-| `body_contains` | string | Response body must contain this substring |
-| `body_equals` | string | Response body must exactly match this string |
+**Assertions use standard expressions:**
+
+```python
+assert_eq(resp.status, 200)
+assert_true("stored" in resp.body)
+assert_true(resp.duration_ms < 1000, "too slow")
+assert_true(resp.ok)
+```
+
+No special `expect` fields — use Starlark expressions directly.
 
 ### TCP Steps
 
-Available when the target interface has `protocol: tcp`.
+Available on interfaces with `protocol: "tcp"`.
 
-```yaml
-- db.main.send:
-    data: "PING"
-    expect:
-      equals: "PONG"
+**Operation:** `send`
 
-- db.main.send:
-    data: "SET mykey myvalue"
-    expect:
-      contains: "OK"
+```python
+resp = db.main.send(data="PING")    # returns response as string
+assert_eq(resp, "PONG")
+
+resp = db.main.send(data="SET key value")
+assert_eq(resp, "OK")
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `data` | string | **yes** | Data to send (newline is appended automatically) |
-| `expect` | object | no | Response expectations |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `data` | string | **yes** | Data to send (newline appended automatically) |
 
-**TCP expect fields:**
+TCP `send` returns a string (the first response line), not a response object.
+It opens a connection, sends one line, reads one line, and closes.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `contains` | string | Response line must contain this substring |
-| `equals` | string | Response line must exactly match this string |
+---
 
-TCP steps open a new connection, send one line, read one line response, and
-close. They are designed for request-response text protocols.
+## Faults
 
-### Sleep Step
+Faults inject failures at the syscall level via seccomp-notify.
 
-Pause execution for a duration:
+### `fault(service, run=callback, **syscall_faults)`
 
-```yaml
-- sleep: 1s
-- sleep: 500ms
-- sleep: 100ms
+Scoped fault injection — faults are active only during the callback:
+
+```python
+def test_db_slow():
+    def scenario():
+        resp = api.post(path="/data/key1", body="value")
+        assert_eq(resp.status, 200)
+        assert_true(resp.duration_ms > 400)
+    fault(db, write=delay("500ms"), run=scenario)
 ```
 
-### Step Failure
+The `run` parameter takes a callable. Faults are automatically removed when
+the callback returns (even on error).
 
-If any step fails (unexpected status, body mismatch, connection error), the
-trace stops immediately and reports the failure. Subsequent steps are skipped.
+Multiple faults can be applied at once:
 
-A step failure means the **trace** fails — this is separate from assertions
-which run after steps complete.
+```python
+fault(db,
+    write=delay("1s"),
+    connect=deny("ECONNREFUSED"),
+    run=scenario,
+)
+```
+
+### `fault_start(service, ...)` / `fault_stop(service)`
+
+Imperative fault control:
+
+```python
+def test_imperative():
+    fault_start(db, write=delay("500ms"))
+    resp = api.post(path="/data/key1", body="value")
+    assert_eq(resp.status, 200)
+    fault_stop(db)
+```
+
+Use `fault()` with `run=` when possible — it guarantees cleanup.
+
+### `delay(duration, probability=)`
+
+Delays a syscall by sleeping before allowing it to proceed.
+
+```python
+delay("500ms")              # 500ms delay, 100% probability
+delay("2s")                 # 2 second delay
+delay("100ms", probability="50%")  # 50% chance of delay
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `duration` | string | — | Go duration: `"500ms"`, `"2s"`, `"100us"` |
+| `probability` | string | `"100%"` | Chance the fault fires |
+
+### `deny(errno, probability=)`
+
+Fails a syscall by returning an error code.
+
+```python
+deny("ECONNREFUSED")           # 100% connection refused
+deny("EIO", probability="10%") # 10% I/O error
+deny("ENOSPC")                 # disk full
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `errno` | string | — | Error code (see table below) |
+| `probability` | string | `"100%"` | Chance the fault fires |
+
+### Fault Targeting
+
+Keyword arguments map syscall names to faults:
+
+```python
+fault(db, write=delay("500ms"), run=fn)      # delay db's write() syscalls
+fault(api, connect=deny("ECONNREFUSED"), run=fn)  # deny api's connect()
+fault(db, openat=deny("ENOENT"), run=fn)     # fail db's file opens
+fault(api, fsync=deny("EIO"), run=fn)        # fail api's fsync
+```
+
+Faults apply to the **service's own syscalls**:
+
+```python
+# CORRECT: API can't connect to DB (API makes outbound connect)
+fault(api, connect=deny("ECONNREFUSED"), run=fn)
+
+# CORRECT: DB responds slowly (DB's write to socket is delayed)
+fault(db, write=delay("500ms"), run=fn)
+```
+
+### Supported Errno Values
+
+**File/IO:** `ENOENT`, `EACCES`, `EPERM`, `EIO`, `ENOSPC`, `EROFS`, `EEXIST`,
+`ENOTEMPTY`, `ENFILE`, `EMFILE`, `EFBIG`
+
+**Network:** `ECONNREFUSED`, `ECONNRESET`, `ECONNABORTED`, `ETIMEDOUT`,
+`ENETUNREACH`, `EHOSTUNREACH`, `EADDRINUSE`, `EADDRNOTAVAIL`
+
+**Generic:** `EINTR`, `EAGAIN`, `ENOMEM`, `EBUSY`, `EINVAL`
+
+### Supported Syscalls
+
+**File/IO:** `openat`, `read`, `write`, `writev`, `readv`, `close`, `fsync`,
+`mkdirat`, `unlinkat`, `faccessat`, `fstatat`, `getdents64`, `readlinkat`
+
+**Network:** `connect`, `socket`, `bind`, `listen`, `accept`, `sendto`, `recvfrom`
+
+**Process:** `clone`, `execve`, `wait4`, `getpid`, `getrandom`
 
 ---
 
 ## Assertions
 
-Assertions verify system behavior after steps have run and services have been
-stopped.
+Starlark has no built-in `assert` statement. Faultbox provides:
 
-### Exit Code Assertion
+### `assert_true(condition, message=)`
 
-Check that a service exited with a specific code:
-
-```yaml
-assert:
-  - exit_code:
-      service: api
-      equals: 0
+```python
+assert_true(resp.status == 200)
+assert_true("ok" in resp.body, "expected ok in body")
+assert_true(resp.duration_ms < 1000, "response too slow")
 ```
 
-Services that were still running when the trace ended (killed by Faultbox) are
-considered to have exit code `0` — they didn't crash, we intentionally stopped
-them.
+### `assert_eq(a, b, message=)`
 
-### Eventually Assertion
-
-Poll an HTTP endpoint until it returns the expected status:
-
-```yaml
-assert:
-  - eventually:
-      timeout: 5s
-      http:
-        url: http://localhost:8080/ready
-        status: 200
+```python
+assert_eq(resp.status, 200)
+assert_eq(resp.body, "hello")
+assert_eq(db.main.send(data="PING"), "PONG")
 ```
 
-Eventually assertions run **while services are still alive** (before shutdown).
-They retry with 200ms intervals until the timeout expires.
+### Using Starlark Expressions
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `timeout` | duration | `5s` | Maximum time to wait |
-| `http.url` | string | — | Full URL to poll |
-| `http.status` | int | — | Expected HTTP status code |
+Since the configuration is code, assertions are composable:
+
+```python
+# Compare strings
+assert_true("error" in resp.body)
+assert_true(resp.body.startswith("stored:"))
+
+# Numeric comparisons
+assert_true(resp.duration_ms > 400)
+assert_true(resp.status >= 200 and resp.status < 300)
+
+# Conditional logic
+if resp.status != 200:
+    print("unexpected status:", resp.status, "body:", resp.body)
+    assert_true(False, "expected 200")
+```
 
 ---
 
 ## Results (`results.json`)
 
-When `--output` is specified, Faultbox writes structured results:
+When `--output` is specified, Faultbox writes structured JSON:
 
 ```json
 {
-  "simulation_id": "5785c75f752a78bc",
-  "duration_ms": 1937,
+  "simulation_id": "",
+  "duration_ms": 1640,
   "traces": [
     {
-      "name": "happy-path",
+      "name": "test_happy_path",
       "result": "pass",
-      "duration_ms": 216,
-      "services": {
-        "api": { "exit_code": 0, "faults_applied": 0 },
-        "db": { "exit_code": 0, "faults_applied": 0 }
-      },
-      "steps": [
-        {
-          "action": "HTTP GET /health",
-          "success": true,
-          "status_code": 200,
-          "body": "ok",
-          "duration_ms": 2
-        }
-      ]
+      "duration_ms": 212
     },
     {
-      "name": "db-timeout",
+      "name": "test_db_slow",
+      "result": "pass",
+      "duration_ms": 1216
+    },
+    {
+      "name": "test_api_cannot_reach_db",
       "result": "fail",
-      "reason": "step \"HTTP POST /data/key1\" failed: expected status 200, got 500",
-      "duration_ms": 5012,
-      "services": { ... },
-      "steps": [ ... ]
+      "reason": "assert_eq failed: 200 != 500",
+      "duration_ms": 212
     }
   ],
-  "pass": 1,
+  "pass": 2,
   "fail": 1
 }
 ```
-
-### Result Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `simulation_id` | string | Unique run identifier |
-| `duration_ms` | int | Total simulation time in milliseconds |
-| `traces[]` | array | Per-trace results |
-| `pass` | int | Number of passing traces |
-| `fail` | int | Number of failing traces |
-
-### Trace Result Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Trace name (from spec) |
-| `result` | string | `"pass"` or `"fail"` |
-| `reason` | string | Failure reason (only when `result` is `"fail"`) |
-| `duration_ms` | int | Trace execution time |
-| `services` | map | Per-service exit codes and fault counts |
-| `steps` | array | Per-step results with timing |
 
 ---
 
@@ -639,39 +480,60 @@ When `--output` is specified, Faultbox writes structured results:
 
 | Code | Meaning |
 |------|---------|
-| 0 | All traces passed |
-| 1 | Faultbox error (bad config, failed to start, etc.) |
-| 2 | One or more traces failed |
+| 0 | All tests passed |
+| 1 | Faultbox error (bad config, load failure, etc.) |
+| 2 | One or more tests failed |
 
 ---
 
 ## Protocol Extensibility (Roadmap)
 
-The step executor is designed around a protocol layering model:
-
 | Layer | Examples | Status |
 |-------|----------|--------|
-| **L4 Core** | `tcp`, `udp` | `tcp` built-in |
-| **L7 Stdlib** | `http`, `grpc` | `http` built-in |
-| **L7 Extensions** | `postgres`, `kafka`, `redis` | Future: Starlark modules |
+| **L4 Core** | `tcp` | Built-in |
+| **L7 Stdlib** | `http` | Built-in |
+| **L7 Extensions** | `grpc`, `postgres`, `kafka`, `redis` | Future: Starlark modules |
 
-Currently `http` and `tcp` are built-in Go implementations. Future versions
-will support Starlark-based protocol modules that implement the same
-`StepHandler` interface, allowing community-defined protocols without changes
-to the spec YAML format.
+Protocol modules implement the same step interface. Usage won't change:
 
 ```python
-# Example future Starlark module: redis.star
-def set(ctx, key, value):
-    resp = ctx.tcp.send(
-        addr = ctx.service("cache").addr,
-        data = f"SET {key} {value}\r\n",
-    )
-    assert.eq(resp.line(), "+OK")
+# Future: redis.star loaded as module
+cache.set(key="session:123", value="active")
+cache.get(key="session:123")
 ```
 
-Usage in spec (no YAML changes needed):
-```yaml
-steps:
-  - cache.set: { key: "session:123", value: "active" }
+---
+
+## State Machines and Hooks (Roadmap)
+
+Services will support state machines with lifecycle hooks:
+
+```python
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+    states = ["starting", "ready", "degraded", "failed"],
+    on_init = db_init,
+    on_syscall = db_on_syscall,
+)
+
+def db_on_syscall(ctx, deps):
+    if ctx.call.name == "write" and ctx.this.state == "degraded":
+        return delay("2s")
+    return allow()
+```
+
+Hooks receive a context with:
+- `ctx.this` — current service (state, name, interfaces)
+- `ctx.call` — syscall context (name, args, counter)
+- `ctx.log` — global event log (emit + query)
+- `deps` — dependency map
+
+Monitors will check temporal properties over the event log:
+
+```python
+def monitor_liveness(ctx):
+    for e in ctx.log.filter(type="request"):
+        assert_true(ctx.log.exists(
+            after=e, within="5s", type="response"
+        ))
 ```
