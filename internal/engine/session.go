@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/faultbox/Faultbox/internal/seccomp"
 )
 
 // State represents the lifecycle of a session.
@@ -77,9 +79,13 @@ type Session struct {
 	log   *slog.Logger
 	state State
 	mu    sync.RWMutex
+
+	// Dynamic fault rules — can be modified while session is running.
+	dynamicRulesMu sync.RWMutex
+	dynamicRules   map[int32][]*FaultRule
 }
 
-func newSession(cfg SessionConfig, parentLog *slog.Logger) (*Session, error) {
+func NewSession(cfg SessionConfig, parentLog *slog.Logger) (*Session, error) {
 	id, err := generateID()
 	if err != nil {
 		return nil, fmt.Errorf("generate session ID: %w", err)
@@ -107,10 +113,43 @@ func (s *Session) setState(state State) {
 	s.log.Info("state changed", slog.String("state", string(state)))
 }
 
-// run launches the target via the unified shim path.
+// Run launches the target via the unified shim path.
 // Platform-specific implementation in launch_linux.go / launch_other.go.
-func (s *Session) run(ctx context.Context) (*Result, error) {
+func (s *Session) Run(ctx context.Context) (*Result, error) {
 	return s.launch(ctx)
+}
+
+// SetDynamicFaultRules replaces the dynamic fault rules for the session.
+// These rules are checked by the notification loop alongside static rules.
+func (s *Session) SetDynamicFaultRules(rules []FaultRule) {
+	s.dynamicRulesMu.Lock()
+	defer s.dynamicRulesMu.Unlock()
+	ruleMap := make(map[int32][]*FaultRule)
+	for i := range rules {
+		nr := seccomp.SyscallNumber(rules[i].Syscall)
+		if nr < 0 {
+			continue
+		}
+		ruleMap[nr] = append(ruleMap[nr], &rules[i])
+	}
+	s.dynamicRules = ruleMap
+}
+
+// ClearDynamicFaultRules removes all dynamic fault rules.
+func (s *Session) ClearDynamicFaultRules() {
+	s.dynamicRulesMu.Lock()
+	defer s.dynamicRulesMu.Unlock()
+	s.dynamicRules = nil
+}
+
+// getDynamicRules returns dynamic rules for a syscall number.
+func (s *Session) getDynamicRules(nr int32) []*FaultRule {
+	s.dynamicRulesMu.RLock()
+	defer s.dynamicRulesMu.RUnlock()
+	if s.dynamicRules == nil {
+		return nil
+	}
+	return s.dynamicRules[nr]
 }
 
 func generateID() (string, error) {

@@ -12,6 +12,7 @@ import (
 	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/logging"
 	"github.com/faultbox/Faultbox/internal/seccomp"
+	"github.com/faultbox/Faultbox/internal/star"
 )
 
 func main() {
@@ -125,11 +126,14 @@ doneFlags:
 	return result.ExitCode
 }
 
-// testCmd handles: faultbox test --config faultbox.yaml --spec spec.yaml [--output results.json]
+// testCmd handles:
+//   faultbox test faultbox.star [--test name] [--output results.json]
+//   faultbox test --config faultbox.yaml --spec spec.yaml [--output results.json]
 func testCmd(args []string) int {
 	logFormat := logging.FormatAuto
 	logLevel := slog.LevelInfo
-	var configPath, specPath, outputPath string
+	var configPath, specPath, outputPath, testFilter string
+	var starFile string
 
 	for len(args) > 0 && len(args[0]) > 0 && args[0][0] == '-' {
 		switch {
@@ -154,6 +158,11 @@ func testCmd(args []string) int {
 		case args[0] == "--output" && len(args) > 1:
 			outputPath = args[1]
 			args = args[1:]
+		case strings.HasPrefix(args[0], "--test="):
+			testFilter = strings.TrimPrefix(args[0], "--test=")
+		case args[0] == "--test" && len(args) > 1:
+			testFilter = args[1]
+			args = args[1:]
 		default:
 			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[0])
 			return 1
@@ -161,16 +170,79 @@ func testCmd(args []string) int {
 		args = args[1:]
 	}
 
-	if configPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --config is required")
-		return 1
+	// If positional arg is a .star file, use Starlark runtime.
+	if len(args) > 0 && strings.HasSuffix(args[0], ".star") {
+		starFile = args[0]
 	}
-	if specPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --spec is required")
+
+	if starFile != "" {
+		return testStarCmd(starFile, testFilter, outputPath, logFormat, logLevel)
+	}
+
+	return testYAMLCmd(configPath, specPath, outputPath, logFormat, logLevel)
+}
+
+// testStarCmd runs tests from a .star file.
+func testStarCmd(starFile, testFilter, outputPath string, logFormat logging.Format, logLevel slog.Level) int {
+	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
+	rt := star.New(logger)
+
+	if err := rt.LoadFile(starFile); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
-	// Load topology and spec.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	result, err := rt.RunAll(ctx, testFilter)
+	if err != nil {
+		logger.Error("test suite failed", slog.String("error", err.Error()))
+		return 1
+	}
+
+	// Write results if requested.
+	if outputPath != "" {
+		simResult := &engine.SimulationResult{
+			DurationMs: result.DurationMs,
+			Pass:       result.Pass,
+			Fail:       result.Fail,
+		}
+		for _, tr := range result.Tests {
+			simResult.Traces = append(simResult.Traces, engine.TraceResult{
+				Name:       tr.Name,
+				Result:     tr.Result,
+				Reason:     tr.Reason,
+				DurationMs: tr.DurationMs,
+			})
+		}
+		if err := engine.WriteResults(outputPath, simResult); err != nil {
+			logger.Error("failed to write results", slog.String("error", err.Error()))
+			return 1
+		}
+		logger.Info("results written", slog.String("path", outputPath))
+	}
+
+	// Print summary.
+	fmt.Fprintf(os.Stderr, "\n%d passed, %d failed\n", result.Pass, result.Fail)
+
+	if result.Fail > 0 {
+		return 2
+	}
+	return 0
+}
+
+// testYAMLCmd runs tests from YAML config + spec files (legacy path).
+func testYAMLCmd(configPath, specPath, outputPath string, logFormat logging.Format, logLevel slog.Level) int {
+	if configPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --config is required (or pass a .star file)")
+		return 1
+	}
+	if specPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --spec is required (or pass a .star file)")
+		return 1
+	}
+
 	topo, err := config.LoadTopology(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -195,7 +267,6 @@ func testCmd(args []string) int {
 		return 1
 	}
 
-	// Write results file if requested.
 	if outputPath != "" {
 		if err := engine.WriteResults(outputPath, result); err != nil {
 			logger.Error("failed to write results", slog.String("error", err.Error()))
@@ -204,7 +275,6 @@ func testCmd(args []string) int {
 		logger.Info("results written", slog.String("path", outputPath))
 	}
 
-	// Exit code: 0 = all pass, 2 = some failures.
 	if result.Fail > 0 {
 		return 2
 	}

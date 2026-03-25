@@ -104,9 +104,9 @@ func runActionStep(ctx context.Context, topo *config.TopologyConfig, step config
 
 	switch protocol {
 	case "http":
-		return runHTTPStep(ctx, addr, operation, step.Args)
+		return RunHTTPStep(ctx, addr, operation, step.Args)
 	case "tcp":
-		return runTCPStep(ctx, addr, operation, step.Args)
+		return RunTCPStep(ctx, addr, operation, step.Args)
 	default:
 		return StepResult{}, fmt.Errorf("unsupported protocol %q for step %s", protocol, step.Action)
 	}
@@ -129,7 +129,7 @@ func parseStepAction(action string) (service, iface, operation string, err error
 // HTTP step handler
 // ---------------------------------------------------------------------------
 
-func runHTTPStep(ctx context.Context, addr, operation string, args map[string]any) (StepResult, error) {
+func RunHTTPStep(ctx context.Context, addr, operation string, args map[string]any) (StepResult, error) {
 	method := strings.ToUpper(operation)
 	switch method {
 	case "GET", "POST", "PUT", "DELETE", "PATCH":
@@ -216,7 +216,7 @@ func checkHTTPExpect(expect map[string]any, status int, body string) error {
 // TCP step handler
 // ---------------------------------------------------------------------------
 
-func runTCPStep(ctx context.Context, addr, operation string, args map[string]any) (StepResult, error) {
+func RunTCPStep(ctx context.Context, addr, operation string, args map[string]any) (StepResult, error) {
 	switch operation {
 	case "send":
 	default:

@@ -32,7 +32,7 @@ func New(logger *slog.Logger) *Engine {
 // Run creates a session and executes the target binary. It blocks until the
 // target exits or the context is cancelled.
 func (e *Engine) Run(ctx context.Context, cfg SessionConfig) (*Result, error) {
-	session, err := newSession(cfg, e.log)
+	session, err := NewSession(cfg, e.log)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -47,7 +47,7 @@ func (e *Engine) Run(ctx context.Context, cfg SessionConfig) (*Result, error) {
 		e.mu.Unlock()
 	}()
 
-	return session.run(ctx)
+	return session.Run(ctx)
 }
 
 // Status returns the current state of a session.

@@ -287,8 +287,15 @@ func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, rule
 
 	decision := "allow"
 
+	// Merge static + dynamic fault rules for this syscall.
+	allRules := ruleMap[req.Data.Nr]
+	if dynRules := s.getDynamicRules(req.Data.Nr); len(dynRules) > 0 {
+		allRules = append(allRules, dynRules...)
+	}
+
 	// Check fault rules for this syscall.
-	if rules, ok := ruleMap[req.Data.Nr]; ok {
+	if len(allRules) > 0 {
+		rules := allRules
 		for _, rule := range rules {
 			// Path-based filtering for file syscalls.
 			if IsFileSyscall(syscallName) && path != "" {
