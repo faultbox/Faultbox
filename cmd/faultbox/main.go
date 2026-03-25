@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -132,10 +133,10 @@ doneFlags:
 func testCmd(args []string) int {
 	logFormat := logging.FormatAuto
 	logLevel := slog.LevelInfo
-	var configPath, specPath, outputPath, testFilter string
+	var configPath, specPath, outputPath, shivizPath, testFilter string
 	var starFile string
 
-	for len(args) > 0 && len(args[0]) > 0 && args[0][0] == '-' {
+	for len(args) > 0 {
 		switch {
 		case args[0] == "--log-format=console":
 			logFormat = logging.FormatConsole
@@ -158,11 +159,24 @@ func testCmd(args []string) int {
 		case args[0] == "--output" && len(args) > 1:
 			outputPath = args[1]
 			args = args[1:]
+		case strings.HasPrefix(args[0], "--shiviz="):
+			shivizPath = strings.TrimPrefix(args[0], "--shiviz=")
+		case args[0] == "--shiviz" && len(args) > 1:
+			shivizPath = args[1]
+			args = args[1:]
 		case strings.HasPrefix(args[0], "--test="):
 			testFilter = strings.TrimPrefix(args[0], "--test=")
 		case args[0] == "--test" && len(args) > 1:
 			testFilter = args[1]
 			args = args[1:]
+		case strings.HasSuffix(args[0], ".star"):
+			starFile = args[0]
+		case strings.HasSuffix(args[0], ".yaml") || strings.HasSuffix(args[0], ".yml"):
+			if configPath == "" {
+				configPath = args[0]
+			} else {
+				specPath = args[0]
+			}
 		default:
 			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[0])
 			return 1
@@ -170,20 +184,15 @@ func testCmd(args []string) int {
 		args = args[1:]
 	}
 
-	// If positional arg is a .star file, use Starlark runtime.
-	if len(args) > 0 && strings.HasSuffix(args[0], ".star") {
-		starFile = args[0]
-	}
-
 	if starFile != "" {
-		return testStarCmd(starFile, testFilter, outputPath, logFormat, logLevel)
+		return testStarCmd(starFile, testFilter, outputPath, shivizPath, logFormat, logLevel)
 	}
 
 	return testYAMLCmd(configPath, specPath, outputPath, logFormat, logLevel)
 }
 
 // testStarCmd runs tests from a .star file.
-func testStarCmd(starFile, testFilter, outputPath string, logFormat logging.Format, logLevel slog.Level) int {
+func testStarCmd(starFile, testFilter, outputPath, shivizPath string, logFormat logging.Format, logLevel slog.Level) int {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
 
@@ -201,26 +210,27 @@ func testStarCmd(starFile, testFilter, outputPath string, logFormat logging.Form
 		return 1
 	}
 
+	// Print trace summary per test.
+	for _, tr := range result.Tests {
+		printTraceSummary(os.Stderr, &tr)
+	}
+
 	// Write results if requested.
 	if outputPath != "" {
-		simResult := &engine.SimulationResult{
-			DurationMs: result.DurationMs,
-			Pass:       result.Pass,
-			Fail:       result.Fail,
-		}
-		for _, tr := range result.Tests {
-			simResult.Traces = append(simResult.Traces, engine.TraceResult{
-				Name:       tr.Name,
-				Result:     tr.Result,
-				Reason:     tr.Reason,
-				DurationMs: tr.DurationMs,
-			})
-		}
-		if err := engine.WriteResults(outputPath, simResult); err != nil {
+		if err := star.WriteTraceResults(outputPath, result); err != nil {
 			logger.Error("failed to write results", slog.String("error", err.Error()))
 			return 1
 		}
 		logger.Info("results written", slog.String("path", outputPath))
+	}
+
+	// Write ShiViz trace if requested.
+	if shivizPath != "" {
+		if err := star.WriteShiVizTrace(shivizPath, result); err != nil {
+			logger.Error("failed to write shiviz trace", slog.String("error", err.Error()))
+			return 1
+		}
+		logger.Info("shiviz trace written", slog.String("path", shivizPath))
 	}
 
 	// Print summary.
@@ -230,6 +240,54 @@ func testStarCmd(starFile, testFilter, outputPath string, logFormat logging.Form
 		return 2
 	}
 	return 0
+}
+
+// printTraceSummary prints a human-readable syscall trace for a test.
+func printTraceSummary(w io.Writer, tr *star.TestResult) {
+	// Status marker.
+	status := "PASS"
+	if tr.Result == "fail" {
+		status = "FAIL"
+	}
+	fmt.Fprintf(w, "\n--- %s: %s (%dms) ---\n", status, tr.Name, tr.DurationMs)
+
+	if tr.Result == "fail" && tr.Reason != "" {
+		fmt.Fprintf(w, "  reason: %s\n", tr.Reason)
+	}
+
+	// Count syscall events (skip lifecycle events).
+	var syscallEvents []star.Event
+	for _, ev := range tr.Events {
+		if ev.Type == "syscall" {
+			syscallEvents = append(syscallEvents, ev)
+		}
+	}
+
+	if len(syscallEvents) == 0 {
+		return
+	}
+
+	// Print compact syscall trace.
+	fmt.Fprintf(w, "  syscall trace (%d events):\n", len(syscallEvents))
+	for _, ev := range syscallEvents {
+		decision := ev.Fields["decision"]
+		syscall := ev.Fields["syscall"]
+		path := ev.Fields["path"]
+
+		// Only show interesting events (faults) in default mode.
+		if decision == "allow" || decision == "allow (system path)" {
+			continue
+		}
+
+		line := fmt.Sprintf("    #%d  %-12s %-10s %s", ev.Seq, ev.Service, syscall, decision)
+		if path != "" {
+			line += "  " + path
+		}
+		if lat, ok := ev.Fields["latency_ms"]; ok && lat != "0" {
+			line += fmt.Sprintf("  (+%sms)", lat)
+		}
+		fmt.Fprintln(w, line)
+	}
 }
 
 // testYAMLCmd runs tests from YAML config + spec files (legacy path).

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/faultbox/Faultbox/internal/seccomp"
@@ -22,6 +23,18 @@ const (
 	StateStopped  State = "stopped"
 	StateFailed   State = "failed"
 )
+
+// SyscallEvent captures a single intercepted syscall and the decision made.
+type SyscallEvent struct {
+	Seq      int64         `json:"seq"`
+	Time     time.Time     `json:"time"`
+	Service  string        `json:"service"`
+	Syscall  string        `json:"syscall"`
+	PID      uint32        `json:"pid"`
+	Decision string        `json:"decision"` // "allow", "deny(ERRNO)", "delay(500ms)"
+	Path     string        `json:"path,omitempty"`
+	Latency  time.Duration `json:"latency_ns,omitempty"` // time spent in fault (delay duration)
+}
 
 // SessionConfig describes what to run and how to isolate it.
 type SessionConfig struct {
@@ -40,6 +53,9 @@ type SessionConfig struct {
 	Namespaces NamespaceConfig
 	// FaultRules to apply via seccomp-notify interception.
 	FaultRules []FaultRule
+	// OnSyscall is called for every intercepted syscall (optional).
+	// Must be safe to call from multiple goroutines.
+	OnSyscall func(SyscallEvent)
 }
 
 // NamespaceConfig controls which Linux namespaces are created.
@@ -74,11 +90,15 @@ type Result struct {
 
 // Session is a single isolated execution of a target binary.
 type Session struct {
-	ID    string
-	cfg   SessionConfig
-	log   *slog.Logger
-	state State
-	mu    sync.RWMutex
+	ID      string
+	Service string // service name label (for event attribution)
+	cfg     SessionConfig
+	log     *slog.Logger
+	state   State
+	mu      sync.RWMutex
+
+	// Monotonic syscall event counter.
+	syscallSeq atomic.Int64
 
 	// Dynamic fault rules — can be modified while session is running.
 	dynamicRulesMu sync.RWMutex
@@ -150,6 +170,23 @@ func (s *Session) getDynamicRules(nr int32) []*FaultRule {
 		return nil
 	}
 	return s.dynamicRules[nr]
+}
+
+// emitSyscallEvent sends a syscall event to the OnSyscall callback if set.
+func (s *Session) emitSyscallEvent(syscallName string, pid uint32, decision, path string, latency time.Duration) {
+	if s.cfg.OnSyscall == nil {
+		return
+	}
+	s.cfg.OnSyscall(SyscallEvent{
+		Seq:      s.syscallSeq.Add(1),
+		Time:     time.Now(),
+		Service:  s.Service,
+		Syscall:  syscallName,
+		PID:      pid,
+		Decision: decision,
+		Path:     path,
+		Latency:  latency,
+	})
 }
 
 func generateID() (string, error) {

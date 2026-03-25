@@ -22,10 +22,11 @@ import (
 
 // TestResult captures the outcome of one test function.
 type TestResult struct {
-	Name       string `json:"name"`
-	Result     string `json:"result"` // "pass" or "fail"
-	Reason     string `json:"reason,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
+	Name       string  `json:"name"`
+	Result     string  `json:"result"` // "pass" or "fail"
+	Reason     string  `json:"reason,omitempty"`
+	DurationMs int64   `json:"duration_ms"`
+	Events     []Event `json:"events,omitempty"`
 }
 
 // SuiteResult captures the outcome of all test functions.
@@ -172,6 +173,9 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		}
 	}
 
+	// Reset event log for this test.
+	rt.events.Reset()
+
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
 
@@ -185,6 +189,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			Name: name, Result: "fail",
 			Reason:     fmt.Sprintf("failed to start services: %v", err),
 			DurationMs: time.Since(start).Milliseconds(),
+			Events:     rt.events.Events(),
 		}
 	}
 
@@ -195,17 +200,21 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// Stop services.
 	rt.stopServices()
 
+	events := rt.events.Events()
+
 	if err != nil {
 		return TestResult{
 			Name: name, Result: "fail",
 			Reason:     err.Error(),
 			DurationMs: time.Since(start).Milliseconds(),
+			Events:     events,
 		}
 	}
 
 	return TestResult{
 		Name: name, Result: "pass",
 		DurationMs: time.Since(start).Milliseconds(),
+		Events:     events,
 	}
 }
 
@@ -263,6 +272,30 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			User:  true,
 		}
 
+		// Wire syscall events into the central event log.
+		svcNameCopy := svcName // capture for closure
+		onSyscall := func(evt engine.SyscallEvent) {
+			fields := map[string]string{
+				"syscall":  evt.Syscall,
+				"pid":      fmt.Sprintf("%d", evt.PID),
+				"decision": evt.Decision,
+			}
+			if evt.Path != "" {
+				fields["path"] = evt.Path
+			}
+			if evt.Latency > 0 {
+				fields["latency_ms"] = fmt.Sprintf("%d", evt.Latency.Milliseconds())
+			}
+			rt.events.Emit("syscall", svcNameCopy, fields)
+
+			// Causal merge: when a service makes a network call (connect/sendto)
+			// that is allowed, merge the target service's clock into this service.
+			if (evt.Syscall == "connect" || evt.Syscall == "sendto") &&
+				strings.HasPrefix(evt.Decision, "allow") {
+				rt.mergeClocksForNetworkCall(svcNameCopy)
+			}
+		}
+
 		sessCfg := engine.SessionConfig{
 			Binary:     svc.Binary,
 			Args:       nil,
@@ -271,6 +304,7 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			Stderr:     os.Stderr,
 			Namespaces: ns,
 			FaultRules: faultRules,
+			OnSyscall:  onSyscall,
 		}
 
 		svcLog := rt.log.With(slog.String("service", svcName))
@@ -278,6 +312,7 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("create session for %q: %w", svcName, err)
 		}
+		session.Service = svcName
 
 		svcCtx, svcCancel := context.WithCancel(ctx)
 		done := make(chan *engine.Result, 1)
@@ -429,18 +464,56 @@ func (rt *Runtime) removeFaults(svcName string) {
 	rt.events.Emit("fault_removed", svcName, nil)
 }
 
+// mergeClocksForNetworkCall merges all other services' clocks into the calling
+// service. This is a conservative approximation: when service A makes a network
+// call, we merge all known service clocks into A since we don't yet resolve the
+// target port to a specific service at the seccomp level.
+func (rt *Runtime) mergeClocksForNetworkCall(svcName string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for name := range rt.services {
+		if name != svcName {
+			rt.events.MergeClock(svcName, name)
+		}
+	}
+}
+
 // executeStep runs an HTTP or TCP step against a running service.
 func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, method string, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	addr := fmt.Sprintf("localhost:%d", ref.Interface.Port)
+	targetSvc := ref.Service.Name
+
+	// Emit step_send event from test driver — shows request going out.
+	rt.events.Emit("step_send", "faultbox", map[string]string{
+		"target":    targetSvc,
+		"method":    method,
+		"interface": ref.Interface.Name,
+		"protocol":  ref.Interface.Protocol,
+	})
+
+	var result starlark.Value
+	var err error
 
 	switch ref.Interface.Protocol {
 	case "http":
-		return rt.executeHTTPStep(addr, method, kwargs)
+		result, err = rt.executeHTTPStep(addr, method, kwargs)
 	case "tcp":
-		return rt.executeTCPStep(addr, method, kwargs)
+		result, err = rt.executeTCPStep(addr, method, kwargs)
 	default:
 		return nil, fmt.Errorf("unsupported protocol %q", ref.Interface.Protocol)
 	}
+
+	// After a step completes, merge target service's clock into the test driver.
+	// This records the causal dependency: test observed targetSvc's state.
+	rt.events.MergeClock("faultbox", targetSvc)
+
+	// Emit step_recv event — shows response received, with merged clock.
+	rt.events.Emit("step_recv", "faultbox", map[string]string{
+		"target": targetSvc,
+		"method": method,
+	})
+
+	return result, err
 }
 
 func (rt *Runtime) executeHTTPStep(addr, method string, kwargs []starlark.Tuple) (starlark.Value, error) {

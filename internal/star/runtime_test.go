@@ -196,3 +196,185 @@ func TestEventLog(t *testing.T) {
 		t.Fatalf("event[1].Seq = %d, want 2", events[1].Seq)
 	}
 }
+
+func TestEventLogReset(t *testing.T) {
+	log := NewEventLog()
+	log.Emit("evt1", "svc", nil)
+	log.Emit("evt2", "svc", nil)
+	if log.Len() != 2 {
+		t.Fatalf("expected 2 events, got %d", log.Len())
+	}
+
+	log.Reset()
+	if log.Len() != 0 {
+		t.Fatalf("expected 0 events after reset, got %d", log.Len())
+	}
+
+	// Seq resets too.
+	log.Emit("evt3", "svc", nil)
+	events := log.Events()
+	if events[0].Seq != 1 {
+		t.Fatalf("expected seq=1 after reset, got %d", events[0].Seq)
+	}
+}
+
+func TestWriteTraceResults(t *testing.T) {
+	result := &SuiteResult{
+		DurationMs: 1000,
+		Pass:       1,
+		Fail:       0,
+		Tests: []TestResult{
+			{
+				Name:       "test_example",
+				Result:     "pass",
+				DurationMs: 500,
+				Events: []Event{
+					{Seq: 1, Type: "service_started", Service: "db"},
+					{Seq: 2, Type: "syscall", Service: "db", Fields: map[string]string{
+						"syscall": "write", "decision": "allow", "pid": "42",
+					}},
+					{Seq: 3, Type: "syscall", Service: "db", Fields: map[string]string{
+						"syscall": "write", "decision": "delay(500ms)", "pid": "42", "latency_ms": "500",
+					}},
+				},
+			},
+		},
+	}
+
+	tmpFile := t.TempDir() + "/trace.json"
+	if err := WriteTraceResults(tmpFile, result); err != nil {
+		t.Fatalf("WriteTraceResults: %v", err)
+	}
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+
+	// Basic checks on JSON structure.
+	s := string(data)
+	if !contains(s, `"test_example"`) {
+		t.Error("missing test name in output")
+	}
+	if !contains(s, `"syscall"`) {
+		t.Error("missing syscall events in output")
+	}
+	if !contains(s, `"delay(500ms)"`) {
+		t.Error("missing fault decision in output")
+	}
+}
+
+func TestEventLogVectorClocks(t *testing.T) {
+	log := NewEventLog()
+
+	// Service db emits two events.
+	log.Emit("syscall", "db", map[string]string{"syscall": "write"})
+	log.Emit("syscall", "db", map[string]string{"syscall": "read"})
+
+	// Service api emits one event.
+	log.Emit("syscall", "api", map[string]string{"syscall": "connect"})
+
+	events := log.Events()
+
+	// db's clock: {db: 1}, {db: 2}
+	if events[0].VectorClock["db"] != 1 {
+		t.Fatalf("event[0] db clock = %d, want 1", events[0].VectorClock["db"])
+	}
+	if events[1].VectorClock["db"] != 2 {
+		t.Fatalf("event[1] db clock = %d, want 2", events[1].VectorClock["db"])
+	}
+
+	// api's clock: {api: 1} (no merge yet)
+	if events[2].VectorClock["api"] != 1 {
+		t.Fatalf("event[2] api clock = %d, want 1", events[2].VectorClock["api"])
+	}
+	if _, ok := events[2].VectorClock["db"]; ok {
+		t.Fatalf("api should not know about db before merge")
+	}
+
+	// Now merge db's clock into api.
+	log.MergeClock("api", "db")
+	log.Emit("syscall", "api", map[string]string{"syscall": "write"})
+
+	events = log.Events()
+	lastEvt := events[len(events)-1]
+
+	// api's clock after merge: {api: 2, db: 2}
+	if lastEvt.VectorClock["api"] != 2 {
+		t.Fatalf("api clock after merge = %d, want 2", lastEvt.VectorClock["api"])
+	}
+	if lastEvt.VectorClock["db"] != 2 {
+		t.Fatalf("db in api's clock after merge = %d, want 2", lastEvt.VectorClock["db"])
+	}
+}
+
+func TestEventLogPObserveFields(t *testing.T) {
+	log := NewEventLog()
+
+	log.Emit("service_started", "db", nil)
+	log.Emit("syscall", "api", map[string]string{"syscall": "connect"})
+
+	events := log.Events()
+
+	// Lifecycle events get dotted event_type.
+	if events[0].EventType != "lifecycle.started" {
+		t.Fatalf("event[0].EventType = %q, want lifecycle.started", events[0].EventType)
+	}
+	if events[0].PartitionKey != "db" {
+		t.Fatalf("event[0].PartitionKey = %q, want db", events[0].PartitionKey)
+	}
+
+	// Syscall events get syscall-specific event_type.
+	if events[1].EventType != "syscall.connect" {
+		t.Fatalf("event[1].EventType = %q, want syscall.connect", events[1].EventType)
+	}
+}
+
+func TestShiVizFormat(t *testing.T) {
+	log := NewEventLog()
+
+	log.Emit("service_started", "db", nil)
+	log.Emit("syscall", "db", map[string]string{"syscall": "write", "decision": "allow"})
+	log.Emit("syscall", "api", map[string]string{"syscall": "connect", "decision": "deny(ECONNREFUSED)"})
+
+	shiviz := log.FormatShiViz()
+
+	// Should contain the regex line.
+	if !contains(shiviz, `(?<host>\S+) (?<clock>\{.*\})`) {
+		t.Error("missing regex header")
+	}
+
+	// Should contain host entries.
+	if !contains(shiviz, "db {") {
+		t.Error("missing db host entry")
+	}
+	if !contains(shiviz, "api {") {
+		t.Error("missing api host entry")
+	}
+
+	// Should contain event descriptions.
+	if !contains(shiviz, "lifecycle.started") {
+		t.Error("missing lifecycle event")
+	}
+	if !contains(shiviz, "deny(ECONNREFUSED)") {
+		t.Error("missing deny decision")
+	}
+
+	// Vector clocks should have deterministic key ordering.
+	if !contains(shiviz, `"db": `) {
+		t.Error("missing db in vector clock")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
