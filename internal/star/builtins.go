@@ -21,8 +21,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"fault":       starlark.NewBuiltin("fault", rt.builtinFault),
 		"fault_start": starlark.NewBuiltin("fault_start", rt.builtinFaultStart),
 		"fault_stop":  starlark.NewBuiltin("fault_stop", rt.builtinFaultStop),
-		"assert_true": starlark.NewBuiltin("assert_true", builtinAssertTrue),
-		"assert_eq":   starlark.NewBuiltin("assert_eq", builtinAssertEq),
+		"assert_true":       starlark.NewBuiltin("assert_true", builtinAssertTrue),
+		"assert_eq":         starlark.NewBuiltin("assert_eq", builtinAssertEq),
+		"assert_eventually": starlark.NewBuiltin("assert_eventually", rt.builtinAssertEventually),
+		"assert_never":      starlark.NewBuiltin("assert_never", rt.builtinAssertNever),
 	}
 }
 
@@ -337,4 +339,102 @@ func builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin, args starlar
 		return nil, fmt.Errorf("%s", msg)
 	}
 	return starlark.None, nil
+}
+
+// assert_eventually(service=, syscall=, path=, decision=)
+// Checks that at least one event in the current trace matches all given filters.
+func (rt *Runtime) builtinAssertEventually(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	filters := extractEventFilters(kwargs)
+	events := rt.events.Events()
+
+	for _, ev := range events {
+		if ev.Type != "syscall" {
+			continue
+		}
+		if matchesFilters(ev, filters) {
+			return starlark.None, nil
+		}
+	}
+
+	return nil, fmt.Errorf("assert_eventually: no matching event found (filters: %s)", formatFilters(filters))
+}
+
+// assert_never(service=, syscall=, path=, decision=)
+// Checks that no event in the current trace matches all given filters.
+func (rt *Runtime) builtinAssertNever(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	filters := extractEventFilters(kwargs)
+	events := rt.events.Events()
+
+	for _, ev := range events {
+		if ev.Type != "syscall" {
+			continue
+		}
+		if matchesFilters(ev, filters) {
+			return nil, fmt.Errorf("assert_never: found matching event #%d (service=%s syscall=%s decision=%s path=%s)",
+				ev.Seq, ev.Service, ev.Fields["syscall"], ev.Fields["decision"], ev.Fields["path"])
+		}
+	}
+
+	return starlark.None, nil
+}
+
+// eventFilter holds a single filter criterion.
+type eventFilter struct {
+	key   string // "service", "syscall", "path", "decision"
+	value string // value to match (supports trailing * for glob)
+}
+
+func extractEventFilters(kwargs []starlark.Tuple) []eventFilter {
+	var filters []eventFilter
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		val, _ := starlark.AsString(kv[1])
+		filters = append(filters, eventFilter{key: key, value: val})
+	}
+	return filters
+}
+
+func matchesFilters(ev Event, filters []eventFilter) bool {
+	for _, f := range filters {
+		var actual string
+		switch f.key {
+		case "service":
+			actual = ev.Service
+		case "syscall":
+			actual = ev.Fields["syscall"]
+		case "path":
+			actual = ev.Fields["path"]
+		case "decision":
+			actual = ev.Fields["decision"]
+		default:
+			actual = ev.Fields[f.key]
+		}
+		if !matchValue(actual, f.value) {
+			return false
+		}
+	}
+	return true
+}
+
+// matchValue checks if actual matches the pattern.
+// Supports trailing * for prefix matching and leading * for suffix matching.
+func matchValue(actual, pattern string) bool {
+	if pattern == "" {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(actual, strings.TrimSuffix(pattern, "*"))
+	}
+	if strings.HasPrefix(pattern, "*") {
+		return strings.HasSuffix(actual, strings.TrimPrefix(pattern, "*"))
+	}
+	return actual == pattern
+}
+
+func formatFilters(filters []eventFilter) string {
+	parts := make([]string, len(filters))
+	for i, f := range filters {
+		parts[i] = fmt.Sprintf("%s=%q", f.key, f.value)
+	}
+	return strings.Join(parts, ", ")
 }

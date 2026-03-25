@@ -7,7 +7,8 @@ configuration is code.
 ```bash
 faultbox test faultbox.star                      # run all tests
 faultbox test faultbox.star --test happy_path    # run one test
-faultbox test faultbox.star --output results.json
+faultbox test faultbox.star --output trace.json  # JSON trace with syscall events
+faultbox test faultbox.star --shiviz trace.shiviz  # ShiViz visualization format
 ```
 
 ---
@@ -17,28 +18,35 @@ faultbox test faultbox.star --output results.json
 ```python
 # faultbox.star
 
-db = service("db", "/usr/local/bin/my-db",
+inventory = service("inventory", "/usr/local/bin/inventory-svc",
     interface("main", "tcp", 5432),
+    env = {"PORT": "5432", "WAL_PATH": "/tmp/inventory.wal"},
     healthcheck = tcp("localhost:5432"),
 )
 
-api = service("api", "/usr/local/bin/my-api",
+orders = service("orders", "/usr/local/bin/order-svc",
     interface("public", "http", 8080),
-    env = {"PORT": "8080", "DB_ADDR": db.main.addr},
-    depends_on = [db],
+    env = {"PORT": "8080", "INVENTORY_ADDR": inventory.main.addr},
+    depends_on = [inventory],
     healthcheck = http("localhost:8080/health"),
 )
 
 def test_happy_path():
-    resp = api.get(path="/health")
+    resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
     assert_eq(resp.status, 200)
+    assert_true("confirmed" in resp.body)
 
-def test_db_down():
+    # Temporal: WAL must have been written.
+    assert_eventually(service="inventory", syscall="openat", path="/tmp/inventory.wal")
+
+def test_inventory_down():
     def scenario():
-        resp = api.post(path="/data/key1", body="value")
-        assert_eq(resp.status, 500)
-        assert_true("db error" in resp.body)
-    fault(api, connect=deny("ECONNREFUSED"), run=scenario)
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_eq(resp.status, 503)
+
+        # No WAL write should occur.
+        assert_never(service="inventory", syscall="openat", path="/tmp/inventory.wal")
+    fault(orders, connect=deny("ECONNREFUSED"), run=scenario)
 ```
 
 ---
@@ -91,9 +99,6 @@ interface("events", "kafka", 9092, spec="./events.avsc")
 
 Currently supported protocols for step execution: `http`, `tcp`.
 Other protocols can be declared for documentation and future Starlark modules.
-
-The `spec` field is a path to a file that a protocol module understands.
-Faultbox core doesn't parse it — future Starlark protocol modules will.
 
 ### Multi-Interface Services
 
@@ -190,21 +195,23 @@ def test_happy_path():
 For each test function:
 
 ```
-1. Wait for ports to be free (cleanup from previous test)
-2. Start all services in dependency order
-3. Wait for healthchecks to pass
-4. Run the test function
-5. Stop all services (SIGTERM → SIGKILL after 2s)
-6. Report result
+1. Reset event log (fresh trace per test)
+2. Wait for ports to be free (cleanup from previous test)
+3. Start all services in dependency order
+4. Wait for healthchecks to pass
+5. Run the test function
+6. Stop all services (SIGTERM → SIGKILL after 2s)
+7. Capture syscall trace and report result
 ```
 
 ### Running Tests
 
 ```bash
-faultbox test faultbox.star                      # all tests
-faultbox test faultbox.star --test happy_path    # one test
-faultbox test faultbox.star --debug              # verbose logging
-faultbox test faultbox.star --output results.json
+faultbox test faultbox.star                        # all tests
+faultbox test faultbox.star --test happy_path      # one test
+faultbox test faultbox.star --debug                # verbose logging
+faultbox test faultbox.star --output trace.json    # JSON trace output
+faultbox test faultbox.star --shiviz trace.shiviz  # ShiViz output
 ```
 
 ---
@@ -231,8 +238,8 @@ Available on interfaces with `protocol: "http"`.
 
 ```python
 resp = api.get(path="/health")
-resp = api.post(path="/data/key1", body="hello world")
-resp = api.post(path="/data/key1", body="data", headers={"Authorization": "Bearer token"})
+resp = api.post(path="/orders", body='{"sku":"widget","qty":1}')
+resp = api.post(path="/data", body="data", headers={"Authorization": "Bearer token"})
 ```
 
 | Parameter | Type | Required | Description |
@@ -244,24 +251,13 @@ resp = api.post(path="/data/key1", body="data", headers={"Authorization": "Beare
 **Response object:**
 
 ```python
-resp = api.post(path="/data/key1", body="hello")
+resp = api.post(path="/orders", body='{"sku":"widget"}')
 resp.status       # int — HTTP status code (200, 404, 500, ...)
 resp.body         # string — response body (trimmed)
 resp.ok           # bool — True if step succeeded
 resp.error        # string — error message if step failed
 resp.duration_ms  # int — request duration in milliseconds
 ```
-
-**Assertions use standard expressions:**
-
-```python
-assert_eq(resp.status, 200)
-assert_true("stored" in resp.body)
-assert_true(resp.duration_ms < 1000, "too slow")
-assert_true(resp.ok)
-```
-
-No special `expect` fields — use Starlark expressions directly.
 
 ### TCP Steps
 
@@ -273,8 +269,8 @@ Available on interfaces with `protocol: "tcp"`.
 resp = db.main.send(data="PING")    # returns response as string
 assert_eq(resp, "PONG")
 
-resp = db.main.send(data="SET key value")
-assert_eq(resp, "OK")
+resp = db.main.send(data="CHECK widget")
+assert_eq(resp, "100")
 ```
 
 | Parameter | Type | Required | Description |
@@ -295,12 +291,12 @@ Faults inject failures at the syscall level via seccomp-notify.
 Scoped fault injection — faults are active only during the callback:
 
 ```python
-def test_db_slow():
+def test_inventory_slow():
     def scenario():
-        resp = api.post(path="/data/key1", body="value")
+        resp = orders.post(path="/orders", body='{"sku":"gadget","qty":1}')
         assert_eq(resp.status, 200)
         assert_true(resp.duration_ms > 400)
-    fault(db, write=delay("500ms"), run=scenario)
+    fault(inventory, write=delay("500ms"), run=scenario)
 ```
 
 The `run` parameter takes a callable. Faults are automatically removed when
@@ -365,20 +361,20 @@ deny("ENOSPC")                 # disk full
 Keyword arguments map syscall names to faults:
 
 ```python
-fault(db, write=delay("500ms"), run=fn)      # delay db's write() syscalls
-fault(api, connect=deny("ECONNREFUSED"), run=fn)  # deny api's connect()
-fault(db, openat=deny("ENOENT"), run=fn)     # fail db's file opens
-fault(api, fsync=deny("EIO"), run=fn)        # fail api's fsync
+fault(inventory, write=delay("500ms"), run=fn)     # delay inventory's write() syscalls
+fault(orders, connect=deny("ECONNREFUSED"), run=fn) # deny orders' connect()
+fault(inventory, fsync=deny("EIO"), run=fn)         # fail inventory's fsync
+fault(inventory, openat=deny("ENOSPC"), run=fn)     # fail inventory's file opens
 ```
 
 Faults apply to the **service's own syscalls**:
 
 ```python
-# CORRECT: API can't connect to DB (API makes outbound connect)
-fault(api, connect=deny("ECONNREFUSED"), run=fn)
+# CORRECT: orders can't connect to inventory (orders makes outbound connect)
+fault(orders, connect=deny("ECONNREFUSED"), run=fn)
 
-# CORRECT: DB responds slowly (DB's write to socket is delayed)
-fault(db, write=delay("500ms"), run=fn)
+# CORRECT: inventory WAL write is slow (inventory's write syscall is delayed)
+fault(inventory, write=delay("500ms"), run=fn)
 ```
 
 ### Supported Errno Values
@@ -404,9 +400,12 @@ fault(db, write=delay("500ms"), run=fn)
 
 ## Assertions
 
-Starlark has no built-in `assert` statement. Faultbox provides:
+Starlark has no built-in `assert` statement. Faultbox provides four assertion
+builtins — two for values, two for temporal properties over the syscall trace.
 
-### `assert_true(condition, message=)`
+### Value Assertions
+
+#### `assert_true(condition, message=)`
 
 ```python
 assert_true(resp.status == 200)
@@ -414,13 +413,64 @@ assert_true("ok" in resp.body, "expected ok in body")
 assert_true(resp.duration_ms < 1000, "response too slow")
 ```
 
-### `assert_eq(a, b, message=)`
+#### `assert_eq(a, b, message=)`
 
 ```python
 assert_eq(resp.status, 200)
 assert_eq(resp.body, "hello")
 assert_eq(db.main.send(data="PING"), "PONG")
 ```
+
+### Temporal Assertions
+
+Temporal assertions query the syscall event trace captured during the current
+test. Every intercepted syscall is recorded with service attribution, decision,
+and path — temporal assertions search this trace.
+
+#### `assert_eventually(service=, syscall=, path=, decision=)`
+
+Asserts that **at least one** syscall event matches all given filters.
+Use this to verify that an expected operation occurred.
+
+```python
+# Verify WAL was opened during reservation.
+assert_eventually(service="inventory", syscall="openat", path="/tmp/inventory.wal")
+
+# Verify a fault was applied.
+assert_eventually(service="inventory", syscall="fsync", decision="deny*")
+
+# Verify inventory was contacted.
+assert_eventually(service="orders", syscall="connect")
+```
+
+#### `assert_never(service=, syscall=, path=, decision=)`
+
+Asserts that **no** syscall event matches all given filters.
+Use this to verify that an operation did NOT occur.
+
+```python
+# Verify WAL was never touched (inventory was unreachable).
+assert_never(service="inventory", syscall="openat", path="/tmp/inventory.wal")
+
+# Verify no writes were denied (all writes succeeded).
+assert_never(service="db", syscall="write", decision="deny*")
+```
+
+#### Filter parameters
+
+All filter parameters are optional keyword arguments. Only events matching
+**all** specified filters are considered.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `service` | string | Service name (e.g., `"inventory"`, `"orders"`) |
+| `syscall` | string | Syscall name (e.g., `"write"`, `"openat"`, `"connect"`) |
+| `path` | string | File path (for file syscalls like `openat`) |
+| `decision` | string | Fault decision (e.g., `"allow"`, `"deny*"`, `"delay*"`) |
+
+**Glob matching:** Values ending with `*` match as a prefix. Values starting
+with `*` match as a suffix. Example: `decision="deny*"` matches
+`"deny(ECONNREFUSED)"`, `"deny(EIO)"`, etc.
 
 ### Using Starlark Expressions
 
@@ -443,46 +493,147 @@ if resp.status != 200:
 
 ---
 
-## Results (`results.json`)
+## Trace Output
 
-When `--output` is specified, Faultbox writes structured JSON:
+Every intercepted syscall is recorded in an ordered event log with:
+- Sequential event number
+- Timestamp
+- Service name
+- Syscall name, PID, decision, file path
+- PObserve-compatible `event_type` and `partition_key`
+- ShiViz-compatible vector clock
+
+### JSON Trace (`--output trace.json`)
 
 ```json
 {
-  "simulation_id": "",
   "duration_ms": 1640,
-  "traces": [
+  "pass": 2,
+  "fail": 1,
+  "tests": [
     {
       "name": "test_happy_path",
       "result": "pass",
-      "duration_ms": 212
-    },
-    {
-      "name": "test_db_slow",
-      "result": "pass",
-      "duration_ms": 1216
-    },
-    {
-      "name": "test_api_cannot_reach_db",
-      "result": "fail",
-      "reason": "assert_eq failed: 200 != 500",
-      "duration_ms": 212
+      "duration_ms": 225,
+      "events": [
+        {
+          "seq": 1,
+          "timestamp": "2026-03-25T19:15:07.547Z",
+          "type": "service_started",
+          "event_type": "lifecycle.started",
+          "partition_key": "inventory",
+          "service": "inventory",
+          "vector_clock": {"inventory": 1}
+        },
+        {
+          "seq": 42,
+          "timestamp": "2026-03-25T19:15:07.650Z",
+          "type": "syscall",
+          "event_type": "syscall.openat",
+          "partition_key": "inventory",
+          "service": "inventory",
+          "fields": {
+            "syscall": "openat",
+            "pid": "1234",
+            "decision": "allow",
+            "path": "/tmp/inventory.wal"
+          },
+          "vector_clock": {"inventory": 20, "orders": 5}
+        }
+      ]
     }
-  ],
-  "pass": 2,
-  "fail": 1
+  ]
 }
 ```
 
+### Event Types (PObserve-Compatible)
+
+Events use dotted `event_type` for PObserve compatibility:
+
+| Event Type | Description |
+|------------|-------------|
+| `lifecycle.started` | Service process launched |
+| `lifecycle.ready` | Healthcheck passed |
+| `syscall.write` | `write` syscall intercepted |
+| `syscall.connect` | `connect` syscall intercepted |
+| `syscall.openat` | `openat` syscall intercepted |
+| `syscall.fsync` | `fsync` syscall intercepted |
+| `step_send.<service>` | Test driver sent request to service |
+| `step_recv.<service>` | Test driver received response from service |
+| `fault_applied` | Fault rules activated on a service |
+| `fault_removed` | Fault rules deactivated |
+
+The `partition_key` field (default: service name) enables routing events to
+per-service PObserve monitor instances.
+
+### ShiViz Visualization (`--shiviz trace.shiviz`)
+
+Produces a [ShiViz](https://bestchai.bitbucket.io/shiviz/)-compatible trace
+file with vector clocks for visualizing causal relationships between services.
+
+```
+(?<host>\S+) (?<clock>\{.*\})
+
+inventory {"inventory": 1}
+lifecycle.started
+orders {"orders": 1}
+lifecycle.started
+faultbox {"faultbox": 1}
+step_send.orders
+faultbox {"faultbox": 2, "inventory": 20, "orders": 15}
+step_recv.orders
+```
+
+Vector clocks track causality:
+- Each service increments its own clock on every syscall
+- When service A makes a network call, remote clocks are merged
+- When the test driver receives a step response, the target service's clock merges
+
+Open the `.shiviz` file at https://bestchai.bitbucket.io/shiviz/ to see a
+space-time diagram with communication arrows between services.
+
 ---
 
-## Exit Codes
+## CLI Summary
+
+```bash
+faultbox test faultbox.star                        # run all tests
+faultbox test faultbox.star --test happy_path      # run one test
+faultbox test faultbox.star --debug                # verbose logging
+faultbox test faultbox.star --output trace.json    # JSON trace with events
+faultbox test faultbox.star --shiviz trace.shiviz  # ShiViz visualization
+```
+
+### Exit Codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | All tests passed |
 | 1 | Faultbox error (bad config, load failure, etc.) |
 | 2 | One or more tests failed |
+
+### Trace Summary
+
+After each test, Faultbox prints a compact trace summary showing only fault
+events (non-allow decisions):
+
+```
+--- PASS: test_happy_path (225ms) ---
+  syscall trace (99 events):
+
+--- PASS: test_inventory_slow (1724ms) ---
+  syscall trace (70 events):
+    #57  inventory    write      delay(500ms)  (+500ms)
+    #69  inventory    write      delay(500ms)  (+500ms)
+
+--- PASS: test_inventory_unreachable (215ms) ---
+  syscall trace (46 events):
+    #50  orders       connect    deny(connection refused)
+
+--- PASS: test_wal_fsync_failure (217ms) ---
+  syscall trace (70 events):
+    #70  inventory    fsync      deny(input/output error)
+```
 
 ---
 
