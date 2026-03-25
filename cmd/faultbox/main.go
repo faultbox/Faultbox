@@ -42,6 +42,8 @@ func run() int {
 		return runCmd(args[1:])
 	case "test":
 		return testCmd(args[1:])
+	case "diff":
+		return diffCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
@@ -133,7 +135,7 @@ doneFlags:
 func testCmd(args []string) int {
 	logFormat := logging.FormatAuto
 	logLevel := slog.LevelInfo
-	var configPath, specPath, outputPath, shivizPath, testFilter string
+	var configPath, specPath, outputPath, shivizPath, normalizePath, testFilter string
 	var starFile string
 
 	for len(args) > 0 {
@@ -164,6 +166,11 @@ func testCmd(args []string) int {
 		case args[0] == "--shiviz" && len(args) > 1:
 			shivizPath = args[1]
 			args = args[1:]
+		case strings.HasPrefix(args[0], "--normalize="):
+			normalizePath = strings.TrimPrefix(args[0], "--normalize=")
+		case args[0] == "--normalize" && len(args) > 1:
+			normalizePath = args[1]
+			args = args[1:]
 		case strings.HasPrefix(args[0], "--test="):
 			testFilter = strings.TrimPrefix(args[0], "--test=")
 		case args[0] == "--test" && len(args) > 1:
@@ -185,14 +192,14 @@ func testCmd(args []string) int {
 	}
 
 	if starFile != "" {
-		return testStarCmd(starFile, testFilter, outputPath, shivizPath, logFormat, logLevel)
+		return testStarCmd(starFile, testFilter, outputPath, shivizPath, normalizePath, logFormat, logLevel)
 	}
 
 	return testYAMLCmd(configPath, specPath, outputPath, logFormat, logLevel)
 }
 
 // testStarCmd runs tests from a .star file.
-func testStarCmd(starFile, testFilter, outputPath, shivizPath string, logFormat logging.Format, logLevel slog.Level) int {
+func testStarCmd(starFile, testFilter, outputPath, shivizPath, normalizePath string, logFormat logging.Format, logLevel slog.Level) int {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
 
@@ -231,6 +238,15 @@ func testStarCmd(starFile, testFilter, outputPath, shivizPath string, logFormat 
 			return 1
 		}
 		logger.Info("shiviz trace written", slog.String("path", shivizPath))
+	}
+
+	// Write normalized trace if requested.
+	if normalizePath != "" {
+		if err := star.WriteNormalizedTrace(normalizePath, result); err != nil {
+			logger.Error("failed to write normalized trace", slog.String("error", err.Error()))
+			return 1
+		}
+		logger.Info("normalized trace written", slog.String("path", normalizePath))
 	}
 
 	// Print summary.
@@ -291,6 +307,35 @@ func printTraceSummary(w io.Writer, tr *star.TestResult) {
 }
 
 // testYAMLCmd runs tests from YAML config + spec files (legacy path).
+// diffCmd handles: faultbox diff trace1.norm trace2.norm
+// Compares two normalized trace files and reports differences.
+func diffCmd(args []string) int {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: faultbox diff <trace1.norm> <trace2.norm>")
+		return 1
+	}
+
+	data1, err := os.ReadFile(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", args[0], err)
+		return 1
+	}
+	data2, err := os.ReadFile(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", args[1], err)
+		return 1
+	}
+
+	diff := star.DiffTraces(string(data1), string(data2))
+	if diff == "" {
+		fmt.Println("traces are identical")
+		return 0
+	}
+
+	fmt.Println(diff)
+	return 2
+}
+
 func testYAMLCmd(configPath, specPath, outputPath string, logFormat logging.Format, logLevel slog.Level) int {
 	if configPath == "" {
 		fmt.Fprintln(os.Stderr, "error: --config is required (or pass a .star file)")
