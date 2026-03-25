@@ -182,7 +182,7 @@ func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name
 		}
 
 		svcLog := log.With(slog.String("service", svcName))
-		session, err := newSession(sessCfg, svcLog)
+		session, err := NewSession(sessCfg, svcLog)
 		if err != nil {
 			return nil, fmt.Errorf("create session for %q: %w", svcName, err)
 		}
@@ -190,7 +190,7 @@ func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name
 		svcCtx, svcCancel := context.WithCancel(traceCtx)
 		done := make(chan *Result, 1)
 		go func() {
-			r, _ := session.run(svcCtx)
+			r, _ := session.Run(svcCtx)
 			done <- r
 		}()
 
