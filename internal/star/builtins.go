@@ -1,6 +1,7 @@
 package star
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/faultbox/Faultbox/internal/engine"
 )
+
+// parallelResult captures the outcome of one parallel callable.
+type parallelResult struct {
+	value starlark.Value
+	err   error
+}
 
 // builtins returns all Starlark built-in functions for a runtime.
 func (rt *Runtime) builtins() starlark.StringDict {
@@ -33,6 +40,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"parallel":          starlark.NewBuiltin("parallel", rt.builtinParallel),
 		"monitor":           starlark.NewBuiltin("monitor", rt.builtinMonitor),
 		"partition":         starlark.NewBuiltin("partition", rt.builtinPartition),
+		"nondet":            starlark.NewBuiltin("nondet", rt.builtinNondet),
 	}
 }
 
@@ -455,10 +463,32 @@ func matchValue(actual, pattern string) bool {
 	return actual == pattern
 }
 
+// nondet(service) — marks a service as nondeterministic, excluding it from
+// interleaving control during parallel(). Its syscalls proceed immediately.
+func (rt *Runtime) builtinNondet(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("nondet() requires a service argument")
+	}
+	svc, ok := args[0].(*ServiceDef)
+	if !ok {
+		return nil, fmt.Errorf("nondet() argument must be a service, got %s", args[0].Type())
+	}
+	if rt.nondetServices == nil {
+		rt.nondetServices = make(map[string]bool)
+	}
+	rt.nondetServices[svc.Name] = true
+	return starlark.None, nil
+}
+
 // parallel(fn1, fn2, ...) → list of results
 // Runs multiple step callables concurrently. Each callable runs in its own
 // goroutine with a dedicated Starlark thread. Returns results in the same
 // order as the arguments.
+//
+// When explore mode is active (--explore=all or --explore=sample), parallel()
+// installs hold rules to control syscall release ordering. The ExploreScheduler
+// uses the current permutation index to determine which held syscall to release
+// next, enabling deterministic interleaving exploration.
 func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 2 {
 		return nil, fmt.Errorf("parallel() requires at least 2 callables")
@@ -474,12 +504,16 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 		callables[i] = c
 	}
 
-	type parallelResult struct {
-		index int
-		value starlark.Value
-		err   error
+	// If explore mode is active, install hold rules and use scheduler.
+	if rt.exploreMode == "all" || rt.exploreMode == "sample" {
+		return rt.parallelWithExplore(callables)
 	}
 
+	return rt.parallelSimple(callables)
+}
+
+// parallelSimple runs callables concurrently without interleaving control.
+func (rt *Runtime) parallelSimple(callables []starlark.Callable) (starlark.Value, error) {
 	results := make([]parallelResult, len(callables))
 	var wg sync.WaitGroup
 
@@ -487,16 +521,118 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 		wg.Add(1)
 		go func(idx int, callable starlark.Callable) {
 			defer wg.Done()
-			// Each goroutine gets its own Starlark thread.
 			t := &starlark.Thread{Name: fmt.Sprintf("parallel-%d", idx)}
 			val, err := starlark.Call(t, callable, nil, nil)
-			results[idx] = parallelResult{index: idx, value: val, err: err}
+			results[idx] = parallelResult{value: val, err: err}
 		}(i, c)
 	}
 
 	wg.Wait()
+	return rt.collectParallelResults(results)
+}
 
-	// Collect results; first error becomes the parallel() error.
+// parallelWithExplore runs callables with hold-and-release scheduling.
+// Syscalls from non-nondet services are held and released in permutation order.
+func (rt *Runtime) parallelWithExplore(callables []starlark.Callable) (starlark.Value, error) {
+	holdTag := fmt.Sprintf("explore-%d", rt.explorePerm)
+
+	// Install hold rules on all non-nondet services.
+	for svcName, rs := range rt.sessions {
+		if rt.nondetServices[svcName] {
+			continue
+		}
+		// Hold all pre-installed syscalls.
+		var rules []engine.FaultRule
+		for _, sc := range []string{"write", "read", "connect", "openat", "fsync", "sendto", "recvfrom", "writev"} {
+			rules = append(rules, engine.FaultRule{
+				Syscall:     sc,
+				Action:      engine.ActionHold,
+				Probability: 1.0,
+			})
+		}
+		rs.session.RegisterHoldQueue(holdTag)
+		rs.session.AddHoldRules(holdTag, rules)
+	}
+
+	// Cleanup hold rules when done.
+	defer func() {
+		for svcName, rs := range rt.sessions {
+			if rt.nondetServices[svcName] {
+				continue
+			}
+			rs.session.RemoveHoldRules(holdTag)
+		}
+	}()
+
+	// Launch callables concurrently.
+	results := make([]parallelResult, len(callables))
+	var wg sync.WaitGroup
+
+	for i, c := range callables {
+		wg.Add(1)
+		go func(idx int, callable starlark.Callable) {
+			defer wg.Done()
+			t := &starlark.Thread{Name: fmt.Sprintf("parallel-%d", idx)}
+			val, err := starlark.Call(t, callable, nil, nil)
+			results[idx] = parallelResult{value: val, err: err}
+		}(i, c)
+	}
+
+	// Run the scheduler: collect held syscalls and release in permutation order.
+	// We do this in a goroutine so callables can proceed as releases happen.
+	schedDone := make(chan error, 1)
+	go func() {
+		// Collect held syscalls from all non-nondet services into a combined queue.
+		// For simplicity, use the first non-nondet service's queue.
+		// TODO: merge queues from multiple services for multi-service parallel.
+		var q *engine.HoldQueue
+		for svcName, rs := range rt.sessions {
+			if rt.nondetServices[svcName] {
+				continue
+			}
+			q = rs.session.GetHoldQueue(holdTag)
+			if q != nil {
+				break
+			}
+		}
+		if q == nil {
+			schedDone <- nil
+			return
+		}
+
+		// Wait a bit for syscalls to arrive, then release in permutation order.
+		// The scheduler releases all held syscalls using the permutation.
+		scheduler := &engine.ExploreScheduler{PermIndex: rt.explorePerm}
+
+		// Wait for at least 1 held syscall, with timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := q.Wait(1, ctx); err != nil {
+			// No syscalls held — callables may have completed without hitting holds.
+			schedDone <- nil
+			return
+		}
+
+		// Give a moment for more syscalls to accumulate.
+		time.Sleep(50 * time.Millisecond)
+
+		n := q.Len()
+		if n > 0 {
+			_, err := scheduler.ReleaseInOrder(ctx, q, n)
+			schedDone <- err
+		} else {
+			schedDone <- nil
+		}
+	}()
+
+	wg.Wait()
+	<-schedDone
+
+	return rt.collectParallelResults(results)
+}
+
+func (rt *Runtime) collectParallelResults(results []parallelResult) (starlark.Value, error) {
 	resultList := make([]starlark.Value, len(results))
 	for i, r := range results {
 		if r.err != nil {
@@ -508,7 +644,6 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 			resultList[i] = r.value
 		}
 	}
-
 	return starlark.NewList(resultList), nil
 }
 

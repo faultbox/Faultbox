@@ -142,6 +142,8 @@ func testCmd(args []string) int {
 	var runs int
 	var seed int64 = -1 // -1 = not set
 	showFilter := "all" // common output filter: "all", "fail"
+	virtualTime := false
+	exploreMode := ""
 
 	for len(args) > 0 {
 		switch {
@@ -195,6 +197,13 @@ func testCmd(args []string) int {
 			showFilter = "fail"
 		case args[0] == "--show=all":
 			showFilter = "all"
+		case args[0] == "--virtual-time":
+			virtualTime = true
+		case strings.HasPrefix(args[0], "--explore="):
+			exploreMode = strings.TrimPrefix(args[0], "--explore=")
+		case args[0] == "--explore" && len(args) > 1:
+			exploreMode = args[1]
+			args = args[1:]
 		case args[0] == "--show" && len(args) > 1:
 			showFilter = args[1]
 			args = args[1:]
@@ -219,11 +228,17 @@ func testCmd(args []string) int {
 			u := uint64(seed)
 			seedPtr = &u
 		}
+		// Default runs for explore=sample when not specified.
+		if exploreMode == "sample" && runs == 0 {
+			runs = 100
+		}
 		rcfg := star.RunConfig{
-			Filter:   testFilter,
-			Seed:     seedPtr,
-			Runs:     runs,
-			FailOnly: showFilter == "fail",
+			Filter:      testFilter,
+			Seed:        seedPtr,
+			Runs:        runs,
+			FailOnly:    showFilter == "fail",
+			VirtualTime: virtualTime,
+			ExploreMode: exploreMode,
 		}
 		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, logFormat, logLevel)
 	}

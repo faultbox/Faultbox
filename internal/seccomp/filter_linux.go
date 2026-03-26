@@ -343,6 +343,17 @@ func Deny(listenerFd int, id uint64, errno int32) error {
 	})
 }
 
+// ReturnValue tells the kernel to return a synthetic value WITHOUT executing
+// the syscall. Used for virtual time: nanosleep returns 0 (success) without sleeping.
+func ReturnValue(listenerFd int, id uint64, val int64) error {
+	return Respond(listenerFd, &NotifResp{
+		ID:  id,
+		Val: val,
+		// Flags: 0 = do NOT execute the real syscall
+		// Error: 0 = no error
+	})
+}
+
 // SyscallName returns a human-readable name for common syscall numbers.
 func SyscallName(nr int32) string {
 	if name, ok := syscallNames[nr]; ok {
@@ -389,6 +400,46 @@ func ReadStringFromProcess(pid uint32, addr uint64, maxLen int) (string, error) 
 		}
 	}
 	return string(buf[:n]), nil
+}
+
+// ReadFromProcess reads raw bytes from another process's memory via /proc/pid/mem.
+func ReadFromProcess(pid uint32, addr uint64, size int) ([]byte, error) {
+	if addr == 0 {
+		return nil, fmt.Errorf("null address")
+	}
+	path := fmt.Sprintf("/proc/%d/mem", pid)
+	f, err := unix.Open(path, unix.O_RDONLY, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer unix.Close(f)
+
+	buf := make([]byte, size)
+	n, err := unix.Pread(f, buf, int64(addr))
+	if err != nil {
+		return nil, fmt.Errorf("pread %s at 0x%x: %w", path, addr, err)
+	}
+	return buf[:n], nil
+}
+
+// WriteToProcess writes bytes to another process's memory via /proc/pid/mem.
+// The target must be stopped (e.g., blocked in seccomp notification) for safety.
+func WriteToProcess(pid uint32, addr uint64, data []byte) error {
+	if addr == 0 {
+		return fmt.Errorf("null address")
+	}
+	path := fmt.Sprintf("/proc/%d/mem", pid)
+	f, err := unix.Open(path, unix.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open %s for write: %w", path, err)
+	}
+	defer unix.Close(f)
+
+	_, err = unix.Pwrite(f, data, int64(addr))
+	if err != nil {
+		return fmt.Errorf("pwrite %s at 0x%x: %w", path, addr, err)
+	}
+	return nil
 }
 
 // ReadSockaddrFromProcess reads a sockaddr_in from another process's memory

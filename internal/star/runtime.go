@@ -62,6 +62,16 @@ type Runtime struct {
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
 
+	// Virtual time: skip fault delays, advance virtual clock instead.
+	virtualTime bool
+
+	// Exploration mode: "all", "sample", or "".
+	exploreMode string
+	explorePerm int // current permutation index for explore mode
+
+	// Services excluded from interleaving control in parallel().
+	nondetServices map[string]bool
+
 	// Monitor errors — collected during test execution, checked after test.
 	monitorMu     sync.Mutex
 	monitorErrors []error
@@ -137,10 +147,12 @@ func (rt *Runtime) Services() []*ServiceDef {
 
 // RunConfig controls test execution parameters.
 type RunConfig struct {
-	Filter   string  // run only matching test (empty = all)
-	Seed     *uint64 // explicit seed (nil = auto-increment from 0)
-	Runs     int     // number of runs per test (0 or 1 = single run)
-	FailOnly bool    // only keep failing test results
+	Filter      string  // run only matching test (empty = all)
+	Seed        *uint64 // explicit seed (nil = auto-increment from 0)
+	Runs        int     // number of runs per test (0 or 1 = single run)
+	FailOnly    bool    // only keep failing test results
+	VirtualTime bool    // enable virtual time (skip fault delays)
+	ExploreMode string  // "all" (exhaustive), "sample" (random), or "" (off)
 }
 
 // RunAll executes all (or filtered) test functions.
@@ -171,6 +183,9 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 				seed = uint64(run)
 			}
 			rt.seed = &seed
+			rt.virtualTime = cfg.VirtualTime
+			rt.exploreMode = cfg.ExploreMode
+			rt.explorePerm = run
 
 			runLabel := name
 			if runs > 1 {
@@ -376,15 +391,16 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		}
 
 		sessCfg := engine.SessionConfig{
-			Binary:     svc.Binary,
-			Args:       svc.Args,
-			Env:        envVars,
-			Stdout:     os.Stdout,
-			Stderr:     os.Stderr,
-			Namespaces: ns,
-			FaultRules: faultRules,
-			OnSyscall:  onSyscall,
-			Seed:       rt.seed,
+			Binary:      svc.Binary,
+			Args:        svc.Args,
+			Env:         envVars,
+			Stdout:      os.Stdout,
+			Stderr:      os.Stderr,
+			Namespaces:  ns,
+			FaultRules:  faultRules,
+			OnSyscall:   onSyscall,
+			Seed:        rt.seed,
+			VirtualTime: rt.virtualTime,
 		}
 
 		svcLog := rt.log.With(slog.String("service", svcName))
@@ -484,6 +500,9 @@ func (rt *Runtime) preinstallRules() []engine.FaultRule {
 	// Pre-install filter for common faultable syscalls.
 	// Rules with Probability=0 will never fire but ensure the syscall is intercepted.
 	syscalls := []string{"write", "read", "connect", "openat", "fsync", "sendto", "recvfrom", "writev"}
+	if rt.virtualTime {
+		syscalls = append(syscalls, "nanosleep", "clock_nanosleep", "clock_gettime")
+	}
 	var rules []engine.FaultRule
 	for _, sc := range syscalls {
 		rules = append(rules, engine.FaultRule{

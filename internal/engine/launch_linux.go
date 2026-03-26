@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"os"
@@ -284,6 +285,13 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 		}
 	}
 
+	// Virtual time: intercept time syscalls and return synthetic values.
+	if s.vclock != nil && s.vclock.enabled {
+		if s.handleTimeSyscall(listenerFd, req, syscallName) {
+			return
+		}
+	}
+
 	// Check hold rules FIRST — these take priority over fault rules.
 	if holdRules := s.getHoldRules(req.Data.Nr); len(holdRules) > 0 {
 		for _, rule := range holdRules {
@@ -389,7 +397,11 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 				case ActionDelay:
 					decision = fmt.Sprintf("delay(%s)", rule.Delay)
 					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
-					time.Sleep(rule.Delay)
+					if s.vclock != nil && s.vclock.enabled {
+						s.vclock.Advance(rule.Delay)
+					} else {
+						time.Sleep(rule.Delay)
+					}
 					s.emitSyscallEvent(syscallName, req.PID, decision, path, rule.Delay)
 					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
 						if !isClosedFdErr(err) {
@@ -433,6 +445,95 @@ func (s *Session) logSyscall(level slog.Level, name string, pid uint32, decision
 		fields = append(fields, slog.String("path", path))
 	}
 	s.log.Log(context.Background(), level, "syscall intercepted", fields...)
+}
+
+// handleTimeSyscall handles nanosleep, clock_nanosleep, and clock_gettime
+// under virtual time. Returns true if the syscall was handled.
+func (s *Session) handleTimeSyscall(listenerFd int, req *seccomp.NotifReq, syscallName string) bool {
+	switch syscallName {
+	case "nanosleep":
+		// nanosleep(const struct timespec *req, struct timespec *rem)
+		// Read requested sleep duration from arg0.
+		dur := s.readTimespec(req.PID, req.Data.Args[0])
+		s.vclock.Advance(dur)
+
+		// Write zero remaining time if rem pointer is non-null.
+		if req.Data.Args[1] != 0 {
+			s.writeZeroTimespec(req.PID, req.Data.Args[1])
+		}
+
+		decision := fmt.Sprintf("virtual_sleep(%s)", dur)
+		s.logSyscall(slog.LevelDebug, syscallName, req.PID, decision, "")
+		s.emitSyscallEvent(syscallName, req.PID, decision, "", dur)
+		seccomp.ReturnValue(listenerFd, req.ID, 0) // return success without sleeping
+		return true
+
+	case "clock_nanosleep":
+		// clock_nanosleep(clockid, flags, const struct timespec *req, struct timespec *rem)
+		// flags (arg1): 0=relative, TIMER_ABSTIME=1=absolute
+		dur := s.readTimespec(req.PID, req.Data.Args[2])
+		if req.Data.Args[1]&1 != 0 { // TIMER_ABSTIME
+			// Absolute: sleep = requested - current virtual elapsed
+			currentNs := s.vclock.Elapsed().Nanoseconds()
+			requestedNs := dur.Nanoseconds()
+			if requestedNs > currentNs {
+				dur = time.Duration(requestedNs-currentNs) * time.Nanosecond
+			} else {
+				dur = 0
+			}
+		}
+		s.vclock.Advance(dur)
+
+		if req.Data.Args[3] != 0 {
+			s.writeZeroTimespec(req.PID, req.Data.Args[3])
+		}
+
+		decision := fmt.Sprintf("virtual_sleep(%s)", dur)
+		s.logSyscall(slog.LevelDebug, syscallName, req.PID, decision, "")
+		s.emitSyscallEvent(syscallName, req.PID, decision, "", dur)
+		seccomp.ReturnValue(listenerFd, req.ID, 0)
+		return true
+
+	case "clock_gettime":
+		// clock_gettime(clockid, struct timespec *tp)
+		// Write virtual time to the output timespec.
+		sec, nsec := s.vclock.Timespec()
+		buf := make([]byte, 16)
+		binary.LittleEndian.PutUint64(buf[0:8], uint64(sec))
+		binary.LittleEndian.PutUint64(buf[8:16], uint64(nsec))
+		if err := seccomp.WriteToProcess(req.PID, req.Data.Args[1], buf); err != nil {
+			s.log.Error("failed to write virtual time", slog.String("error", err.Error()))
+			seccomp.Allow(listenerFd, req.ID) // fallback: let kernel handle it
+			return true
+		}
+
+		decision := fmt.Sprintf("virtual_time(%ds+%dns)", sec, nsec)
+		s.logSyscall(slog.LevelDebug, syscallName, req.PID, decision, "")
+		s.emitSyscallEvent(syscallName, req.PID, decision, "", 0)
+		seccomp.ReturnValue(listenerFd, req.ID, 0)
+		return true
+	}
+	return false
+}
+
+// readTimespec reads a struct timespec {int64 tv_sec, int64 tv_nsec} from process memory.
+func (s *Session) readTimespec(pid uint32, addr uint64) time.Duration {
+	if addr == 0 {
+		return 0
+	}
+	buf, err := seccomp.ReadFromProcess(pid, addr, 16)
+	if err != nil || len(buf) < 16 {
+		return 0
+	}
+	sec := int64(binary.LittleEndian.Uint64(buf[0:8]))
+	nsec := int64(binary.LittleEndian.Uint64(buf[8:16]))
+	return time.Duration(sec)*time.Second + time.Duration(nsec)*time.Nanosecond
+}
+
+// writeZeroTimespec writes a zero timespec to process memory.
+func (s *Session) writeZeroTimespec(pid uint32, addr uint64) {
+	buf := make([]byte, 16) // all zeros
+	seccomp.WriteToProcess(pid, addr, buf)
 }
 
 func isClosedFdErr(err error) bool {

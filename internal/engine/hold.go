@@ -104,6 +104,29 @@ func (q *HoldQueue) ReleaseAll(d HoldDecision) {
 	q.pending = nil
 }
 
+// ReleaseByIndex releases a specific pending notification by index.
+// Returns false if the index is out of bounds.
+func (q *HoldQueue) ReleaseByIndex(i int, d HoldDecision) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if i < 0 || i >= len(q.pending) {
+		return false
+	}
+	h := q.pending[i]
+	q.pending = append(q.pending[:i], q.pending[i+1:]...)
+	h.ReleaseCh <- d
+	return true
+}
+
+// Pending returns a snapshot of currently held notifications.
+func (q *HoldQueue) Pending() []*HeldNotif {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]*HeldNotif, len(q.pending))
+	copy(out, q.pending)
+	return out
+}
+
 // Len returns the number of currently held notifications.
 func (q *HoldQueue) Len() int {
 	q.mu.Lock()

@@ -48,5 +48,8 @@ var syscallNames = map[int32]string{
 	134: "sigaction",
 	135: "sigprocmask",
 	139: "sigreturn",
+	101: "nanosleep",
+	113: "clock_gettime",
+	115: "clock_nanosleep",
 	422: "futex",
 }

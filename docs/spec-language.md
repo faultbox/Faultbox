@@ -531,9 +531,48 @@ def test_concurrent_orders():
 ```
 
 ```bash
-faultbox test faultbox.star --runs 100 --show fail   # explore interleavings
-faultbox test faultbox.star --seed 42                 # replay exact ordering
+faultbox test faultbox.star --runs 100 --show fail   # random interleavings
+faultbox test faultbox.star --explore=all             # exhaustive: ALL permutations
+faultbox test faultbox.star --explore=sample           # 100 random orderings
+faultbox test faultbox.star --seed 42                  # replay exact ordering
 ```
+
+### `nondet(service)`
+
+Excludes a service from interleaving control during `parallel()`. Its syscalls
+proceed immediately without being held. Use this for services that make
+nondeterministic background requests (healthchecks, metrics, logging).
+
+```python
+def test_concurrent_orders():
+    nondet(monitoring_svc)  # exclude from ordering exploration
+    results = parallel(
+        lambda: orders.post(path="/orders", body='...'),
+        lambda: orders.post(path="/orders", body='...'),
+    )
+```
+
+---
+
+## Virtual Time
+
+When `--virtual-time` is enabled, fault delays advance a virtual clock instead
+of sleeping on real wall-clock time. A test with `delay("2s")` completes in
+milliseconds. This makes exhaustive exploration practical.
+
+```bash
+faultbox test faultbox.star --virtual-time                    # fast delays
+faultbox test faultbox.star --virtual-time --explore=all      # fast + exhaustive
+```
+
+**Scope:** Virtual time applies to:
+- Fault delays (`ActionDelay`) — skip sleep, advance clock
+- `nanosleep`/`clock_nanosleep` syscalls — return immediately (for C/Rust targets)
+- `clock_gettime` — return virtual timestamp (for C/Rust targets)
+
+**Go targets limitation:** Go uses vDSO for `time.Now()` (no syscall, not interceptable)
+and `futex` for `time.Sleep()`. Virtual time primarily speeds up fault delays,
+which is the main bottleneck in multi-run exploration.
 
 ---
 
@@ -735,6 +774,14 @@ faultbox test faultbox.star --normalize trace.norm # deterministic trace fingerp
 # Counterexample discovery (P-lang style)
 faultbox test faultbox.star --runs 100 --show fail # run 100x, show failures only
 faultbox test faultbox.star --seed 42              # replay with specific seed
+
+# Exhaustive interleaving exploration
+faultbox test faultbox.star --explore=all           # try all permutations (K!)
+faultbox test faultbox.star --explore=sample         # 100 random orderings (default)
+faultbox test faultbox.star --explore=sample --runs 500  # 500 random orderings
+
+# Virtual time (skip fault delays)
+faultbox test faultbox.star --virtual-time          # instant delay faults
 
 # Compare traces
 faultbox diff trace1.norm trace2.norm              # verify determinism

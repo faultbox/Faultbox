@@ -37,6 +37,37 @@ type SyscallEvent struct {
 	Latency  time.Duration `json:"latency_ns,omitempty"` // time spent in fault (delay duration)
 }
 
+// VirtualClock tracks virtual time for a session. When enabled, fault delays
+// advance the virtual clock instead of sleeping, and nanosleep/clock_nanosleep
+// return immediately with the virtual clock advanced.
+type VirtualClock struct {
+	mu      sync.Mutex
+	enabled bool
+	elapsed time.Duration // total virtual time elapsed since session start
+}
+
+// Advance moves the virtual clock forward by d.
+func (vc *VirtualClock) Advance(d time.Duration) {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	vc.elapsed += d
+}
+
+// Elapsed returns the current virtual time elapsed.
+func (vc *VirtualClock) Elapsed() time.Duration {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	return vc.elapsed
+}
+
+// Timespec returns virtual time as seconds + nanoseconds (for clock_gettime injection).
+func (vc *VirtualClock) Timespec() (sec int64, nsec int64) {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	total := vc.elapsed.Nanoseconds()
+	return total / 1e9, total % 1e9
+}
+
 // SessionConfig describes what to run and how to isolate it.
 type SessionConfig struct {
 	// Binary is the path to the target executable.
@@ -60,6 +91,9 @@ type SessionConfig struct {
 	// Seed for deterministic probabilistic fault decisions.
 	// If non-nil, used to seed the session's RNG. If nil, uses a random seed.
 	Seed *uint64
+	// VirtualTime enables virtual time for this session.
+	// Fault delays advance the virtual clock instead of sleeping.
+	VirtualTime bool
 }
 
 // NamespaceConfig controls which Linux namespaces are created.
@@ -105,6 +139,9 @@ type Session struct {
 	rng   *mathrand.Rand
 	rngMu sync.Mutex
 
+	// Virtual clock for time virtualization (nil if disabled).
+	vclock *VirtualClock
+
 	// Monotonic syscall event counter.
 	syscallSeq atomic.Int64
 
@@ -133,12 +170,18 @@ func NewSession(cfg SessionConfig, parentLog *slog.Logger) (*Session, error) {
 		rng = mathrand.New(mathrand.NewPCG(mathrand.Uint64(), mathrand.Uint64()))
 	}
 
+	var vclock *VirtualClock
+	if cfg.VirtualTime {
+		vclock = &VirtualClock{enabled: true}
+	}
+
 	return &Session{
-		ID:    id,
-		cfg:   cfg,
-		log:   parentLog.With(slog.String("session_id", id)),
-		state: StateCreated,
-		rng:   rng,
+		ID:     id,
+		cfg:    cfg,
+		log:    parentLog.With(slog.String("session_id", id)),
+		state:  StateCreated,
+		rng:    rng,
+		vclock: vclock,
 	}, nil
 }
 
