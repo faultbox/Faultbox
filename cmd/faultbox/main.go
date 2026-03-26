@@ -137,6 +137,9 @@ func testCmd(args []string) int {
 	logLevel := slog.LevelInfo
 	var configPath, specPath, outputPath, shivizPath, normalizePath, testFilter string
 	var starFile string
+	var runs int
+	var seed int64 = -1 // -1 = not set
+	showFilter := "all" // common output filter: "all", "fail"
 
 	for len(args) > 0 {
 		switch {
@@ -176,6 +179,23 @@ func testCmd(args []string) int {
 		case args[0] == "--test" && len(args) > 1:
 			testFilter = args[1]
 			args = args[1:]
+		case strings.HasPrefix(args[0], "--runs="):
+			fmt.Sscanf(strings.TrimPrefix(args[0], "--runs="), "%d", &runs)
+		case args[0] == "--runs" && len(args) > 1:
+			fmt.Sscanf(args[1], "%d", &runs)
+			args = args[1:]
+		case strings.HasPrefix(args[0], "--seed="):
+			fmt.Sscanf(strings.TrimPrefix(args[0], "--seed="), "%d", &seed)
+		case args[0] == "--seed" && len(args) > 1:
+			fmt.Sscanf(args[1], "%d", &seed)
+			args = args[1:]
+		case args[0] == "--show=fail" || args[0] == "--show=failures":
+			showFilter = "fail"
+		case args[0] == "--show=all":
+			showFilter = "all"
+		case args[0] == "--show" && len(args) > 1:
+			showFilter = args[1]
+			args = args[1:]
 		case strings.HasSuffix(args[0], ".star"):
 			starFile = args[0]
 		case strings.HasSuffix(args[0], ".yaml") || strings.HasSuffix(args[0], ".yml"):
@@ -192,14 +212,25 @@ func testCmd(args []string) int {
 	}
 
 	if starFile != "" {
-		return testStarCmd(starFile, testFilter, outputPath, shivizPath, normalizePath, logFormat, logLevel)
+		var seedPtr *uint64
+		if seed >= 0 {
+			u := uint64(seed)
+			seedPtr = &u
+		}
+		rcfg := star.RunConfig{
+			Filter:   testFilter,
+			Seed:     seedPtr,
+			Runs:     runs,
+			FailOnly: showFilter == "fail",
+		}
+		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, logFormat, logLevel)
 	}
 
 	return testYAMLCmd(configPath, specPath, outputPath, logFormat, logLevel)
 }
 
 // testStarCmd runs tests from a .star file.
-func testStarCmd(starFile, testFilter, outputPath, shivizPath, normalizePath string, logFormat logging.Format, logLevel slog.Level) int {
+func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath string, logFormat logging.Format, logLevel slog.Level) int {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
 
@@ -211,7 +242,7 @@ func testStarCmd(starFile, testFilter, outputPath, shivizPath, normalizePath str
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	result, err := rt.RunAll(ctx, testFilter)
+	result, err := rt.RunAll(ctx, rcfg)
 	if err != nil {
 		logger.Error("test suite failed", slog.String("error", err.Error()))
 		return 1
@@ -265,10 +296,12 @@ func printTraceSummary(w io.Writer, tr *star.TestResult) {
 	if tr.Result == "fail" {
 		status = "FAIL"
 	}
-	fmt.Fprintf(w, "\n--- %s: %s (%dms) ---\n", status, tr.Name, tr.DurationMs)
+	fmt.Fprintf(w, "\n--- %s: %s (%dms, seed=%d) ---\n", status, tr.Name, tr.DurationMs, tr.Seed)
 
 	if tr.Result == "fail" && tr.Reason != "" {
 		fmt.Fprintf(w, "  reason: %s\n", tr.Reason)
+		fmt.Fprintf(w, "  replay: faultbox test <file> --test %s --seed %d\n",
+			strings.TrimPrefix(tr.Name, "test_"), tr.Seed)
 	}
 
 	// Count syscall events (skip lifecycle events).

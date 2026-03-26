@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	mathrand "math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,6 +57,9 @@ type SessionConfig struct {
 	// OnSyscall is called for every intercepted syscall (optional).
 	// Must be safe to call from multiple goroutines.
 	OnSyscall func(SyscallEvent)
+	// Seed for deterministic probabilistic fault decisions.
+	// If non-nil, used to seed the session's RNG. If nil, uses a random seed.
+	Seed *uint64
 }
 
 // NamespaceConfig controls which Linux namespaces are created.
@@ -97,6 +101,10 @@ type Session struct {
 	state   State
 	mu      sync.RWMutex
 
+	// Deterministic RNG for probabilistic fault decisions.
+	rng   *mathrand.Rand
+	rngMu sync.Mutex
+
 	// Monotonic syscall event counter.
 	syscallSeq atomic.Int64
 
@@ -111,11 +119,21 @@ func NewSession(cfg SessionConfig, parentLog *slog.Logger) (*Session, error) {
 		return nil, fmt.Errorf("generate session ID: %w", err)
 	}
 
+	// Create deterministic RNG from seed.
+	var rng *mathrand.Rand
+	if cfg.Seed != nil {
+		rng = mathrand.New(mathrand.NewPCG(*cfg.Seed, 0))
+	} else {
+		// Random seed for non-deterministic mode.
+		rng = mathrand.New(mathrand.NewPCG(mathrand.Uint64(), mathrand.Uint64()))
+	}
+
 	return &Session{
 		ID:    id,
 		cfg:   cfg,
 		log:   parentLog.With(slog.String("session_id", id)),
 		state: StateCreated,
+		rng:   rng,
 	}, nil
 }
 
@@ -170,6 +188,14 @@ func (s *Session) getDynamicRules(nr int32) []*FaultRule {
 		return nil
 	}
 	return s.dynamicRules[nr]
+}
+
+// randFloat64 returns a deterministic random float using the session's seeded RNG.
+// Thread-safe — called from notification handler goroutines.
+func (s *Session) randFloat64() float64 {
+	s.rngMu.Lock()
+	defer s.rngMu.Unlock()
+	return s.rng.Float64()
 }
 
 // emitSyscallEvent sends a syscall event to the OnSyscall callback if set.

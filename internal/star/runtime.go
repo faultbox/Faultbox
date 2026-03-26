@@ -25,6 +25,7 @@ type TestResult struct {
 	Name       string  `json:"name"`
 	Result     string  `json:"result"` // "pass" or "fail"
 	Reason     string  `json:"reason,omitempty"`
+	Seed       uint64  `json:"seed"`
 	DurationMs int64   `json:"duration_ms"`
 	Events     []Event `json:"events,omitempty"`
 }
@@ -57,6 +58,9 @@ type Runtime struct {
 
 	// Starlark globals — test functions discovered after load.
 	globals starlark.StringDict
+
+	// Seed for deterministic probabilistic faults (nil = random).
+	seed *uint64
 }
 
 type runningSession struct {
@@ -127,33 +131,87 @@ func (rt *Runtime) Services() []*ServiceDef {
 	return result
 }
 
+// RunConfig controls test execution parameters.
+type RunConfig struct {
+	Filter   string  // run only matching test (empty = all)
+	Seed     *uint64 // explicit seed (nil = auto-increment from 0)
+	Runs     int     // number of runs per test (0 or 1 = single run)
+	FailOnly bool    // only keep failing test results
+}
+
 // RunAll executes all (or filtered) test functions.
-func (rt *Runtime) RunAll(ctx context.Context, filter string) (*SuiteResult, error) {
+func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, error) {
 	start := time.Now()
 	tests := rt.DiscoverTests()
 
+	runs := cfg.Runs
+	if runs <= 0 {
+		runs = 1
+	}
+
 	suite := &SuiteResult{
-		Tests: make([]TestResult, 0, len(tests)),
+		Tests: make([]TestResult, 0, len(tests)*runs),
 	}
 
 	for _, name := range tests {
-		if filter != "" && name != "test_"+filter && name != filter {
+		if cfg.Filter != "" && name != "test_"+cfg.Filter && name != cfg.Filter {
 			continue
 		}
 
-		rt.log.Info("running test", slog.String("test", name))
-		tr := rt.RunTest(ctx, name)
-		suite.Tests = append(suite.Tests, tr)
-		if tr.Result == "pass" {
-			suite.Pass++
-		} else {
-			suite.Fail++
+		for run := 0; run < runs; run++ {
+			// Determine seed for this run.
+			var seed uint64
+			if cfg.Seed != nil {
+				seed = *cfg.Seed
+			} else {
+				seed = uint64(run)
+			}
+			rt.seed = &seed
+
+			runLabel := name
+			if runs > 1 {
+				runLabel = fmt.Sprintf("%s [seed=%d]", name, seed)
+			}
+			rt.log.Info("running test", slog.String("test", runLabel))
+
+			tr := rt.RunTest(ctx, name)
+			tr.Seed = seed
+
+			if runs > 1 {
+				rt.log.Info("test completed",
+					slog.String("test", name),
+					slog.String("result", tr.Result),
+					slog.Uint64("seed", seed),
+					slog.Int("run", run+1),
+					slog.Int("of", runs),
+				)
+			} else {
+				rt.log.Info("test completed",
+					slog.String("test", name),
+					slog.String("result", tr.Result),
+					slog.Int64("duration_ms", tr.DurationMs),
+				)
+			}
+
+			if tr.Result == "pass" {
+				suite.Pass++
+				if !cfg.FailOnly {
+					suite.Tests = append(suite.Tests, tr)
+				}
+			} else {
+				suite.Fail++
+				suite.Tests = append(suite.Tests, tr)
+				// In multi-run mode, stop this test on first failure.
+				if runs > 1 {
+					rt.log.Warn("failure found, stopping runs for this test",
+						slog.String("test", name),
+						slog.Uint64("seed", seed),
+						slog.Int("run", run+1),
+					)
+					break
+				}
+			}
 		}
-		rt.log.Info("test completed",
-			slog.String("test", name),
-			slog.String("result", tr.Result),
-			slog.Int64("duration_ms", tr.DurationMs),
-		)
 	}
 
 	suite.DurationMs = time.Since(start).Milliseconds()
@@ -305,6 +363,7 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			Namespaces: ns,
 			FaultRules: faultRules,
 			OnSyscall:  onSyscall,
+			Seed:       rt.seed,
 		}
 
 		svcLog := rt.log.With(slog.String("service", svcName))

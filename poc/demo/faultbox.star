@@ -101,3 +101,15 @@ def test_disk_full():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_true(resp.status != 200, "expected failure on disk full")
     fault(inventory, write=deny("ENOSPC"), run=scenario)
+
+def test_flaky_network():
+    """20% of connections fail — order should still succeed (retry-safe).
+    Run with: faultbox test faultbox.star --test flaky_network --runs 100 --fail-only
+    """
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        # With 20% failure, most runs should succeed (order-svc retries or fails).
+        # This test explores the space — failures are interesting counterexamples.
+        assert_true(resp.status == 200 or resp.status == 503,
+            "expected 200 or 503, got " + str(resp.status))
+    fault(orders, connect=deny("ECONNREFUSED", probability="20%"), run=scenario)

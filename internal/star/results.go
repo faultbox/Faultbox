@@ -20,6 +20,7 @@ type TestTraceOutput struct {
 	Name       string  `json:"name"`
 	Result     string  `json:"result"`
 	Reason     string  `json:"reason,omitempty"`
+	Seed       uint64  `json:"seed"`
 	DurationMs int64   `json:"duration_ms"`
 	Events     []Event `json:"events"`
 }
@@ -37,6 +38,7 @@ func WriteTraceResults(path string, result *SuiteResult) error {
 			Name:       tr.Name,
 			Result:     tr.Result,
 			Reason:     tr.Reason,
+			Seed:       tr.Seed,
 			DurationMs: tr.DurationMs,
 			Events:     tr.Events,
 		})

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -319,7 +318,7 @@ func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, rule
 				continue
 			}
 
-			if rand.Float64() < rule.Probability {
+			if s.randFloat64() < rule.Probability {
 				switch rule.Action {
 				case ActionDelay:
 					decision = fmt.Sprintf("delay(%s)", rule.Delay)
