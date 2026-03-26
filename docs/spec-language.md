@@ -64,6 +64,7 @@ be referenced by other services and used in tests.
 ```python
 db = service("db", "/tmp/mock-db",
     interface("main", "tcp", 5432),
+    args = ["--data-dir", "/tmp/db-data"],
     env = {"PORT": "5432"},
     depends_on = [],
     healthcheck = tcp("localhost:5432"),
@@ -75,6 +76,7 @@ db = service("db", "/tmp/mock-db",
 | `name` | string | **yes** | Service name (used in logs and results) |
 | `binary` | string | **yes** | Path to the executable |
 | *positional* | interface | **yes** | One or more `interface()` declarations |
+| `args` | list | no | Command-line arguments passed to the binary |
 | `env` | dict | no | Environment variables |
 | `depends_on` | list | no | Services that must start first |
 | `healthcheck` | healthcheck | no | Readiness check (`tcp()` or `http()`) |

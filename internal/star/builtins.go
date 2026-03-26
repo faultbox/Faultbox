@@ -79,6 +79,22 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				v, _ := starlark.AsString(item[1])
 				svc.Env[k] = v
 			}
+		case "args":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("service() args must be a list")
+			}
+			iter := list.Iterate()
+			var val starlark.Value
+			for iter.Next(&val) {
+				s, ok := starlark.AsString(val)
+				if !ok {
+					iter.Done()
+					return nil, fmt.Errorf("service() args items must be strings, got %s", val.Type())
+				}
+				svc.Args = append(svc.Args, s)
+			}
+			iter.Done()
 		case "depends_on":
 			list, ok := kv[1].(*starlark.List)
 			if !ok {

@@ -17,6 +17,7 @@ import (
 type ServiceDef struct {
 	Name       string
 	Binary     string
+	Args       []string
 	Interfaces map[string]*InterfaceDef
 	Env        map[string]string
 	DependsOn  []string

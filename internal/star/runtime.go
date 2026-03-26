@@ -356,7 +356,7 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 
 		sessCfg := engine.SessionConfig{
 			Binary:     svc.Binary,
-			Args:       nil,
+			Args:       svc.Args,
 			Env:        envVars,
 			Stdout:     os.Stdout,
 			Stderr:     os.Stderr,
