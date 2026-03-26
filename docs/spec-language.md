@@ -405,8 +405,8 @@ fault(inventory, write=delay("500ms"), run=fn)
 
 ## Assertions
 
-Starlark has no built-in `assert` statement. Faultbox provides four assertion
-builtins — two for values, two for temporal properties over the syscall trace.
+Starlark has no built-in `assert` statement. Faultbox provides assertion
+builtins — value checks, temporal properties, and ordering verification.
 
 ### Value Assertions
 
@@ -476,6 +476,111 @@ All filter parameters are optional keyword arguments. Only events matching
 **Glob matching:** Values ending with `*` match as a prefix. Values starting
 with `*` match as a suffix. Example: `decision="deny*"` matches
 `"deny(ECONNREFUSED)"`, `"deny(EIO)"`, etc.
+
+### Ordering Assertions
+
+#### `assert_before(first={filters}, then={filters})`
+
+Asserts that the first event matching `first` occurs before the first event
+matching `then` in the syscall trace. Both arguments are dicts with the same
+filter keys as `assert_eventually`.
+
+```python
+# Verify WAL open happens before WAL write.
+assert_before(
+    first={"service": "inventory", "syscall": "openat", "path": "/tmp/inventory.wal"},
+    then={"service": "inventory", "syscall": "write", "path": "/tmp/inventory.wal"},
+)
+```
+
+### Event Query
+
+#### `events(service=, syscall=, path=, decision=)`
+
+Returns a list of matching syscall events from the current test's trace.
+Each event is a dict with `seq`, `type`, `service`, and syscall fields.
+
+```python
+# Count how many connect retries happened.
+retries = events(service="orders", syscall="connect", decision="deny*")
+print("retries:", len(retries))
+
+# Get all WAL operations.
+wal_ops = events(service="inventory", path="/tmp/inventory.wal")
+```
+
+---
+
+## Concurrency
+
+### `parallel(fn1, fn2, ...)`
+
+Runs multiple step callables concurrently. Returns results in argument order.
+Use with `--runs N` to explore different interleavings — each seed produces
+a different scheduling order.
+
+```python
+def test_concurrent_orders():
+    """Two orders at once — no double-spend."""
+    results = parallel(
+        lambda: orders.post(path="/orders", body='{"sku":"widget","qty":1}'),
+        lambda: orders.post(path="/orders", body='{"sku":"widget","qty":1}'),
+    )
+    ok_count = sum(1 for r in results if r.status == 200)
+    assert_eq(ok_count, 1, "exactly one order should succeed")
+```
+
+```bash
+faultbox test faultbox.star --runs 100 --show fail   # explore interleavings
+faultbox test faultbox.star --seed 42                 # replay exact ordering
+```
+
+---
+
+## Monitors
+
+### `monitor(callback, service=, syscall=, path=, decision=)`
+
+Registers a continuous monitor that is called on every matching syscall event
+during the test. If the callback raises an error, the test fails with
+"monitor violation".
+
+```python
+def check_no_unhandled_io_error(event):
+    """Safety: no I/O errors should go unhandled."""
+    if event["decision"].startswith("deny"):
+        # This monitor fires on every denied syscall.
+        # A real monitor would check application state here.
+        pass
+
+monitor(check_no_unhandled_io_error, service="inventory", decision="deny*")
+```
+
+Monitors are cleared between tests automatically.
+
+---
+
+## Network Partitions
+
+### `partition(svc_a, svc_b, run=callback)`
+
+Creates a bidirectional network partition between two services. While the
+callback runs, `svc_a` cannot connect to `svc_b` and vice versa. Connections
+are denied with `ECONNREFUSED` filtered by destination address.
+
+```python
+def test_network_partition():
+    """Orders can't reach inventory — returns 503."""
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_eq(resp.status, 503)
+        assert_never(service="inventory", syscall="openat", path="/tmp/inventory.wal")
+    partition(orders, inventory, run=scenario)
+```
+
+Unlike `fault(orders, connect=deny("ECONNREFUSED"))` which blocks **all**
+outbound connections, `partition()` only blocks connections to the specific
+service's ports — other connectivity remains unaffected.
 
 ### Using Starlark Expressions
 
@@ -711,12 +816,6 @@ Hooks receive a context with:
 - `ctx.log` — global event log (emit + query)
 - `deps` — dependency map
 
-Monitors will check temporal properties over the event log:
-
-```python
-def monitor_liveness(ctx):
-    for e in ctx.log.filter(type="request"):
-        assert_true(ctx.log.exists(
-            after=e, within="5s", type="response"
-        ))
-```
+Monitors (basic `monitor()` builtin) are already implemented — see the
+Monitors section above. State machine hooks will extend monitors with
+per-service state tracking and lifecycle-aware fault decisions.

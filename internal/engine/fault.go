@@ -36,6 +36,8 @@ const (
 	ActionDeny FaultAction = iota
 	// ActionDelay sleeps for a duration then allows the syscall to proceed.
 	ActionDelay
+	// ActionHold blocks the syscall until explicitly released via a HoldQueue.
+	ActionHold
 )
 
 // FaultTrigger controls when a stateful fault fires relative to a call count.
@@ -70,6 +72,11 @@ type FaultRule struct {
 	Trigger FaultTrigger
 	// TriggerN is the count parameter for Nth/After triggers.
 	TriggerN int
+	// DestAddr filters connect() syscalls by destination address ("ip:port").
+	// Only used for network partition modeling.
+	DestAddr string
+	// HoldTag identifies the HoldQueue this rule feeds into (ActionHold only).
+	HoldTag string
 	// counter tracks matching calls for stateful triggers (thread-safe).
 	counter atomic.Int64
 }

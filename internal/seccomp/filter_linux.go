@@ -391,3 +391,46 @@ func ReadStringFromProcess(pid uint32, addr uint64, maxLen int) (string, error) 
 	return string(buf[:n]), nil
 }
 
+// ReadSockaddrFromProcess reads a sockaddr_in from another process's memory
+// via /proc/pid/mem. Returns the IP and port for IPv4 connections.
+// For connect() syscall: arg0=fd, arg1=sockaddr pointer, arg2=addrlen.
+func ReadSockaddrFromProcess(pid uint32, addr uint64) (ip string, port int, err error) {
+	if addr == 0 {
+		return "", 0, fmt.Errorf("null sockaddr pointer")
+	}
+
+	path := fmt.Sprintf("/proc/%d/mem", pid)
+	f, openErr := unix.Open(path, unix.O_RDONLY, 0)
+	if openErr != nil {
+		return "", 0, fmt.Errorf("open %s: %w", path, openErr)
+	}
+	defer unix.Close(f)
+
+	// Read 28 bytes — enough for sockaddr_in (16) or sockaddr_in6 header.
+	buf := make([]byte, 28)
+	n, readErr := unix.Pread(f, buf, int64(addr))
+	if readErr != nil {
+		return "", 0, fmt.Errorf("pread %s at 0x%x: %w", path, addr, readErr)
+	}
+	if n < 4 {
+		return "", 0, fmt.Errorf("short read: got %d bytes", n)
+	}
+
+	// sa_family is the first 2 bytes (little-endian on both arm64 and amd64).
+	family := uint16(buf[0]) | uint16(buf[1])<<8
+
+	switch family {
+	case 2: // AF_INET (IPv4): struct sockaddr_in { family(2), port(2), addr(4), ... }
+		if n < 8 {
+			return "", 0, fmt.Errorf("short sockaddr_in: got %d bytes", n)
+		}
+		// Port is bytes 2-3 in network byte order (big-endian).
+		port = int(buf[2])<<8 | int(buf[3])
+		// IPv4 address is bytes 4-7.
+		ip = fmt.Sprintf("%d.%d.%d.%d", buf[4], buf[5], buf[6], buf[7])
+		return ip, port, nil
+	default:
+		return "", 0, fmt.Errorf("unsupported address family: %d", family)
+	}
+}
+

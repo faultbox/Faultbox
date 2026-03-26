@@ -261,14 +261,14 @@ func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap 
 		wg.Add(1)
 		go func(req *seccomp.NotifReq) {
 			defer wg.Done()
-			s.handleNotification(listenerFd, req, ruleMap)
+			s.handleNotification(ctx, listenerFd, req, ruleMap)
 		}(req)
 	}
 }
 
 // handleNotification processes a single seccomp notification: reads path args,
-// checks fault rules, and responds with allow, deny, or delay-then-allow.
-func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, ruleMap map[int32][]*FaultRule) {
+// checks hold rules, then fault rules, and responds with allow, deny, delay, or hold.
+func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *seccomp.NotifReq, ruleMap map[int32][]*FaultRule) {
 	syscallName := seccomp.SyscallName(req.Data.Nr)
 
 	// For file syscalls, read the path argument for filtering and logging.
@@ -281,6 +281,64 @@ func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, rule
 		p, err := seccomp.ReadStringFromProcess(req.PID, req.Data.Args[argIdx], 256)
 		if err == nil {
 			path = p
+		}
+	}
+
+	// Check hold rules FIRST — these take priority over fault rules.
+	if holdRules := s.getHoldRules(req.Data.Nr); len(holdRules) > 0 {
+		for _, rule := range holdRules {
+			if IsFileSyscall(syscallName) && path != "" && rule.PathGlob != "" {
+				if !rule.MatchPath(path) {
+					dir := filepath.Dir(path)
+					if !rule.MatchPath(dir + "/") {
+						continue
+					}
+				}
+			}
+
+			q := s.GetHoldQueue(rule.HoldTag)
+			if q == nil {
+				continue
+			}
+
+			decision := fmt.Sprintf("hold(%s)", rule.HoldTag)
+			s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
+			s.emitSyscallEvent(syscallName, req.PID, decision, path, 0)
+
+			releaseCh := make(chan HoldDecision, 1)
+			q.Enqueue(&HeldNotif{
+				ReqID:       req.ID,
+				ListenerFd:  listenerFd,
+				SyscallName: syscallName,
+				PID:         req.PID,
+				Path:        path,
+				ReleaseCh:   releaseCh,
+			})
+
+			// Block until released or context cancelled.
+			select {
+			case d := <-releaseCh:
+				releaseDecision := "allow (released)"
+				if d.Allow {
+					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
+						if !isClosedFdErr(err) {
+							s.log.Error("failed to allow held syscall", slog.String("error", err.Error()))
+						}
+					}
+				} else {
+					releaseDecision = fmt.Sprintf("deny(%d) (released)", d.Errno)
+					if err := seccomp.Deny(listenerFd, req.ID, d.Errno); err != nil {
+						if !isClosedFdErr(err) {
+							s.log.Error("failed to deny held syscall", slog.String("error", err.Error()))
+						}
+					}
+				}
+				s.emitSyscallEvent(syscallName, req.PID, releaseDecision, path, 0)
+			case <-ctx.Done():
+				// Fail-safe: allow on shutdown.
+				seccomp.Allow(listenerFd, req.ID)
+			}
+			return
 		}
 	}
 
@@ -310,6 +368,14 @@ func (s *Session) handleNotification(listenerFd int, req *seccomp.NotifReq, rule
 						decision = "allow (system path)"
 						break
 					}
+				}
+			}
+
+			// Destination address filtering for connect() syscalls.
+			if rule.DestAddr != "" && syscallName == "connect" {
+				ip, port, err := seccomp.ReadSockaddrFromProcess(req.PID, req.Data.Args[1])
+				if err != nil || fmt.Sprintf("%s:%d", ip, port) != rule.DestAddr {
+					continue
 				}
 			}
 

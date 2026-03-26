@@ -61,6 +61,10 @@ type Runtime struct {
 
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
+
+	// Monitor errors — collected during test execution, checked after test.
+	monitorMu     sync.Mutex
+	monitorErrors []error
 }
 
 type runningSession struct {
@@ -231,8 +235,12 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		}
 	}
 
-	// Reset event log for this test.
+	// Reset event log and monitors for this test.
 	rt.events.Reset()
+	rt.events.ClearSubscribers()
+	rt.monitorMu.Lock()
+	rt.monitorErrors = nil
+	rt.monitorMu.Unlock()
 
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
@@ -264,6 +272,19 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		return TestResult{
 			Name: name, Result: "fail",
 			Reason:     err.Error(),
+			DurationMs: time.Since(start).Milliseconds(),
+			Events:     events,
+		}
+	}
+
+	// Check monitor errors.
+	rt.monitorMu.Lock()
+	monErrs := rt.monitorErrors
+	rt.monitorMu.Unlock()
+	if len(monErrs) > 0 {
+		return TestResult{
+			Name: name, Result: "fail",
+			Reason:     fmt.Sprintf("monitor violation: %v", monErrs[0]),
 			DurationMs: time.Since(start).Milliseconds(),
 			Events:     events,
 		}

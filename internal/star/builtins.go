@@ -3,9 +3,12 @@ package star
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"go.starlark.net/starlark"
+
+	"github.com/faultbox/Faultbox/internal/engine"
 )
 
 // builtins returns all Starlark built-in functions for a runtime.
@@ -25,6 +28,11 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"assert_eq":         starlark.NewBuiltin("assert_eq", builtinAssertEq),
 		"assert_eventually": starlark.NewBuiltin("assert_eventually", rt.builtinAssertEventually),
 		"assert_never":      starlark.NewBuiltin("assert_never", rt.builtinAssertNever),
+		"assert_before":     starlark.NewBuiltin("assert_before", rt.builtinAssertBefore),
+		"events":            starlark.NewBuiltin("events", rt.builtinEvents),
+		"parallel":          starlark.NewBuiltin("parallel", rt.builtinParallel),
+		"monitor":           starlark.NewBuiltin("monitor", rt.builtinMonitor),
+		"partition":         starlark.NewBuiltin("partition", rt.builtinPartition),
 	}
 }
 
@@ -445,6 +453,297 @@ func matchValue(actual, pattern string) bool {
 		return strings.HasSuffix(actual, strings.TrimPrefix(pattern, "*"))
 	}
 	return actual == pattern
+}
+
+// parallel(fn1, fn2, ...) → list of results
+// Runs multiple step callables concurrently. Each callable runs in its own
+// goroutine with a dedicated Starlark thread. Returns results in the same
+// order as the arguments.
+func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("parallel() requires at least 2 callables")
+	}
+
+	// Verify all args are callable.
+	callables := make([]starlark.Callable, len(args))
+	for i, arg := range args {
+		c, ok := arg.(starlark.Callable)
+		if !ok {
+			return nil, fmt.Errorf("parallel() argument %d is not callable (got %s)", i, arg.Type())
+		}
+		callables[i] = c
+	}
+
+	type parallelResult struct {
+		index int
+		value starlark.Value
+		err   error
+	}
+
+	results := make([]parallelResult, len(callables))
+	var wg sync.WaitGroup
+
+	for i, c := range callables {
+		wg.Add(1)
+		go func(idx int, callable starlark.Callable) {
+			defer wg.Done()
+			// Each goroutine gets its own Starlark thread.
+			t := &starlark.Thread{Name: fmt.Sprintf("parallel-%d", idx)}
+			val, err := starlark.Call(t, callable, nil, nil)
+			results[idx] = parallelResult{index: idx, value: val, err: err}
+		}(i, c)
+	}
+
+	wg.Wait()
+
+	// Collect results; first error becomes the parallel() error.
+	resultList := make([]starlark.Value, len(results))
+	for i, r := range results {
+		if r.err != nil {
+			return nil, fmt.Errorf("parallel() callable %d failed: %w", i, r.err)
+		}
+		if r.value == nil {
+			resultList[i] = starlark.None
+		} else {
+			resultList[i] = r.value
+		}
+	}
+
+	return starlark.NewList(resultList), nil
+}
+
+// monitor(callback, service=, syscall=, path=, decision=)
+// Registers a continuous monitor that is called on every matching event.
+// The callback receives an event dict. If the callback raises an error,
+// the test fails with "monitor violation".
+func (rt *Runtime) builtinMonitor(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("monitor() requires a callback")
+	}
+	callback, ok := args[0].(starlark.Callable)
+	if !ok {
+		return nil, fmt.Errorf("monitor() first argument must be callable, got %s", args[0].Type())
+	}
+
+	// Remaining kwargs are event filters.
+	var filters []eventFilter
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		val, _ := starlark.AsString(kv[1])
+		filters = append(filters, eventFilter{key: key, value: val})
+	}
+
+	// Subscribe to matching events.
+	rt.events.Subscribe(filters, func(ev Event) error {
+		// Build event dict for the Starlark callback.
+		d := starlark.NewDict(6)
+		d.SetKey(starlark.String("seq"), starlark.MakeInt64(ev.Seq))
+		d.SetKey(starlark.String("type"), starlark.String(ev.Type))
+		d.SetKey(starlark.String("service"), starlark.String(ev.Service))
+		for k, v := range ev.Fields {
+			d.SetKey(starlark.String(k), starlark.String(v))
+		}
+
+		// Call Starlark callback on a fresh thread (safe from goroutines).
+		t := &starlark.Thread{Name: "monitor"}
+		_, err := starlark.Call(t, callback, starlark.Tuple{d}, nil)
+		if err != nil {
+			rt.monitorMu.Lock()
+			rt.monitorErrors = append(rt.monitorErrors, err)
+			rt.monitorMu.Unlock()
+			return err
+		}
+		return nil
+	})
+
+	return starlark.None, nil
+}
+
+// partition(svc_a, svc_b, run=callback)
+// Creates a network partition between two services. While the callback runs,
+// svc_a cannot connect to svc_b and svc_b cannot connect to svc_a.
+func (rt *Runtime) builtinPartition(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("partition() requires two service arguments")
+	}
+	svcA, ok := args[0].(*ServiceDef)
+	if !ok {
+		return nil, fmt.Errorf("partition() first arg must be a service, got %s", args[0].Type())
+	}
+	svcB, ok := args[1].(*ServiceDef)
+	if !ok {
+		return nil, fmt.Errorf("partition() second arg must be a service, got %s", args[1].Type())
+	}
+
+	var bodyFn starlark.Callable
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		if key == "run" {
+			cb, cbOk := kv[1].(starlark.Callable)
+			if !cbOk {
+				return nil, fmt.Errorf("partition() run= must be a callable")
+			}
+			bodyFn = cb
+		}
+	}
+	if bodyFn == nil {
+		return nil, fmt.Errorf("partition() requires run= keyword with a callback function")
+	}
+
+	// Resolve destination addresses from service interfaces.
+	// svc_a blocks connect to all of svc_b's interface ports, and vice versa.
+	var rulesA, rulesB []engine.FaultRule
+	for _, iface := range svcB.Interfaces {
+		rulesA = append(rulesA, engine.FaultRule{
+			Syscall:     "connect",
+			Action:      engine.ActionDeny,
+			Errno:       111, // ECONNREFUSED
+			Probability: 1.0,
+			DestAddr:    fmt.Sprintf("127.0.0.1:%d", iface.Port),
+		})
+	}
+	for _, iface := range svcA.Interfaces {
+		rulesB = append(rulesB, engine.FaultRule{
+			Syscall:     "connect",
+			Action:      engine.ActionDeny,
+			Errno:       111, // ECONNREFUSED
+			Probability: 1.0,
+			DestAddr:    fmt.Sprintf("127.0.0.1:%d", iface.Port),
+		})
+	}
+
+	// Apply partition rules.
+	rsA, okA := rt.sessions[svcA.Name]
+	rsB, okB := rt.sessions[svcB.Name]
+	if !okA {
+		return nil, fmt.Errorf("partition(): service %q is not running", svcA.Name)
+	}
+	if !okB {
+		return nil, fmt.Errorf("partition(): service %q is not running", svcB.Name)
+	}
+	rsA.session.SetDynamicFaultRules(rulesA)
+	rsB.session.SetDynamicFaultRules(rulesB)
+	rt.events.Emit("partition_applied", "faultbox", map[string]string{
+		"between": svcA.Name + "," + svcB.Name,
+	})
+
+	// Run body, then remove partition.
+	defer func() {
+		rsA.session.ClearDynamicFaultRules()
+		rsB.session.ClearDynamicFaultRules()
+		rt.events.Emit("partition_removed", "faultbox", map[string]string{
+			"between": svcA.Name + "," + svcB.Name,
+		})
+	}()
+
+	result, err := starlark.Call(thread, bodyFn, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return starlark.None, nil
+	}
+	return result, nil
+}
+
+// assert_before(first={filters}, then={filters})
+// Asserts that the first matching event for "first" occurs before the first matching event for "then".
+func (rt *Runtime) builtinAssertBefore(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var firstDict, thenDict *starlark.Dict
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "first":
+			d, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("assert_before: first must be a dict")
+			}
+			firstDict = d
+		case "then":
+			d, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("assert_before: then must be a dict")
+			}
+			thenDict = d
+		}
+	}
+	if firstDict == nil || thenDict == nil {
+		return nil, fmt.Errorf("assert_before: requires first={...} and then={...} keyword arguments")
+	}
+
+	firstFilters := dictToFilters(firstDict)
+	thenFilters := dictToFilters(thenDict)
+
+	events := rt.events.Events()
+
+	firstSeq := int64(-1)
+	thenSeq := int64(-1)
+
+	for _, ev := range events {
+		if ev.Type != "syscall" {
+			continue
+		}
+		if firstSeq < 0 && matchesFilters(ev, firstFilters) {
+			firstSeq = ev.Seq
+		}
+		if thenSeq < 0 && matchesFilters(ev, thenFilters) {
+			thenSeq = ev.Seq
+		}
+		if firstSeq >= 0 && thenSeq >= 0 {
+			break
+		}
+	}
+
+	if firstSeq < 0 {
+		return nil, fmt.Errorf("assert_before: no event matching 'first' filters (%s)", formatFilters(firstFilters))
+	}
+	if thenSeq < 0 {
+		return nil, fmt.Errorf("assert_before: no event matching 'then' filters (%s)", formatFilters(thenFilters))
+	}
+	if firstSeq >= thenSeq {
+		return nil, fmt.Errorf("assert_before: 'first' event (seq=%d) did not occur before 'then' event (seq=%d)", firstSeq, thenSeq)
+	}
+
+	return starlark.None, nil
+}
+
+// dictToFilters converts a Starlark dict to eventFilter slice.
+func dictToFilters(d *starlark.Dict) []eventFilter {
+	var filters []eventFilter
+	for _, item := range d.Items() {
+		k, _ := starlark.AsString(item[0])
+		v, _ := starlark.AsString(item[1])
+		filters = append(filters, eventFilter{key: k, value: v})
+	}
+	return filters
+}
+
+// events(service=, syscall=, path=, decision=)
+// Returns a list of matching events from the current test's trace.
+func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	filters := extractEventFilters(kwargs)
+	events := rt.events.Events()
+
+	var result []starlark.Value
+	for _, ev := range events {
+		if ev.Type != "syscall" {
+			continue
+		}
+		if len(filters) > 0 && !matchesFilters(ev, filters) {
+			continue
+		}
+		// Convert event to Starlark dict.
+		d := starlark.NewDict(6)
+		d.SetKey(starlark.String("seq"), starlark.MakeInt64(ev.Seq))
+		d.SetKey(starlark.String("type"), starlark.String(ev.Type))
+		d.SetKey(starlark.String("service"), starlark.String(ev.Service))
+		for k, v := range ev.Fields {
+			d.SetKey(starlark.String(k), starlark.String(v))
+		}
+		result = append(result, d)
+	}
+
+	return starlark.NewList(result), nil
 }
 
 func formatFilters(filters []eventFilter) string {

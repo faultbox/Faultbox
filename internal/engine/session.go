@@ -111,6 +111,11 @@ type Session struct {
 	// Dynamic fault rules — can be modified while session is running.
 	dynamicRulesMu sync.RWMutex
 	dynamicRules   map[int32][]*FaultRule
+
+	// Hold rules — separate from dynamic rules, managed by barrier/parallel.
+	holdRulesMu sync.RWMutex
+	holdRules   map[int32][]*FaultRule
+	holdQueues  map[string]*HoldQueue
 }
 
 func NewSession(cfg SessionConfig, parentLog *slog.Logger) (*Session, error) {
@@ -188,6 +193,92 @@ func (s *Session) getDynamicRules(nr int32) []*FaultRule {
 		return nil
 	}
 	return s.dynamicRules[nr]
+}
+
+// RegisterHoldQueue creates a hold queue and returns it.
+// The tag is used to link hold rules to the queue.
+func (s *Session) RegisterHoldQueue(tag string) *HoldQueue {
+	s.holdRulesMu.Lock()
+	defer s.holdRulesMu.Unlock()
+	if s.holdQueues == nil {
+		s.holdQueues = make(map[string]*HoldQueue)
+	}
+	q := NewHoldQueue()
+	s.holdQueues[tag] = q
+	return q
+}
+
+// GetHoldQueue returns the hold queue for the given tag.
+func (s *Session) GetHoldQueue(tag string) *HoldQueue {
+	s.holdRulesMu.RLock()
+	defer s.holdRulesMu.RUnlock()
+	if s.holdQueues == nil {
+		return nil
+	}
+	return s.holdQueues[tag]
+}
+
+// AddHoldRules adds hold rules for a tag. These are checked before fault rules.
+func (s *Session) AddHoldRules(tag string, rules []FaultRule) {
+	s.holdRulesMu.Lock()
+	defer s.holdRulesMu.Unlock()
+	if s.holdRules == nil {
+		s.holdRules = make(map[int32][]*FaultRule)
+	}
+	for i := range rules {
+		rules[i].HoldTag = tag
+		nr := seccomp.SyscallNumber(rules[i].Syscall)
+		if nr < 0 {
+			continue
+		}
+		s.holdRules[nr] = append(s.holdRules[nr], &rules[i])
+	}
+}
+
+// RemoveHoldRules removes all hold rules and closes the queue for a tag.
+func (s *Session) RemoveHoldRules(tag string) {
+	s.holdRulesMu.Lock()
+	defer s.holdRulesMu.Unlock()
+	// Remove rules with this tag.
+	for nr, rules := range s.holdRules {
+		filtered := rules[:0]
+		for _, r := range rules {
+			if r.HoldTag != tag {
+				filtered = append(filtered, r)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(s.holdRules, nr)
+		} else {
+			s.holdRules[nr] = filtered
+		}
+	}
+	// Close and remove the queue.
+	if q, ok := s.holdQueues[tag]; ok {
+		q.Close()
+		delete(s.holdQueues, tag)
+	}
+}
+
+// CloseAllHoldQueues closes all hold queues (cleanup on session stop).
+func (s *Session) CloseAllHoldQueues() {
+	s.holdRulesMu.Lock()
+	defer s.holdRulesMu.Unlock()
+	for _, q := range s.holdQueues {
+		q.Close()
+	}
+	s.holdQueues = nil
+	s.holdRules = nil
+}
+
+// getHoldRules returns hold rules for a syscall number.
+func (s *Session) getHoldRules(nr int32) []*FaultRule {
+	s.holdRulesMu.RLock()
+	defer s.holdRulesMu.RUnlock()
+	if s.holdRules == nil {
+		return nil
+	}
+	return s.holdRules[nr]
 }
 
 // randFloat64 returns a deterministic random float using the session's seeded RNG.

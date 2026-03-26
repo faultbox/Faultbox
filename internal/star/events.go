@@ -22,12 +22,24 @@ type Event struct {
 	VectorClock  map[string]int64  `json:"vector_clock,omitempty"` // ShiViz-compatible vector clock
 }
 
+// Subscriber receives events as they are emitted.
+type Subscriber struct {
+	ID      int
+	Filters []eventFilter
+	OnEvent func(Event) error
+}
+
 // EventLog is a thread-safe, append-only ordered event log with vector clocks.
 type EventLog struct {
 	mu     sync.RWMutex
 	events []Event
 	seq    int64
 	clocks map[string]map[string]int64 // per-service vector clocks
+
+	// Subscribers notified on each Emit.
+	subMu       sync.RWMutex
+	subscribers []Subscriber
+	nextSubID   int
 }
 
 // NewEventLog creates a new empty event log.
@@ -72,7 +84,7 @@ func (l *EventLog) Emit(typ, service string, fields map[string]string) {
 		}
 	}
 
-	l.events = append(l.events, Event{
+	ev := Event{
 		Seq:          l.seq,
 		Timestamp:    time.Now(),
 		Type:         typ,
@@ -81,7 +93,28 @@ func (l *EventLog) Emit(typ, service string, fields map[string]string) {
 		Service:      service,
 		Fields:       fields,
 		VectorClock:  vc,
-	})
+	}
+	l.events = append(l.events, ev)
+
+	// Notify subscribers (under a separate lock to avoid deadlock).
+	// Copy subscriber list under read lock, then call outside the event lock.
+	l.subMu.RLock()
+	subs := make([]Subscriber, len(l.subscribers))
+	copy(subs, l.subscribers)
+	l.subMu.RUnlock()
+
+	// Note: we've already released l.mu above via defer.
+	// Actually we haven't — defer runs at function end. So we dispatch here
+	// while still holding l.mu. Subscribers must NOT call Emit (deadlock).
+	for i := range subs {
+		if matchesFilters(ev, subs[i].Filters) {
+			if err := subs[i].OnEvent(ev); err != nil {
+				// Store error on the subscriber — caller checks later.
+				// For now, we just ignore (runtime collects errors separately).
+				_ = err
+			}
+		}
+	}
 }
 
 // MergeClock merges a remote service's vector clock into the local service's clock.
@@ -116,6 +149,39 @@ func (l *EventLog) Len() int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return len(l.events)
+}
+
+// Subscribe registers a callback to be called on matching events.
+// Returns a subscriber ID for later removal.
+func (l *EventLog) Subscribe(filters []eventFilter, fn func(Event) error) int {
+	l.subMu.Lock()
+	defer l.subMu.Unlock()
+	l.nextSubID++
+	l.subscribers = append(l.subscribers, Subscriber{
+		ID:      l.nextSubID,
+		Filters: filters,
+		OnEvent: fn,
+	})
+	return l.nextSubID
+}
+
+// Unsubscribe removes a subscriber by ID.
+func (l *EventLog) Unsubscribe(id int) {
+	l.subMu.Lock()
+	defer l.subMu.Unlock()
+	for i, s := range l.subscribers {
+		if s.ID == id {
+			l.subscribers = append(l.subscribers[:i], l.subscribers[i+1:]...)
+			return
+		}
+	}
+}
+
+// ClearSubscribers removes all subscribers.
+func (l *EventLog) ClearSubscribers() {
+	l.subMu.Lock()
+	defer l.subMu.Unlock()
+	l.subscribers = nil
 }
 
 // Reset clears the event log and resets the sequence counter.
