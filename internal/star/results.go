@@ -9,6 +9,8 @@ import (
 
 // TraceOutput is the JSON structure written to --output.
 type TraceOutput struct {
+	Version    int               `json:"version"`
+	StarFile   string            `json:"star_file,omitempty"`
 	DurationMs int64             `json:"duration_ms"`
 	Pass       int               `json:"pass"`
 	Fail       int               `json:"fail"`
@@ -17,31 +19,41 @@ type TraceOutput struct {
 
 // TestTraceOutput is the per-test section of the trace output.
 type TestTraceOutput struct {
-	Name       string  `json:"name"`
-	Result     string  `json:"result"`
-	Reason     string  `json:"reason,omitempty"`
-	Seed       uint64  `json:"seed"`
-	DurationMs int64   `json:"duration_ms"`
-	Events     []Event `json:"events"`
+	Name        string  `json:"name"`
+	Result      string  `json:"result"`
+	Reason      string  `json:"reason,omitempty"`
+	FailureType string  `json:"failure_type,omitempty"`
+	Seed        uint64  `json:"seed"`
+	DurationMs  int64   `json:"duration_ms"`
+	ReplayCmd   string  `json:"replay_command,omitempty"`
+	Events      []Event `json:"events"`
 }
 
 // WriteTraceResults writes the suite result with full event traces to a JSON file.
-func WriteTraceResults(path string, result *SuiteResult) error {
+func WriteTraceResults(path, starFile string, result *SuiteResult) error {
 	out := TraceOutput{
+		Version:    1,
+		StarFile:   starFile,
 		DurationMs: result.DurationMs,
 		Pass:       result.Pass,
 		Fail:       result.Fail,
 		Tests:      make([]TestTraceOutput, 0, len(result.Tests)),
 	}
 	for _, tr := range result.Tests {
-		out.Tests = append(out.Tests, TestTraceOutput{
-			Name:       tr.Name,
-			Result:     tr.Result,
-			Reason:     tr.Reason,
-			Seed:       tr.Seed,
-			DurationMs: tr.DurationMs,
-			Events:     tr.Events,
-		})
+		tto := TestTraceOutput{
+			Name:        tr.Name,
+			Result:      tr.Result,
+			Reason:      tr.Reason,
+			FailureType: classifyFailure(tr.Reason),
+			Seed:        tr.Seed,
+			DurationMs:  tr.DurationMs,
+			Events:      tr.Events,
+		}
+		if tr.Result == "fail" {
+			tto.ReplayCmd = fmt.Sprintf("faultbox test %s --test %s --seed %d",
+				starFile, strings.TrimPrefix(tr.Name, "test_"), tr.Seed)
+		}
+		out.Tests = append(out.Tests, tto)
 	}
 
 	data, err := json.MarshalIndent(out, "", "  ")
@@ -52,6 +64,25 @@ func WriteTraceResults(path string, result *SuiteResult) error {
 		return fmt.Errorf("write trace results: %w", err)
 	}
 	return nil
+}
+
+// classifyFailure categorizes a failure reason for machine consumption.
+func classifyFailure(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	r := strings.ToLower(reason)
+	switch {
+	case strings.Contains(r, "assert_eq") || strings.Contains(r, "assert_true") ||
+		strings.Contains(r, "assert_eventually") || strings.Contains(r, "assert_never"):
+		return "assertion"
+	case strings.Contains(r, "timed out") || strings.Contains(r, "timeout"):
+		return "timeout"
+	case strings.Contains(r, "failed to start"):
+		return "service_start"
+	default:
+		return "error"
+	}
 }
 
 // NormalizeTrace produces a deterministic fingerprint of a test's syscall trace.

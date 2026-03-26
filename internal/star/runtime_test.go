@@ -242,7 +242,7 @@ func TestWriteTraceResults(t *testing.T) {
 	}
 
 	tmpFile := t.TempDir() + "/trace.json"
-	if err := WriteTraceResults(tmpFile, result); err != nil {
+	if err := WriteTraceResults(tmpFile, "test.star", result); err != nil {
 		t.Fatalf("WriteTraceResults: %v", err)
 	}
 

@@ -1,9 +1,7 @@
 #!/bin/bash
 # Faultbox Demo Day Script
-# Usage: ./run-demo.sh [--build]
-#
-# Requires: faultbox, inventory-svc, order-svc binaries in /tmp/
-# Pass --build to rebuild from source.
+# Usage: make demo  (from project root — builds + runs in Lima)
+#   or:  ./run-demo.sh  (inside Lima, with binaries already built)
 set -euo pipefail
 
 DEMO_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,17 +22,37 @@ cleanup() {
   pkill -9 -f inventory-svc 2>/dev/null || true
   pkill -9 -f order-svc 2>/dev/null || true
   rm -f /tmp/inventory.wal
-  sleep 1
+  sleep 2
 }
+trap cleanup EXIT
 
-# --- Build (optional) ---
-if [[ "${1:-}" == "--build" ]]; then
-  header "Building binaries..."
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/faultbox       ./cmd/faultbox/
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/inventory-svc  ./poc/demo/inventory-svc/
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/order-svc      ./poc/demo/order-svc/
-  echo "Done."
+# --- Auto-detect binaries ---
+BIN_DIR=""
+for candidate in "$DEMO_DIR/../../bin/linux-arm64" "/tmp"; do
+  if [[ -x "$candidate/faultbox" && -x "$candidate/inventory-svc" && -x "$candidate/order-svc" ]]; then
+    BIN_DIR="$candidate"
+    break
+  fi
+done
+
+if [[ -z "$BIN_DIR" ]]; then
+  echo -e "${RED}Error: binaries not found.${NC}"
+  echo "Run 'make demo' from the project root, or build manually:"
+  echo "  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/linux-arm64/faultbox ./cmd/faultbox/"
+  echo "  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/linux-arm64/inventory-svc ./poc/demo/inventory-svc/"
+  echo "  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/linux-arm64/order-svc ./poc/demo/order-svc/"
+  exit 1
 fi
+
+# Copy binaries to /tmp/ (the .star file references /tmp/ paths).
+if [[ "$BIN_DIR" != "/tmp" ]]; then
+  cp "$BIN_DIR/faultbox"      /tmp/faultbox
+  cp "$BIN_DIR/inventory-svc" /tmp/inventory-svc
+  cp "$BIN_DIR/order-svc"     /tmp/order-svc
+fi
+
+FAULTBOX=/tmp/faultbox
+step "Using binaries from $BIN_DIR"
 
 cleanup
 
@@ -45,7 +63,7 @@ header "ACT 1: The System Under Test"
 
 step "Topology: order-svc (HTTP :8080) → inventory-svc (TCP :5432 + WAL)"
 echo ""
-cat "$STAR_FILE" | head -22
+head -24 "$STAR_FILE"
 echo ""
 
 # ============================================================================
@@ -56,11 +74,11 @@ header "ACT 2: Run All Tests"
 step "faultbox test faultbox.star --output trace.json --shiviz trace.shiviz"
 echo ""
 cleanup
-/tmp/faultbox test "$STAR_FILE" \
+$FAULTBOX test "$STAR_FILE" \
+  --log-format=console \
   --output /tmp/demo-trace.json \
   --shiviz /tmp/demo-trace.shiviz \
-  --normalize /tmp/demo-run1.norm \
-  2>&1 | grep -v '^{' # filter JSON log lines
+  --normalize /tmp/demo-run1.norm
 
 echo ""
 step "Trace written to /tmp/demo-trace.json ($(wc -l < /tmp/demo-trace.json) lines)"
@@ -75,13 +93,13 @@ header "ACT 3: Deterministic Simulation"
 step "Running the same tests again..."
 echo ""
 cleanup
-/tmp/faultbox test "$STAR_FILE" \
-  --normalize /tmp/demo-run2.norm \
-  2>&1 | grep -v '^{' # filter JSON log lines
+$FAULTBOX test "$STAR_FILE" \
+  --log-format=console \
+  --normalize /tmp/demo-run2.norm
 
 echo ""
 step "Comparing normalized traces..."
-/tmp/faultbox diff /tmp/demo-run1.norm /tmp/demo-run2.norm && echo ""
+$FAULTBOX diff /tmp/demo-run1.norm /tmp/demo-run2.norm && echo ""
 
 # ============================================================================
 # ACT 4: Temporal Properties
@@ -115,5 +133,3 @@ echo -e "Files:"
 echo -e "  ${GREEN}trace.json${NC}   — full syscall trace with PObserve-compatible events"
 echo -e "  ${GREEN}trace.shiviz${NC} — ShiViz visualization with vector clocks"
 echo -e "  ${GREEN}*.norm${NC}       — normalized traces for determinism comparison"
-
-cleanup

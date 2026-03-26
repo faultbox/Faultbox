@@ -2,6 +2,97 @@
 
 ## Commands
 
+### `faultbox test`
+
+Run multi-service tests defined in a Starlark `.star` file.
+
+```
+faultbox test [flags] <file.star>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--test <name>` | Run only the matching test function |
+| `--runs <N>` | Run each test N times (stops on first failure per test) |
+| `--seed <N>` | Use specific seed for deterministic replay |
+| `--show all\|fail` | Filter output: `all` (default) or `fail` (only failures) |
+| `--output <file>` | Write JSON trace results (with events, seeds, replay commands) |
+| `--shiviz <file>` | Write ShiViz-compatible visualization trace |
+| `--normalize <file>` | Write normalized trace for determinism comparison |
+| `--log-format=console\|json` | Log output format |
+| `--debug` | Enable debug logging |
+
+**Examples:**
+
+```bash
+faultbox test faultbox.star                             # run all tests
+faultbox test faultbox.star --test happy_path           # run one test
+faultbox test faultbox.star --output trace.json         # JSON trace output
+faultbox test faultbox.star --runs 100 --show fail      # counterexample discovery
+faultbox test faultbox.star --seed 42                   # deterministic replay
+faultbox test faultbox.star --normalize run.norm        # normalized trace
+```
+
+**Counterexample discovery (P-lang style):**
+
+Run each test N times with auto-incrementing seeds (0..N-1). With `--show fail`,
+only failing tests are printed. Each failure includes the seed for replay:
+
+```bash
+faultbox test faultbox.star --runs 1000 --show fail
+# --- FAIL: test_flaky_network (215ms, seed=7) ---
+#   reason: assert_true: expected 200 or 503, got 0
+#   replay: faultbox test faultbox.star --test flaky_network --seed 7
+```
+
+See [Spec Language Reference](spec-language.md) for `.star` file syntax.
+
+---
+
+### `faultbox init`
+
+Generate a starter `.star` file for a service.
+
+```
+faultbox init [flags] <binary>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name <name>` | `myapp` | Service name |
+| `--port <port>` | `8080` | Port number |
+| `--protocol http\|tcp` | `http` | Protocol type |
+| `--output <file>` | stdout | Write to file instead of printing |
+
+**Examples:**
+
+```bash
+faultbox init --name orders --port 8080 ./order-svc           # print to stdout
+faultbox init --name db --port 5432 --protocol tcp ./db-svc   # TCP service
+faultbox init --name api --output faultbox.star ./api-svc      # write to file
+```
+
+---
+
+### `faultbox diff`
+
+Compare two normalized trace files. Returns exit code 0 if identical, 2 if different.
+
+```
+faultbox diff <trace1.norm> <trace2.norm>
+```
+
+**Example:**
+
+```bash
+faultbox test faultbox.star --normalize run1.norm
+faultbox test faultbox.star --normalize run2.norm
+faultbox diff run1.norm run2.norm
+# traces are identical
+```
+
+---
+
 ### `faultbox run`
 
 Launch a binary under Faultbox's control with process isolation and optional
@@ -366,6 +457,16 @@ faultbox run --debug --fault "openat=ENOENT:50%" ./my-service
 
 ## Exit Codes
 
+### `faultbox test` / `faultbox diff`
+
+| Code | Meaning |
+|---|---|
+| 0 | All tests passed / traces identical |
+| 1 | Faultbox error (bad config, load failure, etc.) |
+| 2 | One or more tests failed / traces differ |
+
+### `faultbox run`
+
 | Code | Meaning |
 |---|---|
 | 0 | Target exited successfully |
@@ -374,7 +475,7 @@ faultbox run --debug --fault "openat=ENOENT:50%" ./my-service
 | 127 | Target could not be executed (e.g., shared library load failed) |
 | 128+N | Target killed by signal N (e.g., 137 = SIGKILL) |
 
-Faultbox faithfully propagates the target's exit code. If the target exits 42,
+`faultbox run` faithfully propagates the target's exit code. If the target exits 42,
 faultbox exits 42.
 
 ---

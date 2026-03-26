@@ -5,10 +5,13 @@ topology and test scenarios. Starlark is a Python-like language — the
 configuration is code.
 
 ```bash
-faultbox test faultbox.star                      # run all tests
-faultbox test faultbox.star --test happy_path    # run one test
-faultbox test faultbox.star --output trace.json  # JSON trace with syscall events
+faultbox test faultbox.star                        # run all tests
+faultbox test faultbox.star --test happy_path      # run one test
+faultbox test faultbox.star --output trace.json    # JSON trace with syscall events
 faultbox test faultbox.star --shiviz trace.shiviz  # ShiViz visualization format
+faultbox test faultbox.star --runs 100 --show fail # counterexample discovery
+faultbox test faultbox.star --seed 42              # deterministic replay
+faultbox init --name orders --port 8080 ./order-svc  # generate starter .star
 ```
 
 ---
@@ -507,6 +510,8 @@ Every intercepted syscall is recorded in an ordered event log with:
 
 ```json
 {
+  "version": 1,
+  "star_file": "faultbox.star",
   "duration_ms": 1640,
   "pass": 2,
   "fail": 1,
@@ -514,6 +519,7 @@ Every intercepted syscall is recorded in an ordered event log with:
     {
       "name": "test_happy_path",
       "result": "pass",
+      "seed": 0,
       "duration_ms": 225,
       "events": [
         {
@@ -541,10 +547,24 @@ Every intercepted syscall is recorded in an ordered event log with:
           "vector_clock": {"inventory": 20, "orders": 5}
         }
       ]
+    },
+    {
+      "name": "test_flaky",
+      "result": "fail",
+      "reason": "assert_true: expected 200 or 503, got 0",
+      "failure_type": "assertion",
+      "seed": 7,
+      "duration_ms": 215,
+      "replay_command": "faultbox test faultbox.star --test flaky --seed 7",
+      "events": []
     }
   ]
 }
 ```
+
+**Agent loop fields:** Failed tests include `replay_command` (full CLI for
+deterministic replay) and `failure_type` (`"assertion"`, `"timeout"`,
+`"service_start"`, or `"error"`) for machine consumption.
 
 ### Event Types (PObserve-Compatible)
 
@@ -597,11 +617,23 @@ space-time diagram with communication arrows between services.
 ## CLI Summary
 
 ```bash
+# Run tests
 faultbox test faultbox.star                        # run all tests
 faultbox test faultbox.star --test happy_path      # run one test
 faultbox test faultbox.star --debug                # verbose logging
 faultbox test faultbox.star --output trace.json    # JSON trace with events
 faultbox test faultbox.star --shiviz trace.shiviz  # ShiViz visualization
+faultbox test faultbox.star --normalize trace.norm # deterministic trace fingerprint
+
+# Counterexample discovery (P-lang style)
+faultbox test faultbox.star --runs 100 --show fail # run 100x, show failures only
+faultbox test faultbox.star --seed 42              # replay with specific seed
+
+# Compare traces
+faultbox diff trace1.norm trace2.norm              # verify determinism
+
+# Scaffolding
+faultbox init --name orders --port 8080 ./order-svc  # generate starter .star
 ```
 
 ### Exit Codes
@@ -615,24 +647,22 @@ faultbox test faultbox.star --shiviz trace.shiviz  # ShiViz visualization
 ### Trace Summary
 
 After each test, Faultbox prints a compact trace summary showing only fault
-events (non-allow decisions):
+events (non-allow decisions). Failed tests include seed for deterministic replay:
 
 ```
---- PASS: test_happy_path (225ms) ---
+--- PASS: test_happy_path (225ms, seed=0) ---
   syscall trace (99 events):
 
---- PASS: test_inventory_slow (1724ms) ---
+--- PASS: test_inventory_slow (1724ms, seed=0) ---
   syscall trace (70 events):
     #57  inventory    write      delay(500ms)  (+500ms)
     #69  inventory    write      delay(500ms)  (+500ms)
 
---- PASS: test_inventory_unreachable (215ms) ---
+--- FAIL: test_flaky_network (215ms, seed=7) ---
+  reason: assert_true: expected 200 or 503, got 0
+  replay: faultbox test faultbox.star --test flaky_network --seed 7
   syscall trace (46 events):
     #50  orders       connect    deny(connection refused)
-
---- PASS: test_wal_fsync_failure (217ms) ---
-  syscall trace (70 events):
-    #70  inventory    fsync      deny(input/output error)
 ```
 
 ---
