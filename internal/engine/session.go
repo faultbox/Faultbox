@@ -94,6 +94,13 @@ type SessionConfig struct {
 	// VirtualTime enables virtual time for this session.
 	// Fault delays advance the virtual clock instead of sleeping.
 	VirtualTime bool
+	// ExternalListenerFd is set when the seccomp listener was created externally
+	// (e.g., by a container shim). When >= 0, the session skips binary launch and
+	// runs only the notification loop on this fd.
+	ExternalListenerFd int
+	// ExternalPID is the target process PID (host namespace) when using an
+	// external listener. Used for process memory reads in the notification loop.
+	ExternalPID int
 }
 
 // NamespaceConfig controls which Linux namespaces are created.

@@ -16,8 +16,10 @@ import (
 	"go.starlark.net/starlark"
 
 	"github.com/faultbox/Faultbox/internal/config"
+	"github.com/faultbox/Faultbox/internal/container"
 	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/logging"
+	"github.com/faultbox/Faultbox/internal/seccomp"
 )
 
 // TestResult captures the outcome of one test function.
@@ -58,6 +60,11 @@ type Runtime struct {
 
 	// Starlark globals — test functions discovered after load.
 	globals starlark.StringDict
+
+	// Container support.
+	dockerClient   *container.Client      // lazy-initialized Docker client
+	networkID      string                 // Faultbox Docker network ID
+	containerIDs   map[string]string      // service name → container ID (for cleanup)
 
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
@@ -353,101 +360,266 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 	for _, svcName := range order {
 		svc := rt.services[svcName]
 
-		// Build env vars with auto-injection.
-		envVars := rt.buildEnv(svc)
-
-		// Collect all faultable syscalls for pre-installed seccomp filter.
-		var faultRules []engine.FaultRule
-		faultRules = append(faultRules, rt.preinstallRules()...)
-
-		ns := engine.NamespaceConfig{
-			PID:   true,
-			Mount: true,
-			User:  true,
+		var err error
+		if svc.IsContainer() {
+			err = rt.startContainerService(ctx, svcName, svc)
+		} else {
+			err = rt.startBinaryService(ctx, svcName, svc)
 		}
-
-		// Wire syscall events into the central event log.
-		svcNameCopy := svcName // capture for closure
-		onSyscall := func(evt engine.SyscallEvent) {
-			fields := map[string]string{
-				"syscall":  evt.Syscall,
-				"pid":      fmt.Sprintf("%d", evt.PID),
-				"decision": evt.Decision,
-			}
-			if evt.Path != "" {
-				fields["path"] = evt.Path
-			}
-			if evt.Latency > 0 {
-				fields["latency_ms"] = fmt.Sprintf("%d", evt.Latency.Milliseconds())
-			}
-			rt.events.Emit("syscall", svcNameCopy, fields)
-
-			// Causal merge: when a service makes a network call (connect/sendto)
-			// that is allowed, merge the target service's clock into this service.
-			if (evt.Syscall == "connect" || evt.Syscall == "sendto") &&
-				strings.HasPrefix(evt.Decision, "allow") {
-				rt.mergeClocksForNetworkCall(svcNameCopy)
-			}
-		}
-
-		sessCfg := engine.SessionConfig{
-			Binary:      svc.Binary,
-			Args:        svc.Args,
-			Env:         envVars,
-			Stdout:      os.Stdout,
-			Stderr:      os.Stderr,
-			Namespaces:  ns,
-			FaultRules:  faultRules,
-			OnSyscall:   onSyscall,
-			Seed:        rt.seed,
-			VirtualTime: rt.virtualTime,
-		}
-
-		svcLog := rt.log.With(slog.String("service", svcName))
-		session, err := engine.NewSession(sessCfg, svcLog)
 		if err != nil {
-			return fmt.Errorf("create session for %q: %w", svcName, err)
-		}
-		session.Service = svcName
-
-		svcCtx, svcCancel := context.WithCancel(ctx)
-		done := make(chan *engine.Result, 1)
-		go func() {
-			r, _ := session.Run(svcCtx)
-			done <- r
-		}()
-
-		rt.sessions[svcName] = &runningSession{
-			session: session,
-			cancel:  svcCancel,
-			done:    done,
-		}
-
-		rt.events.Emit("service_started", svcName, nil)
-
-		// Bind InterfaceRef.runtime for step execution.
-		for _, iface := range svc.Interfaces {
-			// Ensure InterfaceRefs have runtime pointer.
-			_ = iface // bindings happen through Attr calls
-		}
-
-		// Wait for healthcheck.
-		if svc.Healthcheck != nil {
-			timeout := svc.Healthcheck.Timeout
-			if timeout <= 0 {
-				timeout = 10 * time.Second
-			}
-			if err := waitReady(ctx, svc.Healthcheck.Test, timeout); err != nil {
-				return fmt.Errorf("service %q not ready: %w", svcName, err)
-			}
-			rt.events.Emit("service_ready", svcName, nil)
-			svcLog.Info("service ready", slog.String("check", svc.Healthcheck.Test))
+			return err
 		}
 	}
 	return nil
 }
 
-// stopServices stops all running services.
+// startBinaryService starts a service from a local binary (PoC 1 path).
+func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *ServiceDef) error {
+	envVars := rt.buildEnv(svc)
+
+	var faultRules []engine.FaultRule
+	faultRules = append(faultRules, rt.preinstallRules()...)
+
+	ns := engine.NamespaceConfig{PID: true, Mount: true, User: true}
+	onSyscall := rt.makeSyscallCallback(svcName)
+
+	sessCfg := engine.SessionConfig{
+		Binary:             svc.Binary,
+		Args:               svc.Args,
+		Env:                envVars,
+		Stdout:             os.Stdout,
+		Stderr:             os.Stderr,
+		Namespaces:         ns,
+		FaultRules:         faultRules,
+		OnSyscall:          onSyscall,
+		Seed:               rt.seed,
+		VirtualTime:        rt.virtualTime,
+		ExternalListenerFd: -1, // not external
+	}
+
+	return rt.launchSession(ctx, svcName, svc, sessCfg)
+}
+
+// startContainerService starts a service from a Docker container image (PoC 2 path).
+func (rt *Runtime) startContainerService(ctx context.Context, svcName string, svc *ServiceDef) error {
+	// Lazy-init Docker client and network.
+	if rt.dockerClient == nil {
+		dc, err := container.NewClient(ctx, rt.log)
+		if err != nil {
+			return fmt.Errorf("docker client: %w", err)
+		}
+		rt.dockerClient = dc
+		rt.containerIDs = make(map[string]string)
+
+		netID, err := dc.EnsureNetwork(ctx)
+		if err != nil {
+			return fmt.Errorf("docker network: %w", err)
+		}
+		rt.networkID = netID
+	}
+
+	// Resolve image.
+	imageName := svc.Image
+	if svc.Build != "" {
+		// TODO: build from Dockerfile. For now, require pre-built image.
+		return fmt.Errorf("build= not yet implemented, use image= with a pre-built image")
+	}
+
+	// Resolve ports from interfaces.
+	ports := make(map[int]int)
+	for _, iface := range svc.Interfaces {
+		ports[iface.Port] = 0 // 0 = let Docker pick host port
+	}
+
+	// Resolve syscall numbers for seccomp filter.
+	var syscallNrs []uint32
+	for _, r := range rt.preinstallRules() {
+		nr := seccomp.SyscallNumber(r.Syscall)
+		if nr >= 0 {
+			syscallNrs = append(syscallNrs, uint32(nr))
+		}
+	}
+
+	// Build container env (use container hostnames for inter-service refs).
+	envVars := rt.buildContainerEnv(svc)
+
+	// Find the shim binary path.
+	shimPath := rt.findShimPath()
+
+	// Launch container.
+	result, err := container.Launch(ctx, rt.dockerClient, container.LaunchConfig{
+		Name:       svcName,
+		Image:      imageName,
+		Env:        envVars,
+		Ports:      ports,
+		Volumes:    svc.Volumes,
+		SyscallNrs: syscallNrs,
+		ShimPath:   shimPath,
+		NetworkID:  rt.networkID,
+	}, rt.log)
+	if err != nil {
+		return fmt.Errorf("launch container %q: %w", svcName, err)
+	}
+	rt.containerIDs[svcName] = result.ContainerID
+
+	// Update interface ports to actual host-mapped ports (for healthchecks + steps).
+	for _, iface := range svc.Interfaces {
+		if hp, ok := result.HostPorts[iface.Port]; ok {
+			iface.HostPort = hp
+		}
+	}
+
+	// Create session with external listener fd.
+	onSyscall := rt.makeSyscallCallback(svcName)
+	faultRules := rt.preinstallRules()
+
+	sessCfg := engine.SessionConfig{
+		FaultRules:         faultRules,
+		OnSyscall:          onSyscall,
+		Seed:               rt.seed,
+		VirtualTime:        rt.virtualTime,
+		ExternalListenerFd: result.ListenerFd,
+		ExternalPID:        result.HostPID,
+	}
+
+	return rt.launchSession(ctx, svcName, svc, sessCfg)
+}
+
+// makeSyscallCallback creates the OnSyscall callback for a service.
+func (rt *Runtime) makeSyscallCallback(svcName string) func(engine.SyscallEvent) {
+	return func(evt engine.SyscallEvent) {
+		fields := map[string]string{
+			"syscall":  evt.Syscall,
+			"pid":      fmt.Sprintf("%d", evt.PID),
+			"decision": evt.Decision,
+		}
+		if evt.Path != "" {
+			fields["path"] = evt.Path
+		}
+		if evt.Latency > 0 {
+			fields["latency_ms"] = fmt.Sprintf("%d", evt.Latency.Milliseconds())
+		}
+		rt.events.Emit("syscall", svcName, fields)
+
+		if (evt.Syscall == "connect" || evt.Syscall == "sendto") &&
+			strings.HasPrefix(evt.Decision, "allow") {
+			rt.mergeClocksForNetworkCall(svcName)
+		}
+	}
+}
+
+// launchSession creates and starts a session, waits for healthcheck.
+func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *ServiceDef, sessCfg engine.SessionConfig) error {
+	svcLog := rt.log.With(slog.String("service", svcName))
+	session, err := engine.NewSession(sessCfg, svcLog)
+	if err != nil {
+		return fmt.Errorf("create session for %q: %w", svcName, err)
+	}
+	session.Service = svcName
+
+	svcCtx, svcCancel := context.WithCancel(ctx)
+	done := make(chan *engine.Result, 1)
+	go func() {
+		r, _ := session.Run(svcCtx)
+		done <- r
+	}()
+
+	rt.sessions[svcName] = &runningSession{
+		session: session,
+		cancel:  svcCancel,
+		done:    done,
+	}
+
+	rt.events.Emit("service_started", svcName, nil)
+
+	// Wait for healthcheck.
+	if svc.Healthcheck != nil {
+		timeout := svc.Healthcheck.Timeout
+		if timeout <= 0 {
+			timeout = 10 * time.Second
+		}
+		// For containers with mapped ports, adjust the healthcheck URL.
+		hcTest := rt.resolveHealthcheck(svc)
+		if err := waitReady(ctx, hcTest, timeout); err != nil {
+			return fmt.Errorf("service %q not ready: %w", svcName, err)
+		}
+		rt.events.Emit("service_ready", svcName, nil)
+		svcLog.Info("service ready", slog.String("check", hcTest))
+	}
+	return nil
+}
+
+// resolveHealthcheck returns the healthcheck URL, adjusting for container port mapping.
+func (rt *Runtime) resolveHealthcheck(svc *ServiceDef) string {
+	if svc.Healthcheck == nil {
+		return ""
+	}
+	test := svc.Healthcheck.Test
+	if !svc.IsContainer() {
+		return test
+	}
+	// For containers, replace the declared port with the actual host-mapped port.
+	for _, iface := range svc.Interfaces {
+		if iface.HostPort > 0 && iface.HostPort != iface.Port {
+			test = strings.ReplaceAll(test,
+				fmt.Sprintf(":%d", iface.Port),
+				fmt.Sprintf(":%d", iface.HostPort))
+		}
+	}
+	return test
+}
+
+// buildContainerEnv builds environment variables for a container service.
+// Uses container hostnames for inter-service references.
+func (rt *Runtime) buildContainerEnv(svc *ServiceDef) []string {
+	var env []string
+	// Auto-inject FAULTBOX_* for all registered services.
+	for _, otherName := range rt.order {
+		other := rt.services[otherName]
+		for _, iface := range other.Interfaces {
+			prefix := fmt.Sprintf("FAULTBOX_%s_%s", strings.ToUpper(otherName), strings.ToUpper(iface.Name))
+			// For container env: use container hostname (service name).
+			host := otherName
+			if !other.IsContainer() {
+				host = "localhost"
+			}
+			env = append(env,
+				fmt.Sprintf("%s_HOST=%s", prefix, host),
+				fmt.Sprintf("%s_PORT=%d", prefix, iface.Port),
+				fmt.Sprintf("%s_ADDR=%s:%d", prefix, host, iface.Port),
+			)
+		}
+	}
+	// User-defined env.
+	for k, v := range svc.Env {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+// findShimPath locates the faultbox-shim binary.
+func (rt *Runtime) findShimPath() string {
+	// Try common locations.
+	candidates := []string{
+		"/tmp/faultbox-shim",
+		"bin/linux-arm64/faultbox-shim",
+		"/host-home/git/Faultbox/bin/linux-arm64/faultbox-shim",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// Fallback: assume it's alongside the faultbox binary.
+	exe, _ := os.Executable()
+	if exe != "" {
+		dir := exe[:strings.LastIndex(exe, "/")]
+		return dir + "/faultbox-shim"
+	}
+	return "faultbox-shim"
+}
+
+// stopServices stops all running services and cleans up containers.
 func (rt *Runtime) stopServices() {
 	for _, rs := range rt.sessions {
 		rs.cancel()
@@ -459,6 +631,17 @@ func (rt *Runtime) stopServices() {
 		}
 	}
 	rt.sessions = make(map[string]*runningSession)
+
+	// Stop and remove Docker containers.
+	if rt.dockerClient != nil {
+		ctx := context.Background()
+		for name, cid := range rt.containerIDs {
+			rt.log.Debug("stopping container", slog.String("name", name))
+			rt.dockerClient.StopContainer(ctx, cid, 5)
+			rt.dockerClient.RemoveContainer(ctx, cid)
+		}
+		rt.containerIDs = make(map[string]string)
+	}
 
 	// Clear active faults.
 	rt.faultsMu.Lock()

@@ -16,13 +16,21 @@ import (
 // ServiceDef is the Starlark representation of a service declaration.
 type ServiceDef struct {
 	Name       string
-	Binary     string
+	Binary     string            // local binary path (binary mode)
+	Image      string            // container image reference (container mode)
+	Build      string            // Dockerfile context path (container mode)
 	Args       []string
 	Interfaces map[string]*InterfaceDef
 	Env        map[string]string
 	DependsOn  []string
+	Volumes    map[string]string // host:container volume mounts (container mode)
 	Healthcheck *HealthcheckDef
 	rt         *Runtime // set by runtime after registration
+}
+
+// IsContainer returns true if this service uses a container image.
+func (s *ServiceDef) IsContainer() bool {
+	return s.Image != "" || s.Build != ""
 }
 
 var _ starlark.Value = (*ServiceDef)(nil)
@@ -83,6 +91,7 @@ type InterfaceDef struct {
 	Name     string
 	Protocol string
 	Port     int
+	HostPort int    // actual host-mapped port (container mode, 0 = same as Port)
 	Spec     string // path to protocol spec file (swagger, proto, etc.)
 }
 
@@ -118,6 +127,17 @@ func (r *InterfaceRef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashabl
 func (r *InterfaceRef) Attr(name string) (starlark.Value, error) {
 	switch name {
 	case "addr":
+		port := r.Interface.Port
+		if r.Interface.HostPort > 0 {
+			port = r.Interface.HostPort
+		}
+		return starlark.String(fmt.Sprintf("localhost:%d", port)), nil
+	case "internal_addr":
+		// For container-to-container: use service name as hostname.
+		// For binary mode: same as addr (localhost).
+		if r.Service.IsContainer() {
+			return starlark.String(fmt.Sprintf("%s:%d", r.Service.Name, r.Interface.Port)), nil
+		}
 		return starlark.String(fmt.Sprintf("localhost:%d", r.Interface.Port)), nil
 	case "host":
 		return starlark.String("localhost"), nil

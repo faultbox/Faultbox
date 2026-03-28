@@ -19,6 +19,12 @@ import (
 )
 
 func (s *Session) launch(ctx context.Context) (*Result, error) {
+	// External listener fd: container shim already installed the seccomp filter.
+	// Skip binary launch, go straight to notification loop.
+	if s.cfg.ExternalListenerFd >= 0 {
+		return s.launchExternal(ctx)
+	}
+
 	start := time.Now()
 
 	// Resolve syscall names to numbers for the seccomp filter.

@@ -38,6 +38,7 @@ LINUX_BIN := $(BIN_DIR)/linux-arm64
 demo-build:
 	@echo "Cross-compiling for linux/arm64..."
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/faultbox       ./cmd/faultbox/
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/faultbox-shim  ./cmd/faultbox-shim/
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/inventory-svc  ./poc/demo/inventory-svc/
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/order-svc      ./poc/demo/order-svc/
 	@echo "Binaries: $(LINUX_BIN)/"
