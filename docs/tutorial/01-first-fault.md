@@ -52,12 +52,18 @@ bin/target
 vm bin/linux-arm64/target
 ```
 
-You'll see:
+You'll see faultbox engine logs followed by the target's output:
 ```
-PID: 12345
-filesystem: write+read OK (2ms)
-network: HTTP 200 OK (150ms)
+... [engine] target started  pid=50318
+=== Faultbox PoC Target ===
+PID: 1
+FS: wrote and read 14 bytes (took 78us)
+=== Target done ===
+... [engine] session completed  exit_code=0
 ```
+
+(Network fails because faultbox runs the target in an isolated network
+namespace — that's expected. We'll use network faults explicitly later.)
 
 Everything works. Now break it.
 
@@ -73,9 +79,31 @@ bin/faultbox run --fault "write=EIO:100%" bin/target
 vm bin/linux-arm64/faultbox run --fault "write=EIO:100%" bin/linux-arm64/target
 ```
 
-The program fails! Every `write()` syscall returns EIO (I/O error). The file
-operation errors out because the kernel told the program "I/O error" — and
-the program believed it.
+Now look at the output:
+```
+... [engine] seccomp filter installed  syscalls=[64]
+... [engine] target started  pid=50274  listener_fd=8
+... [engine] syscall intercepted  name=write  decision=deny(input/output error)
+... [engine] syscall intercepted  name=write  decision=deny(input/output error)
+... [engine] syscall intercepted  name=write  decision=deny(input/output error)
+... [engine] syscall intercepted  name=write  decision=deny(input/output error)
+... [engine] target exited with error  exit_code=1
+```
+
+Notice what happened:
+- The seccomp filter was installed for syscall 64 (`write` on arm64)
+- **Four** write syscalls were intercepted and denied with EIO
+- The target exited with error code 1
+- **The target's own output is missing** — it tried to `write()` to stdout
+  but that write was also denied! The program couldn't even print its error.
+
+This demonstrates a key point: `write=EIO:100%` denies ALL writes — to files,
+to stdout, to network sockets. The program had no way to report what went wrong
+because the reporting mechanism (stdout) was itself broken.
+
+**Why this matters:** In production, if your disk I/O fails, can your service
+still log the error? Can it still respond to healthchecks? A blanket write
+failure exposes these dependencies.
 
 **Why this matters:** Your program's error handling for disk I/O is now
 testable. Does it retry? Crash? Corrupt state? Log the error? You can
