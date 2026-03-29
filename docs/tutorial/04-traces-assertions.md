@@ -1,7 +1,7 @@
 # Chapter 4: Traces & Assertions
 
 **Duration:** 25 minutes
-**Platform:** Linux native, or macOS via Lima VM
+**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
 
 ## Goals & Purpose
 
@@ -32,17 +32,10 @@ verify the *mechanism* that produced them.
 Chapters 4-6 use the full demo: an order service that talks to an inventory
 service with a write-ahead log (WAL).
 
-**Linux:**
-```bash
-make demo-build
-cp bin/linux-arm64/order-svc bin/linux-arm64/inventory-svc /tmp/
-```
+Binaries were built in Chapter 0. Run the demo (on macOS: prefix with `vm`):
 
-**macOS (Lima):** Binaries are already in `bin/linux-arm64/` after `make demo-build`.
-
-Run the demo:
 ```bash
-faultbox test poc/demo/faultbox.star
+bin/faultbox test poc/demo/faultbox.star
 ```
 
 ## The event log

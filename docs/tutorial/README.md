@@ -35,6 +35,7 @@ make demo-build     # cross-compile for Lima VM (linux/arm64)
 
 | # | Title | Duration | You'll learn why |
 |---|-------|----------|-----------------|
+| 0 | [Setup](00-setup.md) | 10 min | Build binaries, configure Lima VM (macOS), verify everything works |
 | 1 | [Your First Fault](01-first-fault.md) | 15 min | How the OS can lie to your program — and why that's useful |
 | 2 | [Writing Your First Test](02-first-test.md) | 20 min | How to codify "this system works" as a repeatable spec |
 | 3 | [Fault Injection in Tests](03-fault-injection.md) | 25 min | How to answer "what happens when X fails?" systematically |

@@ -1,7 +1,7 @@
 # Chapter 2: Writing Your First Test
 
 **Duration:** 20 minutes
-**Platform:** Linux native, or macOS via Lima VM
+**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
 
 ## Goals & Purpose
 
@@ -29,16 +29,11 @@ Faultbox uses Starlark — a Python dialect designed for configuration.
 If you know Python, you know Starlark. No imports, no classes, no exceptions.
 Just functions, variables, and data. Configuration is code.
 
-## Build the mock database
+## The mock database
 
-**Linux and macOS (same):**
-```bash
-go build -o /tmp/mock-db ./poc/mock-db/
-```
+The mock-db binary was built in Chapter 0 (`make build` or `make demo-build`).
 
-**macOS (Lima):** The binary is already cross-compiled by `make demo-build`.
-
-This is a simple TCP key-value store:
+It's a simple TCP key-value store:
 ```
 PING       -> PONG
 SET k v    -> OK
@@ -48,10 +43,11 @@ QUIT       -> closes connection
 
 ## Your first spec file
 
-Create `my-first-test.star`:
+Create `my-first-test.star`. The binary path depends on your platform:
 
+**Linux:**
 ```python
-db = service("db", "/tmp/mock-db",
+db = service("db", "bin/mock-db",
     interface("main", "tcp", 5432),
     healthcheck = tcp("localhost:5432"),
 )
@@ -59,6 +55,12 @@ db = service("db", "/tmp/mock-db",
 def test_ping():
     resp = db.main.send(data="PING")
     assert_eq(resp, "PONG")
+```
+
+**macOS (Lima):** use the cross-compiled path:
+```python
+db = service("db", "bin/linux-arm64/mock-db",
+    ...
 ```
 
 Let's break this down:
@@ -72,8 +74,14 @@ specification — a concrete, executable claim about system behavior.
 
 ## Run it
 
+**Linux:**
 ```bash
-faultbox test my-first-test.star
+bin/faultbox test my-first-test.star
+```
+
+**macOS (Lima):**
+```bash
+vm bin/linux-arm64/faultbox test my-first-test.star
 ```
 
 ```
@@ -162,14 +170,14 @@ def test_set_and_get():
     assert_eq(resp, "hello")
 ```
 
-Run all:
+Run all (on Linux; on macOS prefix with `vm bin/linux-arm64/`):
 ```bash
-faultbox test my-first-test.star
+bin/faultbox test my-first-test.star
 ```
 
 Run one:
 ```bash
-faultbox test my-first-test.star --test set_and_get
+bin/faultbox test my-first-test.star --test set_and_get
 ```
 
 **Each test is independent.** The database restarts between tests, so

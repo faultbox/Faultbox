@@ -1,7 +1,7 @@
 # Chapter 6: Monitors & Network Partitions
 
 **Duration:** 20 minutes
-**Platform:** Linux native, or macOS via Lima VM
+**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
 
 ## Goals & Purpose
 
