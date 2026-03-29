@@ -1,52 +1,81 @@
 # Chapter 6: Monitors & Network Partitions
 
-Previous chapters tested specific scenarios. In this chapter you'll define
-**safety properties** that must hold across all tests, and simulate
-**network partitions** between services.
+**Duration:** 20 minutes
+**Platform:** Linux native, or macOS via Lima VM
+
+## Goals & Purpose
+
+Previous chapters tested specific scenarios: "inject this fault, assert that
+response." But distributed systems need **invariants** — properties that must
+hold regardless of the scenario.
+
+Example: "No order should be confirmed when inventory is unreachable." This
+isn't a single test case — it's a rule that must hold across all failure
+modes, all interleavings, all timing combinations.
+
+**Monitors** let you express these invariants as code that runs continuously
+during every test. They watch the syscall stream and fail immediately if an
+invariant is violated.
+
+**Network partitions** are a specific failure mode that's hard to simulate
+with basic `fault()`: a split between two specific services, while other
+connectivity remains intact. In production, network partitions are the most
+dangerous failure mode — they cause split-brain, data inconsistency, and
+cascading failures.
+
+This chapter teaches you to:
+- **Define safety properties** as monitors that run continuously
+- **Simulate network partitions** between specific services
+- **Combine monitors + partitions** to verify invariants under failure
+- **Think in safety vs liveness** — "bad things don't happen" vs "good things eventually do"
 
 ## Monitors
 
-A monitor is a callback that runs on every matching syscall event.
-If it raises an error, the test fails with "monitor violation".
+A monitor is a callback that fires on every matching syscall event:
 
 ```python
 def no_unhandled_errors(event):
-    """Safety: denied writes should never go unlogged."""
+    """Safety: every denied syscall should be handled."""
     if event["decision"].startswith("deny"):
-        # In a real system, you'd check that the application logged the error.
+        # The application should handle this — if it doesn't,
+        # the next assertion will catch the cascading failure.
         pass
 
 monitor(no_unhandled_errors, service="inventory", syscall="write")
 ```
 
-Monitors are registered before tests run and cleared between tests.
+Monitors are registered before tests and cleared between tests.
+If a monitor callback raises an error, the test fails immediately with
+"monitor violation."
 
-## Practical monitor: deny count limit
+## Practical monitor: denial limit
 
 ```python
 deny_count = {"n": 0}
 
 def limit_denials(event):
+    """No more than 5 denied writes — beyond that, the system should fail-fast."""
     if event["decision"].startswith("deny"):
         deny_count["n"] += 1
         if deny_count["n"] > 5:
-            fail("too many denied syscalls: " + str(deny_count["n"]))
+            fail("too many denied writes: " + str(deny_count["n"]))
 
 monitor(limit_denials, service="inventory", decision="deny*")
 ```
 
-This monitor fails the test if more than 5 syscalls are denied on the
-inventory service. It's a safety property: "fault injection shouldn't
-cause unbounded failures."
+**Why this matters:** in production, a failing disk doesn't cause 1 error — it
+causes hundreds. If your system retries indefinitely, those hundreds become
+thousands. A denial limit monitor catches this: "if you've failed 5 times,
+stop trying and report the error."
 
 ## Monitor filters
 
-Monitors accept the same filters as temporal assertions:
+Same filters as temporal assertions:
 
 ```python
 monitor(callback, service="inventory")                    # all inventory syscalls
 monitor(callback, service="inventory", syscall="write")   # inventory writes only
-monitor(callback, decision="deny*")                       # any denied syscall
+monitor(callback, decision="deny*")                       # any denied syscall anywhere
 monitor(callback, service="orders", syscall="connect")    # orders' connections
 ```
 
@@ -56,83 +85,99 @@ monitor(callback, service="orders", syscall="connect")    # orders' connections
 
 ```python
 def test_network_partition():
-    """Orders can't reach inventory — returns 503."""
+    """Orders can't reach inventory — should return 503."""
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_eq(resp.status, 503)
 
-        # Verify: inventory was never contacted.
+        # Inventory was never contacted.
         assert_never(service="inventory", syscall="openat", path="/tmp/inventory.wal")
 
     partition(orders, inventory, run=scenario)
 ```
 
 During the partition:
-- `orders` can't `connect()` to `inventory` (gets ECONNREFUSED)
-- `inventory` can't `connect()` to `orders` (gets ECONNREFUSED)
+- `orders` can't `connect()` to `inventory` → ECONNREFUSED
+- `inventory` can't `connect()` to `orders` → ECONNREFUSED
 - Other connectivity (orders to external APIs) is **not affected**
 
-This is more precise than `fault(orders, connect=deny("ECONNREFUSED"))`,
-which would block ALL outbound connections, not just to inventory.
-
-## Partition vs fault
+## partition() vs fault()
 
 | | `fault(svc, connect=deny(...))` | `partition(svc_a, svc_b)` |
 |-|---------------------------------|---------------------------|
-| Scope | ALL connections from svc | Only connections between svc_a ↔ svc_b |
-| Direction | One-way | Bidirectional |
-| Other connectivity | Blocked | Preserved |
-| Use case | "Service can't reach anything" | "Network split between two specific services" |
+| **Scope** | ALL connections from svc | Only between svc_a and svc_b |
+| **Direction** | One-way | Bidirectional |
+| **Other connectivity** | Blocked | Preserved |
+| **Use case** | "Service is completely isolated" | "Network split between two specific services" |
+
+**The intuition:** in production, network partitions are usually selective.
+Your API can reach the load balancer but not the database. `partition()` models
+this precisely.
 
 ## Combining monitors and partitions
 
-The real power: define a safety property, then create failure scenarios:
+The real power: define an invariant, then stress-test it:
 
 ```python
-# Safety property: no order should be confirmed when inventory is unreachable.
-def no_phantom_orders(event):
-    """If orders writes 'confirmed', inventory must have been reachable."""
-    if event["syscall"] == "write" and "confirmed" in event.get("path", ""):
-        # This is a simplified check. In practice, you'd verify the
-        # event log shows a successful inventory connection.
-        pass
+# Safety property: no data should be written when inventory is unreachable.
+def no_phantom_writes(event):
+    if event["syscall"] == "openat" and "/tmp/inventory.wal" in event.get("path", ""):
+        fail("WAL was accessed during partition — data inconsistency risk")
 
-monitor(no_phantom_orders, service="orders", syscall="write")
+monitor(no_phantom_writes, service="inventory")
 
 def test_partition_safety():
+    """During partition: no order confirmed, no WAL written."""
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-        # Order should fail, not succeed with phantom data.
-        assert_true(resp.status != 200, "order should not succeed during partition")
+        assert_true(resp.status != 200, "order must not succeed during partition")
     partition(orders, inventory, run=scenario)
 ```
 
+This test says: "when orders and inventory are split, orders must not confirm,
+and inventory's WAL must not be touched." The monitor enforces the second
+property continuously.
+
 ## What you learned
 
-- `monitor(callback, ...)` runs on every matching syscall event
-- Monitors define safety properties that must hold during the test
-- `partition(svc_a, svc_b, run=fn)` creates bidirectional network splits
-- Partitions only affect connections between the two named services
-- Monitors + partitions = verify safety properties under failure
+- `monitor(callback, ...)` defines invariants checked on every syscall event
+- Monitors fail immediately on violation — no waiting for the test to finish
+- `partition(a, b)` creates targeted, bidirectional network splits
+- Partitions preserve other connectivity (more realistic than blanket deny)
+- Monitors + partitions = safety property verification under failure
+
+**The framework:** for any distributed system, identify:
+1. **Safety properties** — bad things that must never happen (data loss, inconsistency)
+2. **Failure modes** — network partitions, disk failures, slow responses
+3. **Write monitors** for the safety properties
+4. **Write partition/fault tests** for the failure modes
+5. **Combine** — verify safety holds under all failure modes
+
+## What's next
+
+Everything so far uses mock binaries — lightweight, fast, but not real
+infrastructure. In production, you use Postgres, Redis, Kafka — each with
+their own syscall patterns, startup sequences, and failure behaviors.
+
+Chapter 7 shows how to test real Docker containers with the same fault
+injection tools. Same `fault()` API, same assertions, real infrastructure.
 
 ## Exercises
 
 1. **Denial counter**: Write a monitor that counts denied `write` syscalls
-   on inventory. Then run a test with `write=deny("EIO")` and verify the
-   monitor sees the denials. How many `write` denials occur for a single
-   order?
+   on inventory. Run a test with `write=deny("EIO")`. How many denials
+   occur for a single order?
 
 2. **Partition + assertion**: Write a test that partitions orders from
-   inventory, attempts an order, and then asserts:
-   - `assert_never(service="inventory", syscall="openat")` — inventory
-     was never contacted
-   - The order returns 503
+   inventory, then asserts:
+   - `assert_never(service="inventory", syscall="openat")` — not contacted
+   - Response is 503
 
-3. **Selective partition**: What happens if you partition orders from
-   inventory, but then access orders' health endpoint? Does `/health`
-   still work? (It should — health doesn't need inventory.)
+3. **Selective partition**: Partition orders from inventory, but also hit
+   the `/health` endpoint. Does health still return 200? (It should —
+   health doesn't need inventory.)
 
-4. **Monitor as invariant checker**: Write a monitor on the orders service
-   that fails if any `connect` syscall is allowed during a partition test.
-   Then run `partition(orders, inventory, run=scenario)` and verify the
-   monitor catches the denied connections (not allowed ones).
+4. **Monitor as guardrail**: Write a monitor that fails if any `connect`
+   is *allowed* during a partition test. Run
+   `partition(orders, inventory, ...)` and verify the monitor catches
+   ECONNREFUSED (denied), not allowed connections.

@@ -1,40 +1,73 @@
 # Chapter 7: Containers — Real Infrastructure
 
-Previous chapters used mock binaries. In this chapter you'll test real
-Postgres, Redis, and a Go API — all in Docker containers, with fault injection.
+**Duration:** 30 minutes
+**Platform:** Linux with Docker, or macOS via Lima VM (Docker inside VM)
 
-## Prerequisites
+## Goals & Purpose
 
-- Docker daemon running
-- Linux kernel 5.6+ (Lima VM on macOS)
-- `sudo` access (required for `pidfd_getfd` across Docker namespaces)
+Chapters 1-6 used mock binaries — lightweight, fast, controllable. But in
+production, your services talk to Postgres, Redis, Kafka, Elasticsearch —
+real infrastructure with real complexity.
+
+The question is: **does your error handling work against real Postgres, or
+just against your mock?** A mock database returns errors instantly and
+predictably. Real Postgres has connection pools, WAL persistence, buffer
+management, and its own error handling. The failure modes are different.
+
+Faultbox solves this by running real Docker containers with the same seccomp
+fault injection used for binaries. The same `fault()` API, the same
+assertions, the same trace output — but now against real infrastructure.
+
+This chapter teaches you to:
+- **Orchestrate Docker containers** with Faultbox (instead of docker-compose)
+- **Inject faults into real databases** — Postgres, Redis
+- **Understand container networking** — how services find each other
+- **Use per-service filtering** — only intercept syscalls on faulted services
+
+After this chapter, you'll be able to answer: "what happens to my API when
+Postgres has a disk I/O error?" — tested against real Postgres, not a mock.
 
 ## How container mode works
 
 ```
 Host (faultbox)                          Docker Container
-┌─────────────────────┐    ┌────────────────────────────────┐
-│ 1. Pull/build image │    │ faultbox-shim (bind-mounted)   │
-│ 2. Override entry-  │    │   ├─ Install seccomp filter    │
-│    point with shim  │    │   ├─ Report listener fd        │
-│ 3. Acquire fd via   │◄───│   ├─ Wait for host ACK         │
-│    pidfd_getfd()    │    │   └─ exec(original entrypoint) │
-│ 4. Run notification │    │                                │
-│    loop (same as    │    │ Real service runs with         │
-│    binary mode)     │    │ seccomp filter active           │
-└─────────────────────┘    └────────────────────────────────┘
++-----------------------+    +----------------------------------+
+| 1. Pull/build image   |    | faultbox-shim (bind-mounted)     |
+| 2. Override entrypoint |    |   +- Install seccomp filter      |
+|    with shim           |    |   +- Report listener fd          |
+| 3. Acquire fd via      |<---|   +- Wait for host ACK           |
+|    pidfd_getfd()       |    |   +- exec(original entrypoint)   |
+| 4. Run notification    |    |                                  |
+|    loop (same as       |    | Real service runs with           |
+|    binary mode)        |    | seccomp filter active            |
++-----------------------+    +----------------------------------+
 ```
 
-The key: a tiny shim binary is injected into the container. It installs the
-seccomp filter, then exec's the original entrypoint. From the service's
-perspective, nothing changed — except faultbox can now intercept its syscalls.
+A tiny shim binary is injected into the container. It installs the seccomp
+filter, then exec's the original entrypoint. From Postgres's perspective,
+nothing changed — except faultbox can now intercept its syscalls.
+
+## Prerequisites
+
+**macOS (Lima VM):**
+```bash
+make env-start                 # start Lima VM (has Docker pre-installed)
+make demo-build                # cross-compile faultbox + shim
+```
+
+**Linux:**
+```bash
+make build
+# Docker must be running
+# sudo required for pidfd_getfd across Docker PID namespaces
+```
 
 ## Container services
 
-Instead of `binary=`, use `image=` or `build=`:
+Instead of a binary path, use `image=` or `build=`:
 
 ```python
-# Pull from registry
+# Pull from registry — no Dockerfile needed
 postgres = service("postgres",
     interface("main", "tcp", 5432),
     image = "postgres:16-alpine",
@@ -42,11 +75,14 @@ postgres = service("postgres",
     healthcheck = tcp("localhost:5432", timeout="60s"),
 )
 
-# Build from Dockerfile
+# Build from local Dockerfile
 api = service("api",
     interface("public", "http", 8080),
     build = "./api",
-    env = {"PORT": "8080", "DATABASE_URL": "postgres://postgres:test@" + postgres.main.internal_addr + "/testdb?sslmode=disable"},
+    env = {
+        "PORT": "8080",
+        "DATABASE_URL": "postgres://postgres:test@" + postgres.main.internal_addr + "/testdb?sslmode=disable",
+    },
     depends_on = [postgres],
     healthcheck = http("localhost:8080/health", timeout="60s"),
 )
@@ -54,58 +90,59 @@ api = service("api",
 
 Three service sources — exactly one required:
 
-| Parameter | Source |
-|-----------|--------|
-| `"/path/to/binary"` (positional) | Local binary (PoC 1) |
-| `image = "postgres:16"` | Docker image from registry |
-| `build = "./api"` | Build from Dockerfile directory |
+| Parameter | When to use |
+|-----------|-------------|
+| `"/path/to/binary"` (positional) | Local development, mock services |
+| `image = "postgres:16"` | Real infrastructure from Docker Hub |
+| `build = "./api"` | Your service with a Dockerfile |
 
 ## Container networking
 
-Containers run on a Docker bridge network (`faultbox-net`). They reach each
-other by service name:
-
-```python
-# internal_addr returns "postgres:5432" (container hostname)
-env = {"DATABASE_URL": "postgres://test@" + postgres.main.internal_addr + "/db"}
-
-# addr returns "localhost:32847" (host-mapped random port)
-# Used by: healthchecks, test step execution (api.get(...))
-```
+Containers run on a Docker bridge network (`faultbox-net`). Two addressing
+modes:
 
 | Attribute | Returns | Used by |
 |-----------|---------|---------|
 | `.internal_addr` | `"postgres:5432"` | Container-to-container env vars |
 | `.addr` | `"localhost:32847"` | Faultbox healthchecks and test steps |
 
-## The demo
+**Why two?** Inside Docker, containers reach each other by hostname
+(`postgres:5432`). Outside Docker, faultbox reaches them via mapped ports
+(`localhost:32847`). The `.internal_addr` attribute handles this automatically.
 
-The container demo is at `poc/demo-container/`. Run it:
+```python
+# Container-to-container: use internal_addr
+env = {"DATABASE_URL": "postgres://test@" + postgres.main.internal_addr + "/db"}
 
-```bash
-# Build binaries + demo API image
-make demo-build
-
-# Run in Lima VM with Docker
-sudo bin/linux-arm64/faultbox test poc/demo-container/faultbox.star
+# Test steps (from host): addr is used automatically
+resp = api.get(path="/health")  # hits localhost:32847
 ```
 
-It starts Postgres, Redis, and a Go API, then runs 4 tests:
+## Run the demo
+
+```bash
+# macOS (Lima VM):
+limactl shell faultbox-dev -- sudo bin/linux-arm64/faultbox test poc/demo-container/faultbox.star
+
+# Linux:
+sudo faultbox test poc/demo-container/faultbox.star
+```
 
 ```
 --- PASS: test_happy_path (9.7s) ---
 --- PASS: test_postgres_write_enospc (10.4s) ---
 --- PASS: test_postgres_write_failure (9.4s) ---
 --- PASS: test_write_and_read (9.7s) ---
+4 passed, 0 failed
 ```
 
 ## Fault injection on containers
 
-Same `fault()` API — Faultbox doesn't care if it's a binary or container:
+Same API — Faultbox doesn't care if it's a binary or container:
 
 ```python
 def test_postgres_disk_full():
-    """Postgres disk full — API should return 503."""
+    """Postgres can't write — API should return 503."""
     def scenario():
         resp = api.post(path="/data?key=full&value=test")
         assert_true(resp.status >= 500, "expected 5xx on ENOSPC")
@@ -113,15 +150,34 @@ def test_postgres_disk_full():
 ```
 
 This denies `write`, `writev`, and `pwrite64` on the Postgres container.
-When Postgres tries to write a data page, it gets ENOSPC. The SQL query
-fails, the API returns 503.
+When Postgres tries to write a data page (via `pwrite64`), it gets ENOSPC.
+The SQL query fails, the API returns 503.
+
+The diagnostic output shows the expansion:
+```
+  fault applied to postgres: write=deny(ENOSPC) -> filter:[write,writev,pwrite64]
+    #5319  postgres  pwrite64  deny(no space left on device)
+```
+
+**Note:** Postgres uses `pwrite64` for data pages, not `write`. The syscall
+family expansion handles this automatically — you write `write=deny(...)` and
+it covers all write variants.
 
 ## Per-service filtering
 
 Faultbox only installs seccomp filters on services that are actually faulted.
-In the demo, only Postgres gets a filter — Redis and API run at native speed.
+In the demo:
+- **test_happy_path**: no faults → all containers run at native speed
+- **test_postgres_write_failure**: only Postgres gets a seccomp filter
 
-This is why fault tests and non-fault tests have similar timing.
+Redis and the API always run without interception overhead. This is why
+fault tests and non-fault tests have similar timing (~10s).
+
+## Why sudo?
+
+`pidfd_getfd()` requires `PTRACE_MODE_ATTACH` on the target process. Docker
+containers run in separate PID namespaces. Without root, the kernel refuses
+to copy the seccomp listener fd from the container process.
 
 ## Volumes
 
@@ -130,45 +186,55 @@ Mount host directories into containers:
 ```python
 pg = service("postgres",
     interface("main", "tcp", 5432),
-    image = "postgres:16-alpine",
+    image = "postgres:16",
     volumes = {"./pg-data": "/var/lib/postgresql/data"},
 )
 ```
 
-## Why sudo?
-
-`pidfd_getfd()` requires `PTRACE_MODE_ATTACH` permission on the target process.
-Docker containers run in separate PID namespaces. Without root, the kernel
-refuses to copy the seccomp listener fd from the container process.
-
-Future: this could be solved with a setuid helper or Docker plugin.
-
 ## What you learned
 
 - `image=` pulls Docker images, `build=` builds from Dockerfile
-- `.internal_addr` for container-to-container references
-- `.addr` for host-side access (healthchecks, test steps)
+- `.internal_addr` for container-to-container, `.addr` for host access
 - Fault injection works identically on containers and binaries
+- Syscall family expansion handles differences (pwrite64 vs write)
 - Per-service filtering: only faulted services get seccomp overhead
 - Requires Linux + Docker + sudo
 
+**The key takeaway:** you can now test your actual production dependencies —
+not mocks. "What happens when Postgres runs out of disk?" is tested against
+real Postgres.
+
+## What's next
+
+You've completed the tutorial. You can now:
+
+- **Inject faults** into any binary or container
+- **Write specs** that declare topology and test expectations
+- **Assert on internal behavior** with temporal assertions and traces
+- **Find concurrency bugs** with parallel execution and exhaustive exploration
+- **Define safety invariants** with monitors
+- **Test real infrastructure** with Docker containers
+
+**Recommended next steps:**
+- Read `docs/spec-language.md` for the complete language reference
+- Read `docs/cli-reference.md` for all CLI options
+- Try writing a faultbox.star for your own services
+- Explore the `poc/demo/faultbox.star` for a complete working example
+
 ## Exercises
 
-1. **Graceful degradation**: The demo API talks to both Postgres and Redis.
-   Currently Redis is unused. Modify `poc/demo-container/api/main.go` to
-   cache values in Redis. Then write a test that faults Redis with
-   `connect=deny("ECONNREFUSED")` and verifies the API still works
-   (falls back to Postgres).
+1. **Read the trace**: Run test_postgres_write_failure with `--output trace.json`.
+   Find the `pwrite64` events. What files was Postgres writing to? (Look at
+   the `path` field.)
 
-2. **Read the trace**: Run the write_failure test with `--output trace.json`.
-   Open the JSON and find the `pwrite64` syscall events with
-   `decision: "deny(input/output error)"`. What files was Postgres trying
-   to write to? (Look at the `path` field.)
+2. **Build your own service**: Create a directory with a Go HTTP server and
+   Dockerfile. Declare it with `build="./my-svc"`. Does it build and start?
 
-3. **Build your own**: Create a new directory with a simple Go HTTP server
-   and Dockerfile. Declare it with `build="./my-svc"` in a .star file.
-   Verify it builds and starts correctly.
+3. **Multiple faults**: Write a test that faults BOTH Postgres (`write=deny("EIO")`)
+   AND the API (`connect=delay("1s")`). What happens when everything breaks?
 
-4. **Multiple faults**: Write a test that faults BOTH Postgres (write=EIO)
-   and the API (connect=delay("1s")). What happens when everything is broken
-   at once?
+4. **Graceful degradation**: The demo API connects to Redis but doesn't use it
+   yet. Imagine it cached values in Redis. Write a test that faults Redis
+   (`connect=deny("ECONNREFUSED")`) and asserts the API still works via
+   Postgres. This tests graceful degradation — a key production resilience
+   pattern.

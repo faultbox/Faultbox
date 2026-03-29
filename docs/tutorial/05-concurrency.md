@@ -1,16 +1,35 @@
 # Chapter 5: Exploring Concurrency
 
-The hardest bugs happen when things run at the same time. In this chapter
-you'll explore concurrent interleavings and find bugs that only appear
-under specific timing.
+**Duration:** 25 minutes
+**Platform:** Linux native, or macOS via Lima VM
 
-## The problem
+## Goals & Purpose
 
-Two orders arrive simultaneously for the last widget in stock. Which wins?
-Do both succeed (overselling)? Does one fail gracefully? Does the system crash?
+The hardest distributed systems bugs are **concurrency bugs** — they only
+appear when operations happen in a specific order, and that order is random
+in production.
 
-The answer depends on the *order* in which syscalls execute — and in production,
-that order is random.
+Consider: two orders arrive at the same instant for the last item in stock.
+Does one get confirmed and the other rejected? Do both get confirmed
+(overselling)? Does the system deadlock? The answer depends on the exact
+interleaving of syscalls — which is different every time.
+
+Traditional testing can't find these bugs because it runs one operation at a
+time. Even "concurrent" tests in Go (`t.Parallel()`) don't control the
+interleaving — they just hope to get lucky.
+
+**Faultbox's approach:** intercept syscalls and control their ordering.
+By holding syscalls and releasing them in specific sequences, Faultbox can
+explore every possible interleaving — or replay a specific one.
+
+This chapter teaches you to:
+- **Run operations concurrently** and observe different outcomes
+- **Reproduce failures** with deterministic seed replay
+- **Explore systematically** — try all possible orderings
+- **Combine concurrency with faults** — the ultimate stress test
+
+After this chapter, you'll know how to find bugs that only appear under
+specific timing — and how to reproduce them reliably.
 
 ## parallel()
 
@@ -23,96 +42,100 @@ def test_concurrent_orders():
         lambda: orders.post(path="/orders", body='{"sku":"widget","qty":1}'),
         lambda: orders.post(path="/orders", body='{"sku":"widget","qty":1}'),
     )
-    # At most one should succeed (stock=10, but in a race condition test
-    # with stock=1, exactly one should fail).
     statuses = [r.status for r in results]
     ok_count = sum(1 for s in statuses if s == 200)
     assert_true(ok_count >= 1, "at least one order should succeed")
 ```
 
-`parallel()` runs the lambdas in concurrent goroutines. The interleaving of
-their syscalls depends on the **seed**.
+`parallel()` runs the lambdas concurrently. Their syscalls interleave based
+on the **seed**.
 
-## Seed-based replay
+## Seeds and replay
 
-Every test run has a seed (default: 0). The seed controls the scheduling
-of held syscalls in `parallel()`:
+Every test run has a seed (default: 0). The seed controls scheduling:
 
 ```bash
 faultbox test poc/demo/faultbox.star --seed 42
 ```
 
-Same seed = same interleaving = same result. This makes concurrent bugs
-**reproducible**.
+**Same seed = same interleaving = same result.** This makes concurrency bugs
+**reproducible** — the holy grail of distributed debugging.
 
-When a test fails, the output includes a replay command:
+When a test fails, the output includes the replay command:
 ```
 --- FAIL: test_concurrent_orders (300ms, seed=7) ---
   replay: faultbox test poc/demo/faultbox.star --test concurrent_orders --seed 7
 ```
 
+Copy-paste to reproduce. Every time.
+
 ## Multi-run discovery
 
-Run the same test many times with different seeds to find failures:
+Run the same test many times with different seeds to hunt for failures:
 
 ```bash
 faultbox test poc/demo/faultbox.star --test flaky_network --runs 100 --show fail
 ```
 
-This runs the test 100 times (seeds 0-99) and only shows failures.
-If seed 7 fails, you can replay it:
+Seeds 0 through 99 are tried. Only failures are shown. If seed 7 fails:
 
 ```bash
 faultbox test poc/demo/faultbox.star --test flaky_network --seed 7
 ```
 
+**The workflow:** run 100 times → find failures → replay → debug → fix → re-run 100 times → all pass.
+
 ## Exhaustive exploration
 
-For small numbers of concurrent operations, try ALL possible orderings:
+For small state spaces, try EVERY possible ordering:
 
 ```bash
 faultbox test poc/demo/faultbox.star --test concurrent_orders --explore=all
 ```
 
-With 2 concurrent operations that each make 3 syscalls, there are
-`6! / (3! * 3!) = 20` possible interleavings. `--explore=all` tries every one.
+With 2 concurrent operations making 3 syscalls each, there are
+`6! / (3! * 3!) = 20` possible interleavings. `--explore=all` tries each one.
 
-For larger state spaces, sample randomly:
+For larger spaces, sample randomly:
 
 ```bash
 faultbox test poc/demo/faultbox.star --explore=sample --runs 500
 ```
 
+**When to use which:**
+- `--explore=all` — small state spaces (<100 permutations), complete guarantee
+- `--explore=sample --runs N` — large state spaces, probabilistic coverage
+- `--runs N` (no explore) — just randomize the seed, fastest
+
 ## nondet()
 
-Some services make background syscalls (healthchecks, metrics, logging) that
-aren't part of the test scenario. These add noise to interleaving exploration.
-
-Exclude them:
+Some services make background syscalls (metrics, logging, healthchecks) that
+aren't part of your test scenario. These add noise:
 
 ```python
 def test_concurrent_orders():
-    nondet(monitoring_svc)  # exclude from ordering exploration
-    results = parallel(
-        lambda: orders.post(...),
-        lambda: orders.post(...),
-    )
+    nondet(monitoring_svc)  # exclude from interleaving control
+    results = parallel(...)
 ```
+
+`nondet()` marks a service's syscalls as "don't hold, don't schedule" —
+they proceed immediately without interleaving control.
 
 ## Virtual time
 
-When faults use `delay()`, real wall-clock sleeps make exhaustive exploration
-slow. Virtual time skips the sleeps:
+Delay faults + exhaustive exploration = very slow (each permutation waits
+for real delays). Virtual time skips the waits:
 
 ```bash
 faultbox test poc/demo/faultbox.star --virtual-time --explore=all
 ```
 
-A test with `delay("2s")` completes in milliseconds.
+A test with `delay("2s")` completes in milliseconds. Virtual time advances
+a logical clock instead of sleeping.
 
 ## Combining faults with concurrency
 
-The most powerful tests combine fault injection with concurrent operations:
+The most powerful tests: concurrent operations under failure conditions.
 
 ```python
 def test_concurrent_under_failure():
@@ -122,34 +145,45 @@ def test_concurrent_under_failure():
             lambda: orders.post(path="/orders", body='{"sku":"widget","qty":1}'),
             lambda: orders.post(path="/orders", body='{"sku":"widget","qty":1}'),
         )
-        # Both should eventually get a response (not hang).
         for r in results:
-            assert_true(r.status in [200, 503], "expected 200 or 503")
+            assert_true(r.status in [200, 503], "expected 200 or 503, not hang")
     fault(inventory, write=delay("500ms"), run=scenario)
 ```
 
+This tests: "when two orders race AND inventory is slow, does the system
+still respond correctly?" This is exactly the scenario that causes
+production outages.
+
 ## What you learned
 
-- `parallel()` runs operations concurrently
-- Seeds control interleaving — same seed = same result
-- `--runs 100 --show fail` finds flaky failures
-- `--seed N` replays a specific interleaving
-- `--explore=all` tries every permutation
-- `nondet()` excludes services from ordering
-- `--virtual-time` skips delays for fast exploration
-- Faults + concurrency = realistic distributed systems testing
+- `parallel()` runs operations concurrently with controlled interleaving
+- Seeds make concurrency bugs reproducible
+- `--runs N` discovers failures across many interleavings
+- `--explore=all` guarantees complete coverage for small state spaces
+- `nondet()` excludes noisy services from scheduling control
+- `--virtual-time` makes exhaustive exploration practical
+- Faults + concurrency = realistic distributed stress testing
+
+## What's next
+
+You can now find and reproduce concurrency bugs. But some properties should
+hold across ALL test scenarios — not just specific ones. "No order should be
+confirmed when inventory is unreachable" is a **safety property** that must
+always be true.
+
+Chapter 6 introduces monitors (continuous invariant checkers) and network
+partitions (targeted connectivity failures between specific services).
 
 ## Exercises
 
-1. **Find the race**: Write a test with two concurrent orders for a
-   limited-stock item. Run with `--runs 50`. Do any fail? If so, what seed?
+1. **Find a race**: Write a test with two concurrent orders for limited
+   stock. Run with `--runs 50`. Do any fail? Which seed?
 
-2. **Exhaustive check**: Take the same test and run with `--explore=all`.
-   How many permutations are tested? Do all pass?
+2. **Exhaustive check**: Run the same test with `--explore=all`. How many
+   permutations? Do all pass?
 
-3. **Fault + concurrency**: Write a test where two orders run concurrently
-   while inventory has a 200ms write delay. Does the system still work?
-   Run with `--runs 20` to check.
+3. **Fault + concurrency**: Two concurrent orders while inventory has a
+   200ms write delay. Run with `--runs 20`. Does the system still behave?
 
-4. **Virtual time speedup**: Run exercise 3 with `--virtual-time`. How much
-   faster is it? Compare wall-clock times.
+4. **Virtual time**: Run exercise 3 with `--virtual-time`. Compare wall-clock
+   times. How much faster?
