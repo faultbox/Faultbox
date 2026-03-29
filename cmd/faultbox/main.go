@@ -115,13 +115,14 @@ doneFlags:
 	ctx = logging.NewContext(ctx, logger)
 
 	cfg := engine.SessionConfig{
-		Binary:     args[0],
-		Args:       args[1:],
-		Env:        envVars,
-		Stdout:     os.Stdout,
-		Stderr:     os.Stderr,
-		Namespaces: engine.DefaultNamespaces(),
-		FaultRules: faultRules,
+		Binary:             args[0],
+		Args:               args[1:],
+		Env:                envVars,
+		Stdout:             os.Stdout,
+		Stderr:             os.Stderr,
+		Namespaces:         engine.DefaultNamespaces(),
+		FaultRules:         faultRules,
+		ExternalListenerFd: -1, // not external — launch the binary
 	}
 
 	result, err := eng.Run(ctx, cfg)
