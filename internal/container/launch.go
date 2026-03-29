@@ -34,12 +34,20 @@ type LaunchResult struct {
 
 // Launch pulls the image, creates and starts a container with the faultbox-shim
 // as entrypoint, waits for the seccomp listener fd, and returns it.
+// Launch pulls the image, creates and starts a container with the faultbox-shim
+// as entrypoint, waits for the seccomp listener fd, and returns it.
+// If SyscallNrs is empty, launches without the shim (no seccomp interception).
 func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Logger) (*LaunchResult, error) {
 	// Pull the image (skip for locally built images).
 	if !cfg.SkipPull {
 		if err := client.PullImage(ctx, cfg.Image); err != nil {
 			return nil, err
 		}
+	}
+
+	// No syscalls to intercept — launch without shim for best performance.
+	if len(cfg.SyscallNrs) == 0 {
+		return launchSimple(ctx, client, cfg, log)
 	}
 
 	// Inspect image to get original entrypoint/cmd.
@@ -176,6 +184,60 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 		ContainerID: containerID,
 		HostPID:     hostPID,
 		ListenerFd:  listenerFd,
+		HostPorts:   hostPorts,
+	}, nil
+}
+
+// launchSimple starts a container without the faultbox-shim (no seccomp filter).
+// Used when no fault rules reference any syscalls — pure Docker orchestration.
+func launchSimple(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Logger) (*LaunchResult, error) {
+	// Build binds from user volumes only (no shim, no socket dir).
+	var binds []string
+	for hostPath, containerPath := range cfg.Volumes {
+		binds = append(binds, hostPath+":"+containerPath)
+	}
+
+	// Build env.
+	var env []string
+	env = append(env, cfg.Env...)
+
+	containerID, err := client.CreateContainer(ctx, CreateOpts{
+		Name:      "faultbox-" + cfg.Name,
+		Image:     cfg.Image,
+		Env:       env,
+		Binds:     binds,
+		Ports:     cfg.Ports,
+		NetworkID: cfg.NetworkID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := client.StartContainer(ctx, containerID); err != nil {
+		client.RemoveContainer(ctx, containerID)
+		return nil, fmt.Errorf("start container %s: %w", cfg.Name, err)
+	}
+
+	log.Info("container started (no seccomp)",
+		slog.String("name", cfg.Name),
+		slog.String("id", containerID[:12]),
+	)
+
+	// Resolve host ports.
+	hostPorts := make(map[int]int)
+	for containerPort := range cfg.Ports {
+		hp, err := client.ContainerHostPort(ctx, containerID, containerPort)
+		if err != nil {
+			log.Warn("could not resolve host port", slog.Int("container_port", containerPort), slog.String("error", err.Error()))
+			continue
+		}
+		hostPorts[containerPort] = hp
+	}
+
+	return &LaunchResult{
+		ContainerID: containerID,
+		HostPID:     0,  // no seccomp — no PID tracking needed
+		ListenerFd:  -1, // no listener
 		HostPorts:   hostPorts,
 	}, nil
 }

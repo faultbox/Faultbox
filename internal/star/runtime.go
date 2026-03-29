@@ -493,6 +493,26 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		}
 	}
 
+	// If no seccomp filter (no fault rules), skip session — just wait for healthcheck.
+	if result.ListenerFd < 0 {
+		rt.log.Info("container running (no seccomp)", slog.String("service", svcName))
+		rt.events.Emit("service_started", svcName, nil)
+
+		if svc.Healthcheck != nil {
+			timeout := svc.Healthcheck.Timeout
+			if timeout <= 0 {
+				timeout = 10 * time.Second
+			}
+			hcTest := rt.resolveHealthcheck(svc)
+			if err := waitReady(ctx, hcTest, timeout); err != nil {
+				return fmt.Errorf("service %q not ready: %w", svcName, err)
+			}
+			rt.events.Emit("service_ready", svcName, nil)
+			rt.log.Info("service ready", slog.String("service", svcName), slog.String("check", hcTest))
+		}
+		return nil
+	}
+
 	// Create session with external listener fd.
 	onSyscall := rt.makeSyscallCallback(svcName)
 	faultRules := rt.requiredFaultRules()
