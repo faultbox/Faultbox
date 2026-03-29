@@ -78,12 +78,16 @@ type FaultRule struct {
 	// HoldTag identifies the HoldQueue this rule feeds into (ActionHold only).
 	HoldTag string
 	// counter tracks matching calls for stateful triggers (thread-safe).
-	counter atomic.Int64
+	// Pointer so FaultRule remains safely copyable.
+	counter *atomic.Int64
 }
 
 // ShouldFire checks stateful triggers and returns true if the fault should
 // fire on this call. Must be called once per matching call (increments counter).
 func (r *FaultRule) ShouldFire() bool {
+	if r.counter == nil {
+		r.counter = &atomic.Int64{}
+	}
 	n := r.counter.Add(1)
 	switch r.Trigger {
 	case TriggerNth:

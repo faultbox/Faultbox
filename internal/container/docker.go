@@ -1,12 +1,16 @@
 package container
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
@@ -167,12 +171,91 @@ func (c *Client) ContainerHostPort(ctx context.Context, id string, containerPort
 	return hostPort, nil
 }
 
+// BuildImage builds a Docker image from a Dockerfile in the given context directory.
+// The image is tagged with the given tag.
+func (c *Client) BuildImage(ctx context.Context, contextDir, tag string) error {
+	c.log.Info("building image", slog.String("context", contextDir), slog.String("tag", tag))
+
+	// Create a tar archive of the build context directory.
+	buildCtx, err := createTarContext(contextDir)
+	if err != nil {
+		return fmt.Errorf("build context for %s: %w", tag, err)
+	}
+	defer buildCtx.Close()
+
+	resp, err := c.cli.ImageBuild(ctx, buildCtx, types.ImageBuildOptions{
+		Tags:       []string{tag},
+		Dockerfile: "Dockerfile",
+		Remove:     true,
+	})
+	if err != nil {
+		return fmt.Errorf("build image %s: %w", tag, err)
+	}
+	defer resp.Body.Close()
+	// Consume build output (required to complete the build).
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+// createTarContext creates a tar archive from a directory for Docker build context.
+func createTarContext(dir string) (io.ReadCloser, error) {
+	pr, pw := io.Pipe()
+	tw := tar.NewWriter(pw)
+
+	go func() {
+		defer pw.Close()
+		defer tw.Close()
+
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			// Get relative path for the tar header.
+			rel, err := filepath.Rel(dir, path)
+			if err != nil {
+				return err
+			}
+			if rel == "." {
+				return nil
+			}
+
+			header, err := tar.FileInfoHeader(info, "")
+			if err != nil {
+				return err
+			}
+			header.Name = rel
+
+			if err := tw.WriteHeader(header); err != nil {
+				return err
+			}
+
+			if info.IsDir() {
+				return nil
+			}
+
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(tw, f)
+			return err
+		})
+		if err != nil {
+			pw.CloseWithError(err)
+		}
+	}()
+
+	return pr, nil
+}
+
 // ShimConfig is the JSON config passed to faultbox-shim via env var.
 type ShimConfig struct {
 	SyscallNrs []uint32 `json:"syscall_nrs"`
 	Entrypoint []string `json:"entrypoint"`
 	Cmd        []string `json:"cmd"`
 	ReportPath string   `json:"report_path"`
+	AckPath    string   `json:"ack_path"`
 }
 
 // ShimConfigJSON serializes a ShimConfig to JSON for the env var.

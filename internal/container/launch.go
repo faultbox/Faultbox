@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/faultbox/Faultbox/internal/seccomp"
 )
@@ -20,6 +21,7 @@ type LaunchConfig struct {
 	SyscallNrs []uint32          // syscalls to intercept
 	ShimPath   string            // host path to faultbox-shim binary
 	NetworkID  string            // Docker network ID
+	SkipPull   bool              // skip image pull (for locally built images)
 }
 
 // LaunchResult contains the result of launching a container.
@@ -33,9 +35,11 @@ type LaunchResult struct {
 // Launch pulls the image, creates and starts a container with the faultbox-shim
 // as entrypoint, waits for the seccomp listener fd, and returns it.
 func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Logger) (*LaunchResult, error) {
-	// Pull the image.
-	if err := client.PullImage(ctx, cfg.Image); err != nil {
-		return nil, err
+	// Pull the image (skip for locally built images).
+	if !cfg.SkipPull {
+		if err := client.PullImage(ctx, cfg.Image); err != nil {
+			return nil, err
+		}
 	}
 
 	// Inspect image to get original entrypoint/cmd.
@@ -53,7 +57,9 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 	socketDir := filepath.Join(os.TempDir(), "faultbox-sockets", cfg.Name)
 	os.MkdirAll(socketDir, 0755)
 	reportPath := filepath.Join(socketDir, "listener-fd")
+	ackPath := filepath.Join(socketDir, "ack")
 	os.Remove(reportPath) // clean up from previous run
+	os.Remove(ackPath)
 
 	// Build shim config.
 	shimCfg := ShimConfig{
@@ -61,6 +67,7 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 		Entrypoint: origEntrypoint,
 		Cmd:        origCmd,
 		ReportPath: "/var/run/faultbox/listener-fd",
+		AckPath:    "/var/run/faultbox/ack",
 	}
 
 	// Build binds.
@@ -110,9 +117,23 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 		return nil, fmt.Errorf("start container %s: %w", cfg.Name, err)
 	}
 
-	// Get host PID.
-	hostPID, err := client.ContainerPID(ctx, containerID)
+	// Get host PID (retry briefly — Docker may need a moment to register it).
+	var hostPID int
+	for attempt := 0; attempt < 10; attempt++ {
+		hostPID, err = client.ContainerPID(ctx, containerID)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			client.RemoveContainer(ctx, containerID)
+			return nil, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 	if err != nil {
+		// Log container logs for debugging.
+		log.Error("container failed to start", slog.String("name", cfg.Name))
 		client.StopContainer(ctx, containerID, 5)
 		client.RemoveContainer(ctx, containerID)
 		return nil, err
@@ -136,6 +157,9 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 		slog.String("name", cfg.Name),
 		slog.Int("listener_fd", listenerFd),
 	)
+
+	// Signal the shim that we've acquired the fd — it can now exec the entrypoint.
+	os.WriteFile(ackPath, []byte("ok"), 0644)
 
 	// Resolve actual host ports.
 	hostPorts := make(map[int]int)

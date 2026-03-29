@@ -366,6 +366,173 @@ func TestShiVizFormat(t *testing.T) {
 	}
 }
 
+func TestContainerServiceRegistration(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+postgres = service("postgres",
+    interface("main", "tcp", 5432),
+    image = "postgres:16-alpine",
+    env = {"POSTGRES_PASSWORD": "test"},
+    healthcheck = tcp("localhost:5432"),
+)
+
+redis = service("redis",
+    interface("main", "tcp", 6379),
+    image = "redis:7-alpine",
+    healthcheck = tcp("localhost:6379"),
+)
+
+api = service("api",
+    interface("public", "http", 8080),
+    build = "./api",
+    env = {
+        "DATABASE_URL": "postgres://test@" + postgres.main.internal_addr + "/testdb",
+    },
+    depends_on = [postgres, redis],
+    healthcheck = http("localhost:8080/health"),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	services := rt.Services()
+	if len(services) != 3 {
+		t.Fatalf("expected 3 services, got %d", len(services))
+	}
+
+	// Find services by name (order among independent services isn't guaranteed).
+	byName := make(map[string]*ServiceDef)
+	for _, s := range services {
+		byName[s.Name] = s
+	}
+
+	pg := byName["postgres"]
+	if pg == nil {
+		t.Fatal("postgres service not found")
+	}
+	if pg.Image != "postgres:16-alpine" {
+		t.Fatalf("pg.Image = %q", pg.Image)
+	}
+	if !pg.IsContainer() {
+		t.Fatal("postgres should be container")
+	}
+	if pg.Binary != "" {
+		t.Fatalf("pg.Binary should be empty, got %q", pg.Binary)
+	}
+
+	api := byName["api"]
+	if api == nil {
+		t.Fatal("api service not found")
+	}
+	if api.Build != "./api" {
+		t.Fatalf("api.Build = %q, want ./api", api.Build)
+	}
+	if !api.IsContainer() {
+		t.Fatal("api (build=) should be container")
+	}
+
+	// api should come after postgres and redis (depends_on).
+	apiIdx := -1
+	for i, s := range services {
+		if s.Name == "api" {
+			apiIdx = i
+		}
+	}
+	if apiIdx != 2 {
+		t.Fatalf("api should be last (depends on postgres+redis), got index %d", apiIdx)
+	}
+
+	// internal_addr should use service name as hostname.
+	if api.Env["DATABASE_URL"] != "postgres://test@postgres:5432/testdb" {
+		t.Fatalf("DATABASE_URL = %q, want postgres hostname", api.Env["DATABASE_URL"])
+	}
+}
+
+func TestServiceValidationExactlyOneSource(t *testing.T) {
+	rt := New(testLogger())
+
+	// No source → error.
+	err := rt.LoadString("test.star", `
+svc = service("bad", interface("main", "tcp", 8080))
+`)
+	if err == nil {
+		t.Fatal("expected error for service with no binary/image/build")
+	}
+
+	// Both binary and image → error.
+	err = rt.LoadString("test.star", `
+svc = service("bad", "/tmp/bin",
+    image = "postgres:16",
+    interface("main", "tcp", 8080),
+)
+`)
+	if err == nil {
+		t.Fatal("expected error for service with both binary and image")
+	}
+}
+
+func TestInternalAddrBinaryService(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+addr = db.main.internal_addr
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// For binary services, internal_addr falls back to localhost.
+	addr := rt.globals["addr"]
+	if addr.String() != `"localhost:5432"` {
+		t.Fatalf("binary internal_addr = %s, want localhost:5432", addr)
+	}
+}
+
+func TestInternalAddrContainerService(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+pg = service("postgres",
+    interface("main", "tcp", 5432),
+    image = "postgres:16",
+)
+addr = pg.main.internal_addr
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// For container services, internal_addr uses service name as hostname.
+	addr := rt.globals["addr"]
+	if addr.String() != `"postgres:5432"` {
+		t.Fatalf("container internal_addr = %s, want postgres:5432", addr)
+	}
+}
+
+func TestContainerServiceWithVolumes(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+svc = service("db",
+    interface("main", "tcp", 5432),
+    image = "postgres:16",
+    volumes = {"./data": "/var/lib/postgresql/data"},
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	services := rt.Services()
+	if len(services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(services))
+	}
+	if services[0].Volumes["./data"] != "/var/lib/postgresql/data" {
+		t.Fatalf("volumes = %v", services[0].Volumes)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

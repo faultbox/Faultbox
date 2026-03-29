@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/faultbox/Faultbox/internal/seccomp"
@@ -72,18 +73,18 @@ func (s *Session) launchExternal(ctx context.Context) (*Result, error) {
 	var exitCode int
 	go func() {
 		defer close(waitDone)
-		statusPath := fmt.Sprintf("/proc/%d/status", childPid)
+		procPath := fmt.Sprintf("/proc/%d", childPid)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-			// Check if process still exists.
-			if !processExists(childPid) {
+			// Check if process still exists via /proc (reliable across namespaces).
+			if _, err := os.Stat(procPath); os.IsNotExist(err) {
 				break
 			}
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 		}
 		// Try to get exit status via waitid (non-blocking, we're not the parent).
 		// For containers, Docker manages the process — we just detect exit.
@@ -119,7 +120,9 @@ func (s *Session) launchExternal(ctx context.Context) (*Result, error) {
 // processExists checks if a process with the given PID exists.
 func processExists(pid int) bool {
 	// Signal 0 checks existence without actually sending a signal.
+	// EPERM means the process exists but we can't signal it (e.g., different namespace).
+	// ESRCH means the process does not exist.
 	err := unix.Kill(pid, 0)
-	return err == nil
+	return err == nil || err == unix.EPERM
 }
 

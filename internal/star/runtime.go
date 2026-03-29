@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -65,6 +66,7 @@ type Runtime struct {
 	dockerClient   *container.Client      // lazy-initialized Docker client
 	networkID      string                 // Faultbox Docker network ID
 	containerIDs   map[string]string      // service name → container ID (for cleanup)
+	baseDir        string                 // directory of the loaded .star file (for build= paths)
 
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
@@ -106,6 +108,12 @@ func New(logger *slog.Logger) *Runtime {
 // discovering test_* functions.
 func (rt *Runtime) LoadFile(path string) error {
 	thread := &starlark.Thread{Name: "load"}
+
+	// Store base directory for resolving relative paths (build=, volumes=).
+	absPath, err := filepath.Abs(path)
+	if err == nil {
+		rt.baseDir = filepath.Dir(absPath)
+	}
 
 	globals, err := starlark.ExecFile(thread, path, nil, rt.builtins())
 	if err != nil {
@@ -418,11 +426,17 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		rt.networkID = netID
 	}
 
-	// Resolve image.
+	// Resolve image: either pull or build from Dockerfile.
 	imageName := svc.Image
 	if svc.Build != "" {
-		// TODO: build from Dockerfile. For now, require pre-built image.
-		return fmt.Errorf("build= not yet implemented, use image= with a pre-built image")
+		imageName = fmt.Sprintf("faultbox-%s:latest", svc.Name)
+		buildCtx := svc.Build
+		if !filepath.IsAbs(buildCtx) && rt.baseDir != "" {
+			buildCtx = filepath.Join(rt.baseDir, buildCtx)
+		}
+		if err := rt.dockerClient.BuildImage(ctx, buildCtx, imageName); err != nil {
+			return fmt.Errorf("build image for %s: %w", svc.Name, err)
+		}
 	}
 
 	// Resolve ports from interfaces.
@@ -456,6 +470,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		SyscallNrs: syscallNrs,
 		ShimPath:   shimPath,
 		NetworkID:  rt.networkID,
+		SkipPull:   svc.Build != "", // locally built images don't need pull
 	}, rt.log)
 	if err != nil {
 		return fmt.Errorf("launch container %q: %w", svcName, err)
@@ -607,14 +622,18 @@ func (rt *Runtime) findShimPath() string {
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
+			// Docker bind mounts require absolute paths.
+			if abs, err := filepath.Abs(p); err == nil {
+				return abs
+			}
 			return p
 		}
 	}
 	// Fallback: assume it's alongside the faultbox binary.
 	exe, _ := os.Executable()
 	if exe != "" {
-		dir := exe[:strings.LastIndex(exe, "/")]
-		return dir + "/faultbox-shim"
+		dir := filepath.Dir(exe)
+		return filepath.Join(dir, "faultbox-shim")
 	}
 	return "faultbox-shim"
 }

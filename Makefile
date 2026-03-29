@@ -1,5 +1,5 @@
 .PHONY: build test clean lint fmt vet run \
-       demo demo-build \
+       demo demo-build demo-container \
        env-create env-start env-stop env-destroy env-shell env-exec env-status env-verify
 
 APP_NAME := faultbox
@@ -45,6 +45,9 @@ demo-build:
 
 demo: demo-build
 	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- bash poc/demo/run-demo.sh
+
+demo-container: demo-build
+	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- bash poc/demo-container/run-demo.sh
 
 # ─── Linux Dev Environment (Lima) ──────────────────────────────────
 
