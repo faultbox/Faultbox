@@ -1,40 +1,65 @@
 # Chapter 4: Traces & Assertions
 
-In chapter 3 you broke things. Now you'll verify *exactly what happened* at the
-syscall level — which files were opened, which connections were made, and in
-what order.
+**Duration:** 25 minutes
+**Platform:** Linux native, or macOS via Lima VM
+
+## Goals & Purpose
+
+In chapters 2-3 you tested inputs and outputs: "I sent this request, I got
+this response." But distributed systems bugs live in the *middle* — in the
+sequence of internal operations between request and response.
+
+Consider: your API returns 200, but did it actually write to the WAL? Or did
+it skip the write and respond from cache? Both return 200, but one is
+correct and the other is a data loss bug.
+
+**The key insight:** to verify distributed systems correctly, you need to
+assert on **what happened inside**, not just what came out. Faultbox records
+every intercepted syscall as an event — giving you a complete audit trail of
+the system's internal behavior.
+
+This chapter teaches you to:
+- **Query the syscall trace** — "did this operation happen?"
+- **Assert temporal properties** — "A happened before B"
+- **Prove absence** — "this operation did NOT happen"
+- **Visualize causality** — see which service did what, and when
+
+After this chapter, you'll write tests that don't just check outputs — they
+verify the *mechanism* that produced them.
 
 ## The demo system
 
 Chapters 4-6 use the full demo: an order service that talks to an inventory
 service with a write-ahead log (WAL).
 
+**Linux:**
 ```bash
-make demo-build  # builds order-svc + inventory-svc for Lima VM
+make demo-build
+cp bin/linux-arm64/order-svc bin/linux-arm64/inventory-svc /tmp/
 ```
 
-The demo spec is at `poc/demo/faultbox.star`. Run it:
+**macOS (Lima):** Binaries are already in `bin/linux-arm64/` after `make demo-build`.
+
+Run the demo:
 ```bash
 faultbox test poc/demo/faultbox.star
 ```
 
 ## The event log
 
-Every intercepted syscall is recorded as an **event** with:
-- Sequence number
-- Timestamp
-- Service name
-- Syscall name, PID, decision, file path
-- Vector clock (for causality tracking)
+Every intercepted syscall is recorded with:
+- **Sequence number** — global ordering
+- **Timestamp** — when it happened
+- **Service name** — which component
+- **Syscall, PID, decision** — what was intercepted and what faultbox decided
+- **File path** — for file syscalls
+- **Vector clock** — logical time per service (for causality)
 
-Even `allow` decisions are recorded. The trace is a complete record of
-what the system did at the kernel level.
+Even `allow` decisions are recorded. The trace is a complete record.
 
-## Temporal assertions
+## assert_eventually — "this happened"
 
-### assert_eventually — "this happened"
-
-Verify that a syscall event occurred during the test:
+The most common temporal assertion: verify something occurred.
 
 ```python
 def test_wal_written():
@@ -42,7 +67,7 @@ def test_wal_written():
     resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
     assert_eq(resp.status, 200)
 
-    # The inventory service should have opened the WAL file.
+    # Prove: the inventory service opened the WAL file.
     assert_eventually(
         service="inventory",
         syscall="openat",
@@ -50,12 +75,13 @@ def test_wal_written():
     )
 ```
 
-`assert_eventually` searches the test's event log for a matching event.
-If none found, the test fails.
+**Why this matters:** the API returned 200, but `assert_eventually` proves
+the write actually reached the WAL. Without this, you're only testing the
+happy-path HTTP response — not the durability guarantee.
 
-### assert_never — "this didn't happen"
+## assert_never — "this didn't happen"
 
-Verify that something did NOT occur:
+Prove that something did NOT occur — equally important for correctness:
 
 ```python
 def test_no_wal_when_unreachable():
@@ -64,7 +90,7 @@ def test_no_wal_when_unreachable():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_eq(resp.status, 503)
 
-        # No WAL access should have happened.
+        # Prove: the WAL was never touched.
         assert_never(
             service="inventory",
             syscall="openat",
@@ -73,13 +99,16 @@ def test_no_wal_when_unreachable():
     fault(orders, connect=deny("ECONNREFUSED"), run=scenario)
 ```
 
-### assert_before — ordering guarantees
+**Why this matters:** if the order failed, no WAL write should have happened.
+If one did, there's a bug: the system partially wrote data for a failed order.
 
-Verify that events happened in the right order:
+## assert_before — ordering guarantees
+
+Verify that events happened in the correct order:
 
 ```python
-def test_wal_before_response():
-    """WAL must be opened before order is confirmed."""
+def test_wal_before_confirmation():
+    """WAL must be written before order is confirmed."""
     resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
     assert_eq(resp.status, 200)
 
@@ -89,56 +118,60 @@ def test_wal_before_response():
     )
 ```
 
-### Filter parameters
+**Why this matters:** if the write happens before the WAL open, the system
+has a durability bug — it confirmed before persisting. `assert_before` catches
+this regardless of timing.
 
-All temporal assertions accept the same filter keywords:
+## Filter parameters
 
-| Parameter | Matches | Example |
-|-----------|---------|---------|
-| `service` | Service name | `"inventory"` |
-| `syscall` | Syscall name | `"openat"`, `"write"`, `"connect"` |
-| `path` | File path | `"/tmp/inventory.wal"` |
-| `decision` | Fault decision | `"allow"`, `"deny*"` |
+All temporal assertions accept the same filters:
 
-Glob matching: `"deny*"` matches `"deny(EIO)"`, `"deny(ENOSPC)"`, etc.
+| Parameter | Matches | Supports glob |
+|-----------|---------|---------------|
+| `service` | Service name | No |
+| `syscall` | Syscall name | No |
+| `path` | File path | No |
+| `decision` | Fault decision | Yes: `"deny*"` matches any denial |
 
-### events() — query the trace
+Glob examples: `decision="deny*"` matches `"deny(EIO)"`, `"deny(ENOSPC)"`, etc.
 
-Get a list of matching events for custom logic:
+## events() — query for custom logic
+
+Get matching events as a list for advanced assertions:
 
 ```python
-def test_count_retries():
+def test_retry_count():
+    """Count connection retries under flaky network."""
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         retries = events(service="orders", syscall="connect", decision="deny*")
         print("connection retries:", len(retries))
+        assert_true(len(retries) < 10, "too many retries")
     fault(orders, connect=deny("ECONNREFUSED", probability="50%"), run=scenario)
 ```
 
 ## Trace output formats
 
-### JSON trace
+### JSON trace — for programmatic analysis
 
 ```bash
 faultbox test poc/demo/faultbox.star --output trace.json
 ```
 
-Produces structured JSON with every event, including:
-- `event_type`: dotted notation (`"syscall.write"`, `"lifecycle.started"`)
-- `partition_key`: service name (for PObserve integration)
-- `vector_clock`: per-service logical clocks
-- `replay_command`: for failed tests, the exact command to reproduce
+Structured JSON with every event, PObserve-compatible fields, vector clocks,
+and replay commands for failed tests.
 
-### ShiViz visualization
+### ShiViz — for visual causality
 
 ```bash
 faultbox test poc/demo/faultbox.star --shiviz trace.shiviz
 ```
 
 Open at https://bestchai.bitbucket.io/shiviz/ to see a space-time diagram
-with communication arrows between services.
+with arrows between services. You'll see exactly when each service acted
+and how their operations interleaved.
 
-### Normalized trace
+### Normalized trace — for determinism verification
 
 ```bash
 faultbox test poc/demo/faultbox.star --normalize trace1.norm
@@ -146,36 +179,47 @@ faultbox test poc/demo/faultbox.star --normalize trace2.norm
 faultbox diff trace1.norm trace2.norm
 ```
 
-Normalized traces strip timestamps for deterministic comparison.
-Same seed + same binary = same trace.
+Same seed + same binary = identical normalized trace. This proves your
+system is deterministic under the same inputs.
 
 ## What you learned
 
-- `assert_eventually()` verifies something happened in the syscall trace
-- `assert_never()` verifies something did NOT happen
-- `assert_before()` verifies ordering between events
+- `assert_eventually()` proves something happened in the syscall trace
+- `assert_never()` proves something did NOT happen
+- `assert_before()` proves ordering between events
 - `events()` returns matching events for custom logic
-- `--output trace.json` for structured analysis
-- `--shiviz trace.shiviz` for visual causality diagrams
-- `--normalize` + `diff` for determinism verification
+- Trace output: JSON (programmatic), ShiViz (visual), normalized (determinism)
+
+**The mental model:** don't just test inputs and outputs. Test the mechanism:
+"the WAL was written before the response," "no data was persisted for a
+failed operation," "retries happened fewer than N times."
+
+## What's next
+
+Your tests verify behavior under specific scenarios. But distributed systems
+bugs often depend on *timing* — which request arrives first, which write
+completes first. The same code can work in one ordering and fail in another.
+
+Chapter 5 introduces `parallel()` — running operations concurrently and
+exploring different interleavings to find timing-dependent bugs.
 
 ## Exercises
 
 1. **WAL ordering**: Write a test that places an order and asserts:
-   - The WAL file was opened (`assert_eventually` with openat)
+   - The WAL was opened (`assert_eventually` with openat + path)
    - The WAL was written to (`assert_eventually` with write)
    - The open happened before the write (`assert_before`)
 
-2. **No denied syscalls**: Write a happy-path test and assert there are
-   zero denied syscalls:
+2. **Clean happy path**: Write a happy-path test and assert zero denied
+   syscalls:
    ```python
    denied = events(decision="deny*")
-   assert_eq(len(denied), 0, "no syscalls should be denied in happy path")
+   assert_eq(len(denied), 0, "no syscalls should be denied")
    ```
 
-3. **Count connections**: Write a test that counts how many `connect`
-   syscalls the orders service made. Is it 1? More? Why?
+3. **Connection count**: Write a test that counts `connect` syscalls from
+   the orders service. Is it 1 per request? More? Why?
 
-4. **JSON analysis**: Run with `--output trace.json` and look at the JSON.
-   Find the `vector_clock` field. What does `{"inventory": 5, "orders": 3}`
-   mean?
+4. **ShiViz visualization**: Run with `--shiviz trace.shiviz` and open
+   the file in ShiViz. Find the `vector_clock` arrows. What does a merge
+   arrow between two services represent?

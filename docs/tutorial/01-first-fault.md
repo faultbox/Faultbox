@@ -1,99 +1,25 @@
 # Chapter 1: Your First Fault
 
-In this chapter you'll inject your first syscall fault into a running process
-and see what happens when the operating system lies to your program.
+**Duration:** 15 minutes
+**Platform:** Linux native, or macOS via Lima VM (noted below)
 
-## What is Faultbox?
+## Goals & Purpose
 
-Faultbox intercepts system calls using Linux's **seccomp-notify** mechanism.
-When your program calls `write()`, `connect()`, or `read()`, the kernel pauses
-the program and asks Faultbox: "should I allow this?" Faultbox can:
+Every program trusts the operating system. When your code calls `write()`,
+it assumes the bytes reach the disk. When it calls `connect()`, it assumes
+the network is there. But in production, these assumptions break: disks
+fill up, networks partition, I/O errors corrupt data.
 
-- **Allow** — let the syscall proceed normally
-- **Deny** — return an error code (EIO, ENOSPC, ECONNREFUSED, ...)
-- **Delay** — wait, then allow
+**The question you should be asking:** *"What happens to my program when
+the OS returns an error it doesn't expect?"*
 
-This isn't mocking. Your program runs for real. The filesystem, network, and
-kernel are all real. Faultbox only changes what the kernel *returns*.
+Most teams discover the answer in production — at 3am, during a traffic
+spike. Faultbox lets you discover it now, on your laptop.
 
-## Build
-
-```bash
-make build
-# For Lima VM:
-make demo-build
-```
-
-This creates `bin/faultbox` (or `bin/linux-arm64/faultbox` for Lima).
-
-## The target program
-
-`poc/target/main.go` is a simple Go program that:
-1. Writes a file to `/tmp/faultbox-target-test`
-2. Reads it back
-3. Makes an HTTP request to `httpbin.org`
-
-Build it:
-```bash
-go build -o /tmp/target ./poc/target/
-```
-
-Run it normally:
-```bash
-/tmp/target
-```
-
-You'll see output like:
-```
-PID: 12345
-filesystem: write+read OK (2ms)
-network: HTTP 200 OK (150ms)
-```
-
-## Inject a write fault
-
-Now run it through Faultbox, denying every `write()` syscall with EIO (I/O error):
-
-```bash
-faultbox run --fault "write=EIO:100%" /tmp/target
-```
-
-The program fails! `write()` returns EIO, and the file operation errors out.
-Faultbox intercepted the syscall at the kernel level — the program had no way
-to avoid it.
-
-## Probabilistic faults
-
-Real failures aren't 100%. Make writes fail 30% of the time:
-
-```bash
-faultbox run --fault "write=EIO:30%" /tmp/target
-```
-
-Run it several times. Sometimes it works, sometimes it fails. This is how
-real disk errors behave — intermittent and unpredictable.
-
-## Path-targeted faults
-
-Deny opens only for files under `/data/`:
-
-```bash
-faultbox run --fault "openat=ENOENT:100%:/data/*" /tmp/target
-```
-
-The target writes to `/tmp/` (not `/data/`), so it succeeds. Path targeting
-lets you fault specific files without breaking the whole filesystem.
-
-## Delay faults
-
-Slow down every write by 500ms:
-
-```bash
-faultbox run --fault "write=delay:500ms:100%" /tmp/target
-```
-
-The filesystem operation now takes >500ms. Delay faults simulate slow disks,
-overloaded storage, or network congestion.
+In this chapter you'll build the core intuition: **the OS is an API, and
+like any API, it can return errors**. Faultbox intercepts that API at the
+kernel level, so your program has no way to avoid or detect the interception.
+This is not mocking — it's real.
 
 ## How it works
 
@@ -106,33 +32,130 @@ Your program                    Kernel                     Faultbox
     |                             |                           |-- deny: EIO
     |                             |<-- return DENY(EIO) ------|
     |<-- errno = EIO -------------|                           |
-    |                             |                           |
 ```
 
-The key insight: this works on **any binary**. C, Rust, Java, Python — anything
-that makes syscalls. No code changes, no special libraries, no mocking frameworks.
+This works on **any binary** — Go, Rust, C, Java, Python. No code changes,
+no special libraries. The kernel is the interception point.
+
+## Build
+
+**Linux:**
+```bash
+make build
+go build -o /tmp/target ./poc/target/
+```
+
+**macOS (Lima VM):**
+```bash
+make demo-build    # cross-compiles to bin/linux-arm64/
+# All faultbox commands below run inside Lima:
+# limactl shell faultbox-dev -- <command>
+```
+
+## The target program
+
+`poc/target/main.go` is a simple program that:
+1. Writes a file to `/tmp/faultbox-target-test`
+2. Reads it back
+3. Makes an HTTP request to `httpbin.org`
+
+Run it normally:
+```bash
+/tmp/target
+```
+```
+PID: 12345
+filesystem: write+read OK (2ms)
+network: HTTP 200 OK (150ms)
+```
+
+Everything works. Now break it.
+
+## Inject a write fault
+
+```bash
+faultbox run --fault "write=EIO:100%" /tmp/target
+```
+
+The program fails. Every `write()` syscall returns EIO (I/O error). The file
+operation errors out because the kernel told the program "I/O error" — and
+the program believed it.
+
+**Why this matters:** Your program's error handling for disk I/O is now
+testable. Does it retry? Crash? Corrupt state? Log the error? You can
+answer these questions before production does.
+
+## Probabilistic faults
+
+Real failures are intermittent. Make writes fail 30% of the time:
+
+```bash
+faultbox run --fault "write=EIO:30%" /tmp/target
+```
+
+Run it several times. Sometimes it works, sometimes it fails. This is how
+real disk errors behave. **The intuition:** if your error handling only
+works when failures are 100%, it might not work when they're 5%.
+
+## Path-targeted faults
+
+Deny opens only for files under `/data/`:
+
+```bash
+faultbox run --fault "openat=ENOENT:100%:/data/*" /tmp/target
+```
+
+The target writes to `/tmp/` (not `/data/`), so it succeeds. **The intuition:**
+production failures are usually localized — one volume fails, not all storage.
+Path targeting lets you simulate exactly that.
+
+## Delay faults
+
+Slow down every write by 500ms:
+
+```bash
+faultbox run --fault "write=delay:500ms:100%" /tmp/target
+```
+
+The filesystem operation now takes >500ms. **The intuition:** slow I/O is
+often worse than failed I/O. A timeout at 5s might mask a 4.9s delay that
+cascades into downstream timeouts. Delays let you find these problems.
 
 ## What you learned
 
-- `faultbox run` wraps a binary with syscall interception
-- `--fault "syscall=ERRNO:PROBABILITY%"` denies syscalls
-- `--fault "syscall=delay:DURATION:PROBABILITY%"` slows syscalls
+- `faultbox run` wraps any binary with syscall interception
+- `--fault "syscall=ERRNO:PROB%"` denies syscalls with specific errors
+- `--fault "syscall=delay:DURATION:PROB%"` introduces latency
 - Path globs (`:/data/*`) target specific files
-- seccomp-notify works at the kernel level — programs can't bypass it
+- seccomp-notify works at the kernel level — no code changes needed
+- **The mental model:** think of every syscall as an API call that can fail
+
+## What's next
+
+Running `faultbox run` with manual flags works for exploration, but it doesn't
+scale. You need:
+
+- **Repeatable tests** — run the same scenario every time, in CI
+- **Multi-service topologies** — your API depends on a database, which depends on storage
+- **Assertions** — not just "did it crash?" but "did it return the right error code?"
+
+Chapter 2 introduces Starlark spec files — a way to codify your system
+topology and test scenarios as code.
 
 ## Exercises
 
-1. **Network fault**: Run the target with `--fault "connect=ECONNREFUSED:100%"`.
-   What happens to the HTTP request? Does the program crash or handle the error?
+1. **Network fault**: Run with `--fault "connect=ECONNREFUSED:100%"`.
+   What happens to the HTTP request? Does the program crash or handle it?
 
-2. **Slow network**: Run with `--fault "connect=delay:2s:100%"`. How long does
-   the HTTP request take now? (The target has a 5s timeout — will it succeed?)
+2. **Slow network**: Run with `--fault "connect=delay:2s:100%"`. The target
+   has a 5s timeout — does the request succeed? What about `delay:6s`?
 
-3. **Combined faults**: Run with two faults at once:
+3. **Combined faults**:
    ```bash
    faultbox run --fault "write=EIO:50%" --fault "connect=delay:1s:100%" /tmp/target
    ```
-   What's the combined effect?
+   What's the combined effect? Which fails first?
 
-4. **Explore errno values**: Try `ENOSPC` (disk full), `EPERM` (permission denied),
-   `ETIMEDOUT` (timeout). Which ones does the target handle gracefully?
+4. **Explore errno values**: Try `ENOSPC` (disk full), `EPERM` (permission
+   denied), `ETIMEDOUT` (timeout). For each one, ask: "would my production
+   service handle this correctly?"
