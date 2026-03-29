@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 
 	"github.com/faultbox/Faultbox/internal/config"
@@ -333,18 +334,42 @@ func printTraceSummary(w io.Writer, tr *star.TestResult) {
 		return
 	}
 
+	// Collect per-service syscall stats and fault hit counts.
+	type svcStats struct {
+		total     int
+		faultHits int
+		syscalls  map[string]int
+	}
+	stats := make(map[string]*svcStats)
+	for _, ev := range syscallEvents {
+		svc := ev.Service
+		if stats[svc] == nil {
+			stats[svc] = &svcStats{syscalls: make(map[string]int)}
+		}
+		stats[svc].total++
+		sc := ev.Fields["syscall"]
+		stats[svc].syscalls[sc]++
+		decision := ev.Fields["decision"]
+		if decision != "allow" && decision != "allow (system path)" && decision != "" {
+			stats[svc].faultHits++
+		}
+	}
+
 	// Print compact syscall trace.
 	fmt.Fprintf(w, "  syscall trace (%d events):\n", len(syscallEvents))
+
+	// Show fault events.
+	var faultCount int
 	for _, ev := range syscallEvents {
 		decision := ev.Fields["decision"]
 		syscall := ev.Fields["syscall"]
 		path := ev.Fields["path"]
 
-		// Only show interesting events (faults) in default mode.
 		if decision == "allow" || decision == "allow (system path)" {
 			continue
 		}
 
+		faultCount++
 		line := fmt.Sprintf("    #%d  %-12s %-10s %s", ev.Seq, ev.Service, syscall, decision)
 		if path != "" {
 			line += "  " + path
@@ -353,6 +378,49 @@ func printTraceSummary(w io.Writer, tr *star.TestResult) {
 			line += fmt.Sprintf("  (+%sms)", lat)
 		}
 		fmt.Fprintln(w, line)
+	}
+
+	// Show fault_applied events with details (helps diagnose missing faults).
+	for _, ev := range tr.Events {
+		if ev.Type == "fault_applied" {
+			var details []string
+			for k, v := range ev.Fields {
+				details = append(details, k+"="+v)
+			}
+			if len(details) > 0 {
+				sort.Strings(details)
+				fmt.Fprintf(w, "  fault applied to %s: %s\n", ev.Service, strings.Join(details, ", "))
+			}
+		}
+	}
+
+	// Warn if faults were applied but never fired.
+	if faultCount == 0 && tr.Result == "fail" {
+		hasFaults := false
+		for _, ev := range tr.Events {
+			if ev.Type == "fault_applied" {
+				hasFaults = true
+				break
+			}
+		}
+		if hasFaults {
+			fmt.Fprintln(w, "  ⚠ faults were applied but no syscalls were denied/delayed")
+			fmt.Fprintln(w, "    hint: the target process may use a different syscall (e.g., pwrite64 instead of write)")
+			fmt.Fprintln(w, "    hint: run with --debug to see all intercepted syscalls")
+		}
+	}
+
+	// Show per-service syscall breakdown (when test fails or debug).
+	if tr.Result == "fail" {
+		fmt.Fprintln(w, "  per-service syscall summary:")
+		for svc, st := range stats {
+			var scList []string
+			for sc, n := range st.syscalls {
+				scList = append(scList, fmt.Sprintf("%s:%d", sc, n))
+			}
+			sort.Strings(scList)
+			fmt.Fprintf(w, "    %-12s %d total, %d faulted  [%s]\n", svc, st.total, st.faultHits, strings.Join(scList, " "))
+		}
 	}
 }
 
