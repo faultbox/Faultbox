@@ -20,6 +20,8 @@ var syscallNames = map[int32]string{
 	43:  "accept",
 	44:  "sendto",
 	45:  "recvfrom",
+	46:  "sendmsg",
+	47:  "recvmsg",
 	49:  "bind",
 	50:  "listen",
 	41:  "socket",
