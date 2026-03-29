@@ -1,7 +1,7 @@
 # Chapter 1: Your First Fault
 
 **Duration:** 15 minutes
-**Platform:** Linux native, or macOS via Lima VM (noted below)
+**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
 
 ## Goals & Purpose
 
@@ -37,32 +37,22 @@ Your program                    Kernel                     Faultbox
 This works on **any binary** — Go, Rust, C, Java, Python. No code changes,
 no special libraries. The kernel is the interception point.
 
-## Build
+## Run the target program normally
+
+The `target` binary is a simple Go program that writes a file, reads it back,
+and makes an HTTP request.
 
 **Linux:**
 ```bash
-make build
-go build -o /tmp/target ./poc/target/
+bin/target
 ```
 
-**macOS (Lima VM):**
+**macOS (Lima):**
 ```bash
-make demo-build    # cross-compiles to bin/linux-arm64/
-# All faultbox commands below run inside Lima:
-# limactl shell faultbox-dev -- <command>
+vm bin/linux-arm64/target
 ```
 
-## The target program
-
-`poc/target/main.go` is a simple program that:
-1. Writes a file to `/tmp/faultbox-target-test`
-2. Reads it back
-3. Makes an HTTP request to `httpbin.org`
-
-Run it normally:
-```bash
-/tmp/target
-```
+You'll see:
 ```
 PID: 12345
 filesystem: write+read OK (2ms)
@@ -73,11 +63,17 @@ Everything works. Now break it.
 
 ## Inject a write fault
 
+**Linux:**
 ```bash
-faultbox run --fault "write=EIO:100%" /tmp/target
+bin/faultbox run --fault "write=EIO:100%" bin/target
 ```
 
-The program fails. Every `write()` syscall returns EIO (I/O error). The file
+**macOS (Lima):**
+```bash
+vm bin/linux-arm64/faultbox run --fault "write=EIO:100%" bin/linux-arm64/target
+```
+
+The program fails! Every `write()` syscall returns EIO (I/O error). The file
 operation errors out because the kernel told the program "I/O error" — and
 the program believed it.
 
@@ -89,8 +85,14 @@ answer these questions before production does.
 
 Real failures are intermittent. Make writes fail 30% of the time:
 
+**Linux:**
 ```bash
-faultbox run --fault "write=EIO:30%" /tmp/target
+bin/faultbox run --fault "write=EIO:30%" bin/target
+```
+
+**macOS (Lima):**
+```bash
+vm bin/linux-arm64/faultbox run --fault "write=EIO:30%" bin/linux-arm64/target
 ```
 
 Run it several times. Sometimes it works, sometimes it fails. This is how
@@ -101,8 +103,14 @@ works when failures are 100%, it might not work when they're 5%.
 
 Deny opens only for files under `/data/`:
 
+**Linux:**
 ```bash
-faultbox run --fault "openat=ENOENT:100%:/data/*" /tmp/target
+bin/faultbox run --fault "openat=ENOENT:100%:/data/*" bin/target
+```
+
+**macOS (Lima):**
+```bash
+vm bin/linux-arm64/faultbox run --fault "openat=ENOENT:100%:/data/*" bin/linux-arm64/target
 ```
 
 The target writes to `/tmp/` (not `/data/`), so it succeeds. **The intuition:**
@@ -113,8 +121,14 @@ Path targeting lets you simulate exactly that.
 
 Slow down every write by 500ms:
 
+**Linux:**
 ```bash
-faultbox run --fault "write=delay:500ms:100%" /tmp/target
+bin/faultbox run --fault "write=delay:500ms:100%" bin/target
+```
+
+**macOS (Lima):**
+```bash
+vm bin/linux-arm64/faultbox run --fault "write=delay:500ms:100%" bin/linux-arm64/target
 ```
 
 The filesystem operation now takes >500ms. **The intuition:** slow I/O is
@@ -152,8 +166,10 @@ topology and test scenarios as code.
 
 3. **Combined faults**:
    ```bash
-   faultbox run --fault "write=EIO:50%" --fault "connect=delay:1s:100%" /tmp/target
+   bin/faultbox run --fault "write=EIO:50%" --fault "connect=delay:1s:100%" bin/target
    ```
+   (On macOS, use `vm bin/linux-arm64/faultbox ...` with `bin/linux-arm64/target`)
+
    What's the combined effect? Which fails first?
 
 4. **Explore errno values**: Try `ENOSPC` (disk full), `EPERM` (permission

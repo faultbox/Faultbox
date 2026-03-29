@@ -1,7 +1,7 @@
 # Chapter 3: Fault Injection in Tests
 
 **Duration:** 25 minutes
-**Platform:** Linux native, or macOS via Lima VM
+**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
 
 ## Goals & Purpose
 
@@ -25,28 +25,24 @@ This chapter teaches you to:
 After this chapter, your mental checklist for any new feature will include:
 "what are the failure modes, and have I tested each one?"
 
-## Build the two-service system
+## The two-service system
 
-**Linux and macOS (same):**
-```bash
-go build -o /tmp/mock-db ./poc/mock-db/
-go build -o /tmp/mock-api ./poc/mock-api/
-```
+Both binaries were built in Chapter 0 (`make build` or `make demo-build`).
 
 The mock-api is an HTTP service that stores data in mock-db via TCP.
 Two services, one dependency — the simplest distributed system.
 
 ## Topology with dependencies
 
-Create `fault-test.star`:
+Create `fault-test.star` (use `bin/linux-arm64/` paths on macOS):
 
 ```python
-db = service("db", "/tmp/mock-db",
+db = service("db", "bin/mock-db",
     interface("main", "tcp", 5432),
     healthcheck = tcp("localhost:5432"),
 )
 
-api = service("api", "/tmp/mock-api",
+api = service("api", "bin/mock-api",
     interface("public", "http", 8080),
     env = {"PORT": "8080", "DB_ADDR": db.main.addr},
     depends_on = [db],
@@ -60,6 +56,11 @@ def test_happy_path():
     resp = api.get(path="/data/mykey")
     assert_eq(resp.status, 200)
     assert_eq(resp.body, "myvalue")
+```
+
+Run it (on macOS: `vm bin/linux-arm64/faultbox test fault-test.star`):
+```bash
+bin/faultbox test fault-test.star
 ```
 
 Notice: `depends_on = [db]` tells Faultbox to start db before api.

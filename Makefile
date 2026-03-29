@@ -41,6 +41,9 @@ demo-build:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/faultbox-shim  ./cmd/faultbox-shim/
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/inventory-svc  ./poc/demo/inventory-svc/
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/order-svc      ./poc/demo/order-svc/
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/mock-db        ./poc/mock-db/
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/mock-api       ./poc/mock-api/
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/target         ./poc/target/
 	@echo "Binaries: $(LINUX_BIN)/"
 
 demo: demo-build
