@@ -97,6 +97,8 @@ type SessionConfig struct {
 	// ExternalListenerFd is set when the seccomp listener was created externally
 	// (e.g., by a container shim). When >= 0, the session skips binary launch and
 	// runs only the notification loop on this fd.
+	// IMPORTANT: Set to -1 for normal binary launch. Go's zero value (0) is a
+	// valid fd and would incorrectly trigger the external path.
 	ExternalListenerFd int
 	// ExternalPID is the target process PID (host namespace) when using an
 	// external listener. Used for process memory reads in the notification loop.
