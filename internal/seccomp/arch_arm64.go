@@ -12,6 +12,8 @@ var syscallNames = map[int32]string{
 	57:  "close",
 	63:  "read",
 	64:  "write",
+	67:  "pread64",
+	68:  "pwrite64",
 	82:  "fsync",
 	203: "connect",
 	198: "socket",

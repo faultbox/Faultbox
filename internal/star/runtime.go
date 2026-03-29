@@ -707,6 +707,22 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 	return result
 }
 
+// expandSyscallFamily maps a user-facing fault keyword to all underlying syscalls.
+// For example, "write" maps to write, writev, pwrite64 since real applications
+// (e.g., Postgres) may use any of these for disk I/O.
+func expandSyscallFamily(name string) []string {
+	switch name {
+	case "write":
+		return []string{"write", "writev", "pwrite64"}
+	case "read":
+		return []string{"read", "readv", "pread64"}
+	case "open":
+		return []string{"open", "openat"}
+	default:
+		return []string{name}
+	}
+}
+
 // faultableSyscalls is the set of syscall names that can appear as fault keywords.
 var faultableSyscalls = []string{
 	"write", "read", "connect", "openat", "fsync",
@@ -745,6 +761,15 @@ func (rt *Runtime) requiredSyscalls() []string {
 		found["clock_gettime"] = true
 	}
 
+	// Expand syscall families — a "write" fault should also catch writev/pwrite64.
+	if found["write"] {
+		found["writev"] = true
+		found["pwrite64"] = true
+	}
+	if found["read"] {
+		found["readv"] = true
+		found["pread64"] = true
+	}
 	// "open" implies "openat" (the actual arm64/x86_64 syscall).
 	if found["open"] {
 		found["openat"] = true
@@ -790,22 +815,26 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 
 	var rules []engine.FaultRule
 	for syscall, fd := range faults {
-		rule := engine.FaultRule{
-			Syscall:     syscall,
-			Probability: fd.Probability,
-		}
-		switch fd.Action {
-		case "delay":
-			rule.Action = engine.ActionDelay
-			rule.Delay = fd.Delay
-		case "deny":
-			rule.Action = engine.ActionDeny
-			parsed, err := engine.ParseFaultRule(syscall + "=" + fd.Errno + ":100%")
-			if err == nil {
-				rule.Errno = parsed.Errno
+		// Expand syscall families: "write" → write, writev, pwrite64
+		syscalls := expandSyscallFamily(syscall)
+		for _, sc := range syscalls {
+			rule := engine.FaultRule{
+				Syscall:     sc,
+				Probability: fd.Probability,
 			}
+			switch fd.Action {
+			case "delay":
+				rule.Action = engine.ActionDelay
+				rule.Delay = fd.Delay
+			case "deny":
+				rule.Action = engine.ActionDeny
+				parsed, err := engine.ParseFaultRule(sc + "=" + fd.Errno + ":100%")
+				if err == nil {
+					rule.Errno = parsed.Errno
+				}
+			}
+			rules = append(rules, rule)
 		}
-		rules = append(rules, rule)
 	}
 
 	rs.session.SetDynamicFaultRules(rules)
