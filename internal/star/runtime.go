@@ -838,7 +838,14 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	}
 
 	rs.session.SetDynamicFaultRules(rules)
-	rt.events.Emit("fault_applied", svcName, nil)
+
+	// Build fault summary for event log (helps diagnose "fault didn't fire").
+	faultDetails := make(map[string]string)
+	for syscall, fd := range faults {
+		expanded := expandSyscallFamily(syscall)
+		faultDetails[syscall] = fmt.Sprintf("%s(%s) → filter:[%s]", fd.Action, fd.Errno, strings.Join(expanded, ","))
+	}
+	rt.events.Emit("fault_applied", svcName, faultDetails)
 	return nil
 }
 
