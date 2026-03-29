@@ -2,36 +2,65 @@
 
 ## Project Overview
 
-Faultbox is a distributed systems simulation and verification platform.
-It helps engineers understand, experiment with, and validate distributed systems
-by combining formal methods (P-lang) with interactive simulation and fault injection.
+Faultbox is a fault injection platform for distributed systems. It intercepts
+syscalls via Linux's **seccomp-notify** mechanism to inject faults (deny, delay,
+hold) into running services — both local binaries and Docker containers.
+
+Tests are written in **Starlark** (Python-like): declare topology, start services,
+inject faults, assert on behavior and syscall traces.
 
 **Company:** Faultbox (under Purestack.ai)
-**Mission:** Help engineers understand, experiment with, and validate distributed systems
-**Positioning:** "Chaos engineering, but smarter" — formal methods made accessible
+**Mission:** Help engineers verify distributed systems behavior under failure
+**Positioning:** "Chaos engineering, but smarter" — syscall-level fault injection
+with deterministic replay and exhaustive interleaving exploration
 
-## Tech Stack
+## Tech Stack (Current)
 
-- **Backend/Core:** Go (primary), Rust (future performance-critical components)
-- **Frontend:** React 18+ with TypeScript 5+ (Phase 2: Desktop)
-- **Desktop Shell:** Tauri (Rust) (Phase 2)
-- **Formal Verification:** P-lang (transpiled from Faultbox DSL, users never see P code)
-- **Database:** SQLite (local/desktop), PostgreSQL (SaaS phase)
-- **Infrastructure:** AWS (SaaS phase), local-only for Phase 1
-- **eBPF:** cilium/ebpf (tracing and fault injection)
+- **Language:** Go 1.26+
+- **Spec Language:** Starlark (go.starlark.net)
+- **Syscall Interception:** seccomp-notify (kernel 5.6+, no eBPF)
+- **Container Orchestration:** Docker Engine API (github.com/docker/docker)
+- **Platform:** Linux-only (macOS via Lima VM)
+- **CI:** GitHub Actions
 
 ## Architecture
 
+### How It Works
+
+```
+Starlark Spec (.star)
+    |
+    v
+Runtime (internal/star/) -- parses topology, discovers tests
+    |
+    +-- For each test:
+        1. Start services (binary or Docker container)
+        2. Install seccomp filter (via shim for containers)
+        3. Wait for healthchecks
+        4. Run test function (HTTP/TCP steps, fault injection)
+        5. Notification loop processes intercepted syscalls
+        6. Stop services, report trace
+```
+
 ### Core Concepts
 
-- **Endpoint + Handler model:** Specifications are built around endpoints and their handler
-  steps (failure points only — external calls, DB ops, message queue publishes)
-- **IR-First:** Go structs are the internal representation (source of truth);
-  YAML/JSON are serialization formats, not the DSL
-- **Hybrid Verification:** P model checker (design bugs, fast) + deterministic simulation
-  (implementation bugs, slower) in a closed loop
-- **Issue Registry:** Known issues can be acknowledged, planned, or resolved —
-  verification modes (audit, discovery, proposal, comparison) skip acknowledged issues
+- **seccomp-notify:** Kernel mechanism that pauses a process on specific syscalls
+  and asks a supervisor (faultbox) whether to allow, deny, or delay them
+- **Starlark specs:** Single .star file declares services, interfaces, healthchecks,
+  faults, and test functions. Configuration is code.
+- **Event log:** Every intercepted syscall is recorded with service attribution,
+  vector clocks, and decision. Temporal assertions query this log.
+- **Per-service filtering:** Only services targeted by fault() get seccomp filters.
+  Unfaulted services run at native speed.
+- **Syscall family expansion:** `write=deny("EIO")` automatically covers write,
+  writev, pwrite64. Users think in operations, not syscall numbers.
+
+### Two Modes
+
+| Mode | How | Use case |
+|------|-----|----------|
+| **Binary** | Fork+exec with seccomp filter | Local development, mock services |
+| **Container** | Docker + faultbox-shim entrypoint | Real infrastructure (Postgres, Redis) |
 
 ### Project Structure
 
@@ -39,36 +68,50 @@ by combining formal methods (P-lang) with interactive simulation and fault injec
 faultbox/
 ├── CLAUDE.md                 # This file
 ├── cmd/
-│   ├── faultbox/             # CLI entrypoint
-│   │   └── main.go
-│   └── faultbox-shim/        # Container entrypoint shim (PoC 2)
-│       └── main.go
+│   ├── faultbox/             # CLI: test, run, init, diff commands
+│   └── faultbox-shim/        # Container entrypoint shim (Linux-only)
 ├── internal/
-│   ├── engine/               # Session lifecycle, fault rules, hold queues
-│   ├── seccomp/              # BPF filter, shim, seccomp-notify API
-│   ├── star/                 # Starlark runtime, builtins, event log
-│   ├── container/            # Docker API wrapper (PoC 2, in progress)
-│   ├── config/               # YAML topology/spec parsing
+│   ├── engine/               # Session lifecycle, fault rules, hold queues, notification loop
+│   ├── seccomp/              # BPF filter generation, seccomp-notify API, arch tables
+│   ├── star/                 # Starlark runtime, builtins, event log, per-service filtering
+│   ├── container/            # Docker API wrapper, network, container launch, pidfd_getfd
+│   ├── config/               # YAML topology parsing (legacy)
 │   └── logging/              # Console/JSON structured logging
 ├── poc/
-│   ├── demo/                 # PoC 1 demo: order-svc + inventory-svc
-│   └── demo-container/       # PoC 2 demo: API + Postgres + Redis (planned)
+│   ├── demo/                 # Binary demo: order-svc + inventory-svc (5 tests)
+│   ├── demo-container/       # Container demo: Go API + Postgres + Redis (4 tests)
+│   ├── mock-api/             # Simple HTTP API wrapping mock-db
+│   ├── mock-db/              # Simple TCP key-value store
+│   ├── target/               # Minimal binary for fault injection testing
+│   └── example/              # Simple 2-service example spec
 ├── docs/
-│   ├── adr/                  # Architecture Decision Records
+│   ├── tutorial/             # 7-chapter progressive tutorial
+│   ├── adr/                  # Architecture Decision Records (historical)
 │   ├── poc/                  # PoC step documentation
 │   ├── spec-language.md      # Starlark spec language reference
 │   ├── cli-reference.md      # CLI reference
-│   └── discovery.md          # Positioning & discovery document
+│   └── discovery.md          # Positioning document
+├── .github/workflows/ci.yml  # GitHub Actions: build, vet, test, cross-compile
 └── Makefile
 ```
 
+### Key Packages
+
+| Package | Purpose | Key files |
+|---------|---------|-----------|
+| `internal/engine` | Session lifecycle, fault rule matching, notification loop | `session.go`, `launch_linux.go`, `fault.go` |
+| `internal/seccomp` | BPF filter building, seccomp syscall, arch tables | `filter_linux.go`, `arch_arm64.go`, `arch_amd64.go` |
+| `internal/star` | Starlark runtime, all builtins, event log, service lifecycle | `runtime.go`, `builtins.go`, `types.go` |
+| `internal/container` | Docker client, network, container launch with shim | `docker.go`, `launch.go`, `fd_linux.go` |
+
 ## Code Standards
 
-- **Go:** Follow Effective Go, use `golangci-lint`
-- **Tests:** Required for all new code (80%+ coverage target)
+- **Go:** Follow Effective Go, use `go vet`
+- **Tests:** Required for all new code. Currently 103 tests, 4 E2E container tests.
 - **Error handling:** Wrap errors with `fmt.Errorf("context: %w", err)`
-- **Patterns:** Repository pattern for data access, service layer for business logic
-- **Context:** Always use `context.Context` for cancellation and tracing
+- **Context:** Always use `context.Context` for cancellation
+- **Readability:** Optimize code and structure for LLM consumption (Claude), not just humans
+- **Build tags:** Linux-only files use `//go:build linux`. Cross-platform stubs in `*_other.go`.
 
 ## Architecture Principles
 
@@ -79,30 +122,45 @@ faultbox/
 
 ## Git Workflow
 
-- Branch naming: `feature/`, `bugfix/`, `hotfix/`
-- Commit messages: Conventional Commits
+- Branch naming: `feature/`, `bugfix/`, `docs/`
+- Commit messages: Conventional Commits (`feat:`, `fix:`, `perf:`, `docs:`, `ci:`)
 - PR required for all changes to main
-
-## Key ADRs
-
-See `docs/adr/` for full details. Key decisions:
-
-- **ADR-002:** Go for MVP, Rust for performance-critical components later
-- **ADR-003/004:** React + TypeScript with Tauri for Desktop
-- **ADR-010:** Hybrid Verification Architecture (P-lang + simulation)
-- **ADR-012:** IR-First specification model (Go structs as source of truth)
-- **ADR-014:** P-lang as core verification engine
-- **ADR-017:** Issue Registry with nuanced verification modes
-- **ADR-018:** Code-to-spec extraction from Go source
-- **ADR-019:** Desktop-first MVP strategy (skip TUI)
-- **ADR-020:** Two operating modes — Discovery (tracing) & Verification (invariants)
+- CI must pass (build + vet + test + cross-compile)
 
 ## Build & Test
 
 ```bash
-make build      # Build binary to bin/faultbox
-make test       # Run all tests
-make lint       # Format + vet
-make clean      # Remove build artifacts
-make run        # Build and run
+# Host (macOS/Linux)
+make build          # Build bin/faultbox
+make test           # Run all tests (go test ./...)
+make lint           # Format + vet
+make clean          # Remove build artifacts
+
+# Cross-compile for Lima VM (linux/arm64)
+make demo-build     # Build faultbox + faultbox-shim + demo binaries
+
+# Run demos
+make demo           # PoC 1: binary demo in Lima VM
+make demo-container # PoC 2: container demo in Lima VM
+
+# Lima VM management
+make env-create     # Create faultbox-dev VM
+make env-start      # Start VM
+make env-stop       # Stop VM
+make env-verify     # Verify kernel features
 ```
+
+## Historical ADRs
+
+The `docs/adr/` directory contains Architecture Decision Records from early
+design phases. Many reference features that were superseded by the current
+seccomp-notify + Starlark approach:
+
+- **ADR-002:** Go for MVP (still current)
+- **ADR-003/004:** React + Tauri Desktop (deferred — CLI-first approach taken)
+- **ADR-010/014:** P-lang verification (superseded by Starlark + seccomp-notify)
+- **ADR-012:** IR-First model (superseded by Starlark as single source of truth)
+- **ADR-019:** Desktop-first strategy (superseded by CLI-first)
+- **ADR-020:** Discovery & Verification modes (partially implemented via tracing)
+
+These ADRs are kept for historical context but do not reflect current architecture.
