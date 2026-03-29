@@ -58,14 +58,23 @@ You'll see faultbox engine logs followed by the target's output:
 === Faultbox PoC Target ===
 PID: 1
 FS: wrote and read 14 bytes (took 78us)
+net failed: ... connect: network is unreachable (took 2ms)
 === Target done ===
 ... [engine] session completed  exit_code=0
 ```
 
-(Network fails because faultbox runs the target in an isolated network
-namespace — that's expected. We'll use network faults explicitly later.)
+> **Why "network is unreachable"?** This is NOT a fault injection.
+> `faultbox run` creates an **isolated network namespace** for the target
+> process (PID, mount, and network are all sandboxed). The target has no
+> network access — only loopback. This is a safety feature: the target
+> can't make real external calls during testing.
+>
+> The filesystem still works because it uses the mount namespace which
+> shares `/tmp/`. The network error is normal and expected — ignore it
+> for now. In later chapters, we'll inject network faults explicitly
+> with `connect=deny("ECONNREFUSED")`.
 
-Everything works. Now break it.
+The filesystem write+read succeeded. Now break it.
 
 ## Inject a write fault
 
@@ -141,9 +150,11 @@ bin/faultbox run --fault "openat=ENOENT:100%:/data/*" bin/target
 vm bin/linux-arm64/faultbox run --fault "openat=ENOENT:100%:/data/*" bin/linux-arm64/target
 ```
 
-The target writes to `/tmp/` (not `/data/`), so it succeeds. **The intuition:**
-production failures are usually localized — one volume fails, not all storage.
-Path targeting lets you simulate exactly that.
+The target writes to `/tmp/` (not `/data/`), so the filesystem test succeeds.
+(You'll still see "network is unreachable" — that's the namespace sandbox,
+not your fault rule.) **The intuition:** production failures are usually
+localized — one volume fails, not all storage. Path targeting simulates
+exactly that.
 
 ## Delay faults
 
