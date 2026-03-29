@@ -53,9 +53,9 @@ def test_postgres_write_failure():
         assert_true(resp.status >= 500, "expected 5xx on DB write failure")
     fault(postgres, write=deny("EIO"), run=scenario)
 
-def test_postgres_connect_failure():
-    """Postgres unreachable — API health check fails."""
+def test_postgres_write_enospc():
+    """Postgres disk full — write should return error."""
     def scenario():
-        resp = api.get(path="/health")
-        assert_true(resp.status >= 500, "expected unhealthy when DB is down")
-    fault(api, connect=deny("ECONNREFUSED"), run=scenario)
+        resp = api.post(path="/data?key=disk-full&value=test")
+        assert_true(resp.status >= 500, "expected 5xx on ENOSPC")
+    fault(postgres, write=deny("ENOSPC"), run=scenario)

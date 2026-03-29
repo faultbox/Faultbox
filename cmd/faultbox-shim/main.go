@@ -108,6 +108,14 @@ func run() error {
 		}
 	}
 
+	// Keep the listener fd open across exec — the host-side copy (via pidfd_getfd)
+	// may become invalid if the kernel's seccomp listener refcount drops to zero.
+	// Dup to a well-known fd (255) that most shells won't close.
+	if listenerFd > 0 {
+		unix.Dup3(listenerFd, 255, 0)
+		// Don't close the original — let exec handle it.
+	}
+
 	// Build clean environment (remove shim config).
 	var cleanEnv []string
 	for _, e := range os.Environ() {

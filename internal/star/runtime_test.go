@@ -556,12 +556,15 @@ def test_connect_fault():
 	}
 
 	syscalls := rt.requiredSyscalls()
-	if len(syscalls) != 2 {
-		t.Fatalf("expected 2 syscalls, got %d: %v", len(syscalls), syscalls)
+	// "write" expands to write, writev, pwrite64; plus connect.
+	if len(syscalls) != 4 {
+		t.Fatalf("expected 4 syscalls, got %d: %v", len(syscalls), syscalls)
 	}
-	// Sorted: connect, write.
-	if syscalls[0] != "connect" || syscalls[1] != "write" {
-		t.Fatalf("expected [connect write], got %v", syscalls)
+	expected := []string{"connect", "pwrite64", "write", "writev"}
+	for i, want := range expected {
+		if syscalls[i] != want {
+			t.Fatalf("syscalls[%d] = %q, want %q (full: %v)", i, syscalls[i], want, syscalls)
+		}
 	}
 }
 
