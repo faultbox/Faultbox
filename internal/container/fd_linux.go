@@ -49,5 +49,12 @@ func waitForListenerFd(ctx context.Context, reportPath string, hostPID int) (int
 		return -1, fmt.Errorf("pidfd_getfd(pid=%d, fd=%d): %w", hostPID, childFd, err)
 	}
 
-	return localFd, nil
+	// Dup to a high fd number (>= 500) to avoid conflicts with Go runtime
+	// and Docker client fds.
+	highFd, err := unix.FcntlInt(uintptr(localFd), unix.F_DUPFD, 500)
+	if err != nil {
+		return localFd, nil // fallback to original
+	}
+	unix.Close(localFd)
+	return highFd, nil
 }
