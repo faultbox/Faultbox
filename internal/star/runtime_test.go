@@ -609,6 +609,71 @@ def test_no_faults():
 	}
 }
 
+func TestRequiredSyscallsPerService(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+pg = service("postgres", "/tmp/mock-pg",
+    interface("main", "tcp", 5432),
+)
+
+redis = service("redis", "/tmp/mock-redis",
+    interface("main", "tcp", 6379),
+)
+
+api = service("api", "/tmp/mock-api",
+    interface("public", "http", 8080),
+    depends_on = [pg, redis],
+)
+
+def test_pg_write():
+    def scenario():
+        pass
+    fault(pg, write=deny("EIO"), run=scenario)
+
+def test_api_connect():
+    def scenario():
+        pass
+    fault(api, connect=deny("ECONNREFUSED"), run=scenario)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Postgres should have write family (write, writev, pwrite64).
+	pgSyscalls := rt.requiredSyscallsForService("postgres")
+	if pgSyscalls == nil {
+		t.Fatal("expected syscalls for postgres, got nil")
+	}
+	hasWrite := false
+	hasPwrite := false
+	for _, sc := range pgSyscalls {
+		if sc == "write" {
+			hasWrite = true
+		}
+		if sc == "pwrite64" {
+			hasPwrite = true
+		}
+	}
+	if !hasWrite || !hasPwrite {
+		t.Fatalf("postgres syscalls = %v, expected write+pwrite64", pgSyscalls)
+	}
+
+	// API should have connect only.
+	apiSyscalls := rt.requiredSyscallsForService("api")
+	if apiSyscalls == nil {
+		t.Fatal("expected syscalls for api, got nil")
+	}
+	if len(apiSyscalls) != 1 || apiSyscalls[0] != "connect" {
+		t.Fatalf("api syscalls = %v, expected [connect]", apiSyscalls)
+	}
+
+	// Redis is never faulted — should return nil.
+	redisSyscalls := rt.requiredSyscallsForService("redis")
+	if redisSyscalls != nil {
+		t.Fatalf("redis syscalls = %v, expected nil (not faulted)", redisSyscalls)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

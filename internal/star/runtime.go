@@ -258,7 +258,27 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 	}
 
 	suite.DurationMs = time.Since(start).Milliseconds()
+
+	// Clean up Docker resources after all tests.
+	rt.cleanup()
+
 	return suite, nil
+}
+
+// cleanup releases Docker resources (network, client) after all tests complete.
+func (rt *Runtime) cleanup() {
+	if rt.dockerClient != nil {
+		ctx := context.Background()
+		if rt.networkID != "" {
+			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
+			rt.networkID = ""
+		}
+		rt.dockerClient.Close()
+		rt.dockerClient = nil
+	}
+	// Final socket cleanup.
+	socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
+	os.RemoveAll(socketBase)
 }
 
 // RunTest executes a single test function with fresh services.
@@ -395,7 +415,9 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 	envVars := rt.buildEnv(svc)
 
 	var faultRules []engine.FaultRule
-	faultRules = append(faultRules, rt.requiredFaultRules()...)
+	if svcRules := rt.requiredFaultRulesForService(svcName); svcRules != nil {
+		faultRules = append(faultRules, svcRules...)
+	}
 
 	ns := engine.NamespaceConfig{PID: true, Mount: true, User: true}
 	onSyscall := rt.makeSyscallCallback(svcName)
@@ -454,9 +476,10 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		ports[iface.Port] = 0 // 0 = let Docker pick host port
 	}
 
-	// Resolve syscall numbers for seccomp filter.
+	// Resolve syscall numbers for seccomp filter (per-service).
 	var syscallNrs []uint32
-	for _, r := range rt.requiredFaultRules() {
+	svcRules := rt.requiredFaultRulesForService(svcName)
+	for _, r := range svcRules {
 		nr := seccomp.SyscallNumber(r.Syscall)
 		if nr >= 0 {
 			syscallNrs = append(syscallNrs, uint32(nr))
@@ -513,9 +536,9 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		return nil
 	}
 
-	// Create session with external listener fd.
+	// Create session with external listener fd (per-service rules).
 	onSyscall := rt.makeSyscallCallback(svcName)
-	faultRules := rt.requiredFaultRules()
+	faultRules := svcRules // already computed above
 
 	sessCfg := engine.SessionConfig{
 		FaultRules:         faultRules,
@@ -693,6 +716,10 @@ func (rt *Runtime) stopServices() {
 		rt.containerIDs = make(map[string]string)
 	}
 
+	// Clean up socket directories.
+	socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
+	os.RemoveAll(socketBase)
+
 	// Clear active faults.
 	rt.faultsMu.Lock()
 	rt.faults = make(map[string]map[string]*FaultDef)
@@ -806,10 +833,113 @@ func (rt *Runtime) requiredSyscalls() []string {
 	return syscalls
 }
 
+// serviceVarMap builds a mapping from Starlark variable names to service names.
+// e.g., if the user wrote `pg = service("postgres", ...)`, returns {"pg": "postgres"}.
+func (rt *Runtime) serviceVarMap() map[string]string {
+	result := make(map[string]string)
+	for varName, val := range rt.globals {
+		if svc, ok := val.(*ServiceDef); ok {
+			result[varName] = svc.Name
+		}
+	}
+	return result
+}
+
+// requiredSyscallsForService returns the syscalls that need seccomp interception
+// for a specific service. Scans the source for fault()/fault_start()/partition()
+// calls that target this service.
+// Returns nil if the service is never faulted (should use launchSimple).
+func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
+	src := rt.sourceText
+	varMap := rt.serviceVarMap()
+
+	// Find all variable names that map to this service.
+	var varNames []string
+	for v, name := range varMap {
+		if name == svcName {
+			varNames = append(varNames, v)
+		}
+	}
+
+	found := make(map[string]bool)
+
+	// Scan line-by-line for fault calls targeting this service.
+	lines := strings.Split(src, "\n")
+	for _, varName := range varNames {
+		faultPrefix := "fault(" + varName + ","
+		faultStartPrefix := "fault_start(" + varName + ","
+
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if !strings.Contains(trimmed, faultPrefix) && !strings.Contains(trimmed, faultStartPrefix) {
+				continue
+			}
+			// This line targets our service — extract syscall keywords.
+			for _, sc := range faultableSyscalls {
+				if strings.Contains(trimmed, sc+"=deny(") ||
+					strings.Contains(trimmed, sc+"=delay(") ||
+					strings.Contains(trimmed, sc+"=allow(") {
+					found[sc] = true
+				}
+			}
+		}
+
+		// partition(VAR_A, VAR_B, ...) needs connect for both services.
+		for _, line := range lines {
+			if strings.Contains(line, "partition(") &&
+				(strings.Contains(line, varName+",") || strings.Contains(line, ", "+varName)) {
+				found["connect"] = true
+			}
+		}
+	}
+
+	// Virtual time needs time syscalls on all services.
+	if rt.virtualTime {
+		found["nanosleep"] = true
+		found["clock_nanosleep"] = true
+		found["clock_gettime"] = true
+	}
+
+	// Expand syscall families.
+	for _, sc := range []string{"write", "read", "open", "fsync", "sendto", "recvfrom"} {
+		if found[sc] {
+			for _, expanded := range expandSyscallFamily(sc) {
+				found[expanded] = true
+			}
+		}
+	}
+
+	if len(found) == 0 {
+		return nil
+	}
+
+	var syscalls []string
+	for sc := range found {
+		syscalls = append(syscalls, sc)
+	}
+	sort.Strings(syscalls)
+	return syscalls
+}
+
+// requiredFaultRulesForService returns placeholder fault rules for a service.
+func (rt *Runtime) requiredFaultRulesForService(svcName string) []engine.FaultRule {
+	syscalls := rt.requiredSyscallsForService(svcName)
+	if syscalls == nil {
+		return nil
+	}
+	rules := make([]engine.FaultRule, len(syscalls))
+	for i, sc := range syscalls {
+		rules[i] = engine.FaultRule{
+			Syscall:     sc,
+			Action:      engine.ActionDeny,
+			Probability: 0,
+		}
+	}
+	return rules
+}
+
 // requiredFaultRules returns placeholder fault rules for syscalls referenced
-// in the loaded Starlark source. Rules have Probability=0 (never fire) — they
-// only ensure the seccomp filter intercepts these syscalls. Actual faults are
-// applied dynamically via SetDynamicFaultRules().
+// in the loaded Starlark source (global, all services). Used as fallback.
 func (rt *Runtime) requiredFaultRules() []engine.FaultRule {
 	syscalls := rt.requiredSyscalls()
 	rules := make([]engine.FaultRule, len(syscalls))
