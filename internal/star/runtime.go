@@ -541,7 +541,9 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 	}
 	session.Service = svcName
 
-	svcCtx, svcCancel := context.WithCancel(ctx)
+	// Sessions use their own context (not tied to startServices/test context).
+	// They are explicitly cancelled by stopServices() via svcCancel.
+	svcCtx, svcCancel := context.WithCancel(context.Background())
 	done := make(chan *engine.Result, 1)
 	go func() {
 		r, _ := session.Run(svcCtx)
@@ -839,7 +841,11 @@ func (rt *Runtime) mergeClocksForNetworkCall(svcName string) {
 
 // executeStep runs an HTTP or TCP step against a running service.
 func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, method string, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	addr := fmt.Sprintf("localhost:%d", ref.Interface.Port)
+	port := ref.Interface.Port
+	if ref.Interface.HostPort > 0 {
+		port = ref.Interface.HostPort
+	}
+	addr := fmt.Sprintf("localhost:%d", port)
 	targetSvc := ref.Service.Name
 
 	// Emit step_send event from test driver — shows request going out.

@@ -63,7 +63,11 @@ func (s *Session) launchExternal(ctx context.Context) (*Result, error) {
 	stopNotif := make(chan struct{})
 	notifDone := make(chan error, 1)
 	go func() {
-		notifDone <- s.notificationLoop(ctx, listenerFd, ruleMap, stopNotif)
+		err := s.notificationLoop(ctx, listenerFd, ruleMap, stopNotif)
+		if err != nil {
+			s.log.Warn("notification loop ended", slog.String("error", err.Error()))
+		}
+		notifDone <- err
 	}()
 
 	// Wait for the process to exit by polling the listener fd.
@@ -103,17 +107,17 @@ func (s *Session) launchExternal(ctx context.Context) (*Result, error) {
 	// Wait for either the process to exit OR the notification loop to end.
 	select {
 	case <-waitDone:
-		// Process exited — stop notification loop.
+		s.log.Debug("session exit: process poller detected exit")
 		close(stopNotif)
 		unix.Close(listenerFd)
 		<-notifDone
-	case <-notifDone:
-		// Notification loop ended (fd closed, error, etc.) — signal process poller to stop.
+	case err := <-notifDone:
+		s.log.Debug("session exit: notification loop ended", slog.Any("error", err))
 		close(stopNotif)
 		unix.Close(listenerFd)
 		<-waitDone
 	case <-ctx.Done():
-		// Context cancelled — clean up both.
+		s.log.Debug("session exit: context cancelled")
 		close(stopNotif)
 		unix.Close(listenerFd)
 		<-notifDone
