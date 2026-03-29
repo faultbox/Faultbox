@@ -1,5 +1,5 @@
 .PHONY: build test clean lint fmt vet run \
-       demo demo-build \
+       demo demo-build demo-container \
        env-create env-start env-stop env-destroy env-shell env-exec env-status env-verify
 
 APP_NAME := faultbox
@@ -38,12 +38,16 @@ LINUX_BIN := $(BIN_DIR)/linux-arm64
 demo-build:
 	@echo "Cross-compiling for linux/arm64..."
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/faultbox       ./cmd/faultbox/
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/faultbox-shim  ./cmd/faultbox-shim/
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/inventory-svc  ./poc/demo/inventory-svc/
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/order-svc      ./poc/demo/order-svc/
 	@echo "Binaries: $(LINUX_BIN)/"
 
 demo: demo-build
 	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- bash poc/demo/run-demo.sh
+
+demo-container: demo-build
+	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- bash poc/demo-container/run-demo.sh
 
 # ─── Linux Dev Environment (Lima) ──────────────────────────────────
 

@@ -39,23 +39,26 @@ by combining formal methods (P-lang) with interactive simulation and fault injec
 faultbox/
 ├── CLAUDE.md                 # This file
 ├── cmd/
-│   └── faultbox/             # CLI entrypoint
+│   ├── faultbox/             # CLI entrypoint
+│   │   └── main.go
+│   └── faultbox-shim/        # Container entrypoint shim (PoC 2)
 │       └── main.go
 ├── internal/
-│   ├── cli/                  # CLI commands (cobra)
-│   ├── core/                 # Core engine (reusable)
-│   │   ├── simulation/
-│   │   ├── ebpf/
-│   │   └── analysis/
-│   ├── extract/              # Code-to-spec extraction (Go AST)
-│   ├── ir/                   # Internal representation types
-│   ├── plang/                # P-lang transpiler and runner
-│   ├── config/               # Configuration
-│   └── output/               # Formatters (JSON, table, etc.)
-├── pkg/                      # Public API (for future SDK)
-│   └── faultbox/
+│   ├── engine/               # Session lifecycle, fault rules, hold queues
+│   ├── seccomp/              # BPF filter, shim, seccomp-notify API
+│   ├── star/                 # Starlark runtime, builtins, event log
+│   ├── container/            # Docker API wrapper (PoC 2, in progress)
+│   ├── config/               # YAML topology/spec parsing
+│   └── logging/              # Console/JSON structured logging
+├── poc/
+│   ├── demo/                 # PoC 1 demo: order-svc + inventory-svc
+│   └── demo-container/       # PoC 2 demo: API + Postgres + Redis (planned)
 ├── docs/
-│   └── adr/                  # Architecture Decision Records
+│   ├── adr/                  # Architecture Decision Records
+│   ├── poc/                  # PoC step documentation
+│   ├── spec-language.md      # Starlark spec language reference
+│   ├── cli-reference.md      # CLI reference
+│   └── discovery.md          # Positioning & discovery document
 └── Makefile
 ```
 

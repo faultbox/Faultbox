@@ -56,12 +56,16 @@ def test_inventory_down():
 
 ## Topology
 
-### `service(name, binary, *interfaces, ...)`
+### `service(name, [binary], *interfaces, ...)`
 
 Declares a service in the system under test. Returns a service object that can
 be referenced by other services and used in tests.
 
+A service must have exactly one source: `binary` (local executable), `image`
+(Docker container image), or `build` (Dockerfile directory).
+
 ```python
+# Binary mode — local executable
 db = service("db", "/tmp/mock-db",
     interface("main", "tcp", 5432),
     args = ["--data-dir", "/tmp/db-data"],
@@ -69,15 +73,35 @@ db = service("db", "/tmp/mock-db",
     depends_on = [],
     healthcheck = tcp("localhost:5432"),
 )
+
+# Container mode — pull image from registry
+postgres = service("postgres",
+    interface("main", "tcp", 5432),
+    image = "postgres:16-alpine",
+    env = {"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "testdb"},
+    healthcheck = tcp("localhost:5432"),
+)
+
+# Container mode — build from Dockerfile
+api = service("api",
+    interface("public", "http", 8080),
+    build = "./api",
+    env = {"PORT": "8080", "DB_URL": postgres.main.internal_addr},
+    depends_on = [postgres],
+    healthcheck = http("localhost:8080/health"),
+)
 ```
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | **yes** | Service name (used in logs and results) |
-| `binary` | string | **yes** | Path to the executable |
+| `binary` | string | one of three | Path to the executable (positional or keyword) |
+| `image` | string | one of three | Docker image reference (e.g., `"postgres:16-alpine"`) |
+| `build` | string | one of three | Path to Dockerfile context directory |
 | *positional* | interface | **yes** | One or more `interface()` declarations |
 | `args` | list | no | Command-line arguments passed to the binary |
 | `env` | dict | no | Environment variables |
+| `volumes` | dict | no | Volume mounts `{host_path: container_path}` (container mode) |
 | `depends_on` | list | no | Services that must start first |
 | `healthcheck` | healthcheck | no | Readiness check (`tcp()` or `http()`) |
 
@@ -170,6 +194,12 @@ Available attributes on interface references:
 | `.addr` | `"localhost:port"` | `db.main.addr` → `"localhost:5432"` |
 | `.host` | `"localhost"` | `db.main.host` → `"localhost"` |
 | `.port` | port number | `db.main.port` → `5432` |
+| `.internal_addr` | `"hostname:port"` | `db.main.internal_addr` → `"db:5432"` (container) or `"localhost:5432"` (binary) |
+
+**Container networking:** For container services, `.internal_addr` returns
+`<service-name>:<port>` — the Docker network hostname. Use this for
+container-to-container references in env vars. `.addr` returns
+`localhost:<mapped-port>` for test driver access.
 
 #### Auto-Injected Variables
 

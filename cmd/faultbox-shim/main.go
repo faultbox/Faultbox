@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ type ShimConfig struct {
 	Entrypoint []string `json:"entrypoint"` // original container entrypoint
 	Cmd        []string `json:"cmd"`        // original container cmd
 	ReportPath string   `json:"report_path"` // where to write listener fd (e.g., /var/run/faultbox/listener-fd)
+	AckPath    string   `json:"ack_path"`    // faultbox writes here after acquiring the fd
 }
 
 const envKey = "_FAULTBOX_SHIM_CONFIG"
@@ -53,7 +55,11 @@ func run() error {
 	if len(execArgs) == 0 {
 		return fmt.Errorf("no entrypoint or cmd specified")
 	}
-	binary := execArgs[0]
+	// Resolve binary via PATH (unix.Exec requires an absolute path).
+	binary, err := exec.LookPath(execArgs[0])
+	if err != nil {
+		return fmt.Errorf("resolve entrypoint %q: %w", execArgs[0], err)
+	}
 
 	// Lock to OS thread — seccomp filters are per-thread.
 	runtime.LockOSThread()
@@ -86,6 +92,21 @@ func run() error {
 		return fmt.Errorf("write listener fd to report: %w", err)
 	}
 	reportFile.Close()
+
+	// Wait for faultbox to acknowledge it has acquired the listener fd.
+	// This handshake ensures pidfd_getfd succeeds before we exec (which may
+	// cause the shell entrypoint to close the listener fd).
+	if cfg.AckPath != "" {
+		for {
+			if _, err := os.Stat(cfg.AckPath); err == nil {
+				break
+			}
+			// Busy-wait with a tiny sleep. Can't use time.Sleep (it may use
+			// intercepted syscalls). Use nanosleep directly.
+			ts := unix.Timespec{Nsec: 10_000_000} // 10ms
+			unix.Nanosleep(&ts, nil)
+		}
+	}
 
 	// Build clean environment (remove shim config).
 	var cleanEnv []string

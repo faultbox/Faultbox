@@ -44,41 +44,50 @@ func (rt *Runtime) builtins() starlark.StringDict {
 	}
 }
 
-// service(name, binary, *interfaces, healthcheck=, env=, depends_on=, spec=)
+// service(name, [binary], *interfaces, image=, build=, healthcheck=, env=, depends_on=, volumes=)
+// Binary can be positional (2nd arg) or keyword. For containers, use image= or build= instead.
 func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if len(args) < 2 {
-		return nil, fmt.Errorf("service() requires at least name and binary")
+	if len(args) < 1 {
+		return nil, fmt.Errorf("service() requires at least a name")
 	}
 
 	name, ok := starlark.AsString(args[0])
 	if !ok {
 		return nil, fmt.Errorf("service() name must be a string")
 	}
-	binary, ok := starlark.AsString(args[1])
-	if !ok {
-		return nil, fmt.Errorf("service() binary must be a string")
-	}
 
 	svc := &ServiceDef{
 		Name:       name,
-		Binary:     binary,
 		Interfaces: make(map[string]*InterfaceDef),
 		Env:        make(map[string]string),
 	}
 
-	// Positional args after name and binary are interfaces.
-	for i := 2; i < len(args); i++ {
-		iface, ok := args[i].(*InterfaceDef)
-		if !ok {
-			return nil, fmt.Errorf("service() positional arg %d must be an interface(), got %s", i, args[i].Type())
+	// Positional args after name: binary (string) or interfaces.
+	for i := 1; i < len(args); i++ {
+		switch v := args[i].(type) {
+		case starlark.String:
+			// Second positional string = binary path.
+			svc.Binary = string(v)
+		case *InterfaceDef:
+			svc.Interfaces[v.Name] = v
+		default:
+			return nil, fmt.Errorf("service() positional arg %d must be a string (binary) or interface(), got %s", i, args[i].Type())
 		}
-		svc.Interfaces[iface.Name] = iface
 	}
 
 	// Keyword args.
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
 		switch key {
+		case "binary":
+			s, _ := starlark.AsString(kv[1])
+			svc.Binary = s
+		case "image":
+			s, _ := starlark.AsString(kv[1])
+			svc.Image = s
+		case "build":
+			s, _ := starlark.AsString(kv[1])
+			svc.Build = s
 		case "healthcheck":
 			hc, ok := kv[1].(*HealthcheckDef)
 			if !ok {
@@ -129,7 +138,36 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 					return nil, fmt.Errorf("depends_on items must be services or strings, got %s", val.Type())
 				}
 			}
+		case "volumes":
+			dict, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("service() volumes must be a dict")
+			}
+			svc.Volumes = make(map[string]string)
+			for _, item := range dict.Items() {
+				k, _ := starlark.AsString(item[0])
+				v, _ := starlark.AsString(item[1])
+				svc.Volumes[k] = v
+			}
 		}
+	}
+
+	// Validate: exactly one of binary, image, or build must be set.
+	sources := 0
+	if svc.Binary != "" {
+		sources++
+	}
+	if svc.Image != "" {
+		sources++
+	}
+	if svc.Build != "" {
+		sources++
+	}
+	if sources == 0 {
+		return nil, fmt.Errorf("service() requires one of: binary (positional or keyword), image=, or build=")
+	}
+	if sources > 1 {
+		return nil, fmt.Errorf("service() accepts only one of: binary, image=, or build= (got %d)", sources)
 	}
 
 	rt.registerService(svc)
