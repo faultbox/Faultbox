@@ -718,6 +718,12 @@ func expandSyscallFamily(name string) []string {
 		return []string{"read", "readv", "pread64"}
 	case "open":
 		return []string{"open", "openat"}
+	case "fsync":
+		return []string{"fsync", "fdatasync"}
+	case "sendto":
+		return []string{"sendto", "sendmsg"}
+	case "recvfrom":
+		return []string{"recvfrom", "recvmsg"}
 	default:
 		return []string{name}
 	}
@@ -727,6 +733,7 @@ func expandSyscallFamily(name string) []string {
 var faultableSyscalls = []string{
 	"write", "read", "connect", "openat", "fsync",
 	"sendto", "recvfrom", "writev", "readv", "close",
+	"pwrite64", "pread64", "fdatasync", "sendmsg", "recvmsg",
 }
 
 // requiredSyscalls scans the loaded Starlark source to determine which syscalls
@@ -761,18 +768,13 @@ func (rt *Runtime) requiredSyscalls() []string {
 		found["clock_gettime"] = true
 	}
 
-	// Expand syscall families — a "write" fault should also catch writev/pwrite64.
-	if found["write"] {
-		found["writev"] = true
-		found["pwrite64"] = true
-	}
-	if found["read"] {
-		found["readv"] = true
-		found["pread64"] = true
-	}
-	// "open" implies "openat" (the actual arm64/x86_64 syscall).
-	if found["open"] {
-		found["openat"] = true
+	// Expand syscall families so the seccomp filter covers all variants.
+	for _, sc := range []string{"write", "read", "open", "fsync", "sendto", "recvfrom"} {
+		if found[sc] {
+			for _, expanded := range expandSyscallFamily(sc) {
+				found[expanded] = true
+			}
+		}
 	}
 
 	// Convert to sorted slice for deterministic filter.
