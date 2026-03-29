@@ -94,8 +94,15 @@ func (c *Client) CreateContainer(ctx context.Context, opts CreateOpts) (string, 
 		portBindings[cp] = []nat.PortBinding{binding}
 	}
 
+	// Use the service name (without "faultbox-" prefix) as hostname for DNS resolution.
+	hostname := opts.Name
+	if len(hostname) > 10 && hostname[:9] == "faultbox-" {
+		hostname = hostname[9:]
+	}
+
 	cfg := &container.Config{
 		Image:        opts.Image,
+		Hostname:     hostname,
 		Entrypoint:   opts.Entrypoint,
 		Cmd:          opts.Cmd,
 		Env:          opts.Env,
@@ -111,7 +118,10 @@ func (c *Client) CreateContainer(ctx context.Context, opts CreateOpts) (string, 
 	netCfg := &network.NetworkingConfig{}
 	if opts.NetworkID != "" {
 		netCfg.EndpointsConfig = map[string]*network.EndpointSettings{
-			"faultbox-net": {NetworkID: opts.NetworkID},
+			"faultbox-net": {
+				NetworkID: opts.NetworkID,
+				Aliases:   []string{hostname}, // DNS alias = service name
+			},
 		}
 	}
 

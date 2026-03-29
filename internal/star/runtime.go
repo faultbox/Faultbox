@@ -67,6 +67,7 @@ type Runtime struct {
 	networkID      string                 // Faultbox Docker network ID
 	containerIDs   map[string]string      // service name → container ID (for cleanup)
 	baseDir        string                 // directory of the loaded .star file (for build= paths)
+	sourceText     string                 // raw .star source for syscall scanning
 
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
@@ -115,6 +116,13 @@ func (rt *Runtime) LoadFile(path string) error {
 		rt.baseDir = filepath.Dir(absPath)
 	}
 
+	// Read source for syscall scanning.
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	rt.sourceText = string(src)
+
 	globals, err := starlark.ExecFile(thread, path, nil, rt.builtins())
 	if err != nil {
 		return fmt.Errorf("load %s: %w", path, err)
@@ -127,6 +135,7 @@ func (rt *Runtime) LoadFile(path string) error {
 // LoadString executes Starlark source from a string (for testing).
 func (rt *Runtime) LoadString(name, src string) error {
 	thread := &starlark.Thread{Name: "load"}
+	rt.sourceText = src
 	globals, err := starlark.ExecFile(thread, name, src, rt.builtins())
 	if err != nil {
 		return fmt.Errorf("load: %w", err)
@@ -386,7 +395,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 	envVars := rt.buildEnv(svc)
 
 	var faultRules []engine.FaultRule
-	faultRules = append(faultRules, rt.preinstallRules()...)
+	faultRules = append(faultRules, rt.requiredFaultRules()...)
 
 	ns := engine.NamespaceConfig{PID: true, Mount: true, User: true}
 	onSyscall := rt.makeSyscallCallback(svcName)
@@ -447,7 +456,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 
 	// Resolve syscall numbers for seccomp filter.
 	var syscallNrs []uint32
-	for _, r := range rt.preinstallRules() {
+	for _, r := range rt.requiredFaultRules() {
 		nr := seccomp.SyscallNumber(r.Syscall)
 		if nr >= 0 {
 			syscallNrs = append(syscallNrs, uint32(nr))
@@ -486,7 +495,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 
 	// Create session with external listener fd.
 	onSyscall := rt.makeSyscallCallback(svcName)
-	faultRules := rt.preinstallRules()
+	faultRules := rt.requiredFaultRules()
 
 	sessCfg := engine.SessionConfig{
 		FaultRules:         faultRules,
@@ -696,22 +705,71 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 	return result
 }
 
-// preinstallRules returns empty fault rules for common syscalls so the seccomp
-// filter is pre-installed. Actual faults are applied dynamically.
-func (rt *Runtime) preinstallRules() []engine.FaultRule {
-	// Pre-install filter for common faultable syscalls.
-	// Rules with Probability=0 will never fire but ensure the syscall is intercepted.
-	syscalls := []string{"write", "read", "connect", "openat", "fsync", "sendto", "recvfrom", "writev"}
-	if rt.virtualTime {
-		syscalls = append(syscalls, "nanosleep", "clock_nanosleep", "clock_gettime")
+// faultableSyscalls is the set of syscall names that can appear as fault keywords.
+var faultableSyscalls = []string{
+	"write", "read", "connect", "openat", "fsync",
+	"sendto", "recvfrom", "writev", "readv", "close",
+}
+
+// requiredSyscalls scans the loaded Starlark source to determine which syscalls
+// tests actually reference in fault()/fault_start()/partition() calls.
+// Only these syscalls are installed in the seccomp filter, avoiding the overhead
+// of intercepting irrelevant syscalls (e.g., openat during library loading).
+func (rt *Runtime) requiredSyscalls() []string {
+	src := rt.sourceText
+	found := make(map[string]bool)
+
+	// Scan for fault keywords: "write=deny", "write=delay", "connect=deny", etc.
+	for _, sc := range faultableSyscalls {
+		// Match "syscall=deny(" or "syscall=delay(" or "syscall=allow("
+		if strings.Contains(src, sc+"=deny(") ||
+			strings.Contains(src, sc+"=delay(") ||
+			strings.Contains(src, sc+"=allow(") ||
+			strings.Contains(src, sc+"=deny (") ||
+			strings.Contains(src, sc+"=delay (") {
+			found[sc] = true
+		}
 	}
-	var rules []engine.FaultRule
-	for _, sc := range syscalls {
-		rules = append(rules, engine.FaultRule{
+
+	// partition() always needs connect.
+	if strings.Contains(src, "partition(") {
+		found["connect"] = true
+	}
+
+	// Virtual time needs time syscalls.
+	if rt.virtualTime {
+		found["nanosleep"] = true
+		found["clock_nanosleep"] = true
+		found["clock_gettime"] = true
+	}
+
+	// "open" implies "openat" (the actual arm64/x86_64 syscall).
+	if found["open"] {
+		found["openat"] = true
+	}
+
+	// Convert to sorted slice for deterministic filter.
+	var syscalls []string
+	for sc := range found {
+		syscalls = append(syscalls, sc)
+	}
+	sort.Strings(syscalls)
+	return syscalls
+}
+
+// requiredFaultRules returns placeholder fault rules for syscalls referenced
+// in the loaded Starlark source. Rules have Probability=0 (never fire) — they
+// only ensure the seccomp filter intercepts these syscalls. Actual faults are
+// applied dynamically via SetDynamicFaultRules().
+func (rt *Runtime) requiredFaultRules() []engine.FaultRule {
+	syscalls := rt.requiredSyscalls()
+	rules := make([]engine.FaultRule, len(syscalls))
+	for i, sc := range syscalls {
+		rules[i] = engine.FaultRule{
 			Syscall:     sc,
 			Action:      engine.ActionDeny,
-			Probability: 0, // never fires — just pre-installs the seccomp filter
-		})
+			Probability: 0,
+		}
 	}
 	return rules
 }

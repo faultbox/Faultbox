@@ -533,6 +533,79 @@ svc = service("db",
 	}
 }
 
+func TestRequiredSyscalls(t *testing.T) {
+	// Only write and connect faults referenced.
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+svc = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def test_write_fault():
+    def scenario():
+        pass
+    fault(svc, write=deny("EIO"), run=scenario)
+
+def test_connect_fault():
+    def scenario():
+        pass
+    fault(svc, connect=deny("ECONNREFUSED"), run=scenario)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	syscalls := rt.requiredSyscalls()
+	if len(syscalls) != 2 {
+		t.Fatalf("expected 2 syscalls, got %d: %v", len(syscalls), syscalls)
+	}
+	// Sorted: connect, write.
+	if syscalls[0] != "connect" || syscalls[1] != "write" {
+		t.Fatalf("expected [connect write], got %v", syscalls)
+	}
+}
+
+func TestRequiredSyscallsPartition(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+a = service("a", "/tmp/a", interface("main", "tcp", 8080))
+b = service("b", "/tmp/b", interface("main", "tcp", 9090))
+
+def test_partition():
+    def scenario():
+        pass
+    partition(a, b, run=scenario)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	syscalls := rt.requiredSyscalls()
+	if len(syscalls) != 1 || syscalls[0] != "connect" {
+		t.Fatalf("expected [connect] for partition, got %v", syscalls)
+	}
+}
+
+func TestRequiredSyscallsEmpty(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+svc = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def test_no_faults():
+    pass
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	syscalls := rt.requiredSyscalls()
+	if len(syscalls) != 0 {
+		t.Fatalf("expected 0 syscalls for no-fault test, got %v", syscalls)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

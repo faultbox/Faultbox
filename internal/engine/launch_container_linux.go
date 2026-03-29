@@ -100,12 +100,25 @@ func (s *Session) launchExternal(ctx context.Context) (*Result, error) {
 		// If Wait4 fails (ECHILD — we're not the parent), that's OK for containers.
 	}()
 
-	<-waitDone
-
-	// Stop the notification loop.
-	close(stopNotif)
-	unix.Close(listenerFd)
-	<-notifDone
+	// Wait for either the process to exit OR the notification loop to end.
+	select {
+	case <-waitDone:
+		// Process exited — stop notification loop.
+		close(stopNotif)
+		unix.Close(listenerFd)
+		<-notifDone
+	case <-notifDone:
+		// Notification loop ended (fd closed, error, etc.) — signal process poller to stop.
+		close(stopNotif)
+		unix.Close(listenerFd)
+		<-waitDone
+	case <-ctx.Done():
+		// Context cancelled — clean up both.
+		close(stopNotif)
+		unix.Close(listenerFd)
+		<-notifDone
+		<-waitDone
+	}
 	duration := time.Since(start)
 
 	s.setState(StateStopped)
