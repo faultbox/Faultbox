@@ -197,20 +197,24 @@ topology and test scenarios as code.
 
 ## Exercises
 
-1. **Network fault**: Run with `--fault "connect=ECONNREFUSED:100%"`.
-   What happens to the HTTP request? Does the program crash or handle it?
+> Note: `faultbox run` isolates the network namespace, so network-related
+> exercises won't show interesting results here. We'll test network faults
+> in Chapter 3 with multi-service topologies where services connect to each
+> other on localhost.
 
-2. **Slow network**: Run with `--fault "connect=delay:2s:100%"`. The target
-   has a 5s timeout — does the request succeed? What about `delay:6s`?
+1. **Disk full**: Run with `--fault "write=ENOSPC:100%"`. What errno message
+   do you see in the engine logs? How is it different from EIO?
 
-3. **Combined faults**:
-   ```bash
-   bin/faultbox run --fault "write=EIO:50%" --fault "connect=delay:1s:100%" bin/target
-   ```
-   (On macOS, use `vm bin/linux-arm64/faultbox ...` with `bin/linux-arm64/target`)
+2. **Slow filesystem**: Run with `--fault "write=delay:1s:100%"`. How long
+   does the session take? Now try `delay:3s`. Does the target handle the
+   slowdown or does it time out?
 
-   What's the combined effect? Which fails first?
+3. **Permission denied**: Run with `--fault "openat=EPERM:100%"`. The target
+   can't open any files. How many `openat` syscalls get denied? (Count the
+   `deny(operation not permitted)` lines.) Are they all for `/tmp/faultbox-target-test`
+   or are there other files?
 
-4. **Explore errno values**: Try `ENOSPC` (disk full), `EPERM` (permission
-   denied), `ETIMEDOUT` (timeout). For each one, ask: "would my production
-   service handle this correctly?"
+4. **Selective denial**: Run with `--fault "openat=ENOENT:100%:/tmp/faultbox*"`.
+   The glob targets only the test file. Does the target still run? What about
+   its other operations? Now try `--fault "write=EIO:100%:/tmp/faultbox*"` —
+   does path filtering work for `write` the same way as `openat`?
