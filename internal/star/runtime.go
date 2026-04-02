@@ -259,6 +259,12 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 
 	suite.DurationMs = time.Since(start).Milliseconds()
 
+	// Warn if filter matched no tests.
+	if cfg.Filter != "" && len(suite.Tests) == 0 {
+		available := strings.Join(tests, ", ")
+		fmt.Fprintf(os.Stderr, "WARNING: no test matched filter %q (available: %s)\n", cfg.Filter, available)
+	}
+
 	// Clean up Docker resources after all tests.
 	rt.cleanup()
 

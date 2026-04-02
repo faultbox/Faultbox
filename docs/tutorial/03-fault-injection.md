@@ -34,15 +34,19 @@ Two services, one dependency — the simplest distributed system.
 
 ## Topology with dependencies
 
-Create `fault-test.star` (use `bin/linux-arm64/` paths on macOS):
+Create `fault-test.star` in the project root:
 
 ```python
-db = service("db", "bin/mock-db",
+# Linux: BIN = "bin"
+# macOS (Lima): BIN = "bin/linux-arm64"
+BIN = "bin/linux-arm64"
+
+db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
     healthcheck = tcp("localhost:5432"),
 )
 
-api = service("api", "bin/mock-api",
+api = service("api", BIN + "/mock-api",
     interface("public", "http", 8080),
     env = {"PORT": "8080", "DB_ADDR": db.main.addr},
     depends_on = [db],
@@ -58,9 +62,28 @@ def test_happy_path():
     assert_eq(resp.body, "myvalue")
 ```
 
-Run it (on macOS: `vm bin/linux-arm64/faultbox test fault-test.star`):
+**Linux:**
 ```bash
 bin/faultbox test fault-test.star
+```
+
+**macOS (Lima):**
+```bash
+vm bin/linux-arm64/faultbox test fault-test.star
+```
+
+Expected output:
+```
+... [starlark] running test  test=test_happy_path
+... [starlark] starting session  binary=bin/linux-arm64/mock-db  service=db
+... [starlark] target started  pid=...  service=db
+... [starlark] starting session  binary=bin/linux-arm64/mock-api  service=api
+... [starlark] target started  pid=...  service=api
+... [starlark] test completed  test=test_happy_path  result=pass
+
+--- PASS: test_happy_path (200ms, seed=0) ---
+
+1 passed, 0 failed
 ```
 
 Notice: `depends_on = [db]` tells Faultbox to start db before api.
@@ -69,9 +92,16 @@ Notice: `depends_on = [db]` tells Faultbox to start db before api.
 **The pattern:** topology is declared, not discovered. You're writing down
 "the api depends on the db at this address" — making the architecture explicit.
 
+> **Cyclic dependencies:** `depends_on` controls **startup order** and must be
+> acyclic — Faultbox will reject `A depends_on B, B depends_on A`. But `env`
+> wiring is unrestricted: services can exchange each other's addresses and call
+> each other at runtime. Pick one direction for `depends_on` (whichever service
+> needs to be healthy first), and wire the rest through `env`.
+
 ## The `fault()` builtin
 
-`fault()` applies temporary faults while running a callback:
+`fault()` applies temporary faults while running a callback. Add this
+test to your `fault-test.star`:
 
 ```python
 def test_db_write_failure():
@@ -82,6 +112,22 @@ def test_db_write_failure():
     fault(db, write=deny("EIO"), run=scenario)
 ```
 
+Run it:
+```bash
+# Linux:
+bin/faultbox test fault-test.star --test db_write_failure
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test fault-test.star --test db_write_failure
+```
+
+```
+--- PASS: test_db_write_failure (200ms, seed=0) ---
+  syscall trace (85 events):
+    #72  db    write   deny(input/output error)
+    #73  db    write   deny(input/output error)
+  fault rule on db: write=deny(EIO) → filter:[write,writev,pwrite64]
+```
+
 What happens:
 1. **Apply** `write=deny("EIO")` to the db service's seccomp filter
 2. **Run** `scenario()` — which exercises the fault
@@ -90,6 +136,71 @@ What happens:
 The fault is **scoped** — it exists only during the callback. This is
 important: you're testing a specific hypothesis ("when db writes fail,
 the api returns 500"), not creating permanent damage.
+
+### Why scoping is powerful
+
+The basic example above tests one failure mode. But scoping lets you do
+much more — test **setup → break → verify recovery** in a single test:
+
+Add to `fault-test.star`:
+
+```python
+def test_recovery_after_disk_error():
+    # Setup: write data while DB is healthy.
+    api.post(path="/data/key1", body="safe-value")
+
+    # Break: DB disk fails during this window only.
+    def break_writes():
+        resp = api.post(path="/data/key2", body="doomed")
+        assert_true(resp.status >= 500, "should fail during disk error")
+    fault(db, write=deny("EIO"), run=break_writes)
+
+    # Verify: DB is healthy again — old data survived.
+    resp = api.get(path="/data/key1")
+    assert_eq(resp.body, "safe-value")
+```
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test fault-test.star --test recovery_after_disk_error
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test fault-test.star --test recovery_after_disk_error
+```
+
+```
+--- PASS: test_recovery_after_disk_error (350ms, seed=0) ---
+  fault rule on db: write=deny(EIO) → filter:[write,writev,pwrite64]
+    ↑ fault active only during break_writes(), removed after
+```
+
+Or test **multiple failure modes in sequence**. Add to `fault-test.star`:
+
+```python
+def test_db_failure_modes():
+    # Disk full — does the API say "disk full" or just "error"?
+    def check_enospc():
+        resp = api.post(path="/data/k", body="v")
+        assert_true(resp.status >= 500, "expected 5xx on disk full")
+    fault(db, write=deny("ENOSPC"), run=check_enospc)
+
+    # Slow disk — does the API timeout or wait?
+    def check_slow():
+        resp = api.post(path="/data/k", body="v")
+        assert_true(resp.status in [200, 504], "expected success or gateway timeout")
+    fault(db, write=delay("2s"), run=check_slow)
+```
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test fault-test.star --test db_failure_modes
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test fault-test.star --test db_failure_modes
+```
+
+Without scoping, you'd need to restart services between tests to change
+fault rules. Scoped faults give you clean transitions for free.
 
 ## deny() and delay()
 
@@ -139,25 +250,51 @@ low-level variant your program uses:
 **The intuition:** think in terms of operations (write, read, sync), not
 syscall numbers. Faultbox handles the mapping.
 
+> **What if a variant is missing?** The family expansion covers the most
+> common variants (Postgres, Redis, Go, Java). But some databases use
+> less common syscalls — e.g., RocksDB may use `pwritev2`, MySQL InnoDB
+> uses `sync_file_range`. If your fault is applied but never fires, check
+> the diagnostic output (see "Reading diagnostic output" below) — the
+> per-service syscall summary shows exactly which syscalls the service
+> actually used. You can always target the exact syscall directly:
+> `fault(db, pwritev2=deny("EIO"), run=fn)`.
+
 ## Multi-fault injection
 
-Apply multiple faults at once to simulate cascading failures:
+Apply multiple faults at once to simulate cascading failures. Add to
+`fault-test.star`:
 
 ```python
 def test_everything_broken():
     def scenario():
         resp = api.post(path="/data/key", body="val")
-        assert_true(resp.status >= 500)
+        assert_true(resp.status >= 500, "expected 5xx when DB writes fail")
     fault(db,
-        write=delay("1s"),
-        fsync=deny("EIO"),
+        write=deny("EIO"),
+        read=deny("EIO"),
         run=scenario,
     )
 ```
 
+Run it:
+```bash
+# Linux:
+bin/faultbox test fault-test.star --test everything_broken
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test fault-test.star --test everything_broken
+```
+
+```
+--- PASS: test_everything_broken (5213ms, seed=0) ---
+  syscall trace (2 events):
+    #8  db    write   deny(input/output error)
+  fault rule on db: read=deny(EIO) → filter:[read,readv,pread64]
+  fault rule on db: write=deny(EIO) → filter:[write,writev,pwrite64]
+```
+
 ## Imperative fault control
 
-For scenarios where fault timing matters:
+For scenarios where fault timing matters. Add to `fault-test.star`:
 
 ```python
 def test_fault_mid_operation():
@@ -176,6 +313,21 @@ def test_fault_mid_operation():
     assert_eq(resp.status, 200)
 ```
 
+Run it:
+```bash
+# Linux:
+bin/faultbox test fault-test.star --test fault_mid_operation
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test fault-test.star --test fault_mid_operation
+```
+
+```
+--- PASS: test_fault_mid_operation (400ms, seed=0) ---
+    #30  db    write   allow           ← Phase 1: no fault
+    #45  db    write   deny(EIO)       ← Phase 2: fault active
+    #62  db    write   allow           ← Phase 3: fault removed
+```
+
 Prefer `fault()` with `run=` when possible — it guarantees cleanup.
 
 ## Reading diagnostic output
@@ -186,12 +338,15 @@ When a fault fires:
   syscall trace (85 events):
     #72  db    write   deny(input/output error)
     #73  db    write   deny(input/output error)
-  fault applied to db: write=deny(EIO) -> filter:[write,writev,pwrite64]
+  fault rule on db: write=deny(EIO) -> filter:[write,writev,pwrite64]
 ```
 
 When a fault was applied but never fired:
 ```
-  fault applied to db: fsync=deny(EIO) -> filter:[fsync,fdatasync]
+  fault rule on db: fsync=deny(EIO) -> filter:[fsync,fdatasync]
+  WARNING: fault rules were installed but no injections fired
+    hint: the target may use a different syscall variant (e.g., pwrite64 instead of write)
+    hint: run with --debug to see all intercepted syscalls
   per-service syscall summary:
     db    120 total, 0 faulted  [write:45 read:30 connect:5 ...]
 ```

@@ -340,7 +340,7 @@ func TestShiVizFormat(t *testing.T) {
 	shiviz := log.FormatShiViz()
 
 	// Should contain the regex line.
-	if !contains(shiviz, `(?<host>\S+) (?<clock>\{.*\})`) {
+	if !contains(shiviz, `(?<host>\S+) (?<clock>\{.*?\}) (?<event>.*)`) {
 		t.Error("missing regex header")
 	}
 
