@@ -43,11 +43,16 @@ QUIT       -> closes connection
 
 ## Your first spec file
 
-Create `my-first-test.star`. The binary path depends on your platform:
+Create `my-first-test.star` **in the Faultbox project root** (the same directory
+where `bin/` lives). All binary paths in specs are relative to where you run
+`faultbox test` from, so run everything from the project root.
 
-**Linux:**
 ```python
-db = service("db", "bin/mock-db",
+# Linux: BIN = "bin"
+# macOS (Lima): BIN = "bin/linux-arm64"
+BIN = "bin/linux-arm64"
+
+db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
     healthcheck = tcp("localhost:5432"),
 )
@@ -55,12 +60,6 @@ db = service("db", "bin/mock-db",
 def test_ping():
     resp = db.main.send(data="PING")
     assert_eq(resp, "PONG")
-```
-
-**macOS (Lima):** use the cross-compiled path:
-```python
-db = service("db", "bin/linux-arm64/mock-db",
-    ...
 ```
 
 Let's break this down:

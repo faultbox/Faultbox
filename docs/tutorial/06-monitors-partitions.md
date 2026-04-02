@@ -29,6 +29,37 @@ This chapter teaches you to:
 - **Combine monitors + partitions** to verify invariants under failure
 - **Think in safety vs liveness** — "bad things don't happen" vs "good things eventually do"
 
+## Setup
+
+This chapter uses the same two-service system from Chapters 4-5:
+
+```
+orders (HTTP :8080) ──→ inventory (TCP :5432 + WAL file)
+```
+
+Create `monitors-test.star` in the project root:
+
+```python
+# Linux: BIN = "bin"
+# macOS (Lima): BIN = "bin/linux-arm64"
+BIN = "bin/linux-arm64"
+
+inventory = service("inventory", BIN + "/inventory-svc",
+    interface("main", "tcp", 5432),
+    env = {"PORT": "5432", "WAL_PATH": "/tmp/inventory.wal"},
+    healthcheck = tcp("localhost:5432"),
+)
+
+orders = service("orders", BIN + "/order-svc",
+    interface("public", "http", 8080),
+    env = {"PORT": "8080", "INVENTORY_ADDR": inventory.main.addr},
+    depends_on = [inventory],
+    healthcheck = http("localhost:8080/health"),
+)
+```
+
+Add all monitors and test functions from this chapter to this file.
+
 ## Monitors
 
 A monitor is a callback that fires on every matching syscall event:
@@ -96,6 +127,19 @@ def test_network_partition():
     partition(orders, inventory, run=scenario)
 ```
 
+Run it:
+```bash
+# Linux:
+bin/faultbox test monitors-test.star --test network_partition
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test monitors-test.star --test network_partition
+```
+
+```
+--- PASS: test_network_partition (200ms, seed=0) ---
+    #12  orders  connect  deny(connection refused)  → inventory:8081
+```
+
 During the partition:
 - `orders` can't `connect()` to `inventory` → ECONNREFUSED
 - `inventory` can't `connect()` to `orders` → ECONNREFUSED
@@ -132,6 +176,19 @@ def test_partition_safety():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_true(resp.status != 200, "order must not succeed during partition")
     partition(orders, inventory, run=scenario)
+```
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test monitors-test.star --test partition_safety
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test monitors-test.star --test partition_safety
+```
+
+```
+--- PASS: test_partition_safety (200ms, seed=0) ---
+    #12  orders  connect  deny(connection refused)  → inventory:8081
 ```
 
 This test says: "when orders and inventory are split, orders must not confirm,

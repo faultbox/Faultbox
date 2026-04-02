@@ -71,15 +71,21 @@ bin/linux-arm64/
 
 **Running commands inside the VM:**
 
-Every faultbox command is wrapped with `limactl shell`:
+Every faultbox command is wrapped with `limactl shell`. Run from the
+Faultbox project root:
 ```bash
-limactl shell --workdir /host-home/git/Faultbox faultbox-dev -- <command>
+limactl shell --workdir /host-home/<path-from-home>/Faultbox faultbox-dev -- <command>
 ```
 
-For convenience, you can alias it:
+For convenience, create an alias that maps your Mac's working directory
+into the VM (your home `~` is mounted at `/host-home`):
 ```bash
-alias vm='limactl shell --workdir /host-home/git/Faultbox faultbox-dev --'
+# From the Faultbox project root:
+alias vm="limactl shell --workdir /host-home/${PWD#$HOME/} faultbox-dev --"
 ```
+
+> **Example:** if you cloned to `~/git/faultbox-demo/Faultbox`, the alias
+> resolves to `--workdir /host-home/git/faultbox-demo/Faultbox`.
 
 Then:
 ```bash

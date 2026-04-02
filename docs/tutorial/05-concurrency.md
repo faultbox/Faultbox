@@ -31,6 +31,37 @@ This chapter teaches you to:
 After this chapter, you'll know how to find bugs that only appear under
 specific timing — and how to reproduce them reliably.
 
+## Setup
+
+This chapter uses the same two-service system from Chapter 4:
+
+```
+orders (HTTP :8080) ──→ inventory (TCP :5432 + WAL file)
+```
+
+Create `concurrency-test.star` in the project root:
+
+```python
+# Linux: BIN = "bin"
+# macOS (Lima): BIN = "bin/linux-arm64"
+BIN = "bin/linux-arm64"
+
+inventory = service("inventory", BIN + "/inventory-svc",
+    interface("main", "tcp", 5432),
+    env = {"PORT": "5432", "WAL_PATH": "/tmp/inventory.wal"},
+    healthcheck = tcp("localhost:5432"),
+)
+
+orders = service("orders", BIN + "/order-svc",
+    interface("public", "http", 8080),
+    env = {"PORT": "8080", "INVENTORY_ADDR": inventory.main.addr},
+    depends_on = [inventory],
+    healthcheck = http("localhost:8080/health"),
+)
+```
+
+Add all test functions from this chapter to this file.
+
 ## parallel()
 
 Run multiple operations concurrently:
@@ -47,6 +78,19 @@ def test_concurrent_orders():
     assert_true(ok_count >= 1, "at least one order should succeed")
 ```
 
+Run it:
+```bash
+# Linux:
+bin/faultbox test concurrency-test.star --test concurrent_orders
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders
+```
+
+```
+--- PASS: test_concurrent_orders (300ms, seed=0) ---
+  syscall trace (128 events)
+```
+
 `parallel()` runs the lambdas concurrently. Their syscalls interleave based
 on the **seed**.
 
@@ -55,7 +99,10 @@ on the **seed**.
 Every test run has a seed (default: 0). The seed controls scheduling:
 
 ```bash
-faultbox test poc/demo/faultbox.star --seed 42
+# Linux:
+bin/faultbox test concurrency-test.star --seed 42
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test concurrency-test.star --seed 42
 ```
 
 **Same seed = same interleaving = same result.** This makes concurrency bugs
@@ -64,7 +111,7 @@ faultbox test poc/demo/faultbox.star --seed 42
 When a test fails, the output includes the replay command:
 ```
 --- FAIL: test_concurrent_orders (300ms, seed=7) ---
-  replay: faultbox test poc/demo/faultbox.star --test concurrent_orders --seed 7
+  replay: faultbox test concurrency-test.star --test concurrent_orders --seed 7
 ```
 
 Copy-paste to reproduce. Every time.
@@ -74,13 +121,19 @@ Copy-paste to reproduce. Every time.
 Run the same test many times with different seeds to hunt for failures:
 
 ```bash
-faultbox test poc/demo/faultbox.star --test flaky_network --runs 100 --show fail
+# Linux:
+bin/faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail
 ```
 
 Seeds 0 through 99 are tried. Only failures are shown. If seed 7 fails:
 
 ```bash
-faultbox test poc/demo/faultbox.star --test flaky_network --seed 7
+# Linux:
+bin/faultbox test concurrency-test.star --test flaky_network --seed 7
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test concurrency-test.star --test flaky_network --seed 7
 ```
 
 **The workflow:** run 100 times → find failures → replay → debug → fix → re-run 100 times → all pass.
@@ -90,7 +143,16 @@ faultbox test poc/demo/faultbox.star --test flaky_network --seed 7
 For small state spaces, try EVERY possible ordering:
 
 ```bash
-faultbox test poc/demo/faultbox.star --test concurrent_orders --explore=all
+# Linux:
+bin/faultbox test concurrency-test.star --test concurrent_orders --explore=all
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders --explore=all
+```
+
+```
+exploring 20 interleavings for test_concurrent_orders...
+  seed 0: PASS  seed 1: PASS  seed 2: PASS  ...
+20/20 passed (20 interleavings explored)
 ```
 
 With 2 concurrent operations making 3 syscalls each, there are
@@ -99,7 +161,10 @@ With 2 concurrent operations making 3 syscalls each, there are
 For larger spaces, sample randomly:
 
 ```bash
-faultbox test poc/demo/faultbox.star --explore=sample --runs 500
+# Linux:
+bin/faultbox test concurrency-test.star --explore=sample --runs 500
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test concurrency-test.star --explore=sample --runs 500
 ```
 
 **When to use which:**
@@ -127,7 +192,10 @@ Delay faults + exhaustive exploration = very slow (each permutation waits
 for real delays). Virtual time skips the waits:
 
 ```bash
-faultbox test poc/demo/faultbox.star --virtual-time --explore=all
+# Linux:
+bin/faultbox test concurrency-test.star --virtual-time --explore=all
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test concurrency-test.star --virtual-time --explore=all
 ```
 
 A test with `delay("2s")` completes in milliseconds. Virtual time advances
@@ -148,6 +216,19 @@ def test_concurrent_under_failure():
         for r in results:
             assert_true(r.status in [200, 503], "expected 200 or 503, not hang")
     fault(inventory, write=delay("500ms"), run=scenario)
+```
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test concurrency-test.star --test concurrent_under_failure
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_under_failure
+```
+
+```
+--- PASS: test_concurrent_under_failure (600ms, seed=0) ---
+  fault rule on inventory: write=delay(500ms) → filter:[write,writev,pwrite64]
 ```
 
 This tests: "when two orders race AND inventory is slow, does the system

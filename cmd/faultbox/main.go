@@ -390,25 +390,23 @@ func printTraceSummary(w io.Writer, tr *star.TestResult) {
 			}
 			if len(details) > 0 {
 				sort.Strings(details)
-				fmt.Fprintf(w, "  fault applied to %s: %s\n", ev.Service, strings.Join(details, ", "))
+				fmt.Fprintf(w, "  fault rule on %s: %s\n", ev.Service, strings.Join(details, ", "))
 			}
 		}
 	}
 
 	// Warn if faults were applied but never fired.
-	if faultCount == 0 && tr.Result == "fail" {
-		hasFaults := false
-		for _, ev := range tr.Events {
-			if ev.Type == "fault_applied" {
-				hasFaults = true
-				break
-			}
+	hasFaults := false
+	for _, ev := range tr.Events {
+		if ev.Type == "fault_applied" {
+			hasFaults = true
+			break
 		}
-		if hasFaults {
-			fmt.Fprintln(w, "  ⚠ faults were applied but no syscalls were denied/delayed")
-			fmt.Fprintln(w, "    hint: the target process may use a different syscall (e.g., pwrite64 instead of write)")
-			fmt.Fprintln(w, "    hint: run with --debug to see all intercepted syscalls")
-		}
+	}
+	if hasFaults && faultCount == 0 {
+		fmt.Fprintln(w, "  WARNING: fault rules were installed but no injections fired")
+		fmt.Fprintln(w, "    hint: the target may use a different syscall variant (e.g., pwrite64 instead of write)")
+		fmt.Fprintln(w, "    hint: run with --debug to see all intercepted syscalls")
 	}
 
 	// Show per-service syscall breakdown (when test fails or debug).

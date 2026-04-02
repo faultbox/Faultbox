@@ -149,13 +149,27 @@ def test_postgres_disk_full():
     fault(postgres, write=deny("ENOSPC"), run=scenario)
 ```
 
+Run it:
+```bash
+# macOS (Lima VM):
+limactl shell faultbox-dev -- sudo bin/linux-arm64/faultbox test poc/demo-container/faultbox.star --test postgres_disk_full
+# Linux:
+sudo bin/faultbox test poc/demo-container/faultbox.star --test postgres_disk_full
+```
+
+```
+--- PASS: test_postgres_disk_full (10.4s, seed=0) ---
+  fault rule on postgres: write=deny(ENOSPC) → filter:[write,writev,pwrite64]
+    #5319  postgres  pwrite64  deny(no space left on device)
+```
+
 This denies `write`, `writev`, and `pwrite64` on the Postgres container.
 When Postgres tries to write a data page (via `pwrite64`), it gets ENOSPC.
 The SQL query fails, the API returns 503.
 
 The diagnostic output shows the expansion:
 ```
-  fault applied to postgres: write=deny(ENOSPC) -> filter:[write,writev,pwrite64]
+  fault rule on postgres: write=deny(ENOSPC) -> filter:[write,writev,pwrite64]
     #5319  postgres  pwrite64  deny(no space left on device)
 ```
 

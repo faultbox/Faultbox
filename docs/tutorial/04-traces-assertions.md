@@ -29,14 +29,63 @@ verify the *mechanism* that produced them.
 
 ## The demo system
 
-Chapters 4-6 use the full demo: an order service that talks to an inventory
-service with a write-ahead log (WAL).
+Chapters 4-6 use the full demo: two services that form a simple order
+processing pipeline:
 
-Binaries were built in Chapter 0. Run the demo (on macOS: prefix with `vm`):
-
-```bash
-bin/faultbox test poc/demo/faultbox.star
 ```
+orders (HTTP :8080) ──→ inventory (TCP :5432 + WAL file)
+```
+
+- **orders** — HTTP API that receives order requests and forwards them
+  to inventory
+- **inventory** — TCP service that manages stock and writes a
+  write-ahead log (WAL) to `/tmp/inventory.wal`
+
+Create `traces-test.star` in the project root:
+
+```python
+# Linux: BIN = "bin"
+# macOS (Lima): BIN = "bin/linux-arm64"
+BIN = "bin/linux-arm64"
+
+inventory = service("inventory", BIN + "/inventory-svc",
+    interface("main", "tcp", 5432),
+    env = {"PORT": "5432", "WAL_PATH": "/tmp/inventory.wal"},
+    healthcheck = tcp("localhost:5432"),
+)
+
+orders = service("orders", BIN + "/order-svc",
+    interface("public", "http", 8080),
+    env = {"PORT": "8080", "INVENTORY_ADDR": inventory.main.addr},
+    depends_on = [inventory],
+    healthcheck = http("localhost:8080/health"),
+)
+```
+
+**You'll add all test functions from this chapter to this file.**
+
+Verify the topology works with a quick happy-path test — add to `traces-test.star`:
+
+```python
+def test_happy_path():
+    resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+    assert_eq(resp.status, 200)
+```
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test traces-test.star --test happy_path
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --test happy_path
+```
+
+```
+--- PASS: test_happy_path (200ms, seed=0) ---
+1 passed, 0 failed
+```
+
+Good — the topology works. Now add the trace assertion tests below.
 
 ## The event log
 
@@ -56,20 +105,42 @@ The most common temporal assertion: verify something occurred.
 
 ```python
 def test_wal_written():
-    """Order placement triggers a WAL write."""
-    resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-    assert_eq(resp.status, 200)
+    """Slow writes — but WAL write still happened."""
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_eq(resp.status, 200)
 
-    # Prove: the inventory service opened the WAL file.
-    assert_eventually(
-        service="inventory",
-        syscall="openat",
-        path="/tmp/inventory.wal",
-    )
+        # Prove: the inventory service wrote to the WAL.
+        assert_eventually(
+            service="inventory",
+            syscall="write",
+        )
+    fault(inventory, write=delay("100ms"), run=scenario)
+```
+
+> **Why a fault here?** Trace assertions query the syscall event log.
+> Events are only recorded for syscalls with a seccomp filter installed.
+> `fault(inventory, write=delay(...))` installs filters for
+> `[write,writev,pwrite64]` — so only write-family events appear in the
+> trace. If you need `openat` events, add an openat fault too.
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test traces-test.star --test wal_written
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --test wal_written
+```
+
+```
+--- PASS: test_wal_written (500ms, seed=0) ---
+  syscall trace (4 events):
+    #8  inventory  write  delay(100ms)  (+100ms)
+  fault rule on inventory: write=delay(100ms) → filter:[write,writev,pwrite64]
 ```
 
 **Why this matters:** the API returned 200, but `assert_eventually` proves
-the write actually reached the WAL. Without this, you're only testing the
+the write actually happened. Without this, you're only testing the
 happy-path HTTP response — not the durability guarantee.
 
 ## assert_never — "this didn't happen"
@@ -77,38 +148,80 @@ happy-path HTTP response — not the durability guarantee.
 Prove that something did NOT occur — equally important for correctness:
 
 ```python
-def test_no_wal_when_unreachable():
-    """When inventory is unreachable, no WAL write should occur."""
+def test_no_write_when_unreachable():
+    """When inventory is unreachable, no denied connect should go through."""
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_eq(resp.status, 503)
 
-        # Prove: the WAL was never touched.
+        # Prove: every connect from orders was denied.
         assert_never(
-            service="inventory",
-            syscall="openat",
-            path="/tmp/inventory.wal",
+            service="orders",
+            syscall="connect",
+            decision="allow",
         )
     fault(orders, connect=deny("ECONNREFUSED"), run=scenario)
 ```
 
-**Why this matters:** if the order failed, no WAL write should have happened.
-If one did, there's a bug: the system partially wrote data for a failed order.
+> **Why not `assert_never(service="inventory", syscall="write")`?**
+> Inventory has background writes (startup logs, healthcheck responses)
+> that are unrelated to order processing. Since we can't path-filter
+> writes (see Chapter 1 callout), we assert on the **cause** (connect
+> denied) rather than the **effect** (no writes).
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test traces-test.star --test no_write_when_unreachable
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --test no_write_when_unreachable
+```
+
+```
+--- PASS: test_no_write_when_unreachable (200ms, seed=0) ---
+  fault rule on orders: connect=deny(ECONNREFUSED) → filter:[connect]
+    #8  orders  connect  deny(connection refused)
+```
+
+**Why this matters:** `assert_never` with `decision="allow"` proves that
+no connection succeeded. If any did, inventory might have received a
+partial request — a potential data inconsistency bug.
 
 ## assert_before — ordering guarantees
 
 Verify that events happened in the correct order:
 
 ```python
-def test_wal_before_confirmation():
-    """WAL must be written before order is confirmed."""
-    resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-    assert_eq(resp.status, 200)
+def test_delay_then_deny():
+    """Slow writes come before the fsync denial."""
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_true(resp.status != 200, "expected failure on fsync deny")
 
-    assert_before(
-        first={"service": "inventory", "syscall": "openat", "path": "/tmp/inventory.wal"},
-        then={"service": "inventory", "syscall": "write"},
-    )
+        assert_before(
+            first={"service": "inventory", "syscall": "write"},
+            then={"service": "inventory", "decision": "deny*"},
+        )
+    fault(inventory, write=delay("100ms"), fsync=deny("EIO"), run=scenario)
+```
+
+> **Note:** Both fault keywords are in a single `fault()` call, so both
+> filters are installed together. `assert_before` verifies that the
+> delayed write happened before the denied fsync — confirming the WAL
+> write attempt preceded the sync failure.
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test traces-test.star --test delay_then_deny
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --test delay_then_deny
+```
+
+```
+--- PASS: test_delay_then_deny (350ms, seed=0) ---
+  assert_before: inventory.write → inventory.fsync(deny) ✓
+  fault rule on inventory: write=delay(100ms), fsync=deny(EIO)
 ```
 
 **Why this matters:** if the write happens before the WAL open, the system
@@ -133,14 +246,35 @@ Glob examples: `decision="deny*"` matches `"deny(EIO)"`, `"deny(ENOSPC)"`, etc.
 Get matching events as a list for advanced assertions:
 
 ```python
-def test_retry_count():
-    """Count connection retries under flaky network."""
+def test_write_count():
+    """Count how many writes inventory makes for a single order."""
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-        retries = events(service="orders", syscall="connect", decision="deny*")
-        print("connection retries:", len(retries))
-        assert_true(len(retries) < 10, "too many retries")
-    fault(orders, connect=deny("ECONNREFUSED", probability="50%"), run=scenario)
+        assert_eq(resp.status, 200)
+
+        writes = events(service="inventory", syscall="write")
+        print("inventory writes per order:", len(writes))
+        assert_true(len(writes) >= 1, "expected at least 1 WAL write")
+        assert_true(len(writes) < 10, "too many writes for a single order")
+    fault(inventory, write=delay("10ms"), run=scenario)
+```
+
+`events()` returns a list of matching events. You can filter by any
+combination of `service`, `syscall`, `decision`, `path` — then use
+`len()`, loop, or inspect individual fields.
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test traces-test.star --test write_count
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --test write_count
+```
+
+```
+--- PASS: test_write_count (250ms, seed=0) ---
+  inventory writes per order: 3
+  fault rule on inventory: write=delay(10ms) → filter:[write,writev,pwrite64]
 ```
 
 ## Trace output formats
@@ -148,7 +282,10 @@ def test_retry_count():
 ### JSON trace — for programmatic analysis
 
 ```bash
-faultbox test poc/demo/faultbox.star --output trace.json
+# Linux:
+bin/faultbox test traces-test.star --output trace.json
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --output trace.json
 ```
 
 Structured JSON with every event, PObserve-compatible fields, vector clocks,
@@ -157,7 +294,10 @@ and replay commands for failed tests.
 ### ShiViz — for visual causality
 
 ```bash
-faultbox test poc/demo/faultbox.star --shiviz trace.shiviz
+# Linux:
+bin/faultbox test traces-test.star --shiviz trace.shiviz
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --shiviz trace.shiviz
 ```
 
 Open at https://bestchai.bitbucket.io/shiviz/ to see a space-time diagram
@@ -167,9 +307,14 @@ and how their operations interleaved.
 ### Normalized trace — for determinism verification
 
 ```bash
-faultbox test poc/demo/faultbox.star --normalize trace1.norm
-faultbox test poc/demo/faultbox.star --normalize trace2.norm
-faultbox diff trace1.norm trace2.norm
+# Linux:
+bin/faultbox test traces-test.star --normalize trace1.norm
+bin/faultbox test traces-test.star --normalize trace2.norm
+bin/faultbox diff trace1.norm trace2.norm
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --normalize trace1.norm
+vm bin/linux-arm64/faultbox test traces-test.star --normalize trace2.norm
+vm bin/linux-arm64/faultbox diff trace1.norm trace2.norm
 ```
 
 Same seed + same binary = identical normalized trace. This proves your

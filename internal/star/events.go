@@ -203,8 +203,8 @@ func (l *EventLog) FormatShiViz() string {
 
 	var sb strings.Builder
 
-	// Line 1: parsing regex — host then clock on one line, event on next.
-	sb.WriteString(`(?<host>\S+) (?<clock>\{.*\})`)
+	// Line 1: parsing regex — host, clock, and event on one line.
+	sb.WriteString(`(?<host>\S+) (?<clock>\{.*?\}) (?<event>.*)`)
 	sb.WriteByte('\n')
 	// Line 2: multi-execution delimiter (empty = single execution).
 	sb.WriteByte('\n')
@@ -218,17 +218,17 @@ func (l *EventLog) FormatShiViz() string {
 		// Event description.
 		desc := ev.EventType
 		if decision, ok := ev.Fields["decision"]; ok {
-			desc += "  " + decision
+			desc += " " + decision
 		}
 		if path, ok := ev.Fields["path"]; ok && path != "" {
-			desc += "  " + path
+			desc += " " + path
 		}
 
 		// Vector clock as JSON.
 		clockJSON := formatVectorClock(ev.VectorClock)
 
-		// ShiViz format: "host {clock}\nevent"
-		fmt.Fprintf(&sb, "%s %s\n%s\n", host, clockJSON, desc)
+		// ShiViz format: "host {clock} event" — all on one line.
+		fmt.Fprintf(&sb, "%s %s %s\n", host, clockJSON, desc)
 	}
 
 	return sb.String()
