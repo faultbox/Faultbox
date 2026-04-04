@@ -807,6 +807,12 @@ func (rt *Runtime) requiredSyscalls() []string {
 			strings.Contains(src, sc+"=delay (") {
 			found[sc] = true
 		}
+		// Match trace() syscall list: "write" or 'write' inside trace()/trace_start().
+		if strings.Contains(src, "trace(") || strings.Contains(src, "trace_start(") {
+			if strings.Contains(src, `"`+sc+`"`) || strings.Contains(src, `'`+sc+`'`) {
+				found[sc] = true
+			}
+		}
 	}
 
 	// partition() always needs connect.
@@ -869,23 +875,34 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 
 	found := make(map[string]bool)
 
-	// Scan line-by-line for fault calls targeting this service.
+	// Scan line-by-line for fault/trace calls targeting this service.
 	lines := strings.Split(src, "\n")
 	for _, varName := range varNames {
 		faultPrefix := "fault(" + varName + ","
 		faultStartPrefix := "fault_start(" + varName + ","
+		tracePrefix := "trace(" + varName + ","
+		traceStartPrefix := "trace_start(" + varName + ","
 
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if !strings.Contains(trimmed, faultPrefix) && !strings.Contains(trimmed, faultStartPrefix) {
-				continue
+
+			// Fault calls: extract syscall keywords from fault definitions.
+			if strings.Contains(trimmed, faultPrefix) || strings.Contains(trimmed, faultStartPrefix) {
+				for _, sc := range faultableSyscalls {
+					if strings.Contains(trimmed, sc+"=deny(") ||
+						strings.Contains(trimmed, sc+"=delay(") ||
+						strings.Contains(trimmed, sc+"=allow(") {
+						found[sc] = true
+					}
+				}
 			}
-			// This line targets our service — extract syscall keywords.
-			for _, sc := range faultableSyscalls {
-				if strings.Contains(trimmed, sc+"=deny(") ||
-					strings.Contains(trimmed, sc+"=delay(") ||
-					strings.Contains(trimmed, sc+"=allow(") {
-					found[sc] = true
+
+			// Trace calls: extract syscall names from syscalls=[...] list.
+			if strings.Contains(trimmed, tracePrefix) || strings.Contains(trimmed, traceStartPrefix) {
+				for _, sc := range faultableSyscalls {
+					if strings.Contains(trimmed, `"`+sc+`"`) || strings.Contains(trimmed, `'`+sc+`'`) {
+						found[sc] = true
+					}
 				}
 			}
 		}
@@ -1005,6 +1022,44 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	}
 	rt.events.Emit("fault_applied", svcName, faultDetails)
 	return nil
+}
+
+// applyTrace installs trace-only rules for a service's running session.
+// Traced syscalls are allowed but logged at Info level.
+func (rt *Runtime) applyTrace(svcName string, syscalls []string) error {
+	rs, ok := rt.sessions[svcName]
+	if !ok {
+		return fmt.Errorf("service %q is not running", svcName)
+	}
+
+	var rules []engine.FaultRule
+	for _, sc := range syscalls {
+		for _, expanded := range expandSyscallFamily(sc) {
+			rules = append(rules, engine.FaultRule{
+				Syscall:     expanded,
+				Action:      engine.ActionTrace,
+				Probability: 1.0,
+			})
+		}
+	}
+
+	rs.session.SetDynamicFaultRules(rules)
+
+	traceDetails := make(map[string]string)
+	for _, sc := range syscalls {
+		expanded := expandSyscallFamily(sc)
+		traceDetails[sc] = fmt.Sprintf("trace → filter:[%s]", strings.Join(expanded, ","))
+	}
+	rt.events.Emit("trace_applied", svcName, traceDetails)
+	return nil
+}
+
+// removeTrace clears trace rules for a service.
+func (rt *Runtime) removeTrace(svcName string) {
+	if rs, ok := rt.sessions[svcName]; ok {
+		rs.session.ClearDynamicFaultRules()
+	}
+	rt.events.Emit("trace_removed", svcName, nil)
 }
 
 // removeFaults clears fault rules for a service.

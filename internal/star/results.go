@@ -201,15 +201,41 @@ func DiffTraces(a, b string) string {
 // WriteShiVizTrace writes a ShiViz-compatible trace file for a test result.
 func WriteShiVizTrace(path string, result *SuiteResult) error {
 	// Build a combined EventLog from all test events.
+	// Vector clocks must be globally monotonic, so we offset each test's
+	// clocks by the maximum seen so far per host.
 	log := NewEventLog()
+	maxClock := make(map[string]int64) // host → max clock value seen
+
 	for _, tr := range result.Tests {
+		// Calculate offset: shift this test's clocks so they start after
+		// the previous test's maximum.
+		offset := make(map[string]int64)
+		for host, max := range maxClock {
+			offset[host] = max
+		}
+
 		for _, ev := range tr.Events {
-			// Re-emit using raw fields to preserve vector clocks.
+			// Apply offset to vector clock.
+			if ev.VectorClock != nil {
+				adjusted := make(map[string]int64, len(ev.VectorClock))
+				for host, val := range ev.VectorClock {
+					adjusted[host] = val + offset[host]
+				}
+				ev.VectorClock = adjusted
+			}
+
 			log.mu.Lock()
 			log.seq++
 			ev.Seq = log.seq
 			log.events = append(log.events, ev)
 			log.mu.Unlock()
+
+			// Track max clock per host.
+			for host, val := range ev.VectorClock {
+				if val > maxClock[host] {
+					maxClock[host] = val
+				}
+			}
 		}
 	}
 

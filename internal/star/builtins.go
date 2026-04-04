@@ -41,6 +41,9 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"monitor":           starlark.NewBuiltin("monitor", rt.builtinMonitor),
 		"partition":         starlark.NewBuiltin("partition", rt.builtinPartition),
 		"nondet":            starlark.NewBuiltin("nondet", rt.builtinNondet),
+		"trace":             starlark.NewBuiltin("trace", rt.builtinTrace),
+		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
+		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
 	}
 }
 
@@ -499,6 +502,119 @@ func matchValue(actual, pattern string) bool {
 		return strings.HasSuffix(actual, strings.TrimPrefix(pattern, "*"))
 	}
 	return actual == pattern
+}
+
+// trace(service, syscalls=["write", "openat"], run=body_fn)
+// Installs seccomp filters in allow-only mode so syscalls are logged without faulting.
+func (rt *Runtime) builtinTrace(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("trace() requires a service argument")
+	}
+	svc, ok := args[0].(*ServiceDef)
+	if !ok {
+		return nil, fmt.Errorf("trace() first arg must be a service, got %s", args[0].Type())
+	}
+
+	var bodyFn starlark.Callable
+	var syscalls []string
+
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "run":
+			cb, ok := kv[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("trace() run= must be a callable")
+			}
+			bodyFn = cb
+		case "syscalls":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("trace() syscalls= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				s, ok := starlark.AsString(list.Index(i))
+				if !ok {
+					return nil, fmt.Errorf("trace() syscalls list items must be strings")
+				}
+				syscalls = append(syscalls, s)
+			}
+		default:
+			return nil, fmt.Errorf("trace() unexpected keyword %q (use syscalls= for syscall list)", key)
+		}
+	}
+
+	if bodyFn == nil {
+		return nil, fmt.Errorf("trace() requires run= keyword with a callback function")
+	}
+	if len(syscalls) == 0 {
+		return nil, fmt.Errorf("trace() requires syscalls= keyword with a list of syscall names")
+	}
+
+	if err := rt.applyTrace(svc.Name, syscalls); err != nil {
+		return nil, fmt.Errorf("trace(): %w", err)
+	}
+	defer rt.removeTrace(svc.Name)
+
+	result, err := starlark.Call(thread, bodyFn, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return starlark.None, nil
+	}
+	return result, nil
+}
+
+// trace_start(service, syscalls=["write", "openat"])
+func (rt *Runtime) builtinTraceStart(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("trace_start() requires a service argument")
+	}
+	svc, ok := args[0].(*ServiceDef)
+	if !ok {
+		return nil, fmt.Errorf("trace_start() first arg must be a service, got %s", args[0].Type())
+	}
+
+	var syscalls []string
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		if key == "syscalls" {
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("trace_start() syscalls= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				s, ok := starlark.AsString(list.Index(i))
+				if !ok {
+					return nil, fmt.Errorf("trace_start() syscalls list items must be strings")
+				}
+				syscalls = append(syscalls, s)
+			}
+		}
+	}
+
+	if len(syscalls) == 0 {
+		return nil, fmt.Errorf("trace_start() requires syscalls= keyword with a list of syscall names")
+	}
+
+	if err := rt.applyTrace(svc.Name, syscalls); err != nil {
+		return nil, err
+	}
+	return starlark.None, nil
+}
+
+// trace_stop(service)
+func (rt *Runtime) builtinTraceStop(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("trace_stop() requires a service argument")
+	}
+	svc, ok := args[0].(*ServiceDef)
+	if !ok {
+		return nil, fmt.Errorf("trace_stop() first arg must be a service, got %s", args[0].Type())
+	}
+	rt.removeTrace(svc.Name)
+	return starlark.None, nil
 }
 
 // nondet(service) — marks a service as nondeterministic, excluding it from
