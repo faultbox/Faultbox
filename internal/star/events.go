@@ -217,24 +217,32 @@ func (l *EventLog) FormatShiViz() string {
 			continue
 		}
 
-		// Build rich event description with available metadata.
-		desc := ev.EventType
-		if decision, ok := ev.Fields["decision"]; ok {
-			desc += " " + decision
-		}
-		if label, ok := ev.Fields["label"]; ok && label != "" {
-			desc += " [" + label + "]"
-		}
-		if path, ok := ev.Fields["path"]; ok && path != "" {
-			desc += " " + path
-		}
-		if lat, ok := ev.Fields["latency_ms"]; ok && lat != "" && lat != "0" {
-			desc += " (+" + lat + "ms)"
-		}
-		// Step events: show target and method.
-		if target, ok := ev.Fields["target"]; ok {
-			if method, ok := ev.Fields["method"]; ok {
-				desc += " " + method + "→" + target
+		// Build event description.
+		var desc string
+		if ev.Type == "violation" {
+			// Violation marker — stands out in ShiViz visualization.
+			reason := ev.Fields["reason"]
+			testName := ev.Fields["test"]
+			desc = fmt.Sprintf("VIOLATION [%s] %s", testName, reason)
+		} else {
+			desc = ev.EventType
+			if decision, ok := ev.Fields["decision"]; ok {
+				desc += " " + decision
+			}
+			if label, ok := ev.Fields["label"]; ok && label != "" {
+				desc += " [" + label + "]"
+			}
+			if path, ok := ev.Fields["path"]; ok && path != "" {
+				desc += " " + path
+			}
+			if lat, ok := ev.Fields["latency_ms"]; ok && lat != "" && lat != "0" {
+				desc += " (+" + lat + "ms)"
+			}
+			// Step events: show target and method.
+			if target, ok := ev.Fields["target"]; ok {
+				if method, ok := ev.Fields["method"]; ok {
+					desc += " " + method + "→" + target
+				}
 			}
 		}
 

@@ -237,6 +237,39 @@ func WriteShiVizTrace(path string, result *SuiteResult) error {
 				}
 			}
 		}
+
+		// Inject a violation marker for failed tests.
+		if tr.Result == "fail" {
+			// Place the violation on "test" host with a clock that
+			// follows the last event, merging all known service clocks.
+			vc := make(map[string]int64)
+			for host, val := range maxClock {
+				vc[host] = val
+			}
+			// Advance "test" clock for this event.
+			vc["test"] = vc["test"] + 1
+			maxClock["test"] = vc["test"]
+
+			reason := tr.Reason
+			if reason == "" {
+				reason = "test failed"
+			}
+
+			log.mu.Lock()
+			log.seq++
+			log.events = append(log.events, Event{
+				Seq:         log.seq,
+				Type:        "violation",
+				EventType:   "violation",
+				Service:     "test",
+				VectorClock: vc,
+				Fields: map[string]string{
+					"test":   tr.Name,
+					"reason": reason,
+				},
+			})
+			log.mu.Unlock()
+		}
 	}
 
 	content := log.FormatShiViz()
