@@ -422,35 +422,59 @@ func builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin, args starlar
 	return starlark.None, nil
 }
 
-// assert_eventually(service=, syscall=, path=, decision=)
+// assert_eventually(service=, syscall=, path=, decision=, where=lambda)
 // Checks that at least one event in the current trace matches all given filters.
+// Supports where=lambda for complex predicates on structured event data.
 func (rt *Runtime) builtinAssertEventually(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	filters := extractEventFilters(kwargs)
+	whereFn, whereKwargs := extractWhere(kwargs)
+	filters := extractEventFilters(whereKwargs)
 	events := rt.events.Events()
 
 	for _, ev := range events {
-		if ev.Type != "syscall" {
+		if ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
 			continue
 		}
-		if matchesFilters(ev, filters) {
+		if whereFn != nil {
+			se := &StarlarkEvent{ev: ev}
+			result, err := starlark.Call(thread, whereFn, starlark.Tuple{se}, nil)
+			if err != nil {
+				return nil, fmt.Errorf("assert_eventually: where= callback failed: %w", err)
+			}
+			if result.Truth() {
+				return starlark.None, nil
+			}
+		} else if matchesFilters(ev, filters) {
 			return starlark.None, nil
 		}
 	}
 
+	if whereFn != nil {
+		return nil, fmt.Errorf("assert_eventually: no event matched where= predicate")
+	}
 	return nil, fmt.Errorf("assert_eventually: no matching event found (filters: %s)", formatFilters(filters))
 }
 
-// assert_never(service=, syscall=, path=, decision=)
+// assert_never(service=, syscall=, path=, decision=, where=lambda)
 // Checks that no event in the current trace matches all given filters.
 func (rt *Runtime) builtinAssertNever(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	filters := extractEventFilters(kwargs)
+	whereFn, whereKwargs := extractWhere(kwargs)
+	filters := extractEventFilters(whereKwargs)
 	events := rt.events.Events()
 
 	for _, ev := range events {
-		if ev.Type != "syscall" {
+		if ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
 			continue
 		}
-		if matchesFilters(ev, filters) {
+		if whereFn != nil {
+			se := &StarlarkEvent{ev: ev}
+			result, err := starlark.Call(thread, whereFn, starlark.Tuple{se}, nil)
+			if err != nil {
+				return nil, fmt.Errorf("assert_never: where= callback failed: %w", err)
+			}
+			if result.Truth() {
+				return nil, fmt.Errorf("assert_never: found matching event #%d via where= predicate", ev.Seq)
+			}
+		} else if matchesFilters(ev, filters) {
 			return nil, fmt.Errorf("assert_never: found matching event #%d (service=%s syscall=%s decision=%s path=%s)",
 				ev.Seq, ev.Service, ev.Fields["syscall"], ev.Fields["decision"], ev.Fields["path"])
 		}
@@ -463,6 +487,24 @@ func (rt *Runtime) builtinAssertNever(thread *starlark.Thread, fn *starlark.Buil
 type eventFilter struct {
 	key   string // "service", "syscall", "path", "decision"
 	value string // value to match (supports trailing * for glob)
+}
+
+// extractWhere separates the where= kwarg from other kwargs.
+// Returns the where callable (or nil) and the remaining kwargs.
+func extractWhere(kwargs []starlark.Tuple) (starlark.Callable, []starlark.Tuple) {
+	var whereFn starlark.Callable
+	var rest []starlark.Tuple
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		if key == "where" {
+			if cb, ok := kv[1].(starlark.Callable); ok {
+				whereFn = cb
+			}
+		} else {
+			rest = append(rest, kv)
+		}
+	}
+	return whereFn, rest
 }
 
 func extractEventFilters(kwargs []starlark.Tuple) []eventFilter {
@@ -1020,29 +1062,34 @@ func dictToFilters(d *starlark.Dict) []eventFilter {
 	return filters
 }
 
-// events(service=, syscall=, path=, decision=)
+// events(service=, syscall=, path=, decision=, where=lambda)
 // Returns a list of matching events from the current test's trace.
 func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	filters := extractEventFilters(kwargs)
+	whereFn, whereKwargs := extractWhere(kwargs)
+	filters := extractEventFilters(whereKwargs)
 	events := rt.events.Events()
 
 	var result []starlark.Value
 	for _, ev := range events {
-		if ev.Type != "syscall" {
+		if ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
 			continue
 		}
-		if len(filters) > 0 && !matchesFilters(ev, filters) {
+
+		se := &StarlarkEvent{ev: ev}
+
+		if whereFn != nil {
+			res, err := starlark.Call(thread, whereFn, starlark.Tuple{se}, nil)
+			if err != nil {
+				return nil, fmt.Errorf("events(): where= callback failed: %w", err)
+			}
+			if !res.Truth() {
+				continue
+			}
+		} else if len(filters) > 0 && !matchesFilters(ev, filters) {
 			continue
 		}
-		// Convert event to Starlark dict.
-		d := starlark.NewDict(6)
-		d.SetKey(starlark.String("seq"), starlark.MakeInt64(ev.Seq))
-		d.SetKey(starlark.String("type"), starlark.String(ev.Type))
-		d.SetKey(starlark.String("service"), starlark.String(ev.Service))
-		for k, v := range ev.Fields {
-			d.SetKey(starlark.String(k), starlark.String(v))
-		}
-		result = append(result, d)
+
+		result = append(result, se)
 	}
 
 	return starlark.NewList(result), nil

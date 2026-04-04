@@ -339,7 +339,12 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	}
 
 	// Run the test function.
-	thread := &starlark.Thread{Name: name}
+	thread := &starlark.Thread{
+		Name: name,
+		Print: func(_ *starlark.Thread, msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+		},
+	}
 	_, err := starlark.Call(thread, fn, nil, nil)
 
 	// Stop services.

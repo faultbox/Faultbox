@@ -2,6 +2,7 @@
 package star
 
 import (
+	jsonPkg "encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -225,6 +226,13 @@ func (r *Response) Attr(name string) (starlark.Value, error) {
 		return starlark.MakeInt(r.Status), nil
 	case "body":
 		return starlark.String(r.Body), nil
+	case "data":
+		// Auto-decode JSON body into native Starlark dict/list.
+		if decoded := jsonToStarlark(r.Body); decoded != nil {
+			return decoded, nil
+		}
+		// Fallback: return body as string if not valid JSON.
+		return starlark.String(r.Body), nil
 	case "ok":
 		return starlark.Bool(r.Ok), nil
 	case "error":
@@ -236,7 +244,7 @@ func (r *Response) Attr(name string) (starlark.Value, error) {
 }
 
 func (r *Response) AttrNames() []string {
-	return []string{"status", "body", "ok", "error", "duration_ms"}
+	return []string{"status", "body", "data", "ok", "error", "duration_ms"}
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +294,134 @@ func (f *FaultDef) Type() string           { return "fault" }
 func (f *FaultDef) Freeze()                {}
 func (f *FaultDef) Truth() starlark.Bool   { return true }
 func (f *FaultDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: fault") }
+
+// ---------------------------------------------------------------------------
+// StarlarkEvent — wraps Event for lambda predicate access
+// ---------------------------------------------------------------------------
+
+// StarlarkEvent wraps an Event for use in Starlark lambda predicates.
+// Provides .service, .type, .data (auto-decoded JSON), .fields, .seq.
+type StarlarkEvent struct {
+	ev    Event
+	first *StarlarkEvent // for assert_before: the matched first event
+}
+
+var _ starlark.Value = (*StarlarkEvent)(nil)
+var _ starlark.HasAttrs = (*StarlarkEvent)(nil)
+
+func (e *StarlarkEvent) String() string {
+	return fmt.Sprintf("<event #%d %s %s>", e.ev.Seq, e.ev.Service, e.ev.EventType)
+}
+func (e *StarlarkEvent) Type() string           { return "event" }
+func (e *StarlarkEvent) Freeze()                {}
+func (e *StarlarkEvent) Truth() starlark.Bool   { return true }
+func (e *StarlarkEvent) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: event") }
+
+func (e *StarlarkEvent) Attr(name string) (starlark.Value, error) {
+	switch name {
+	case "seq":
+		return starlark.MakeInt64(e.ev.Seq), nil
+	case "service":
+		return starlark.String(e.ev.Service), nil
+	case "type":
+		return starlark.String(e.ev.Type), nil
+	case "event_type":
+		return starlark.String(e.ev.EventType), nil
+	case "data":
+		// Auto-decode JSON from the "data" field if present,
+		// otherwise return all fields as a dict.
+		return e.fieldsAsData(), nil
+	case "fields":
+		return e.fieldsDict(), nil
+	case "first":
+		if e.first != nil {
+			return e.first, nil
+		}
+		return starlark.None, nil
+	}
+	// Also allow direct access to common fields.
+	if v, ok := e.ev.Fields[name]; ok {
+		return starlark.String(v), nil
+	}
+	return nil, starlark.NoSuchAttrError(fmt.Sprintf("event has no .%s attribute", name))
+}
+
+func (e *StarlarkEvent) AttrNames() []string {
+	return []string{"seq", "service", "type", "event_type", "data", "fields", "first"}
+}
+
+// fieldsDict returns all event fields as a Starlark dict.
+func (e *StarlarkEvent) fieldsDict() *starlark.Dict {
+	d := starlark.NewDict(len(e.ev.Fields))
+	for k, v := range e.ev.Fields {
+		d.SetKey(starlark.String(k), starlark.String(v))
+	}
+	return d
+}
+
+// fieldsAsData returns event fields as a Starlark dict.
+// If a "data" field exists containing JSON, it's auto-decoded.
+// Otherwise returns all fields as a dict.
+func (e *StarlarkEvent) fieldsAsData() starlark.Value {
+	if jsonStr, ok := e.ev.Fields["data"]; ok && len(jsonStr) > 0 {
+		if decoded := jsonToStarlark(jsonStr); decoded != nil {
+			return decoded
+		}
+	}
+	// Fallback: return all fields as a dict.
+	return e.fieldsDict()
+}
+
+// jsonToStarlark attempts to decode a JSON string into Starlark values.
+// Returns nil if parsing fails.
+func jsonToStarlark(s string) starlark.Value {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return nil
+	}
+	// Try to parse as JSON using Go's json package, then convert.
+	var raw any
+	if err := jsonUnmarshal([]byte(s), &raw); err != nil {
+		return nil
+	}
+	return goToStarlark(raw)
+}
+
+// goToStarlark converts a Go value (from json.Unmarshal) to Starlark.
+func goToStarlark(v any) starlark.Value {
+	switch val := v.(type) {
+	case nil:
+		return starlark.None
+	case bool:
+		return starlark.Bool(val)
+	case float64:
+		if val == float64(int64(val)) {
+			return starlark.MakeInt64(int64(val))
+		}
+		return starlark.Float(val)
+	case string:
+		return starlark.String(val)
+	case []any:
+		items := make([]starlark.Value, len(val))
+		for i, item := range val {
+			items[i] = goToStarlark(item)
+		}
+		return starlark.NewList(items)
+	case map[string]any:
+		d := starlark.NewDict(len(val))
+		for k, v := range val {
+			d.SetKey(starlark.String(k), goToStarlark(v))
+		}
+		return d
+	default:
+		return starlark.String(fmt.Sprint(v))
+	}
+}
+
+// jsonUnmarshal is a thin wrapper for encoding/json.Unmarshal.
+func jsonUnmarshal(data []byte, v any) error {
+	return jsonPkg.Unmarshal(data, v)
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
