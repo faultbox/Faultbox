@@ -442,24 +442,73 @@ func printTraceSummary(w io.Writer, tr *star.TestResult) {
 		fmt.Fprintln(w, line)
 	}
 
-	// Show fault_applied events with details (helps diagnose missing faults).
+	// Show fault/trace scope timeline with per-scope hit counts.
+	type faultScope struct {
+		service string
+		details string
+		typ     string // "fault" or "trace"
+		hits    int
+		seq     int64
+	}
+	var scopes []faultScope
 	for _, ev := range tr.Events {
-		if ev.Type == "fault_applied" {
+		if ev.Type == "fault_applied" || ev.Type == "trace_applied" {
 			var details []string
 			for k, v := range ev.Fields {
 				details = append(details, k+"="+v)
 			}
-			if len(details) > 0 {
-				sort.Strings(details)
-				fmt.Fprintf(w, "  fault rule on %s: %s\n", ev.Service, strings.Join(details, ", "))
+			sort.Strings(details)
+			typ := "fault"
+			if ev.Type == "trace_applied" {
+				typ = "trace"
+			}
+			scopes = append(scopes, faultScope{
+				service: ev.Service,
+				details: strings.Join(details, ", "),
+				typ:     typ,
+				seq:     ev.Seq,
+			})
+		}
+	}
+
+	// Count hits per scope: events between scope's seq and next scope or end.
+	for i := range scopes {
+		startSeq := scopes[i].seq
+		var endSeq int64 = 1<<62 - 1
+		// Find the next fault_removed/trace_removed for same service.
+		for _, ev := range tr.Events {
+			if (ev.Type == "fault_removed" || ev.Type == "trace_removed") &&
+				ev.Service == scopes[i].service && ev.Seq > startSeq {
+				endSeq = ev.Seq
+				break
+			}
+		}
+		for _, ev := range syscallEvents {
+			if ev.Service == scopes[i].service && ev.Seq > startSeq && ev.Seq < endSeq {
+				decision := ev.Fields["decision"]
+				if decision != "allow" && decision != "allow (system path)" && decision != "" {
+					scopes[i].hits++
+				}
 			}
 		}
 	}
 
+	for _, scope := range scopes {
+		label := "fault rule"
+		if scope.typ == "trace" {
+			label = "trace rule"
+		}
+		hitInfo := ""
+		if scope.hits > 0 {
+			hitInfo = fmt.Sprintf(" (%d hits)", scope.hits)
+		}
+		fmt.Fprintf(w, "  %s on %s: %s%s\n", label, scope.service, scope.details, hitInfo)
+	}
+
 	// Warn if faults were applied but never fired.
 	hasFaults := false
-	for _, ev := range tr.Events {
-		if ev.Type == "fault_applied" {
+	for _, s := range scopes {
+		if s.typ == "fault" {
 			hasFaults = true
 			break
 		}
