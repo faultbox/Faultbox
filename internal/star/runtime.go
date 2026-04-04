@@ -3,10 +3,8 @@ package star
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +18,7 @@ import (
 	"github.com/faultbox/Faultbox/internal/container"
 	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/logging"
+	"github.com/faultbox/Faultbox/internal/protocol"
 	"github.com/faultbox/Faultbox/internal/seccomp"
 )
 
@@ -1131,20 +1130,21 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 		"protocol":  ref.Interface.Protocol,
 	})
 
-	var result starlark.Value
-	var err error
+	// Dispatch via protocol plugin registry.
+	p, ok := protocol.Get(ref.Interface.Protocol)
+	if !ok {
+		return nil, fmt.Errorf("unsupported protocol %q (no plugin registered)", ref.Interface.Protocol)
+	}
 
-	switch ref.Interface.Protocol {
-	case "http":
-		result, err = rt.executeHTTPStep(addr, method, kwargs)
-	case "tcp":
-		result, err = rt.executeTCPStep(addr, method, kwargs)
-	default:
-		return nil, fmt.Errorf("unsupported protocol %q", ref.Interface.Protocol)
+	// Convert Starlark kwargs to map[string]any for the protocol plugin.
+	stepArgs := starlarkKwargsToMap(kwargs)
+
+	stepResult, err := p.ExecuteStep(context.Background(), addr, method, stepArgs)
+	if err != nil {
+		return nil, err
 	}
 
 	// After a step completes, merge target service's clock into the test driver.
-	// This records the causal dependency: test observed targetSvc's state.
 	rt.events.MergeClock("test", targetSvc)
 
 	// Emit step_recv event — shows response received, with merged clock.
@@ -1153,109 +1153,71 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 		"method": method,
 	})
 
-	return result, err
-}
-
-func (rt *Runtime) executeHTTPStep(addr, method string, kwargs []starlark.Tuple) (starlark.Value, error) {
-	stepArgs := make(map[string]any)
-	stepArgs["path"] = "/"
-
-	for _, kv := range kwargs {
-		key, _ := starlark.AsString(kv[0])
-		switch key {
-		case "path":
-			s, _ := starlark.AsString(kv[1])
-			stepArgs["path"] = s
-		case "body":
-			s, _ := starlark.AsString(kv[1])
-			stepArgs["body"] = s
-		case "headers":
-			dict, ok := kv[1].(*starlark.Dict)
-			if ok {
-				headers := make(map[string]any)
-				for _, item := range dict.Items() {
-					k, _ := starlark.AsString(item[0])
-					v, _ := starlark.AsString(item[1])
-					headers[k] = v
-				}
-				stepArgs["headers"] = headers
-			}
-		}
+	// TCP send returns raw string for backward compatibility.
+	if ref.Interface.Protocol == "tcp" && stepResult.Success {
+		return starlark.String(stepResult.Body), nil
 	}
-
-	result, err := engine.RunHTTPStep(context.Background(), addr, strings.ToUpper(method), stepArgs)
-	if err != nil {
-		return nil, err
+	if ref.Interface.Protocol == "tcp" && !stepResult.Success {
+		return nil, fmt.Errorf("tcp send failed: %s", stepResult.Error)
 	}
 
 	return &Response{
-		Status:     result.StatusCode,
-		Body:       result.Body,
-		DurationMs: result.DurationMs,
-		Ok:         result.Success,
-		Error:      result.Error,
+		Status:     stepResult.StatusCode,
+		Body:       stepResult.Body,
+		DurationMs: stepResult.DurationMs,
+		Ok:         stepResult.Success,
+		Error:      stepResult.Error,
 	}, nil
 }
 
-func (rt *Runtime) executeTCPStep(addr, method string, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if method != "send" {
-		return nil, fmt.Errorf("TCP only supports 'send', got %q", method)
-	}
-
-	stepArgs := make(map[string]any)
+// starlarkKwargsToMap converts Starlark kwargs to a Go map for protocol plugins.
+func starlarkKwargsToMap(kwargs []starlark.Tuple) map[string]any {
+	m := make(map[string]any)
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
-		switch key {
-		case "data":
-			s, _ := starlark.AsString(kv[1])
-			stepArgs["data"] = s
+		switch v := kv[1].(type) {
+		case starlark.String:
+			m[key] = string(v)
+		case starlark.Int:
+			n, _ := v.Int64()
+			m[key] = n
+		case starlark.Float:
+			m[key] = float64(v)
+		case starlark.Bool:
+			m[key] = bool(v)
+		case *starlark.Dict:
+			dm := make(map[string]any)
+			for _, item := range v.Items() {
+				k, _ := starlark.AsString(item[0])
+				val, _ := starlark.AsString(item[1])
+				dm[k] = val
+			}
+			m[key] = dm
+		default:
+			m[key] = v.String()
 		}
 	}
-
-	result, err := engine.RunTCPStep(context.Background(), addr, "send", stepArgs)
-	if err != nil {
-		return nil, err
-	}
-
-	// For TCP send, return the response body as a string (simpler API).
-	if result.Success {
-		return starlark.String(result.Body), nil
-	}
-	return nil, fmt.Errorf("tcp send failed: %s", result.Error)
+	return m
 }
 
-// waitReady polls a readiness check.
+// waitReady polls a readiness check using protocol plugins.
 func waitReady(ctx context.Context, check string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	// Determine protocol from URL prefix.
+	switch {
+	case strings.HasPrefix(check, "tcp://"):
+		addr := strings.TrimPrefix(check, "tcp://")
+		if p, ok := protocol.Get("tcp"); ok {
+			return p.Healthcheck(ctx, addr, timeout)
 		}
-
-		if strings.HasPrefix(check, "tcp://") {
-			addr := strings.TrimPrefix(check, "tcp://")
-			conn, err := net.DialTimeout("tcp", addr, time.Second)
-			if err == nil {
-				conn.Close()
-				return nil
-			}
-		} else if strings.HasPrefix(check, "http://") || strings.HasPrefix(check, "https://") {
-			client := &http.Client{Timeout: time.Second}
-			resp, err := client.Get(check)
-			if err == nil {
-				io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
-				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-					return nil
-				}
-			}
+		return protocol.TCPHealthcheck(ctx, addr, timeout)
+	case strings.HasPrefix(check, "http://"), strings.HasPrefix(check, "https://"):
+		if p, ok := protocol.Get("http"); ok {
+			return p.Healthcheck(ctx, check, timeout)
 		}
-
-		time.Sleep(100 * time.Millisecond)
+		return fmt.Errorf("HTTP protocol not registered")
+	default:
+		return fmt.Errorf("unsupported healthcheck scheme in %q", check)
 	}
-	return fmt.Errorf("readiness check %q timed out after %s", check, timeout)
 }
 
 // waitPortsFree waits for service ports to be available.

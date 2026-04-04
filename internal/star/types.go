@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.starlark.net/starlark"
+
+	"github.com/faultbox/Faultbox/internal/protocol"
 )
 
 // ---------------------------------------------------------------------------
@@ -143,19 +145,26 @@ func (r *InterfaceRef) Attr(name string) (starlark.Value, error) {
 		return starlark.String("localhost"), nil
 	case "port":
 		return starlark.MakeInt(r.Interface.Port), nil
-	case "get", "post", "put", "delete", "patch":
-		return &StepMethod{Ref: r, Method: name}, nil
-	case "send":
-		return &StepMethod{Ref: r, Method: "send"}, nil
 	}
+
+	// Check if this is a step method from the protocol plugin.
+	if p, ok := protocol.Get(r.Interface.Protocol); ok {
+		for _, m := range p.Methods() {
+			if m == name {
+				return &StepMethod{Ref: r, Method: name}, nil
+			}
+		}
+	}
+
 	return nil, starlark.NoSuchAttrError(fmt.Sprintf("interface_ref has no .%s attribute", name))
 }
 
 func (r *InterfaceRef) AttrNames() []string {
-	if r.Interface.Protocol == "tcp" {
-		return []string{"addr", "host", "port", "send"}
+	base := []string{"addr", "internal_addr", "host", "port"}
+	if p, ok := protocol.Get(r.Interface.Protocol); ok {
+		base = append(base, p.Methods()...)
 	}
-	return []string{"addr", "host", "port", "get", "post", "put", "delete", "patch"}
+	return base
 }
 
 // ---------------------------------------------------------------------------
