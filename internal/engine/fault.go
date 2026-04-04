@@ -77,6 +77,8 @@ type FaultRule struct {
 	// DestAddr filters connect() syscalls by destination address ("ip:port").
 	// Only used for network partition modeling.
 	DestAddr string
+	// Label is an optional human-readable description (e.g., "WAL write").
+	Label string
 	// HoldTag identifies the HoldQueue this rule feeds into (ActionHold only).
 	HoldTag string
 	// counter tracks matching calls for stateful triggers (thread-safe).

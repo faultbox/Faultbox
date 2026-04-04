@@ -35,6 +35,7 @@ type SyscallEvent struct {
 	Decision string        `json:"decision"` // "allow", "deny(ERRNO)", "delay(500ms)"
 	Path     string        `json:"path,omitempty"`
 	Latency  time.Duration `json:"latency_ns,omitempty"` // time spent in fault (delay duration)
+	Label    string        `json:"label,omitempty"`       // optional fault label from deny/delay
 }
 
 // VirtualClock tracks virtual time for a session. When enabled, fault delays
@@ -342,9 +343,13 @@ func (s *Session) randFloat64() float64 {
 }
 
 // emitSyscallEvent sends a syscall event to the OnSyscall callback if set.
-func (s *Session) emitSyscallEvent(syscallName string, pid uint32, decision, path string, latency time.Duration) {
+func (s *Session) emitSyscallEvent(syscallName string, pid uint32, decision, path string, latency time.Duration, labels ...string) {
 	if s.cfg.OnSyscall == nil {
 		return
+	}
+	var label string
+	if len(labels) > 0 {
+		label = labels[0]
 	}
 	s.cfg.OnSyscall(SyscallEvent{
 		Seq:      s.syscallSeq.Add(1),
@@ -355,6 +360,7 @@ func (s *Session) emitSyscallEvent(syscallName string, pid uint32, decision, pat
 		Decision: decision,
 		Path:     path,
 		Latency:  latency,
+		Label:    label,
 	})
 }
 

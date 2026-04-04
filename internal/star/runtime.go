@@ -572,6 +572,9 @@ func (rt *Runtime) makeSyscallCallback(svcName string) func(engine.SyscallEvent)
 		if evt.Latency > 0 {
 			fields["latency_ms"] = fmt.Sprintf("%d", evt.Latency.Milliseconds())
 		}
+		if evt.Label != "" {
+			fields["label"] = evt.Label
+		}
 		rt.events.Emit("syscall", svcName, fields)
 
 		if (evt.Syscall == "connect" || evt.Syscall == "sendto") &&
@@ -996,6 +999,7 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 			rule := engine.FaultRule{
 				Syscall:     sc,
 				Probability: fd.Probability,
+				Label:       fd.Label,
 			}
 			switch fd.Action {
 			case "delay":
@@ -1018,7 +1022,11 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	faultDetails := make(map[string]string)
 	for syscall, fd := range faults {
 		expanded := expandSyscallFamily(syscall)
-		faultDetails[syscall] = fmt.Sprintf("%s(%s) → filter:[%s]", fd.Action, fd.Errno, strings.Join(expanded, ","))
+		summary := fmt.Sprintf("%s(%s) → filter:[%s]", fd.Action, fd.Errno, strings.Join(expanded, ","))
+		if fd.Label != "" {
+			summary += fmt.Sprintf(" label=%q", fd.Label)
+		}
+		faultDetails[syscall] = summary
 	}
 	rt.events.Emit("fault_applied", svcName, faultDetails)
 	return nil

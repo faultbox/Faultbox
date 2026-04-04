@@ -149,6 +149,31 @@ a = allow()
 	}
 }
 
+func TestFaultLabels(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+d = deny("EIO", label="WAL write")
+dl = delay("500ms", label="slow disk")
+d_nolabel = deny("ENOSPC")
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	d := rt.globals["d"].(*FaultDef)
+	if d.Label != "WAL write" {
+		t.Fatalf("deny label = %q, want %q", d.Label, "WAL write")
+	}
+	dl := rt.globals["dl"].(*FaultDef)
+	if dl.Label != "slow disk" {
+		t.Fatalf("delay label = %q, want %q", dl.Label, "slow disk")
+	}
+	noLabel := rt.globals["d_nolabel"].(*FaultDef)
+	if noLabel.Label != "" {
+		t.Fatalf("deny without label = %q, want empty", noLabel.Label)
+	}
+}
+
 func TestAssertBuiltins(t *testing.T) {
 	rt := New(testLogger())
 

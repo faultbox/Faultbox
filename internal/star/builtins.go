@@ -244,7 +244,7 @@ func builtinHTTP(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 	return &HealthcheckDef{Test: url, Timeout: timeout}, nil
 }
 
-// delay(duration, probability=)
+// delay(duration, probability=, label=)
 func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var durStr string
 	if err := starlark.UnpackPositionalArgs("delay", args, nil, 1, &durStr); err != nil {
@@ -263,10 +263,14 @@ func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.T
 			prob /= 100.0
 		}
 	}
-	return &FaultDef{Action: "delay", Delay: dur, Probability: prob}, nil
+	var label string
+	if ls, ok := starKwarg(kwargs, "label"); ok {
+		label, _ = starlark.AsString(ls)
+	}
+	return &FaultDef{Action: "delay", Delay: dur, Probability: prob, Label: label}, nil
 }
 
-// deny(errno, probability=)
+// deny(errno, probability=, label=)
 func builtinDeny(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var errno string
 	if err := starlark.UnpackPositionalArgs("deny", args, nil, 1, &errno); err != nil {
@@ -281,7 +285,11 @@ func builtinDeny(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 			prob /= 100.0
 		}
 	}
-	return &FaultDef{Action: "deny", Errno: strings.ToUpper(errno), Probability: prob}, nil
+	var label string
+	if ls, ok := starKwarg(kwargs, "label"); ok {
+		label, _ = starlark.AsString(ls)
+	}
+	return &FaultDef{Action: "deny", Errno: strings.ToUpper(errno), Probability: prob, Label: label}, nil
 }
 
 // allow()
