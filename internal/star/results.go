@@ -103,7 +103,7 @@ func NormalizeTrace(result *SuiteResult) string {
 			var line string
 			svc := ev.Service
 			if svc == "" {
-				svc = "faultbox"
+				svc = "test"
 			}
 
 			switch ev.Type {

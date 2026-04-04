@@ -212,7 +212,9 @@ func (l *EventLog) FormatShiViz() string {
 	for _, ev := range events {
 		host := ev.Service
 		if host == "" {
-			host = "faultbox"
+			// Skip metadata events (fault_applied, etc.) — they have no
+			// service attribution and would create a spurious "faultbox" swimlane.
+			continue
 		}
 
 		// Event description.

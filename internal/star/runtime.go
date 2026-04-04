@@ -1105,8 +1105,11 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	addr := fmt.Sprintf("localhost:%d", port)
 	targetSvc := ref.Service.Name
 
+	// Merge test driver's clock into target service — records causal "request sent".
+	rt.events.MergeClock(targetSvc, "test")
+
 	// Emit step_send event from test driver — shows request going out.
-	rt.events.Emit("step_send", "faultbox", map[string]string{
+	rt.events.Emit("step_send", "test", map[string]string{
 		"target":    targetSvc,
 		"method":    method,
 		"interface": ref.Interface.Name,
@@ -1127,10 +1130,10 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 
 	// After a step completes, merge target service's clock into the test driver.
 	// This records the causal dependency: test observed targetSvc's state.
-	rt.events.MergeClock("faultbox", targetSvc)
+	rt.events.MergeClock("test", targetSvc)
 
 	// Emit step_recv event — shows response received, with merged clock.
-	rt.events.Emit("step_recv", "faultbox", map[string]string{
+	rt.events.Emit("step_recv", "test", map[string]string{
 		"target": targetSvc,
 		"method": method,
 	})

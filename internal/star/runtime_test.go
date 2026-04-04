@@ -389,6 +389,18 @@ func TestShiVizFormat(t *testing.T) {
 	if !contains(shiviz, `"db": `) {
 		t.Error("missing db in vector clock")
 	}
+
+	// Events with empty service should be skipped (no "faultbox" swimlane).
+	if contains(shiviz, "faultbox") {
+		t.Error("ShiViz output should not contain 'faultbox' host")
+	}
+
+	// Add an event with no service — should not appear in ShiViz.
+	log.Emit("fault_applied", "", map[string]string{"write": "deny(EIO)"})
+	shiviz2 := log.FormatShiViz()
+	if contains(shiviz2, "fault_applied") {
+		t.Error("metadata events (empty service) should be skipped in ShiViz")
+	}
 }
 
 func TestContainerServiceRegistration(t *testing.T) {

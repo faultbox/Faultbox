@@ -923,7 +923,7 @@ func (rt *Runtime) builtinPartition(thread *starlark.Thread, fn *starlark.Builti
 	}
 	rsA.session.SetDynamicFaultRules(rulesA)
 	rsB.session.SetDynamicFaultRules(rulesB)
-	rt.events.Emit("partition_applied", "faultbox", map[string]string{
+	rt.events.Emit("partition_applied", "", map[string]string{
 		"between": svcA.Name + "," + svcB.Name,
 	})
 
@@ -931,7 +931,7 @@ func (rt *Runtime) builtinPartition(thread *starlark.Thread, fn *starlark.Builti
 	defer func() {
 		rsA.session.ClearDynamicFaultRules()
 		rsB.session.ClearDynamicFaultRules()
-		rt.events.Emit("partition_removed", "faultbox", map[string]string{
+		rt.events.Emit("partition_removed", "", map[string]string{
 			"between": svcA.Name + "," + svcB.Name,
 		})
 	}()
