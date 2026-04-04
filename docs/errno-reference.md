@@ -237,6 +237,30 @@ seccomp policy blocking the operation entirely, missing filesystem feature.
 - Does the service fall back to an alternative?
 - Does it report a clear "unsupported" error?
 
+## Using errnos not listed here
+
+Linux has ~130 errnos. This reference covers the most common ones for
+fault injection. If you need an errno not listed here:
+
+**Step 1:** Find the errno name. Run on your target Linux system:
+```bash
+# List all errnos:
+python3 -c "import errno; print('\n'.join(f'{v}: {k}' for k,v in sorted(errno.errorcode.items())))"
+
+# Or search for a specific error:
+grep -r "EDEADLK\|ELOOP\|ENOLCK" /usr/include/asm-generic/errno*.h
+```
+
+**Step 2:** Use it directly in Faultbox — any valid Linux errno name works:
+```python
+fault(db, write=deny("EDEADLK"), run=scenario)    # resource deadlock
+fault(db, openat=deny("ELOOP"), run=scenario)      # too many symlinks
+fault(db, write=deny("EDQUOT"), run=scenario)      # disk quota exceeded
+```
+
+Faultbox passes the errno string to the kernel — if Linux recognizes it,
+it works. No configuration needed.
+
 ## Combining errnos with probability
 
 Not all failures are 100%. Use probability for intermittent errors:
