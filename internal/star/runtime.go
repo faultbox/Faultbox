@@ -3,6 +3,7 @@ package star
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/container"
 	"github.com/faultbox/Faultbox/internal/engine"
+	"github.com/faultbox/Faultbox/internal/eventsource"
 	"github.com/faultbox/Faultbox/internal/logging"
 	"github.com/faultbox/Faultbox/internal/protocol"
 	"github.com/faultbox/Faultbox/internal/seccomp"
@@ -447,11 +449,48 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 	ns := engine.NamespaceConfig{PID: true, Mount: true, User: true}
 	onSyscall := rt.makeSyscallCallback(svcName)
 
+	// Set up stdout: if observe includes stdout source, create a pipe
+	// so we can decode output lines as events.
+	var stdout io.Writer = os.Stdout
+	var stdoutSources []*eventsource.StdoutSourceHandle
+
+	for _, obs := range svc.Observe {
+		if obs.SourceName == "stdout" {
+			pr, pw := io.Pipe()
+			// Tee: send stdout to both the pipe (for decoding) and os.Stdout.
+			stdout = io.MultiWriter(os.Stdout, pw)
+
+			// Create and start the stdout event source.
+			var dec eventsource.Decoder
+			if obs.DecoderName != "" {
+				if factory, ok := eventsource.GetDecoder(obs.DecoderName); ok {
+					d, err := factory(obs.Params)
+					if err != nil {
+						pw.Close()
+						return fmt.Errorf("decoder %q: %w", obs.DecoderName, err)
+					}
+					dec = d
+				}
+			}
+			src := eventsource.StdoutSource(dec)
+			src.StartWithReader(ctx, eventsource.SourceConfig{
+				ServiceName: svcName,
+				Emit: func(typ string, fields map[string]string) {
+					rt.events.Emit(typ, svcName, fields)
+				},
+			}, pr)
+			stdoutSources = append(stdoutSources, &eventsource.StdoutSourceHandle{
+				Source:    src,
+				PipeWrite: pw,
+			})
+		}
+	}
+
 	sessCfg := engine.SessionConfig{
 		Binary:             svc.Binary,
 		Args:               svc.Args,
 		Env:                envVars,
-		Stdout:             os.Stdout,
+		Stdout:             stdout,
 		Stderr:             os.Stderr,
 		Namespaces:         ns,
 		FaultRules:         faultRules,
@@ -461,6 +500,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 		ExternalListenerFd: -1, // not external
 	}
 
+	_ = stdoutSources // TODO: store for cleanup in stopServices
 	return rt.launchSession(ctx, svcName, svc, sessCfg)
 }
 

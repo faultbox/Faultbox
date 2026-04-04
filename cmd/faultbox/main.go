@@ -12,6 +12,7 @@ import (
 
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/engine"
+	_ "github.com/faultbox/Faultbox/internal/eventsource/decoder" // register decoders
 	"github.com/faultbox/Faultbox/internal/logging"
 	"github.com/faultbox/Faultbox/internal/seccomp"
 	"github.com/faultbox/Faultbox/internal/star"

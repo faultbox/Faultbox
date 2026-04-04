@@ -44,6 +44,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"trace":             starlark.NewBuiltin("trace", rt.builtinTrace),
 		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
+		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutSource),
+		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoder),
+		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoder),
+		"regex_decoder":     starlark.NewBuiltin("regex_decoder", builtinRegexDecoder),
 	}
 }
 
@@ -152,6 +156,22 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				v, _ := starlark.AsString(item[1])
 				svc.Volumes[k] = v
 			}
+		case "observe":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("service() observe must be a list")
+			}
+			iter := list.Iterate()
+			var val starlark.Value
+			for iter.Next(&val) {
+				osv, ok := val.(*ObserveSourceVal)
+				if !ok {
+					iter.Done()
+					return nil, fmt.Errorf("service() observe items must be stdout()/topic()/etc, got %s", val.Type())
+				}
+				svc.Observe = append(svc.Observe, osv.Config)
+			}
+			iter.Done()
 		}
 	}
 
@@ -1101,4 +1121,79 @@ func formatFilters(filters []eventFilter) string {
 		parts[i] = fmt.Sprintf("%s=%q", f.key, f.value)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// ---------------------------------------------------------------------------
+// EventSource + Decoder builtins for observe=
+// ---------------------------------------------------------------------------
+
+// ObserveSourceVal is a Starlark value representing an observe source config.
+type ObserveSourceVal struct {
+	Config ObserveConfig
+}
+
+var _ starlark.Value = (*ObserveSourceVal)(nil)
+
+func (v *ObserveSourceVal) String() string      { return fmt.Sprintf("<observe %s>", v.Config.SourceName) }
+func (v *ObserveSourceVal) Type() string         { return "observe_source" }
+func (v *ObserveSourceVal) Freeze()              {}
+func (v *ObserveSourceVal) Truth() starlark.Bool { return true }
+func (v *ObserveSourceVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: observe_source") }
+
+// DecoderVal is a Starlark value representing a decoder config.
+type DecoderVal struct {
+	Name   string
+	Params map[string]string
+}
+
+var _ starlark.Value = (*DecoderVal)(nil)
+
+func (v *DecoderVal) String() string      { return fmt.Sprintf("<decoder %s>", v.Name) }
+func (v *DecoderVal) Type() string         { return "decoder" }
+func (v *DecoderVal) Freeze()              {}
+func (v *DecoderVal) Truth() starlark.Bool { return true }
+func (v *DecoderVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: decoder") }
+
+// stdout(decoder=) — creates an observe source config for stdout capture.
+func builtinStdoutSource(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	cfg := ObserveConfig{
+		SourceName: "stdout",
+		Params:     make(map[string]string),
+	}
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		if key == "decoder" {
+			if dv, ok := kv[1].(*DecoderVal); ok {
+				cfg.DecoderName = dv.Name
+				for k, v := range dv.Params {
+					cfg.Params["decoder_"+k] = v
+				}
+			}
+		}
+	}
+	return &ObserveSourceVal{Config: cfg}, nil
+}
+
+// json_decoder() — creates a JSON decoder config.
+func builtinJSONDecoder(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	return &DecoderVal{Name: "json"}, nil
+}
+
+// logfmt_decoder() — creates a logfmt decoder config.
+func builtinLogfmtDecoder(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	return &DecoderVal{Name: "logfmt"}, nil
+}
+
+// regex_decoder(pattern=) — creates a regex decoder config.
+func builtinRegexDecoder(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	params := make(map[string]string)
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		val, _ := starlark.AsString(kv[1])
+		params[key] = val
+	}
+	if _, ok := params["pattern"]; !ok {
+		return nil, fmt.Errorf("regex_decoder() requires pattern= argument")
+	}
+	return &DecoderVal{Name: "regex", Params: params}, nil
 }

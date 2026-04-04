@@ -17,6 +17,13 @@ import (
 // ---------------------------------------------------------------------------
 
 // ServiceDef is the Starlark representation of a service declaration.
+// ObserveConfig describes an event source attached to a service.
+type ObserveConfig struct {
+	SourceName  string            // "stdout", "topic", "wal_stream", "tail", "poll"
+	DecoderName string            // "json", "logfmt", "regex"
+	Params      map[string]string // source-specific params
+}
+
 type ServiceDef struct {
 	Name       string
 	Binary     string            // local binary path (binary mode)
@@ -28,6 +35,7 @@ type ServiceDef struct {
 	DependsOn  []string
 	Volumes    map[string]string // host:container volume mounts (container mode)
 	Healthcheck *HealthcheckDef
+	Observe    []ObserveConfig   // event sources to attach
 	rt         *Runtime // set by runtime after registration
 }
 
