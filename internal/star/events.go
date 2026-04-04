@@ -212,18 +212,30 @@ func (l *EventLog) FormatShiViz() string {
 	for _, ev := range events {
 		host := ev.Service
 		if host == "" {
-			// Skip metadata events (fault_applied, etc.) — they have no
-			// service attribution and would create a spurious "faultbox" swimlane.
+			// Skip metadata events (fault_applied, partition, etc.) — they have no
+			// service attribution and would create a spurious swimlane.
 			continue
 		}
 
-		// Event description.
+		// Build rich event description with available metadata.
 		desc := ev.EventType
 		if decision, ok := ev.Fields["decision"]; ok {
 			desc += " " + decision
 		}
+		if label, ok := ev.Fields["label"]; ok && label != "" {
+			desc += " [" + label + "]"
+		}
 		if path, ok := ev.Fields["path"]; ok && path != "" {
 			desc += " " + path
+		}
+		if lat, ok := ev.Fields["latency_ms"]; ok && lat != "" && lat != "0" {
+			desc += " (+" + lat + "ms)"
+		}
+		// Step events: show target and method.
+		if target, ok := ev.Fields["target"]; ok {
+			if method, ok := ev.Fields["method"]; ok {
+				desc += " " + method + "→" + target
+			}
 		}
 
 		// Vector clock as JSON.
