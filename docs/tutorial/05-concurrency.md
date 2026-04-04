@@ -216,9 +216,9 @@ For small state spaces, try EVERY possible ordering:
 
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --test concurrent_orders --explore=all --runs 20
+bin/faultbox test concurrency-test.star --test concurrent_orders --explore=all
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders --explore=all --runs 20
+vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders --explore=all
 ```
 
 ```
@@ -227,14 +227,15 @@ vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders 
 20 passed, 0 failed
 ```
 
-With 2 concurrent operations making 3 syscalls each, there are
-`6! / (3! * 3!) = 20` possible interleavings. `--explore=all` uses
-hold-and-release scheduling — each run produces a different permutation.
+Faultbox auto-calculates the permutation count. With 2 concurrent operations
+making 3 syscalls each, there are `6! / (3! * 3!) = 20` possible
+interleavings. `--explore=all` uses hold-and-release scheduling — each run
+produces a different permutation.
 
-> **Current limitation:** `--explore=all` requires you to specify `--runs N`
-> manually. Pick a number larger than the expected permutation count —
-> extra runs just repeat. A future version will auto-calculate the
-> permutation count so `--explore=all` alone is enough.
+> **Auto-calculation:** When you use `--explore=all` without `--runs`,
+> Faultbox runs the first permutation, observes how many syscalls are held,
+> and automatically runs all `N!` permutations. You can still specify
+> `--runs N` to override (e.g., to limit exploration of large state spaces).
 
 For larger spaces, sample randomly:
 

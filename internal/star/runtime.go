@@ -76,8 +76,9 @@ type Runtime struct {
 	virtualTime bool
 
 	// Exploration mode: "all", "sample", or "".
-	exploreMode string
-	explorePerm int // current permutation index for explore mode
+	exploreMode    string
+	explorePerm    int // current permutation index for explore mode
+	exploreHeldN   int // number of held syscalls observed in last explore run
 
 	// Services excluded from interleaving control in parallel().
 	nondetServices map[string]bool
@@ -193,12 +194,16 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 		Tests: make([]TestResult, 0, len(tests)*runs),
 	}
 
+	// Auto-calculate permutation count for --explore=all without --runs.
+	autoExplore := cfg.ExploreMode == "all" && cfg.Runs <= 0
+
 	for _, name := range tests {
 		if cfg.Filter != "" && name != "test_"+cfg.Filter && name != cfg.Filter {
 			continue
 		}
 
-		for run := 0; run < runs; run++ {
+		testRuns := runs
+		for run := 0; run < testRuns; run++ {
 			// Determine seed for this run.
 			var seed uint64
 			if cfg.Seed != nil {
@@ -210,9 +215,10 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 			rt.virtualTime = cfg.VirtualTime
 			rt.exploreMode = cfg.ExploreMode
 			rt.explorePerm = run
+			rt.exploreHeldN = 0
 
 			runLabel := name
-			if runs > 1 {
+			if testRuns > 1 {
 				runLabel = fmt.Sprintf("%s [seed=%d]", name, seed)
 			}
 			rt.log.Info("running test", slog.String("test", runLabel))
@@ -220,13 +226,22 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 			tr := rt.RunTest(ctx, name)
 			tr.Seed = seed
 
-			if runs > 1 {
+			// After first run with --explore=all (auto), calculate total permutations.
+			if autoExplore && run == 0 && rt.exploreHeldN > 0 {
+				testRuns = engine.Factorial(rt.exploreHeldN)
+				rt.log.Info("explore=all: auto-calculated permutations",
+					slog.Int("held_syscalls", rt.exploreHeldN),
+					slog.Int("total_permutations", testRuns),
+				)
+			}
+
+			if testRuns > 1 {
 				rt.log.Info("test completed",
 					slog.String("test", name),
 					slog.String("result", tr.Result),
 					slog.Uint64("seed", seed),
 					slog.Int("run", run+1),
-					slog.Int("of", runs),
+					slog.Int("of", testRuns),
 				)
 			} else {
 				rt.log.Info("test completed",
@@ -245,7 +260,7 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 				suite.Fail++
 				suite.Tests = append(suite.Tests, tr)
 				// In multi-run mode, stop this test on first failure.
-				if runs > 1 {
+				if testRuns > 1 {
 					rt.log.Warn("failure found, stopping runs for this test",
 						slog.String("test", name),
 						slog.Uint64("seed", seed),

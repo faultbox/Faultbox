@@ -784,6 +784,8 @@ func (rt *Runtime) parallelWithExplore(callables []starlark.Callable) (starlark.
 
 		n := q.Len()
 		if n > 0 {
+			// Record held count for auto-permutation calculation.
+			rt.exploreHeldN = n
 			_, err := scheduler.ReleaseInOrder(ctx, q, n)
 			schedDone <- err
 		} else {

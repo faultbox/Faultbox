@@ -268,9 +268,11 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	}
 
 	// Print trace summary per test.
-	// In multi-run mode, group passing runs into a compact summary.
-	if rcfg.Runs > 1 {
-		printMultiRunSummary(os.Stderr, result, rcfg.Runs)
+	// In multi-run mode (explicit --runs or auto-explore), group passing runs
+	// into a compact summary.
+	totalRuns := result.Pass + result.Fail
+	if rcfg.Runs > 1 || (rcfg.ExploreMode == "all" && totalRuns > 1) {
+		printMultiRunSummary(os.Stderr, result, totalRuns)
 	} else {
 		for _, tr := range result.Tests {
 			printTraceSummary(os.Stderr, &tr)
