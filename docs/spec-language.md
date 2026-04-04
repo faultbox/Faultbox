@@ -126,8 +126,9 @@ interface("events", "kafka", 9092, spec="./events.avsc")
 | `port` | int | **yes** | Port number |
 | `spec` | string | no | Path to protocol spec file (OpenAPI, protobuf, Avro, etc.) |
 
-Currently supported protocols for step execution: `http`, `tcp`.
-Other protocols can be declared for documentation and future Starlark modules.
+Protocols are provided by **plugins** — Go implementations registered at
+compile time. Each protocol defines its own step methods, healthcheck,
+and response format. See [Protocols](#protocols) for the full list.
 
 ### Multi-Interface Services
 
@@ -144,6 +145,237 @@ courier = service("courier", "./courier-svc",
 ```
 
 Access interfaces by name: `courier.public`, `courier.internal`, `courier.events`.
+
+---
+
+## Type Reference
+
+Everything in a `.star` file is a typed value. This section defines each
+built-in type, its constructor, properties, and what's extensible.
+
+### Type: `Service`
+
+**Constructor:** `service(name, [binary], *interfaces, ...)`
+
+A service declaration. Created by `service()` and assigned to a variable.
+The variable name is arbitrary — `"main"` is not special:
+
+```python
+db = service("db", ...)        # variable "db", service name "db"
+my_pg = service("postgres", ...)  # variable "my_pg", service name "postgres"
+```
+
+**Properties (read-only):**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `.name` | `string` | Service name (first arg to `service()`) |
+| `.<interface_name>` | `InterfaceRef` | Reference to the named interface |
+
+**Shorthand step methods:** When a service has exactly one interface,
+its step methods are promoted to the service level:
+
+```python
+# These are equivalent when api has one interface:
+api.public.get(path="/health")
+api.get(path="/health")
+```
+
+**What's user-defined:** The service name and interface names are yours.
+Nothing is built-in — `"main"`, `"public"`, `"internal"` are conventions,
+not keywords.
+
+---
+
+### Type: `Interface`
+
+**Constructor:** `interface(name, protocol, port, spec=)`
+
+Declares a communication endpoint on a service. The `protocol` string
+selects which plugin handles step methods and healthchecks.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | **yes** | Your name for this interface (arbitrary) |
+| `protocol` | string | **yes** | Plugin name — determines available methods |
+| `port` | int | **yes** | Port number |
+| `spec` | string | no | Path to protocol spec file (OpenAPI, protobuf, Avro) |
+
+**What's user-defined:** The name is yours. The protocol must match a
+registered plugin (see [Protocols](#protocols)).
+
+---
+
+### Type: `InterfaceRef`
+
+**Not constructed directly.** Returned when you access `service.interface_name`.
+
+```python
+db = service("db", ..., interface("main", "tcp", 5432))
+ref = db.main  # ← this is an InterfaceRef
+```
+
+**Properties (read-only):**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `.addr` | `string` | `"localhost:<port>"` — for healthchecks, test steps, binary-mode env |
+| `.host` | `string` | `"localhost"` |
+| `.port` | `int` | Port number |
+| `.internal_addr` | `string` | Container-to-container address (`"servicename:<port>"` in Docker, same as `.addr` for binaries) |
+
+**Step methods:** determined by the protocol plugin. Accessing a method name
+returns a callable `StepMethod`:
+
+```python
+db.main.send(data="PING")       # tcp protocol → send()
+api.public.post(path="/data")    # http protocol → post()
+pg.main.query(sql="SELECT 1")   # postgres protocol → query()
+```
+
+**`.addr` vs `.internal_addr`:**
+
+| | Binary mode | Container mode |
+|---|---|---|
+| `.addr` | `localhost:5432` | `localhost:<mapped_port>` |
+| `.internal_addr` | `localhost:5432` | `db:5432` (Docker DNS) |
+
+Use `.addr` for healthchecks and test steps (from the host).
+Use `.internal_addr` in container `env` (service-to-service).
+
+---
+
+### Type: `StepMethod`
+
+**Not constructed directly.** Returned when you access a method on an InterfaceRef.
+
+```python
+fn = api.public.post   # ← StepMethod
+fn(path="/data")       # ← callable
+```
+
+All step methods return a `Response`. The available methods depend on
+the protocol — see [Protocols](#protocols).
+
+---
+
+### Type: `Response`
+
+**Returned by step methods.** Wraps the result of a protocol call.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `.status` | `int` | Status code (HTTP status, or 0 for non-HTTP on success) |
+| `.body` | `string` | Raw response body |
+| `.data` | `dict/list` | **Auto-decoded** — JSON body parsed into native Starlark values |
+| `.ok` | `bool` | `True` if the step succeeded |
+| `.error` | `string` | Error message if `.ok` is `False` |
+| `.duration_ms` | `int` | Step execution time in milliseconds |
+
+**`.body` vs `.data`:** `.body` is always the raw string. `.data` is the
+same content auto-decoded from JSON — you never need `json.decode()`:
+
+```python
+resp = pg.main.query(sql="SELECT * FROM users")
+print(resp.body)           # '[{"id": 1, "name": "alice"}]'
+print(resp.data[0]["name"])  # 'alice'
+```
+
+---
+
+### Type: `StarlarkEvent`
+
+**Passed to `where=` lambda predicates** in assertions and `events()`.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `.seq` | `int` | Monotonic sequence number |
+| `.service` | `string` | Service that produced the event |
+| `.type` | `string` | Event type (`"syscall"`, `"stdout"`, `"wal"`, `"topic"`) |
+| `.event_type` | `string` | PObserve dotted notation (`"syscall.write"`) |
+| `.data` | `dict` | Auto-decoded payload (from JSON `"data"` field, or all fields) |
+| `.fields` | `dict` | Raw string fields |
+| `.first` | `StarlarkEvent/None` | In `assert_before` `then=` lambda: the matched first event |
+| `.<field_name>` | `string` | Direct access to any field (e.g., `.decision`, `.label`) |
+
+```python
+assert_eventually(where=lambda e: e.type == "wal" and e.data["op"] == "INSERT")
+assert_before(
+    first=lambda e: e.data["op"] == "INSERT",
+    then=lambda e: e.data["ref_id"] == e.first.data["id"],
+)
+```
+
+---
+
+## Protocols
+
+Protocols are **Go plugins** registered at compile time via `init()`.
+Each protocol defines which step methods are available on its interfaces.
+
+The `protocol` string in `interface(name, protocol, port)` selects the plugin.
+**You cannot define new protocols in Starlark** — they are Go code.
+To add a protocol, implement the `protocol.Protocol` interface in Go.
+
+### Built-in Protocols
+
+| Protocol | Step Methods | Response `.data` | Healthcheck |
+|----------|-------------|-----------------|-------------|
+| `http` | `get`, `post`, `put`, `delete`, `patch` | raw body (auto-decoded if JSON) | HTTP GET 2xx-3xx |
+| `tcp` | `send` | response line as string | TCP connect |
+| `postgres` | `query`, `exec` | `[{col: val, ...}]` / `{rows_affected: N}` | TCP + Postgres ping |
+| `redis` | `get`, `set`, `del`, `ping`, `keys`, `lpush`, `rpush`, `lrange`, `incr`, `command` | `{value: ...}` | TCP + PING/PONG |
+| `mysql` | `query`, `exec` | `[{col: val, ...}]` / `{rows_affected: N}` | TCP + MySQL ping |
+| `kafka` | `publish`, `consume` | `{published: true}` / `{topic, key, value, ...}` | TCP connect |
+| `nats` | `publish`, `request`, `subscribe` | `{subject, data}` | TCP connect |
+| `grpc` | `call` | `{method, raw}` | TCP connect |
+
+### Protocol Step Method Reference
+
+**http** — `interface("api", "http", 8080)`
+```python
+resp = svc.api.get(path="/users", headers={"Authorization": "Bearer ..."})
+resp = svc.api.post(path="/users", body='{"name": "alice"}')
+```
+
+**tcp** — `interface("main", "tcp", 5432)`
+```python
+resp = svc.main.send(data="PING")  # returns string, not Response
+```
+
+**postgres** — `interface("main", "postgres", 5432)`
+```python
+resp = svc.main.query(sql="SELECT * FROM users WHERE id=1")
+# resp.data = [{"id": 1, "name": "alice"}]
+resp = svc.main.exec(sql="INSERT INTO users (name) VALUES ('bob')")
+# resp.data = {"rows_affected": 1}
+```
+
+**redis** — `interface("main", "redis", 6379)`
+```python
+svc.main.set(key="user:1", value="alice")
+resp = svc.main.get(key="user:1")
+# resp.data = {"value": "alice"}
+```
+
+**kafka** — `interface("main", "kafka", 9092)`
+```python
+svc.main.publish(topic="events", data='{"type": "order"}', key="order-1")
+resp = svc.main.consume(topic="events", group="test")
+# resp.data = {"topic": "events", "key": "order-1", "value": "..."}
+```
+
+**nats** — `interface("main", "nats", 4222)`
+```python
+svc.main.publish(subject="orders.new", data='{"id": 1}')
+resp = svc.main.request(subject="orders.get", data='{"id": 1}')
+resp = svc.main.subscribe(subject="orders.*")
+```
+
+**grpc** — `interface("main", "grpc", 9090)`
+```python
+resp = svc.main.call(method="/package.Service/GetUser", body='{"id": 1}')
+```
 
 ### Healthchecks
 
