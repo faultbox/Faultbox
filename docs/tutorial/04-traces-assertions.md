@@ -306,19 +306,61 @@ and how their operations interleaved.
 
 ### Normalized trace — for determinism verification
 
+**The problem:** you fix a bug, and the tests pass. But did the fix change
+the system's behavior in unexpected ways? Maybe the fix reordered internal
+operations, or removed a retry, or changed which syscalls get called. The
+tests still pass, but the system behaves differently — and you won't know
+until production.
+
+**The solution:** capture a normalized trace (stripped of timestamps,
+PIDs, and other non-deterministic fields) before and after your change.
+If the traces are identical, the behavior is unchanged. If they differ,
+the diff shows exactly what changed.
+
+**Step 1:** Capture a baseline trace:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --normalize trace1.norm
-bin/faultbox test traces-test.star --normalize trace2.norm
-bin/faultbox diff trace1.norm trace2.norm
+bin/faultbox test traces-test.star --normalize trace-before.norm
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --normalize trace1.norm
-vm bin/linux-arm64/faultbox test traces-test.star --normalize trace2.norm
-vm bin/linux-arm64/faultbox diff trace1.norm trace2.norm
+vm bin/linux-arm64/faultbox test traces-test.star --normalize trace-before.norm
 ```
 
-Same seed + same binary = identical normalized trace. This proves your
-system is deterministic under the same inputs.
+**Step 2:** Make your code change, rebuild, then capture again:
+```bash
+# Linux:
+bin/faultbox test traces-test.star --normalize trace-after.norm
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --normalize trace-after.norm
+```
+
+**Step 3:** Compare:
+```bash
+# Linux:
+bin/faultbox diff trace-before.norm trace-after.norm
+# macOS (Lima):
+vm bin/linux-arm64/faultbox diff trace-before.norm trace-after.norm
+```
+
+If the system is deterministic (same seed + same binary), the output is:
+```
+traces are identical
+```
+
+If the behavior changed, you see exactly what:
+```
+traces differ (24 vs 26 lines):
+  line 12:
+    run1: inventory write allow
+    run2: inventory write allow
+  line 13:
+    run1: inventory fsync allow
+    run2: inventory write allow        ← extra write before fsync
+```
+
+**When to use this:**
+- Before/after a refactor — prove no behavioral change
+- In CI — capture a baseline trace, fail if a PR changes it unexpectedly
+- Debugging flaky tests — run twice with the same seed, diff to find non-determinism
 
 ## What you learned
 
