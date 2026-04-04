@@ -109,7 +109,7 @@ def test_db_write_failure():
     def scenario():
         resp = api.post(path="/data/failkey", body="value")
         assert_true(resp.status >= 500, "expected 5xx on DB write failure")
-    fault(db, write=deny("EIO"), run=scenario)
+    fault(db, write=deny("EIO", label="disk failure"), run=scenario)
 ```
 
 Run it:
@@ -123,10 +123,14 @@ vm bin/linux-arm64/faultbox test fault-test.star --test db_write_failure
 ```
 --- PASS: test_db_write_failure (200ms, seed=0) ---
   syscall trace (85 events):
-    #72  db    write   deny(input/output error)
-    #73  db    write   deny(input/output error)
-  fault rule on db: write=deny(EIO) → filter:[write,writev,pwrite64]
+    #72  db    write   deny(input/output error)  [disk failure]
+    #73  db    write   deny(input/output error)  [disk failure]
+  fault rule on db: write=deny(EIO) → filter:[write,writev,pwrite64] label="disk failure"
 ```
+
+The `label="disk failure"` tag appears in the trace output as `[disk failure]`
+next to each faulted syscall — making it easy to identify which fault rule
+caused each denial when you have multiple faults active.
 
 What happens:
 1. **Apply** `write=deny("EIO")` to the db service's seccomp filter
@@ -212,10 +216,12 @@ deny("EIO")                    # I/O error, 100%
 deny("ENOSPC")                 # disk full
 deny("ECONNREFUSED")           # connection refused
 deny("EIO", probability="50%") # 50% chance
+deny("EIO", label="WAL write") # labeled — shows [WAL write] in trace
 
 # Slow down, then allow
 delay("500ms")                 # add 500ms latency
 delay("2s", probability="30%") # 30% chance of 2s delay
+delay("500ms", label="slow disk") # labeled for trace clarity
 ```
 
 **When to use deny vs delay:**

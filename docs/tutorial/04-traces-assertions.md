@@ -115,7 +115,7 @@ def test_wal_written():
             service="inventory",
             syscall="write",
         )
-    fault(inventory, write=delay("100ms"), run=scenario)
+    fault(inventory, write=delay("100ms", label="slow WAL"), run=scenario)
 ```
 
 > **Why a fault here?** Trace assertions query the syscall event log.
@@ -135,8 +135,8 @@ vm bin/linux-arm64/faultbox test traces-test.star --test wal_written
 ```
 --- PASS: test_wal_written (500ms, seed=0) ---
   syscall trace (4 events):
-    #8  inventory  write  delay(100ms)  (+100ms)
-  fault rule on inventory: write=delay(100ms) → filter:[write,writev,pwrite64]
+    #8  inventory  write  delay(100ms)  [slow WAL]  (+100ms)
+  fault rule on inventory: write=delay(100ms) → filter:[write,writev,pwrite64] label="slow WAL"
 ```
 
 **Why this matters:** the API returned 200, but `assert_eventually` proves
@@ -160,7 +160,7 @@ def test_no_write_when_unreachable():
             syscall="connect",
             decision="allow",
         )
-    fault(orders, connect=deny("ECONNREFUSED"), run=scenario)
+    fault(orders, connect=deny("ECONNREFUSED", label="inventory unreachable"), run=scenario)
 ```
 
 > **Why not `assert_never(service="inventory", syscall="write")`?**
@@ -202,7 +202,7 @@ def test_delay_then_deny():
             first={"service": "inventory", "syscall": "write"},
             then={"service": "inventory", "decision": "deny*"},
         )
-    fault(inventory, write=delay("100ms"), fsync=deny("EIO"), run=scenario)
+    fault(inventory, write=delay("100ms", label="slow WAL"), fsync=deny("EIO", label="sync failure"), run=scenario)
 ```
 
 > **Note:** Both fault keywords are in a single `fault()` call, so both
@@ -301,8 +301,17 @@ vm bin/linux-arm64/faultbox test traces-test.star --shiviz trace.shiviz
 ```
 
 Open at https://bestchai.bitbucket.io/shiviz/ to see a space-time diagram
-with arrows between services. You'll see exactly when each service acted
-and how their operations interleaved.
+with arrows between services. Each service gets its own swimlane, plus a
+**"test"** swimlane representing the test driver (your step calls).
+
+**What you'll see in the diagram:**
+- **Causal arrows** between swimlanes — e.g., test sends a request to orders,
+  orders connects to inventory
+- **Fault labels** on events — `[slow WAL]`, `[sync failure]` — so you can
+  identify which fault rule affected each syscall
+- **Paths and latency** — file paths for I/O syscalls, `(+100ms)` for delays
+- **VIOLATION markers** — if a test fails, a `VIOLATION [test_name] reason`
+  event appears at the failure point in the "test" swimlane
 
 ### Normalized trace — for determinism verification
 

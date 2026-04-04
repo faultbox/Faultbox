@@ -146,7 +146,7 @@ def test_postgres_disk_full():
     def scenario():
         resp = api.post(path="/data?key=full&value=test")
         assert_true(resp.status >= 500, "expected 5xx on ENOSPC")
-    fault(postgres, write=deny("ENOSPC"), run=scenario)
+    fault(postgres, write=deny("ENOSPC", label="disk full"), run=scenario)
 ```
 
 Run it:
@@ -159,8 +159,8 @@ sudo bin/faultbox test poc/demo-container/faultbox.star --test postgres_disk_ful
 
 ```
 --- PASS: test_postgres_disk_full (10.4s, seed=0) ---
-  fault rule on postgres: write=deny(ENOSPC) → filter:[write,writev,pwrite64]
-    #5319  postgres  pwrite64  deny(no space left on device)
+  fault rule on postgres: write=deny(ENOSPC) → filter:[write,writev,pwrite64] label="disk full"
+    #5319  postgres  pwrite64  deny(no space left on device)  [disk full]
 ```
 
 This denies `write`, `writev`, and `pwrite64` on the Postgres container.

@@ -188,6 +188,12 @@ vm bin/linux-arm64/faultbox test concurrency-test.star --test flaky_network --ru
 (0, 1, 2, ..., 99). Each seed produces a different interleaving of
 concurrent operations. `--show fail` hides passing runs.
 
+When all runs pass, output is compact — one summary line per test:
+```
+--- PASS: test_flaky_network (100/100 runs) ---
+```
+When a run fails, you see the full trace detail for the first failure.
+
 If seed 7 fails, replay it:
 
 ```bash
@@ -216,9 +222,8 @@ vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders 
 ```
 
 ```
---- PASS: test_concurrent_orders [seed=0] (5200ms, seed=0) ---
---- PASS: test_concurrent_orders [seed=1] (5100ms, seed=1) ---
-...
+--- PASS: test_concurrent_orders (20/20 runs) ---
+
 20 passed, 0 failed
 ```
 
@@ -252,12 +257,14 @@ aren't part of your test scenario. These add noise:
 
 ```python
 def test_concurrent_orders():
-    nondet(monitoring_svc)  # exclude from interleaving control
+    nondet(monitoring_svc, cache_svc)  # exclude from interleaving control
     results = parallel(...)
 ```
 
-`nondet()` marks a service's syscalls as "don't hold, don't schedule" —
-they proceed immediately without interleaving control.
+`nondet()` accepts one or more services and marks their syscalls as
+"don't hold, don't schedule" — they proceed immediately without
+interleaving control. Pass multiple services in a single call instead
+of calling `nondet()` separately for each.
 
 ## Virtual time
 
@@ -298,7 +305,7 @@ def test_concurrent_under_failure():
             if r.status == 200:
                 ok_count += 1
         assert_true(ok_count <= 1, "at most one order should succeed — no overselling")
-    fault(inventory, write=delay("500ms"), run=scenario)
+    fault(inventory, write=delay("500ms", label="slow inventory"), run=scenario)
 ```
 
 Both orders request all 100 widgets. Only one can win — the other must
@@ -315,7 +322,7 @@ vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_under_f
 
 ```
 --- PASS: test_concurrent_under_failure (600ms, seed=0) ---
-  fault rule on inventory: write=delay(500ms) → filter:[write,writev,pwrite64]
+  fault rule on inventory: write=delay(500ms) → filter:[write,writev,pwrite64] label="slow inventory"
 ```
 
 This tests: "when two orders race AND inventory is slow, does the system
@@ -342,7 +349,7 @@ def test_oversell_bug():
         )
         for r in results:
             assert_eq(r.status, 200, "both orders should succeed")
-    fault(inventory, write=delay("100ms"), run=scenario)
+    fault(inventory, write=delay("100ms", label="race window"), run=scenario)
 ```
 
 Run it with multiple seeds to find a failure:
@@ -376,14 +383,19 @@ vm bin/linux-arm64/faultbox test concurrency-test.star --test oversell_bug --see
 
 **Step 3:** Open both at https://bestchai.bitbucket.io/shiviz/ and compare.
 
+You'll see swimlanes for each service plus a **"test"** swimlane for
+the test driver. Each event now shows rich metadata:
+- **Labels** like `[race window]` on faulted syscalls
+- **Causal arrows** between services showing request/response flow
+- **VIOLATION marker** in the failing trace — a `VIOLATION [test_oversell_bug]`
+  event appears at the failure point, making it easy to spot
+
 In the **passing** run, both RESERVE calls happen before inventory
 checks stock — the mutex serializes them and both see enough stock.
 
 In the **failing** run, the second RESERVE arrives after the first
 drained all stock — it gets "insufficient_stock" and the assertion fails.
-
-The ShiViz diagram makes the ordering difference immediately visible —
-you can see exactly where the syscalls interleaved differently.
+The VIOLATION marker shows exactly which assertion failed and why.
 
 **This is the core debugging workflow:** find a failure with `--runs`,
 visualize it with `--shiviz`, compare with a passing seed, understand
@@ -393,10 +405,11 @@ the ordering, fix the code, replay to verify.
 
 - `parallel()` runs operations concurrently with controlled interleaving
 - Seeds make concurrency bugs reproducible
-- `--runs N` discovers failures across many interleavings
+- `--runs N` discovers failures — compact output shows one summary line per test
 - `--explore=all` guarantees complete coverage for small state spaces
-- `nondet()` excludes noisy services from scheduling control
+- `nondet(svc1, svc2, ...)` excludes noisy services from scheduling control
 - `--virtual-time` makes exhaustive exploration practical
+- ShiViz shows causal arrows, fault labels, and VIOLATION markers for debugging
 - Faults + concurrency = realistic distributed stress testing
 - ShiViz visualizes interleavings — compare failing vs passing seeds to see the bug
 
