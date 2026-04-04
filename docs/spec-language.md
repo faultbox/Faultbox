@@ -787,10 +787,10 @@ inventory {"inventory": 1}
 lifecycle.started
 orders {"orders": 1}
 lifecycle.started
-faultbox {"faultbox": 1}
-step_send.orders
-faultbox {"faultbox": 2, "inventory": 20, "orders": 15}
-step_recv.orders
+test {"test": 1}
+step_send.orders post→orders
+test {"test": 2, "inventory": 20, "orders": 15}
+step_recv.orders post→orders
 ```
 
 Vector clocks track causality:
