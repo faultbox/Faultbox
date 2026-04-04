@@ -205,6 +205,38 @@ succeeds but the sync fails, and the application thinks data is durable.
 > retrying might silently return success even though data was lost.
 > This is exactly the kind of bug Faultbox was built to find.
 
+## Filesystem edge cases
+
+### EEXIST — File exists
+```python
+fault(db, openat=deny("EEXIST"), run=scenario)
+```
+**Simulates:** Lock file already held by another process, create-exclusive
+(`O_EXCL`) failing because the file was already created, PID file from a
+previous crashed instance.
+
+**What to test:**
+- Does the service handle "already exists" differently from "can't create"?
+- Does it clean up stale lock files?
+
+### ENOTEMPTY — Directory not empty
+```python
+fault(db, openat=deny("ENOTEMPTY"), run=scenario)
+```
+**Simulates:** Trying to remove a directory that still has files (e.g.,
+cleanup of temp directories, log rotation removing old dirs).
+
+### ENOSYS — Function not implemented
+```python
+fault(db, openat=deny("ENOSYS"), run=scenario)
+```
+**Simulates:** Running on a kernel that doesn't support a specific syscall,
+seccomp policy blocking the operation entirely, missing filesystem feature.
+
+**What to test:**
+- Does the service fall back to an alternative?
+- Does it report a clear "unsupported" error?
+
 ## Combining errnos with probability
 
 Not all failures are 100%. Use probability for intermittent errors:
