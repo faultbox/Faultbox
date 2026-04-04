@@ -617,20 +617,23 @@ func (rt *Runtime) builtinTraceStop(thread *starlark.Thread, fn *starlark.Builti
 	return starlark.None, nil
 }
 
-// nondet(service) — marks a service as nondeterministic, excluding it from
-// interleaving control during parallel(). Its syscalls proceed immediately.
+// nondet(service, ...) — marks one or more services as nondeterministic,
+// excluding them from interleaving control during parallel().
+// Their syscalls proceed immediately.
 func (rt *Runtime) builtinNondet(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 1 {
-		return nil, fmt.Errorf("nondet() requires a service argument")
-	}
-	svc, ok := args[0].(*ServiceDef)
-	if !ok {
-		return nil, fmt.Errorf("nondet() argument must be a service, got %s", args[0].Type())
+		return nil, fmt.Errorf("nondet() requires at least one service argument")
 	}
 	if rt.nondetServices == nil {
 		rt.nondetServices = make(map[string]bool)
 	}
-	rt.nondetServices[svc.Name] = true
+	for i, arg := range args {
+		svc, ok := arg.(*ServiceDef)
+		if !ok {
+			return nil, fmt.Errorf("nondet() argument %d must be a service, got %s", i, arg.Type())
+		}
+		rt.nondetServices[svc.Name] = true
+	}
 	return starlark.None, nil
 }
 

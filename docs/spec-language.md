@@ -567,15 +567,15 @@ faultbox test faultbox.star --explore=sample           # 100 random orderings
 faultbox test faultbox.star --seed 42                  # replay exact ordering
 ```
 
-### `nondet(service)`
+### `nondet(service, ...)`
 
-Excludes a service from interleaving control during `parallel()`. Its syscalls
-proceed immediately without being held. Use this for services that make
-nondeterministic background requests (healthchecks, metrics, logging).
+Excludes one or more services from interleaving control during `parallel()`.
+Their syscalls proceed immediately without being held. Use this for services
+that make nondeterministic background requests (healthchecks, metrics, logging).
 
 ```python
 def test_concurrent_orders():
-    nondet(monitoring_svc)  # exclude from ordering exploration
+    nondet(monitoring_svc, cache_svc)  # exclude from ordering exploration
     results = parallel(
         lambda: orders.post(path="/orders", body='...'),
         lambda: orders.post(path="/orders", body='...'),
