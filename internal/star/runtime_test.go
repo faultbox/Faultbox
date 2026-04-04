@@ -729,6 +729,33 @@ def test_trace_writes():
 	}
 }
 
+func TestNondetVariadic(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+api = service("api", "/tmp/mock-api",
+    interface("public", "http", 8080),
+)
+cache = service("cache", "/tmp/mock-cache",
+    interface("main", "tcp", 6379),
+)
+
+# Variadic: mark multiple services at once.
+nondet(db, api, cache)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	for _, name := range []string{"db", "api", "cache"} {
+		if !rt.nondetServices[name] {
+			t.Errorf("expected %q to be marked nondet", name)
+		}
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }
