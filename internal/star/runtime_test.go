@@ -336,6 +336,15 @@ func TestShiVizFormat(t *testing.T) {
 	log.Emit("service_started", "db", nil)
 	log.Emit("syscall", "db", map[string]string{"syscall": "write", "decision": "allow"})
 	log.Emit("syscall", "api", map[string]string{"syscall": "connect", "decision": "deny(ECONNREFUSED)"})
+	// Rich metadata: label, latency, path.
+	log.Emit("syscall", "db", map[string]string{
+		"syscall": "write", "decision": "deny(EIO)",
+		"label": "WAL write", "path": "/data/wal", "latency_ms": "500",
+	})
+	// Step event with target/method.
+	log.Emit("step_send", "test", map[string]string{"target": "db", "method": "post"})
+	// Metadata event (empty service) — should be skipped.
+	log.Emit("fault_applied", "", map[string]string{"write": "deny(EIO)"})
 
 	shiviz := log.FormatShiViz()
 
@@ -358,6 +367,28 @@ func TestShiVizFormat(t *testing.T) {
 	}
 	if !contains(shiviz, "deny(ECONNREFUSED)") {
 		t.Error("missing deny decision")
+	}
+
+	// Rich metadata should appear in event descriptions.
+	if !contains(shiviz, "[WAL write]") {
+		t.Error("missing label in ShiViz event")
+	}
+	if !contains(shiviz, "/data/wal") {
+		t.Error("missing path in ShiViz event")
+	}
+	if !contains(shiviz, "(+500ms)") {
+		t.Error("missing latency in ShiViz event")
+	}
+	if !contains(shiviz, "post→db") {
+		t.Error("missing step target/method in ShiViz event")
+	}
+
+	// Metadata events (empty service) should be skipped.
+	if contains(shiviz, "faultbox") {
+		t.Error("ShiViz should not contain 'faultbox' host")
+	}
+	if contains(shiviz, "fault_applied") {
+		t.Error("metadata events should be skipped in ShiViz")
 	}
 
 	// Vector clocks should have deterministic key ordering.
