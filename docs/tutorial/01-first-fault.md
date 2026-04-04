@@ -156,13 +156,12 @@ not your fault rule.) **The intuition:** production failures are usually
 localized — one volume fails, not all storage. Path targeting simulates
 exactly that.
 
-> **Important:** Path filtering only works for syscalls that take a path
-> argument — like `openat(dirfd, path, ...)`. It does NOT work for `write`,
-> because `write(fd, buf, len)` only sees a file descriptor number, not a
-> path. If you try `--fault "write=EIO:100%:/tmp/faultbox*"`, the path glob
-> is silently ignored and ALL writes are denied — including stdout and stderr.
->
-> To target specific files, block the **open** (`openat`), not the write.
+> **fd→path resolution:** Path filtering works for both file-path syscalls
+> (`openat`) and fd-based syscalls (`write`, `read`, `fsync`). For fd-based
+> syscalls, Faultbox resolves the file descriptor to a path via `/proc/PID/fd/N`,
+> so `--fault "write=EIO:100%:/tmp/faultbox*"` correctly targets only writes
+> to files matching that glob. System paths (libc, ld-linux, /proc, etc.)
+> are automatically excluded.
 
 ## Delay faults
 
@@ -225,5 +224,5 @@ topology and test scenarios as code.
 4. **Selective denial**: Run with `--fault "openat=ENOENT:100%:/tmp/faultbox*"`.
    The glob targets only the test file. Does the target still run? What about
    its other operations? Now try `--fault "write=EIO:100%:/tmp/faultbox*"` —
-   does path filtering work for `write` the same way as `openat`? (Hint: check
-   the callout box in the "Path-targeted faults" section above.)
+   does path filtering work for `write` the same way as `openat`? (Yes — Faultbox
+   resolves fd→path via `/proc`, so write path targeting works.)

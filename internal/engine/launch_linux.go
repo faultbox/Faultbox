@@ -279,6 +279,8 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 	syscallName := seccomp.SyscallName(req.Data.Nr)
 
 	// For file syscalls, read the path argument for filtering and logging.
+	// For fd-based syscalls (write, read, fsync), resolve the fd to a path
+	// via /proc/PID/fd/N for path-based fault matching.
 	var path string
 	if IsFileSyscall(syscallName) {
 		argIdx := 1 // openat and friends: arg1 is path
@@ -287,6 +289,13 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 		}
 		p, err := seccomp.ReadStringFromProcess(req.PID, req.Data.Args[argIdx], 256)
 		if err == nil {
+			path = p
+		}
+	} else if IsFdSyscall(syscallName) {
+		// Resolve fd → path via /proc for write/read/fsync path targeting.
+		fd := req.Data.Args[0]
+		p, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", req.PID, fd))
+		if err == nil && !IsSystemPath(p) {
 			path = p
 		}
 	}
@@ -368,8 +377,8 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 	if len(allRules) > 0 {
 		rules := allRules
 		for _, rule := range rules {
-			// Path-based filtering for file syscalls.
-			if IsFileSyscall(syscallName) && path != "" {
+			// Path-based filtering for file and fd-based syscalls.
+			if (IsFileSyscall(syscallName) || IsFdSyscall(syscallName)) && path != "" {
 				if rule.PathGlob != "" {
 					if !rule.MatchPath(path) {
 						dir := filepath.Dir(path)

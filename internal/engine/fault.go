@@ -327,6 +327,18 @@ func IsFileSyscall(name string) bool {
 	return false
 }
 
+// IsFdSyscall returns true if the syscall operates on a file descriptor
+// (first arg is fd) and could benefit from fd→path resolution.
+func IsFdSyscall(name string) bool {
+	switch name {
+	case "write", "writev", "pwrite64", "pwritev", "pwritev2",
+		"read", "readv", "pread64", "preadv", "preadv2",
+		"fsync", "fdatasync", "ftruncate", "fchmod", "fchown":
+		return true
+	}
+	return false
+}
+
 // IsSystemPath returns true if the path is a system path that should be
 // excluded from file-related faults by default.
 func IsSystemPath(path string) bool {
