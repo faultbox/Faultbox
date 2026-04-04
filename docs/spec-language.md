@@ -369,27 +369,40 @@ Delays a syscall by sleeping before allowing it to proceed.
 delay("500ms")              # 500ms delay, 100% probability
 delay("2s")                 # 2 second delay
 delay("100ms", probability="50%")  # 50% chance of delay
+delay("500ms", label="slow WAL")   # labeled for diagnostics
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `duration` | string | — | Go duration: `"500ms"`, `"2s"`, `"100us"` |
 | `probability` | string | `"100%"` | Chance the fault fires |
+| `label` | string | — | Human-readable label shown in trace output |
 
-### `deny(errno, probability=)`
+### `deny(errno, probability=, label=)`
 
 Fails a syscall by returning an error code.
 
 ```python
-deny("ECONNREFUSED")           # 100% connection refused
-deny("EIO", probability="10%") # 10% I/O error
-deny("ENOSPC")                 # disk full
+deny("ECONNREFUSED")                     # 100% connection refused
+deny("EIO", probability="10%")           # 10% I/O error
+deny("ENOSPC")                           # disk full
+deny("EIO", label="WAL write")           # labeled for diagnostics
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `errno` | string | — | Error code (see table below) |
 | `probability` | string | `"100%"` | Chance the fault fires |
+| `label` | string | — | Human-readable label shown in trace output |
+
+**Labels in diagnostics:** When a labeled fault fires, the trace output shows
+the label alongside the decision:
+```
+  syscall trace (85 events):
+    #72  db    write   deny(input/output error)  [WAL write]
+    #73  db    write   deny(input/output error)  [WAL write]
+  fault rule on db: write=deny(EIO) → filter:[write,writev,pwrite64] label="WAL write"
+```
 
 ### Fault Targeting
 

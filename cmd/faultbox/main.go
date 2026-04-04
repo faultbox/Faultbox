@@ -430,6 +430,9 @@ func printTraceSummary(w io.Writer, tr *star.TestResult) {
 
 		faultCount++
 		line := fmt.Sprintf("    #%d  %-12s %-10s %s", ev.Seq, ev.Service, syscall, decision)
+		if label, ok := ev.Fields["label"]; ok && label != "" {
+			line += fmt.Sprintf("  [%s]", label)
+		}
 		if path != "" {
 			line += "  " + path
 		}

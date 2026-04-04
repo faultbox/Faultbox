@@ -256,15 +256,22 @@ type FaultDef struct {
 	Delay       time.Duration
 	Errno       string
 	Probability float64
+	Label       string // optional human-readable label (e.g., "WAL write")
 }
 
 var _ starlark.Value = (*FaultDef)(nil)
 
 func (f *FaultDef) String() string {
+	var s string
 	if f.Action == "delay" {
-		return fmt.Sprintf("<fault delay=%s prob=%.0f%%>", f.Delay, f.Probability*100)
+		s = fmt.Sprintf("<fault delay=%s prob=%.0f%%", f.Delay, f.Probability*100)
+	} else {
+		s = fmt.Sprintf("<fault deny=%s prob=%.0f%%", f.Errno, f.Probability*100)
 	}
-	return fmt.Sprintf("<fault deny=%s prob=%.0f%%>", f.Errno, f.Probability*100)
+	if f.Label != "" {
+		s += fmt.Sprintf(" label=%q", f.Label)
+	}
+	return s + ">"
 }
 func (f *FaultDef) Type() string           { return "fault" }
 func (f *FaultDef) Freeze()                {}
