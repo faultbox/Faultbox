@@ -366,6 +366,56 @@ func TestShiVizFormat(t *testing.T) {
 	}
 }
 
+func TestShiVizViolationMarker(t *testing.T) {
+	// Create a suite result with a failed test.
+	result := &SuiteResult{
+		Pass: 0,
+		Fail: 1,
+		Tests: []TestResult{
+			{
+				Name:   "test_db_write_failure",
+				Result: "fail",
+				Reason: "assert_true failed: expected 5xx on DB write failure",
+				Events: []Event{
+					{Seq: 1, Type: "syscall", Service: "db", EventType: "syscall.write",
+						Fields: map[string]string{"syscall": "write", "decision": "deny(EIO)"},
+						VectorClock: map[string]int64{"db": 1}},
+					{Seq: 2, Type: "syscall", Service: "api", EventType: "syscall.connect",
+						Fields: map[string]string{"syscall": "connect", "decision": "allow"},
+						VectorClock: map[string]int64{"api": 1}},
+				},
+			},
+		},
+	}
+
+	// Write ShiViz trace to a temp file.
+	tmpFile := t.TempDir() + "/test.shiviz"
+	if err := WriteShiVizTrace(tmpFile, result); err != nil {
+		t.Fatalf("WriteShiVizTrace: %v", err)
+	}
+
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+
+	// Should contain the VIOLATION marker.
+	if !contains(content, "VIOLATION") {
+		t.Error("missing VIOLATION marker in ShiViz output")
+	}
+	if !contains(content, "test_db_write_failure") {
+		t.Error("missing test name in violation marker")
+	}
+	if !contains(content, "assert_true failed") {
+		t.Error("missing failure reason in violation marker")
+	}
+	// Violation should be on "test" host.
+	if !contains(content, "test {") {
+		t.Error("violation marker should be on 'test' host")
+	}
+}
+
 func TestContainerServiceRegistration(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `
