@@ -268,8 +268,13 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	}
 
 	// Print trace summary per test.
-	for _, tr := range result.Tests {
-		printTraceSummary(os.Stderr, &tr)
+	// In multi-run mode, group passing runs into a compact summary.
+	if rcfg.Runs > 1 {
+		printMultiRunSummary(os.Stderr, result, rcfg.Runs)
+	} else {
+		for _, tr := range result.Tests {
+			printTraceSummary(os.Stderr, &tr)
+		}
 	}
 
 	// Write results if requested.
@@ -306,6 +311,59 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		return 2
 	}
 	return 0
+}
+
+// printMultiRunSummary prints compact output for multi-run mode.
+// Passing tests get one summary line; failing tests get full trace detail.
+func printMultiRunSummary(w io.Writer, result *star.SuiteResult, totalRuns int) {
+	// Group results by test name.
+	type testGroup struct {
+		name     string
+		passed   int
+		failed   int
+		failedTR *star.TestResult // first failure (for detail)
+	}
+	groups := make(map[string]*testGroup)
+	var order []string
+
+	for i := range result.Tests {
+		tr := &result.Tests[i]
+		g, ok := groups[tr.Name]
+		if !ok {
+			g = &testGroup{name: tr.Name}
+			groups[tr.Name] = g
+			order = append(order, tr.Name)
+		}
+		if tr.Result == "pass" {
+			g.passed++
+		} else {
+			g.failed++
+			if g.failedTR == nil {
+				g.failedTR = tr
+			}
+		}
+	}
+
+	// When --show fail filters out passing results, we may have no stored tests.
+	// Use suite-level counts for the summary in that case.
+	if len(order) == 0 && result.Pass > 0 {
+		fmt.Fprintf(w, "\n--- PASS: all tests (%d/%d runs) ---\n", result.Pass, result.Pass)
+		return
+	}
+
+	for _, name := range order {
+		g := groups[name]
+		if g.failed == 0 {
+			// Compact: one line for all passing runs.
+			fmt.Fprintf(w, "\n--- PASS: %s (%d/%d runs) ---\n", name, g.passed, totalRuns)
+		} else {
+			// Print full detail for the first failure.
+			printTraceSummary(w, g.failedTR)
+			if g.passed > 0 {
+				fmt.Fprintf(w, "  (%d/%d runs passed before failure)\n", g.passed, g.passed+g.failed)
+			}
+		}
+	}
 }
 
 // printTraceSummary prints a human-readable syscall trace for a test.
@@ -667,7 +725,7 @@ Run flags:
 
 Test flags:
   --test <name>            Run only matching test
-  --runs <N>               Run each test N times (stop on first failure)
+  --runs <N>               Run each test N times (compact summary, stop on first failure)
   --seed <N>               Deterministic seed for replay
   --show all|fail          Filter output (default: all)
   --output results.json    Write JSON trace results
