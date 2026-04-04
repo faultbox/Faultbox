@@ -426,6 +426,17 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 						}
 					}
 					return
+
+				case ActionTrace:
+					decision = "trace"
+					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
+					s.emitSyscallEvent(syscallName, req.PID, decision, path, 0)
+					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
+						if !isClosedFdErr(err) {
+							s.log.Error("failed to allow traced syscall", slog.String("error", err.Error()))
+						}
+					}
+					return
 				}
 			}
 		}

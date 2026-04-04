@@ -674,6 +674,61 @@ def test_api_connect():
 	}
 }
 
+func TestRequiredSyscallsTrace(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def test_trace_writes():
+    def scenario():
+        pass
+    trace(db, syscalls=["write", "openat"], run=scenario)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	syscalls := rt.requiredSyscalls()
+	// "write" expands to write, writev, pwrite64; "openat" expands via open family to open, openat.
+	hasWrite := false
+	hasOpenat := false
+	for _, sc := range syscalls {
+		if sc == "write" {
+			hasWrite = true
+		}
+		if sc == "openat" {
+			hasOpenat = true
+		}
+	}
+	if !hasWrite {
+		t.Fatalf("expected write in syscalls, got %v", syscalls)
+	}
+	if !hasOpenat {
+		t.Fatalf("expected openat in syscalls, got %v", syscalls)
+	}
+
+	// Per-service: db should have write + openat families.
+	dbSyscalls := rt.requiredSyscallsForService("db")
+	if dbSyscalls == nil {
+		t.Fatal("expected syscalls for db via trace(), got nil")
+	}
+	hasWrite = false
+	hasOpenat = false
+	for _, sc := range dbSyscalls {
+		if sc == "write" {
+			hasWrite = true
+		}
+		if sc == "openat" {
+			hasOpenat = true
+		}
+	}
+	if !hasWrite || !hasOpenat {
+		t.Fatalf("db trace syscalls = %v, expected write+openat", dbSyscalls)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

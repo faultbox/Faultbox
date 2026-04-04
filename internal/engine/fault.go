@@ -38,6 +38,8 @@ const (
 	ActionDelay
 	// ActionHold blocks the syscall until explicitly released via a HoldQueue.
 	ActionHold
+	// ActionTrace allows the syscall but logs it at Info level (for observation without faulting).
+	ActionTrace
 )
 
 // FaultTrigger controls when a stateful fault fires relative to a call count.
