@@ -89,6 +89,20 @@ Expected output:
 Notice: `depends_on = [db]` tells Faultbox to start db before api.
 `env = {"DB_ADDR": db.main.addr}` wires the api to the db's address.
 
+### How `db.main.addr` works
+
+`db.main` is not a keyword — `"main"` is just the name you gave the interface.
+It returns an `InterfaceRef` with properties like `.addr`, `.port`, `.host`.
+Step methods (`.get()`, `.send()`, `.query()`) come from the protocol plugin.
+
+Nothing here is magic — `"main"`, `"public"`, `"api"` are your names.
+The protocol string (`"http"`, `"tcp"`, `"postgres"`) selects which plugin
+provides the methods.
+
+> For the full type reference (Service, Interface, InterfaceRef, Response,
+> StarlarkEvent, all protocol methods), see
+> [Spec Language Reference — Type Reference](../spec-language.md#type-reference).
+
 **The pattern:** topology is declared, not discovered. You're writing down
 "the api depends on the db at this address" — making the architecture explicit.
 
