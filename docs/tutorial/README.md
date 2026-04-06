@@ -43,5 +43,7 @@ make demo-build     # cross-compile for Lima VM (linux/arm64)
 | 5 | [Exploring Concurrency](05-concurrency.md) | 25 min | How to find bugs that only appear under specific timing |
 | 6 | [Monitors & Partitions](06-monitors-partitions.md) | 20 min | How to define safety properties that must always hold |
 | 7 | [Containers](07-containers.md) | 30 min | How to test real infrastructure (Postgres, Redis) with the same tools |
+| 8 | [Scenarios & Generation](08-scenarios-generation.md) | 20 min | How to auto-generate failure tests from happy paths |
+| 9 | [Event Sources & Observability](09-event-sources.md) | 20 min | How to capture stdout, WAL, Kafka events as first-class trace data |
 
 Each chapter ends with exercises that push slightly beyond the lesson.

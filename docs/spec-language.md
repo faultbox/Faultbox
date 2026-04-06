@@ -104,6 +104,7 @@ api = service("api",
 | `volumes` | dict | no | Volume mounts `{host_path: container_path}` (container mode) |
 | `depends_on` | list | no | Services that must start first |
 | `healthcheck` | healthcheck | no | Readiness check (`tcp()` or `http()`) |
+| `observe` | list | no | Event sources to attach (see [Event Sources](#event-sources)) |
 
 Services must be declared in dependency order — define `db` before `api` if
 `api` depends on `db`.
@@ -445,10 +446,155 @@ FAULTBOX_DB_MAIN_PORT=5432
 
 ---
 
+## Event Sources
+
+Event sources capture non-syscall events (stdout, WAL changes, message
+queues, log files) and emit them into the trace as first-class events.
+They are attached to services via the `observe=` parameter.
+
+```python
+api = service("api", "./api",
+    interface("public", "http", 8080),
+    observe=[
+        stdout(decoder=json_decoder()),
+    ],
+)
+
+db = service("postgres",
+    interface("main", "postgres", 5432),
+    image="postgres:16",
+    observe=[
+        stdout(decoder=logfmt_decoder()),
+        wal_stream(slot="faultbox"),
+    ],
+)
+```
+
+Events from sources have a type (`"stdout"`, `"wal"`, `"topic"`, `"tail"`,
+`"poll"`) and are queryable by assertions and monitors — same as syscall events.
+
+### Built-in Event Sources
+
+| Source | Constructor | What it captures |
+|--------|------------|-----------------|
+| stdout | `stdout(decoder=)` | Service stdout lines, decoded per line |
+| wal_stream | `wal_stream(slot=)` | Postgres logical replication (INSERT/UPDATE/DELETE) |
+| topic | `topic(broker=, topic=, group=)` | Kafka/NATS topic messages |
+| tail | `tail(path=)` | New lines appended to a file (inotify) |
+| poll | `poll(url=, interval=)` | Periodic HTTP endpoint fetch |
+
+### Decoders
+
+Decoders parse raw bytes (a line of output, a message payload) into
+structured event fields. The `"data"` field is auto-decoded on
+`StarlarkEvent.data` — no `json.decode()` needed.
+
+| Decoder | Constructor | Parses |
+|---------|------------|--------|
+| json | `json_decoder()` | JSON objects — top-level keys become fields |
+| logfmt | `logfmt_decoder()` | `key=value key2="value 2"` pairs |
+| regex | `regex_decoder(pattern=)` | Named capture groups from regex |
+
+```python
+# JSON: {"level":"INFO","msg":"started"} → e.data["level"] == "INFO"
+observe=[stdout(decoder=json_decoder())]
+
+# Logfmt: level=INFO msg="started" → e.data["msg"] == "started"
+observe=[stdout(decoder=logfmt_decoder())]
+
+# Regex: WAL: fsync /data/wal/001 → e.data["action"] == "fsync"
+observe=[stdout(decoder=regex_decoder(pattern=r"WAL: (?P<action>\w+) (?P<path>.+)"))]
+```
+
+### Querying Event Source Events
+
+Event source events work with all assertion and query functions:
+
+```python
+# Assert a WAL INSERT happened:
+assert_eventually(where=lambda e: e.type == "wal" and e.data["op"] == "INSERT")
+
+# Monitor stdout for errors:
+monitor(lambda e: fail("unexpected error") if e.type == "stdout" and "ERROR" in e.data.get("level", ""))
+
+# Query Kafka topic events:
+msgs = events(where=lambda e: e.type == "topic" and e.data["topic"] == "orders.events")
+```
+
+---
+
+## Scenarios & Generation
+
+### `scenario(fn)`
+
+Registers a function as a **happy-path scenario**. The function runs as a
+test (like `test_*`) and is also available to `faultbox generate` for
+automatic failure mutation.
+
+```python
+def order_flow():
+    api.post(path="/orders", body='{"sku": "widget", "qty": 1}')
+    api.post(path="/payments", body='{"order_id": 1, "amount": 100}')
+    resp = api.get(path="/orders/1")
+    assert_eq(resp.data["status"], "paid")
+
+scenario(order_flow)  # runs as test_order_flow + registered for generator
+```
+
+Everything that works in `test_*` functions works inside scenarios:
+`fault()`, `trace()`, `monitor()`, `assert_eventually()`, `parallel()`, etc.
+
+### `faultbox generate`
+
+Takes registered scenarios and systematically wraps each in every possible
+fault — one mutation per scenario × dependency × failure mode:
+
+```bash
+faultbox generate faultbox.star
+# → order_flow.faults.star
+# → health_check.faults.star
+```
+
+Generated `.faults.star` files use `load()` to import topology and scenario
+functions from the source file. See [CLI Reference](cli-reference.md) for
+all flags.
+
+### `load(filename, symbol1, symbol2, ...)`
+
+Imports symbols from another `.star` file. The loaded file shares the same
+runtime (service registry, builtins, event log).
+
+```python
+# failures.star
+load("faultbox.star", "api", "db", "order_flow")
+
+def test_gen_order_flow_db_down():
+    fault(api, connect=deny("ECONNREFUSED", label="db down"), run=order_flow)
+```
+
+Paths are resolved relative to the loading file's directory. Modules are
+cached — each file is executed at most once.
+
+### `print(...)`
+
+Outputs to stderr during test execution. Use for debugging event structures:
+
+```python
+resp = db.main.query(sql="SELECT * FROM users")
+print(resp.data)       # shows the auto-decoded dict/list structure
+print(resp.data[0])    # shows first row
+
+writes = events(service="db", syscall="write")
+print(len(writes), "writes recorded")
+```
+
+---
+
 ## Tests
 
 Test functions are named `test_*` and discovered automatically. Each test
 runs with fresh service instances (restarted between tests).
+Scenario-registered functions also run as tests (as `test_<name>`).
 
 ```python
 def test_happy_path():
@@ -707,39 +853,42 @@ Temporal assertions query the syscall event trace captured during the current
 test. Every intercepted syscall is recorded with service attribution, decision,
 and path — temporal assertions search this trace.
 
-#### `assert_eventually(service=, syscall=, path=, decision=)`
+#### `assert_eventually(service=, syscall=, path=, decision=, where=)`
 
-Asserts that **at least one** syscall event matches all given filters.
+Asserts that **at least one** event matches all given filters.
 Use this to verify that an expected operation occurred.
 
 ```python
-# Verify WAL was opened during reservation.
+# Simple filter matching:
 assert_eventually(service="inventory", syscall="openat", path="/tmp/inventory.wal")
-
-# Verify a fault was applied.
 assert_eventually(service="inventory", syscall="fsync", decision="deny*")
-
-# Verify inventory was contacted.
 assert_eventually(service="orders", syscall="connect")
+
+# Lambda predicate for complex conditions:
+assert_eventually(where=lambda e: e.service == "db" and e.data.get("table") == "users")
+assert_eventually(where=lambda e: e.type == "wal" and e.data["op"] == "INSERT")
 ```
 
-#### `assert_never(service=, syscall=, path=, decision=)`
+#### `assert_never(service=, syscall=, path=, decision=, where=)`
 
-Asserts that **no** syscall event matches all given filters.
+Asserts that **no** event matches all given filters.
 Use this to verify that an operation did NOT occur.
 
 ```python
-# Verify WAL was never touched (inventory was unreachable).
+# Simple filter matching:
 assert_never(service="inventory", syscall="openat", path="/tmp/inventory.wal")
-
-# Verify no writes were denied (all writes succeeded).
 assert_never(service="db", syscall="write", decision="deny*")
+
+# Lambda predicate:
+assert_never(where=lambda e: e.decision.startswith("deny") and e.label == "critical path")
 ```
 
 #### Filter parameters
 
-All filter parameters are optional keyword arguments. Only events matching
-**all** specified filters are considered.
+Two ways to filter events — **dict matching** (simple) and **lambda
+predicates** (powerful). Both can be combined.
+
+**Dict matching** — keyword arguments as flat string filters:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -752,28 +901,55 @@ All filter parameters are optional keyword arguments. Only events matching
 with `*` match as a suffix. Example: `decision="deny*"` matches
 `"deny(ECONNREFUSED)"`, `"deny(EIO)"`, etc.
 
-### Ordering Assertions
+**Lambda predicate** — `where=lambda e: ...` for complex conditions:
 
-#### `assert_before(first={filters}, then={filters})`
-
-Asserts that the first event matching `first` occurs before the first event
-matching `then` in the syscall trace. Both arguments are dicts with the same
-filter keys as `assert_eventually`.
+The lambda receives a `StarlarkEvent` (see [Type Reference](#type-starlarkevent))
+with `.service`, `.type`, `.data`, `.fields`, `.seq`, and direct field access.
 
 ```python
-# Verify WAL open happens before WAL write.
+# Access auto-decoded structured data:
+where=lambda e: e.data["table"] == "users" and e.data["op"] == "INSERT"
+
+# Combine multiple conditions:
+where=lambda e: e.service == "db" and int(e.fields.get("size", "0")) > 4096
+```
+
+### Ordering Assertions
+
+#### `assert_before(first=, then=)`
+
+Asserts that the first event matching `first` occurs before the first event
+matching `then` in the trace. Arguments can be dicts (same filter keys as
+`assert_eventually`) or lambda predicates.
+
+```python
+# Dict matching:
 assert_before(
     first={"service": "inventory", "syscall": "openat", "path": "/tmp/inventory.wal"},
     then={"service": "inventory", "syscall": "write", "path": "/tmp/inventory.wal"},
+)
+
+# Lambda predicates with correlation — then= receives the matched first event:
+assert_before(
+    first=lambda e: e.data["op"] == "INSERT",
+    then=lambda e: e.data["ref_id"] == e.first.data["id"],
 )
 ```
 
 ### Event Query
 
-#### `events(service=, syscall=, path=, decision=)`
+#### `events(service=, syscall=, path=, decision=, where=)`
 
-Returns a list of matching syscall events from the current test's trace.
-Each event is a dict with `seq`, `type`, `service`, and syscall fields.
+Returns a list of matching events from the current test's trace.
+Each element is a `StarlarkEvent` with `.service`, `.type`, `.data`, `.fields`.
+
+```python
+# Dict matching:
+retries = events(service="orders", syscall="connect", decision="deny*")
+print("retries:", len(retries))
+
+# Lambda predicate:
+big_writes = events(where=lambda e: e.data.get("size", 0) > 4096)
 
 ```python
 # Count how many connect retries happened.

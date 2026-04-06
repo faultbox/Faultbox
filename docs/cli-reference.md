@@ -93,6 +93,52 @@ faultbox diff run1.norm run2.norm
 
 ---
 
+### `faultbox generate`
+
+Generate failure scenarios from registered `scenario()` functions.
+
+```
+faultbox generate [flags] <file.star>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--output <file>` | Write all mutations to a single file (default: one file per scenario) |
+| `--scenario <name>` | Generate only for this scenario |
+| `--service <name>` | Generate only for this dependency |
+| `--category <cat>` | Filter: `network`, `disk`, `all` (default: `all`) |
+| `--dry-run` | List mutations without generating code |
+
+**Default output:** one file per scenario, named `<scenario>.faults.star`.
+
+**Examples:**
+
+```bash
+faultbox generate faultbox.star                            # per-scenario files
+faultbox generate faultbox.star --output all-failures.star # single file
+faultbox generate faultbox.star --scenario order_flow      # one scenario
+faultbox generate faultbox.star --service db               # one dependency
+faultbox generate faultbox.star --dry-run                  # preview
+```
+
+**How it works:**
+
+1. Loads the `.star` file and finds all `scenario()` registrations
+2. Analyzes the topology (services, dependencies, protocols)
+3. For each scenario × dependency × failure mode, generates a test
+   that wraps the scenario function in a fault scope
+4. Generated tests use `load()` to import topology and scenario functions
+
+**Generated test naming:** `test_gen_<scenario>_<target>_<failure_mode>`
+
+```
+test_gen_order_flow_db_down
+test_gen_order_flow_db_disk_full
+test_gen_order_flow_cache_slow
+```
+
+---
+
 ### `faultbox run`
 
 Launch a binary under Faultbox's control with process isolation and optional

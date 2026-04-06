@@ -68,13 +68,16 @@ Runtime (internal/star/) -- parses topology, discovers tests
 faultbox/
 ├── CLAUDE.md                 # This file
 ├── cmd/
-│   ├── faultbox/             # CLI: test, run, init, diff commands
+│   ├── faultbox/             # CLI: test, run, generate, init, diff commands
 │   └── faultbox-shim/        # Container entrypoint shim (Linux-only)
 ├── internal/
 │   ├── engine/               # Session lifecycle, fault rules, hold queues, notification loop
 │   ├── seccomp/              # BPF filter generation, seccomp-notify API, arch tables
 │   ├── star/                 # Starlark runtime, builtins, event log, per-service filtering
 │   ├── container/            # Docker API wrapper, network, container launch, pidfd_getfd
+│   ├── protocol/             # Protocol plugins (http, tcp, postgres, redis, kafka, mysql, nats, grpc)
+│   ├── eventsource/          # Event source plugins (stdout, wal_stream, topic, tail, poll) + decoders
+│   ├── generate/             # Failure scenario generator (analyzer, matrix, codegen)
 │   ├── config/               # YAML topology parsing (legacy)
 │   └── logging/              # Console/JSON structured logging
 ├── poc/
@@ -85,11 +88,14 @@ faultbox/
 │   ├── target/               # Minimal binary for fault injection testing
 │   └── example/              # Simple 2-service example spec
 ├── docs/
-│   ├── tutorial/             # 7-chapter progressive tutorial
+│   ├── tutorial/             # 9-chapter progressive tutorial
+│   ├── design/               # Design documents (generator, etc.)
+│   ├── use-cases/            # User persona stories (BE, QA, Mobile)
 │   ├── adr/                  # Architecture Decision Records (historical)
 │   ├── poc/                  # PoC step documentation
 │   ├── spec-language.md      # Starlark spec language reference
 │   ├── cli-reference.md      # CLI reference
+│   ├── errno-reference.md    # Error code reference for fault injection
 │   └── discovery.md          # Positioning document
 ├── .github/workflows/ci.yml  # GitHub Actions: build, vet, test, cross-compile
 └── Makefile
@@ -103,6 +109,9 @@ faultbox/
 | `internal/seccomp` | BPF filter building, seccomp syscall, arch tables | `filter_linux.go`, `arch_arm64.go`, `arch_amd64.go` |
 | `internal/star` | Starlark runtime, all builtins, event log, service lifecycle | `runtime.go`, `builtins.go`, `types.go` |
 | `internal/container` | Docker client, network, container launch with shim | `docker.go`, `launch.go`, `fd_linux.go` |
+| `internal/protocol` | Protocol plugins (http, tcp, postgres, redis, kafka, etc.) | `protocol.go`, `http.go`, `postgres.go` |
+| `internal/eventsource` | Event source plugins (stdout, wal_stream, topic, tail, poll) | `eventsource.go`, `stdout.go`, `walstream.go` |
+| `internal/generate` | Failure scenario generator (topology analysis → mutations) | `analyzer.go`, `matrix.go`, `codegen.go` |
 
 ## Code Standards
 
