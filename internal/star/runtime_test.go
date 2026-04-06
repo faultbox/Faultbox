@@ -931,6 +931,46 @@ def test_gen_order_flow_db_down():
 	}
 }
 
+func TestNamedOperations(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+    ops = {
+        "persist": op(syscalls=["write", "fsync"], path="/tmp/*.wal"),
+        "accept":  op(syscalls=["connect", "read"]),
+    },
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	services := rt.Services()
+	if len(services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(services))
+	}
+
+	db := services[0]
+	if len(db.Ops) != 2 {
+		t.Fatalf("expected 2 ops, got %d", len(db.Ops))
+	}
+
+	persist := db.Ops["persist"]
+	if persist == nil {
+		t.Fatal("expected 'persist' op")
+	}
+	if persist.Name != "persist" {
+		t.Errorf("persist.Name = %q", persist.Name)
+	}
+	if len(persist.Syscalls) != 2 {
+		t.Errorf("persist.Syscalls = %v", persist.Syscalls)
+	}
+	if persist.Path != "/tmp/*.wal" {
+		t.Errorf("persist.Path = %q", persist.Path)
+	}
+}
+
 func TestScenarioBuiltin(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `

@@ -17,6 +17,22 @@ import (
 // ---------------------------------------------------------------------------
 
 // ServiceDef is the Starlark representation of a service declaration.
+// OpDef defines a named operation — a group of syscalls + optional path filter.
+// Created by the op() builtin, stored in ServiceDef.Ops.
+type OpDef struct {
+	Name     string   // set when attached to service
+	Syscalls []string // e.g., ["write", "fsync"]
+	Path     string   // optional glob (e.g., "/tmp/*.wal")
+}
+
+var _ starlark.Value = (*OpDef)(nil)
+
+func (o *OpDef) String() string        { return fmt.Sprintf("<op %s syscalls=%v>", o.Name, o.Syscalls) }
+func (o *OpDef) Type() string           { return "op" }
+func (o *OpDef) Freeze()                {}
+func (o *OpDef) Truth() starlark.Bool   { return true }
+func (o *OpDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: op") }
+
 // ObserveConfig describes an event source attached to a service.
 type ObserveConfig struct {
 	SourceName  string            // "stdout", "topic", "wal_stream", "tail", "poll"
@@ -36,6 +52,7 @@ type ServiceDef struct {
 	Volumes    map[string]string // host:container volume mounts (container mode)
 	Healthcheck *HealthcheckDef
 	Observe    []ObserveConfig   // event sources to attach
+	Ops        map[string]*OpDef // named operations (e.g., "persist" → write+fsync+path)
 	rt         *Runtime // set by runtime after registration
 }
 
@@ -282,6 +299,8 @@ type FaultDef struct {
 	Errno       string
 	Probability float64
 	Label       string // optional human-readable label (e.g., "WAL write")
+	Op          string // operation name (set when expanded from ops=)
+	PathGlob    string // path glob (set when expanded from ops=)
 }
 
 var _ starlark.Value = (*FaultDef)(nil)
@@ -355,7 +374,7 @@ func (e *StarlarkEvent) Attr(name string) (starlark.Value, error) {
 }
 
 func (e *StarlarkEvent) AttrNames() []string {
-	return []string{"seq", "service", "type", "event_type", "data", "fields", "first"}
+	return []string{"seq", "service", "type", "event_type", "data", "fields", "first", "op"}
 }
 
 // fieldsDict returns all event fields as a Starlark dict.

@@ -417,7 +417,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 					} else {
 						time.Sleep(rule.Delay)
 					}
-					s.emitSyscallEvent(syscallName, req.PID, decision, path, rule.Delay, rule.Label)
+					s.emitSyscallEvent(syscallName, req.PID, decision, path, rule.Delay, rule.Label, rule.Op)
 					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
 						if !isClosedFdErr(err) {
 							s.log.Error("failed to allow syscall after delay", slog.String("error", err.Error()))
@@ -428,7 +428,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 				case ActionDeny:
 					decision = fmt.Sprintf("deny(%s)", rule.Errno)
 					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
-					s.emitSyscallEvent(syscallName, req.PID, decision, path, 0, rule.Label)
+					s.emitSyscallEvent(syscallName, req.PID, decision, path, 0, rule.Label, rule.Op)
 					if err := seccomp.Deny(listenerFd, req.ID, int32(rule.Errno)); err != nil {
 						if !isClosedFdErr(err) {
 							s.log.Error("failed to deny syscall", slog.String("error", err.Error()))

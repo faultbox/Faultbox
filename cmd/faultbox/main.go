@@ -435,7 +435,12 @@ func printTraceSummary(w io.Writer, tr *star.TestResult) {
 		}
 
 		faultCount++
-		line := fmt.Sprintf("    #%d  %-12s %-10s %s", ev.Seq, ev.Service, syscall, decision)
+		// Show op(syscall) when operation name is available.
+		syscallDisplay := syscall
+		if op, ok := ev.Fields["op"]; ok && op != "" {
+			syscallDisplay = op + "(" + syscall + ")"
+		}
+		line := fmt.Sprintf("    #%d  %-12s %-16s %s", ev.Seq, ev.Service, syscallDisplay, decision)
 		if label, ok := ev.Fields["label"]; ok && label != "" {
 			line += fmt.Sprintf("  [%s]", label)
 		}

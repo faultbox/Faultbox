@@ -45,6 +45,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
 		"scenario":          starlark.NewBuiltin("scenario", rt.builtinScenario),
+		"op":                starlark.NewBuiltin("op", builtinOp),
 		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutSource),
 		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoder),
 		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoder),
@@ -173,6 +174,21 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				svc.Observe = append(svc.Observe, osv.Config)
 			}
 			iter.Done()
+		case "ops":
+			dict, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("service() ops must be a dict")
+			}
+			svc.Ops = make(map[string]*OpDef)
+			for _, item := range dict.Items() {
+				name, _ := starlark.AsString(item[0])
+				opDef, ok := item[1].(*OpDef)
+				if !ok {
+					return nil, fmt.Errorf("service() ops values must be op(), got %s", item[1].Type())
+				}
+				opDef.Name = name
+				svc.Ops[name] = opDef
+			}
 		}
 	}
 
@@ -330,6 +346,7 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 	}
 
 	// Extract run= callback and fault specs from kwargs.
+	// Keys can be syscall names ("write") or operation names ("persist").
 	var bodyFn starlark.Callable
 	faults := make(map[string]*FaultDef)
 
@@ -345,6 +362,21 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 			fd, ok := kv[1].(*FaultDef)
 			if !ok {
 				return nil, fmt.Errorf("fault() %s= must be a fault (delay/deny), got %s", key, kv[1].Type())
+			}
+			// Check if key is a named operation on this service.
+			if svc.Ops != nil {
+				if opDef, isOp := svc.Ops[key]; isOp {
+					// Expand operation: add fault for each syscall in the op.
+					for _, sc := range opDef.Syscalls {
+						opFd := *fd // copy
+						opFd.Op = key
+						if opDef.Path != "" {
+							opFd.PathGlob = opDef.Path
+						}
+						faults[sc] = &opFd
+					}
+					continue
+				}
 			}
 			faults[key] = fd
 		}
@@ -1175,6 +1207,42 @@ func (v *DecoderVal) Truth() starlark.Bool { return true }
 func (v *DecoderVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: decoder") }
 
 // stdout(decoder=) — creates an observe source config for stdout capture.
+// op(syscalls=, path=) — defines a named operation (group of syscalls + path filter).
+func builtinOp(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	op := &OpDef{}
+
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "syscalls":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("op() syscalls must be a list")
+			}
+			iter := list.Iterate()
+			var val starlark.Value
+			for iter.Next(&val) {
+				s, ok := starlark.AsString(val)
+				if !ok {
+					iter.Done()
+					return nil, fmt.Errorf("op() syscalls items must be strings")
+				}
+				op.Syscalls = append(op.Syscalls, s)
+			}
+			iter.Done()
+		case "path":
+			s, _ := starlark.AsString(kv[1])
+			op.Path = s
+		}
+	}
+
+	if len(op.Syscalls) == 0 {
+		return nil, fmt.Errorf("op() requires syscalls= argument")
+	}
+
+	return op, nil
+}
+
 func builtinStdoutSource(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	cfg := ObserveConfig{
 		SourceName: "stdout",

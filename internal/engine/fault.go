@@ -79,6 +79,9 @@ type FaultRule struct {
 	DestAddr string
 	// Label is an optional human-readable description (e.g., "WAL write").
 	Label string
+	// Op is the named operation this rule belongs to (e.g., "persist").
+	// Empty for raw syscall faults.
+	Op string
 	// HoldTag identifies the HoldQueue this rule feeds into (ActionHold only).
 	HoldTag string
 	// counter tracks matching calls for stateful triggers (thread-safe).

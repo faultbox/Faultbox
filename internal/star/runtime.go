@@ -704,6 +704,9 @@ func (rt *Runtime) makeSyscallCallback(svcName string) func(engine.SyscallEvent)
 		if evt.Label != "" {
 			fields["label"] = evt.Label
 		}
+		if evt.Op != "" {
+			fields["op"] = evt.Op
+		}
 		rt.events.Emit("syscall", svcName, fields)
 
 		if (evt.Syscall == "connect" || evt.Syscall == "sendto") &&
@@ -1129,6 +1132,8 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 				Syscall:     sc,
 				Probability: fd.Probability,
 				Label:       fd.Label,
+				Op:          fd.Op,
+				PathGlob:    fd.PathGlob,
 			}
 			switch fd.Action {
 			case "delay":
