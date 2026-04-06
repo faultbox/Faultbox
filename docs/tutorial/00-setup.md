@@ -154,12 +154,14 @@ This creates three files:
 | `assert_ev` | Lambda assertion |
 
 After setup, **reload VS Code** (Cmd+Shift+P → "Developer: Reload Window"),
-then open any `.star` file — you'll get autocomplete for `fault(`, `deny(`,
-`assert_eventually(`, `resp.data`, etc. No import lines needed.
+then open any `.star` file. You'll get:
+- **Autocomplete** for builtin functions (`fault(`, `deny(`, `assert_eventually(`)
+- **Parameter hints** showing argument names and types
+- **Snippet expansion** via the prefixes above (type `svc` + Tab)
 
 > **Note:** This requires the Python extension for VS Code (ms-python.python).
-> The autocomplete works because Starlark syntax is close enough to Python.
-> Type checking is disabled — only autocomplete and parameter hints are active.
+> Attribute completion on variables (e.g., `resp.data`) is limited — a
+> dedicated Starlark LSP is planned for full context-aware support.
 
 ## Step 5: Docker (chapter 7 only)
 
