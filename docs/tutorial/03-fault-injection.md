@@ -282,14 +282,14 @@ syscall numbers. Faultbox handles the mapping.
 ## Named operations
 
 Instead of thinking in syscalls, you can define **named operations** that
-group related syscalls with a path filter:
+group related syscalls:
 
 ```python
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
     healthcheck = tcp("localhost:5432"),
     ops = {
-        "persist": op(syscalls=["write", "fsync"], path="/tmp/*.wal"),
+        "persist": op(syscalls=["write", "fsync"]),
     },
 )
 
@@ -298,10 +298,22 @@ def test_persist_failure():
     def scenario():
         resp = api.post(path="/data/key", body="val")
         assert_true(resp.status >= 500, "expected 5xx on persist failure")
-    fault(db, persist=deny("EIO", label="WAL failure"), run=scenario)
+    fault(db, persist=deny("EIO", label="persist failure"), run=scenario)
 ```
 
 The trace output shows the operation name: `persist(write) deny(EIO)`.
+
+Operations can also include a **path filter** — useful for services that
+write to specific files (e.g., a database WAL):
+
+```python
+ops = {
+    "wal_write": op(syscalls=["write", "fsync"], path="/tmp/*.wal"),
+}
+```
+
+With a path filter, only writes to matching files are faulted — stdout
+and other writes are unaffected.
 
 > **When to use ops:** When you want to fault a logical operation (like
 > "persist to disk") that involves multiple syscalls. For simple cases,
