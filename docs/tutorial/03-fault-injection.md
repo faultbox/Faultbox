@@ -285,6 +285,10 @@ Instead of thinking in syscalls, you can define **named operations** that
 group related syscalls:
 
 ```python
+# Linux: BIN = "bin"
+# macOS (Lima): BIN = "bin/linux-arm64"
+BIN = "bin/linux-arm64"
+
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
     healthcheck = tcp("localhost:5432"),
@@ -308,6 +312,10 @@ write to specific files. The inventory-svc from Chapters 4-6 writes a
 WAL file to `/tmp/inventory.wal`. Here's a working example:
 
 ```python
+# Linux: BIN = "bin"
+# macOS (Lima): BIN = "bin/linux-arm64"
+BIN = "bin/linux-arm64"
+
 inventory = service("inventory", BIN + "/inventory-svc",
     interface("main", "tcp", 5432),
     healthcheck = tcp("localhost:5432"),
