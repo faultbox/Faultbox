@@ -220,19 +220,18 @@ real Postgres.
 
 ## What's next
 
-You've completed the tutorial. You can now:
+You can test real infrastructure. But writing failure tests by hand is
+slow — Chapter 8 shows how to auto-generate them.
 
-- **Inject faults** into any binary or container
-- **Write specs** that declare topology and test expectations
-- **Assert on internal behavior** with temporal assertions and traces
-- **Find concurrency bugs** with parallel execution and exhaustive exploration
-- **Define safety invariants** with monitors
-- **Test real infrastructure** with Docker containers
+**Continue:**
+- [Chapter 8: Scenarios & Generation](08-scenarios-generation.md) — register
+  happy paths with `scenario()`, auto-generate fault mutations
+- [Chapter 9: Event Sources & Observability](09-event-sources.md) — capture
+  stdout, WAL changes, Kafka messages as trace events
 
-**Recommended next steps:**
-- Read `docs/spec-language.md` for the complete language reference
-- Read `docs/cli-reference.md` for all CLI options
-- Try writing a faultbox.star for your own services
+**Reference:**
+- [Spec Language Reference](../spec-language.md) — complete API
+- [CLI Reference](../cli-reference.md) — all commands and flags
 - Explore the `poc/demo/faultbox.star` for a complete working example
 
 ## Exercises

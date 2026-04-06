@@ -279,6 +279,35 @@ syscall numbers. Faultbox handles the mapping.
 > actually used. You can always target the exact syscall directly:
 > `fault(db, pwritev2=deny("EIO"), run=fn)`.
 
+## Named operations
+
+Instead of thinking in syscalls, you can define **named operations** that
+group related syscalls with a path filter:
+
+```python
+db = service("db", BIN + "/mock-db",
+    interface("main", "tcp", 5432),
+    healthcheck = tcp("localhost:5432"),
+    ops = {
+        "persist": op(syscalls=["write", "fsync"], path="/tmp/*.wal"),
+    },
+)
+
+# Now use the operation name in fault():
+def test_persist_failure():
+    def scenario():
+        resp = api.post(path="/data/key", body="val")
+        assert_true(resp.status >= 500, "expected 5xx on persist failure")
+    fault(db, persist=deny("EIO", label="WAL failure"), run=scenario)
+```
+
+The trace output shows the operation name: `persist(write) deny(EIO)`.
+
+> **When to use ops:** When you want to fault a logical operation (like
+> "persist to disk") that involves multiple syscalls. For simple cases,
+> raw syscall names work fine. See the
+> [Spec Language Reference](../spec-language.md#type-reference) for details.
+
 ## Multi-fault injection
 
 Apply multiple faults at once to simulate cascading failures. Add to

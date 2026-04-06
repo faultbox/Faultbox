@@ -120,7 +120,39 @@ network: HTTP 200 OK (150ms)
 
 If you see this, you're ready for Chapter 1.
 
-## Step 4: Docker (chapter 7 only)
+## Step 4: VS Code autocomplete (recommended)
+
+If you use VS Code, set up autocomplete for `.star` files:
+
+```bash
+faultbox init --vscode
+```
+
+This creates three files:
+- **`faultbox.pyi`** — type stubs so VS Code shows parameter hints and
+  attribute completion for all Faultbox builtins
+- **`.vscode/settings.json`** — associates `.star` files with Python
+  syntax highlighting
+- **`.vscode/faultbox.code-snippets`** — code templates triggered by
+  typing prefixes:
+
+| Prefix | Expands to |
+|--------|-----------|
+| `svc` | Full service declaration |
+| `test` | Test function skeleton |
+| `scenario` | Scenario with `scenario()` registration |
+| `fault` | Fault injection test |
+| `monitor` | Event monitor |
+| `observe` | stdout observation with decoder |
+| `assert_ev` | Lambda assertion |
+
+After setup, open any `.star` file in VS Code — you'll get autocomplete
+for `fault(`, `deny(`, `assert_eventually(`, `resp.data`, etc.
+
+> **Note:** This requires the Python extension for VS Code (ms-python.python).
+> The autocomplete works because Starlark syntax is close enough to Python.
+
+## Step 5: Docker (chapter 7 only)
 
 Docker is only needed for Chapter 7 (containers). Skip this for now.
 
@@ -141,8 +173,10 @@ vm sudo bin/linux-arm64/faultbox test poc/demo-container/faultbox.star
 | What | Linux | macOS (Lima) |
 |------|-------|-------------|
 | Build | `make build` | `make demo-build` |
+| VS Code setup | `faultbox init --vscode` | `faultbox init --vscode` (runs on host) |
 | Faultbox binary | `bin/faultbox` | `bin/linux-arm64/faultbox` (run inside VM) |
 | Target binary | `bin/target` | `bin/linux-arm64/target` (run inside VM) |
 | Run command | `bin/faultbox run ...` | `vm bin/linux-arm64/faultbox run ...` |
 | Test command | `bin/faultbox test ...` | `vm bin/linux-arm64/faultbox test ...` |
+| Generate faults | `bin/faultbox generate ...` | `vm bin/linux-arm64/faultbox generate ...` |
 | Container test | `sudo bin/faultbox test ...` | `vm sudo bin/linux-arm64/faultbox test ...` |
