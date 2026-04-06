@@ -876,6 +876,52 @@ nondet(db, api, cache)
 	}
 }
 
+func TestScenarioBuiltin(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    pass
+
+def health_check():
+    pass
+
+scenario(order_flow)
+scenario(health_check)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Should have 2 registered scenarios.
+	scenarios := rt.Scenarios()
+	if len(scenarios) != 2 {
+		t.Fatalf("expected 2 scenarios, got %d", len(scenarios))
+	}
+	if scenarios[0].Name != "order_flow" {
+		t.Errorf("scenario[0].Name = %q, want order_flow", scenarios[0].Name)
+	}
+	if scenarios[1].Name != "health_check" {
+		t.Errorf("scenario[1].Name = %q, want health_check", scenarios[1].Name)
+	}
+
+	// Scenarios should appear as tests (test_order_flow, test_health_check).
+	tests := rt.DiscoverTests()
+	found := make(map[string]bool)
+	for _, name := range tests {
+		found[name] = true
+	}
+	if !found["test_order_flow"] {
+		t.Error("expected test_order_flow in discovered tests")
+	}
+	if !found["test_health_check"] {
+		t.Error("expected test_health_check in discovered tests")
+	}
+}
+
 func TestResponseData(t *testing.T) {
 	// Test that Response.data auto-decodes JSON body.
 	resp := &Response{

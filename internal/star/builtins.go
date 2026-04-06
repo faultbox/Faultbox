@@ -44,6 +44,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"trace":             starlark.NewBuiltin("trace", rt.builtinTrace),
 		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
+		"scenario":          starlark.NewBuiltin("scenario", rt.builtinScenario),
 		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutSource),
 		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoder),
 		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoder),
@@ -684,6 +685,25 @@ func (rt *Runtime) builtinTraceStop(thread *starlark.Thread, fn *starlark.Builti
 		return nil, fmt.Errorf("trace_stop() first arg must be a service, got %s", args[0].Type())
 	}
 	rt.removeTrace(svc.Name)
+	return starlark.None, nil
+}
+
+// scenario(fn) — registers a happy-path function for the failure generator.
+// The function is also run as a test (equivalent to test_<name>).
+func (rt *Runtime) builtinScenario(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("scenario() requires exactly one callable")
+	}
+	callable, ok := args[0].(starlark.Callable)
+	if !ok {
+		return nil, fmt.Errorf("scenario() argument must be a callable, got %s", args[0].Type())
+	}
+
+	rt.scenarios = append(rt.scenarios, ScenarioRegistration{
+		Name: callable.Name(),
+		Fn:   callable,
+	})
+
 	return starlark.None, nil
 }
 

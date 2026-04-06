@@ -84,6 +84,10 @@ type Runtime struct {
 	// Services excluded from interleaving control in parallel().
 	nondetServices map[string]bool
 
+	// Registered scenarios — happy paths registered via scenario() builtin.
+	// Used by the generator and also run as tests.
+	scenarios []ScenarioRegistration
+
 	// Monitor errors — collected during test execution, checked after test.
 	monitorMu     sync.Mutex
 	monitorErrors []error
@@ -146,14 +150,27 @@ func (rt *Runtime) LoadString(name, src string) error {
 	return nil
 }
 
-// DiscoverTests returns sorted test function names (test_* globals).
+// DiscoverTests returns sorted test function names.
+// Includes test_* globals and scenario()-registered functions (as test_<name>).
 func (rt *Runtime) DiscoverTests() []string {
+	seen := make(map[string]bool)
 	var names []string
 	for name, val := range rt.globals {
 		if strings.HasPrefix(name, "test_") {
 			if _, ok := val.(starlark.Callable); ok {
 				names = append(names, name)
+				seen[name] = true
 			}
+		}
+	}
+	// Add scenario-registered functions as test_<name>.
+	for _, s := range rt.scenarios {
+		testName := "test_" + s.Name
+		if !seen[testName] {
+			names = append(names, testName)
+			seen[testName] = true
+			// Register in globals so RunTest can find it.
+			rt.globals[testName] = s.Fn
 		}
 	}
 	sort.Strings(names)
@@ -169,6 +186,17 @@ func (rt *Runtime) Services() []*ServiceDef {
 		result = append(result, rt.services[name])
 	}
 	return result
+}
+
+// ScenarioRegistration records a happy-path function registered via scenario().
+type ScenarioRegistration struct {
+	Name string             // function name (e.g., "order_flow")
+	Fn   starlark.Callable  // the Starlark callable
+}
+
+// Scenarios returns all registered scenario functions.
+func (rt *Runtime) Scenarios() []ScenarioRegistration {
+	return rt.scenarios
 }
 
 // RunConfig controls test execution parameters.
