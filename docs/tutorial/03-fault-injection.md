@@ -332,16 +332,18 @@ orders = service("orders", BIN + "/order-svc",
 )
 
 def test_wal_write_failure():
-    """Only WAL writes fail — stdout and TCP responses still work."""
+    """Only WAL writes fail — inventory can still respond with an error."""
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-        assert_true(resp.status >= 500, "expected 5xx on WAL failure")
+        assert_eq(resp.status, 409, "expected 409 conflict on WAL failure")
     fault(inventory, wal_write=deny("EIO", label="WAL broken"), run=scenario)
 ```
 
 With a path filter, only writes to matching files are faulted — stdout,
-TCP responses, and other writes are unaffected. This is how you test
-"WAL is broken but the service can still respond with an error."
+TCP responses, and other writes are unaffected. The inventory service
+can still respond to the order-svc (409 Conflict) even though its WAL
+write failed. This is the value of targeted faults — you test one
+component's failure while the rest of the system keeps working.
 
 > **When to use ops:** When you want to fault a logical operation (like
 > "persist to disk") that involves multiple syscalls. For simple cases,
