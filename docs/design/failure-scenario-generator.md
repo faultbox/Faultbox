@@ -22,8 +22,6 @@ The user reviews, edits, and saves the ones they want.
 
 ```
 faultbox generate faultbox.star --output failures.star
-faultbox generate faultbox.star --append           # append to same file
-faultbox generate faultbox.star --format json      # machine-readable
 ```
 
 ## What the Generator Knows
@@ -132,9 +130,6 @@ faultbox generate faultbox.star
 # Write to file
 faultbox generate faultbox.star --output failures.star
 
-# Append to existing spec
-faultbox generate faultbox.star --append
-
 # Only generate for specific service
 faultbox generate faultbox.star --service api
 
@@ -143,14 +138,11 @@ faultbox generate faultbox.star --category network
 faultbox generate faultbox.star --category disk
 faultbox generate faultbox.star --category all     # default
 
-# Machine-readable output (for LLM consumption or CI)
-faultbox generate faultbox.star --format json
-
 # Dry run — show what would be generated without code
 faultbox generate faultbox.star --dry-run
 ```
 
-### Output Format (Starlark)
+### Output Format
 
 ```python
 # ============================================================
@@ -253,46 +245,6 @@ def test_gen_db_slow_concurrent():
     fault(db, write=delay("500ms", label="slow db"), run=scenario)
 ```
 
-### Output Format (JSON)
-
-```json
-{
-  "source": "faultbox.star",
-  "generated": "2026-04-05T12:00:00Z",
-  "scenarios": [
-    {
-      "name": "test_gen_api_db_connection_refused",
-      "category": "network",
-      "edge": "api → db",
-      "fault_target": "api",
-      "syscall": "connect",
-      "errno": "ECONNREFUSED",
-      "description": "When db is down, api should return 5xx",
-      "covered_by": null,
-      "severity": "critical",
-      "code": "def test_gen_api_db_connection_refused():\n    ..."
-    },
-    {
-      "name": "test_gen_db_disk_full",
-      "category": "disk",
-      "edge": "db (storage)",
-      "fault_target": "db",
-      "syscall": "write",
-      "errno": "ENOSPC",
-      "description": "DB disk full — does api report meaningful error?",
-      "covered_by": "test_db_write_failure",
-      "severity": "high",
-      "code": "def test_gen_db_disk_full():\n    ..."
-    }
-  ],
-  "coverage": {
-    "total_scenarios": 15,
-    "already_covered": 2,
-    "new_scenarios": 13
-  }
-}
-```
-
 ## Technical Implementation
 
 ### Architecture
@@ -386,14 +338,13 @@ func BuildFailureMatrix(graph *TopologyGraph) []Scenario
 
 ```go
 type GenerateOpts struct {
-    Format    string  // "starlark", "json"
     Service   string  // filter to one service
     Category  string  // filter to one category
     DryRun    bool
+    Source    string  // source .star filename (for load() statement)
 }
 
-func GenerateStarlark(scenarios []Scenario, happy []HappyPath, opts GenerateOpts) string
-func GenerateJSON(scenarios []Scenario, opts GenerateOpts) string
+func Generate(scenarios []Scenario, happy []HappyPath, opts GenerateOpts) string
 ```
 
 ### Scenario Templates
@@ -492,39 +443,27 @@ faultbox generate faultbox.star --format json | jq '.scenarios[] | select(.cover
 # Output: 13 uncovered failure modes
 ```
 
-### 3. CI Coverage Gate
+### 3. Service-Specific Generation
 
 ```bash
-# In CI: generate and check coverage
-faultbox generate faultbox.star --format json > coverage.json
-UNCOVERED=$(jq '.coverage.new_scenarios' coverage.json)
-if [ "$UNCOVERED" -gt 5 ]; then
-  echo "WARNING: $UNCOVERED failure modes not tested"
-fi
-```
-
-### 4. Service-Specific Generation
-
-```bash
-# Just added a new Redis dependency — generate Redis-specific failures
+# Just added a new Redis dependency — generate only Redis-specific failures
 faultbox generate faultbox.star --service cache --output cache-failures.star
 ```
 
-### 5. Post-Incident Reproduction
+### 4. Post-Incident Reproduction
 
 After an incident where the payment gateway timed out:
 
 ```bash
-# Generate shows it was already in the matrix but not tested
-faultbox generate faultbox.star --format json | \
-  jq '.scenarios[] | select(.description | contains("timeout"))'
+# Generate failures, search for timeout scenarios you missed
+faultbox generate faultbox.star | grep -A5 "timeout"
 ```
 
-### 6. LLM Workflow (future Phase 2)
+### 5. LLM Workflow (future Phase 2)
 
 ```bash
-# LLM reads the generated JSON, enriches with semantic understanding
-faultbox generate faultbox.star --format json | \
+# LLM reviews the generated Starlark, adds business-logic failures
+faultbox generate faultbox.star | \
   claude "Review these failure scenarios for a payment system. \
           Add any business-logic failures I'm missing."
 ```
