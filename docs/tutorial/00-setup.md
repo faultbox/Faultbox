@@ -122,10 +122,17 @@ If you see this, you're ready for Chapter 1.
 
 ## Step 4: VS Code autocomplete (recommended)
 
-If you use VS Code, set up autocomplete for `.star` files:
+If you use VS Code, set up autocomplete for `.star` files.
 
+**Linux:**
 ```bash
-faultbox init --vscode
+bin/faultbox init --vscode
+```
+
+**macOS:** Build a host-native binary first (init doesn't need Linux):
+```bash
+go build -o bin/faultbox ./cmd/faultbox/
+bin/faultbox init --vscode
 ```
 
 This creates three files:
@@ -173,7 +180,7 @@ vm sudo bin/linux-arm64/faultbox test poc/demo-container/faultbox.star
 | What | Linux | macOS (Lima) |
 |------|-------|-------------|
 | Build | `make build` | `make demo-build` |
-| VS Code setup | `faultbox init --vscode` | `faultbox init --vscode` (runs on host) |
+| VS Code setup | `bin/faultbox init --vscode` | `bin/faultbox init --vscode` (host binary, see Step 4) |
 | Faultbox binary | `bin/faultbox` | `bin/linux-arm64/faultbox` (run inside VM) |
 | Target binary | `bin/target` | `bin/linux-arm64/target` (run inside VM) |
 | Run command | `bin/faultbox run ...` | `vm bin/linux-arm64/faultbox run ...` |
