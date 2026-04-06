@@ -114,8 +114,6 @@ func New(logger *slog.Logger) *Runtime {
 // LoadFile executes a .star file, populating the service registry and
 // discovering test_* functions.
 func (rt *Runtime) LoadFile(path string) error {
-	thread := &starlark.Thread{Name: "load"}
-
 	// Store base directory for resolving relative paths (build=, volumes=).
 	absPath, err := filepath.Abs(path)
 	if err == nil {
@@ -129,6 +127,9 @@ func (rt *Runtime) LoadFile(path string) error {
 	}
 	rt.sourceText = string(src)
 
+	thread := &starlark.Thread{Name: "load"}
+	thread.Load = rt.makeLoadFunc()
+
 	globals, err := starlark.ExecFile(thread, path, nil, rt.builtins())
 	if err != nil {
 		return fmt.Errorf("load %s: %w", path, err)
@@ -141,6 +142,7 @@ func (rt *Runtime) LoadFile(path string) error {
 // LoadString executes Starlark source from a string (for testing).
 func (rt *Runtime) LoadString(name, src string) error {
 	thread := &starlark.Thread{Name: "load"}
+	thread.Load = rt.makeLoadFunc()
 	rt.sourceText = src
 	globals, err := starlark.ExecFile(thread, name, src, rt.builtins())
 	if err != nil {
@@ -148,6 +150,46 @@ func (rt *Runtime) LoadString(name, src string) error {
 	}
 	rt.globals = globals
 	return nil
+}
+
+// makeLoadFunc creates a thread.Load handler for Starlark's load() statement.
+// Loaded modules share the same runtime (service registry, builtins).
+// Results are cached — each module is executed at most once.
+func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
+	cache := make(map[string]starlark.StringDict)
+
+	return func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
+		// Return cached result if already loaded.
+		if globals, ok := cache[module]; ok {
+			return globals, nil
+		}
+
+		// Resolve path relative to the base directory.
+		modPath := module
+		if rt.baseDir != "" && !filepath.IsAbs(module) {
+			modPath = filepath.Join(rt.baseDir, module)
+		}
+
+		// Read and execute the module with same builtins.
+		src, err := os.ReadFile(modPath)
+		if err != nil {
+			return nil, fmt.Errorf("load %q: %w", module, err)
+		}
+
+		// Append module source for syscall scanning.
+		rt.sourceText += "\n" + string(src)
+
+		modThread := &starlark.Thread{Name: module}
+		modThread.Load = rt.makeLoadFunc() // support nested loads
+
+		globals, err := starlark.ExecFile(modThread, modPath, src, rt.builtins())
+		if err != nil {
+			return nil, fmt.Errorf("load %q: %w", module, err)
+		}
+
+		cache[module] = globals
+		return globals, nil
+	}
 }
 
 // DiscoverTests returns sorted test function names.

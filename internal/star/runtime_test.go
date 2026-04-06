@@ -876,6 +876,61 @@ nondet(db, api, cache)
 	}
 }
 
+func TestLoadStatement(t *testing.T) {
+	// Create a temp directory with two .star files.
+	dir := t.TempDir()
+
+	// Write the base topology file.
+	base := `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    pass
+
+scenario(order_flow)
+`
+	if err := os.WriteFile(dir+"/faultbox.star", []byte(base), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a file that loads from the base.
+	loader := `
+load("faultbox.star", "db", "order_flow")
+
+def test_gen_order_flow_db_down():
+    pass
+`
+	if err := os.WriteFile(dir+"/failures.star", []byte(loader), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load the failures file — it should resolve the load() to faultbox.star.
+	rt := New(testLogger())
+	if err := rt.LoadFile(dir + "/failures.star"); err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+
+	// The loaded file should have access to db and order_flow.
+	tests := rt.DiscoverTests()
+	found := false
+	for _, name := range tests {
+		if name == "test_gen_order_flow_db_down" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected test_gen_order_flow_db_down in tests, got %v", tests)
+	}
+
+	// The service registry should have db from the loaded module.
+	services := rt.Services()
+	if len(services) != 1 || services[0].Name != "db" {
+		t.Errorf("expected db service, got %v", services)
+	}
+}
+
 func TestScenarioBuiltin(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `
