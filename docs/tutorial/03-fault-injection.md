@@ -304,16 +304,36 @@ def test_persist_failure():
 The trace output shows the operation name: `persist(write) deny(EIO)`.
 
 Operations can also include a **path filter** — useful for services that
-write to specific files (e.g., a database WAL):
+write to specific files. The inventory-svc from Chapters 4-6 writes a
+WAL file to `/tmp/inventory.wal`. Here's a working example:
 
 ```python
-ops = {
-    "wal_write": op(syscalls=["write", "fsync"], path="/tmp/*.wal"),
-}
+inventory = service("inventory", BIN + "/inventory-svc",
+    interface("main", "tcp", 5432),
+    healthcheck = tcp("localhost:5432"),
+    ops = {
+        "wal_write": op(syscalls=["write", "fsync"], path="/tmp/*.wal"),
+    },
+)
+
+orders = service("orders", BIN + "/order-svc",
+    interface("public", "http", 8080),
+    env = {"PORT": "8080", "INVENTORY_ADDR": inventory.main.addr},
+    depends_on = [inventory],
+    healthcheck = http("localhost:8080/health"),
+)
+
+def test_wal_write_failure():
+    """Only WAL writes fail — stdout and TCP responses still work."""
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_true(resp.status >= 500, "expected 5xx on WAL failure")
+    fault(inventory, wal_write=deny("EIO", label="WAL broken"), run=scenario)
 ```
 
-With a path filter, only writes to matching files are faulted — stdout
-and other writes are unaffected.
+With a path filter, only writes to matching files are faulted — stdout,
+TCP responses, and other writes are unaffected. This is how you test
+"WAL is broken but the service can still respond with an error."
 
 > **When to use ops:** When you want to fault a logical operation (like
 > "persist to disk") that involves multiple syscalls. For simple cases,
