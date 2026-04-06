@@ -385,23 +385,22 @@ vm bin/linux-arm64/faultbox test fault-test.star --test everything_broken
 
 ## Imperative fault control
 
-For scenarios where fault timing matters. Add to `fault-test.star`:
+For scenarios where fault timing matters, use `fault_start`/`fault_stop`
+instead of the scoped `fault()` with `run=`. Add to `fault-test.star`:
 
 ```python
 def test_fault_mid_operation():
-    # Phase 1: no faults.
+    # Phase 1: no faults — write succeeds.
     resp = api.post(path="/data/key1", body="before")
     assert_eq(resp.status, 200)
 
-    # Phase 2: enable fault.
+    # Phase 2: enable fault — write fails.
     fault_start(db, write=deny("EIO"))
     resp = api.post(path="/data/key2", body="during")
-    assert_true(resp.status >= 500)
+    assert_true(resp.status >= 500, "expected error during fault")
 
     # Phase 3: disable fault.
     fault_stop(db)
-    resp = api.post(path="/data/key3", body="after")
-    assert_eq(resp.status, 200)
 ```
 
 Run it:
@@ -413,13 +412,18 @@ vm bin/linux-arm64/faultbox test fault-test.star --test fault_mid_operation
 ```
 
 ```
---- PASS: test_fault_mid_operation (400ms, seed=0) ---
+--- PASS: test_fault_mid_operation (300ms, seed=0) ---
     #30  db    write   allow           ← Phase 1: no fault
     #45  db    write   deny(EIO)       ← Phase 2: fault active
-    #62  db    write   allow           ← Phase 3: fault removed
 ```
 
-Prefer `fault()` with `run=` when possible — it guarantees cleanup.
+> **Why no Phase 3 recovery check?** The mock-db crashes when it gets EIO —
+> it doesn't recover within the same process. Real databases (Postgres, Redis)
+> handle I/O errors more gracefully. In production testing, you'd verify
+> recovery after `fault_stop()`. Here, verifying the fault fires is enough.
+
+Prefer `fault()` with `run=` when possible — it guarantees cleanup even
+if the test fails.
 
 ## Reading diagnostic output
 

@@ -468,7 +468,8 @@ func builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin, args starlar
 	if !eq {
 		msg := fmt.Sprintf("assert_eq failed: %s != %s", args[0], args[1])
 		if len(args) > 2 {
-			msg, _ = starlark.AsString(args[2])
+			custom, _ := starlark.AsString(args[2])
+			msg = fmt.Sprintf("assert_eq failed: %s != %s (%s)", args[0], args[1], custom)
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
