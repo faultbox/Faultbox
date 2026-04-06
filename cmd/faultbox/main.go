@@ -13,6 +13,7 @@ import (
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/engine"
 	_ "github.com/faultbox/Faultbox/internal/eventsource/decoder" // register decoders
+	"github.com/faultbox/Faultbox/internal/generate"
 	"github.com/faultbox/Faultbox/internal/logging"
 	"github.com/faultbox/Faultbox/internal/seccomp"
 	"github.com/faultbox/Faultbox/internal/star"
@@ -44,6 +45,8 @@ func run() int {
 		return runCmd(args[1:])
 	case "test":
 		return testCmd(args[1:])
+	case "generate":
+		return generateCmd(args[1:])
 	case "diff":
 		return diffCmd(args[1:])
 	case "init":
@@ -763,10 +766,126 @@ Flags:
 	return 0
 }
 
+// generateCmd handles: faultbox generate <file.star> [flags]
+func generateCmd(args []string) int {
+	var starFile, output, scenarioFilter, serviceFilter, category string
+	dryRun := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case strings.HasSuffix(args[i], ".star"):
+			starFile = args[i]
+		case args[i] == "--output" && i+1 < len(args):
+			i++
+			output = args[i]
+		case strings.HasPrefix(args[i], "--output="):
+			output = strings.TrimPrefix(args[i], "--output=")
+		case args[i] == "--scenario" && i+1 < len(args):
+			i++
+			scenarioFilter = args[i]
+		case strings.HasPrefix(args[i], "--scenario="):
+			scenarioFilter = strings.TrimPrefix(args[i], "--scenario=")
+		case args[i] == "--service" && i+1 < len(args):
+			i++
+			serviceFilter = args[i]
+		case strings.HasPrefix(args[i], "--service="):
+			serviceFilter = strings.TrimPrefix(args[i], "--service=")
+		case args[i] == "--category" && i+1 < len(args):
+			i++
+			category = args[i]
+		case strings.HasPrefix(args[i], "--category="):
+			category = strings.TrimPrefix(args[i], "--category=")
+		case args[i] == "--dry-run":
+			dryRun = true
+		case args[i] == "-h" || args[i] == "--help":
+			fmt.Fprintln(os.Stderr, `Usage: faultbox generate <file.star> [flags]
+
+Generate failure scenarios from registered scenario() functions.
+
+Flags:
+  --output <file>        Write all mutations to a single file
+  --scenario <name>      Generate only for this scenario
+  --service <name>       Generate only for this dependency
+  --category <cat>       Filter: network, disk, all (default: all)
+  --dry-run              List mutations without generating code`)
+			return 0
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			return 1
+		}
+	}
+
+	if starFile == "" {
+		fmt.Fprintln(os.Stderr, "error: .star file required\nusage: faultbox generate <file.star>")
+		return 1
+	}
+
+	// Load the .star file.
+	logger := logging.New(logging.Config{Level: slog.LevelWarn})
+	rt := star.New(logger)
+	if err := rt.LoadFile(starFile); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	// Analyze topology.
+	analysis, err := generate.Analyze(rt)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error analyzing topology: %v\n", err)
+		return 1
+	}
+
+	if len(analysis.Scenarios) == 0 {
+		fmt.Fprintln(os.Stderr, "no scenario() functions found — nothing to generate")
+		fmt.Fprintln(os.Stderr, "hint: register happy paths with scenario(fn)")
+		return 1
+	}
+
+	// Build failure matrix.
+	mutations := generate.BuildMatrix(analysis)
+
+	// Dry run — just show summary.
+	if dryRun {
+		fmt.Fprint(os.Stderr, generate.DryRun(mutations, analysis))
+		return 0
+	}
+
+	opts := generate.GenerateOpts{
+		Scenario: scenarioFilter,
+		Service:  serviceFilter,
+		Category: category,
+		Source:   starFile,
+	}
+
+	if output != "" {
+		// Single output file.
+		code := generate.Generate(mutations, analysis, opts)
+		if err := os.WriteFile(output, []byte(code), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing %s: %v\n", output, err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "wrote %s (%d mutations)\n", output, len(mutations))
+	} else {
+		// Per-scenario files: <scenario>.faults.star
+		perScenario := generate.GeneratePerScenario(mutations, analysis, opts)
+		for scenario, code := range perScenario {
+			fname := scenario + ".faults.star"
+			if err := os.WriteFile(fname, []byte(code), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing %s: %v\n", fname, err)
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "wrote %s\n", fname)
+		}
+	}
+
+	return 0
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage:
   faultbox run [flags] <binary> [args...]    Run a single service
   faultbox test [flags] <file.star>          Run multi-service tests
+  faultbox generate <file.star> [flags]     Generate failure scenarios
   faultbox init [flags] <binary>             Generate starter .star file
   faultbox diff <trace1> <trace2>            Compare normalized traces
 
