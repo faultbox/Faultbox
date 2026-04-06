@@ -1240,6 +1240,68 @@ def regex_decoder(*, pattern: str) -> decoder: ...
 def print(*args: Any) -> None: ...
 def fail(msg: str) -> None: ...
 def load(module: str, *symbols: str) -> None: ...
+
+# ---------------------------------------------------------------------------
+# Constants — for autocomplete, type errno. or http. to see options
+# ---------------------------------------------------------------------------
+
+class errno:
+    """Linux errno codes for deny()."""
+    EIO: str             # I/O error — disk corruption, hardware failure
+    ENOSPC: str          # No space left on device — disk full
+    EROFS: str           # Read-only file system
+    ENOENT: str          # No such file or directory
+    EACCES: str          # Permission denied
+    EPERM: str           # Operation not permitted
+    ECONNREFUSED: str    # Connection refused — service down
+    ECONNRESET: str      # Connection reset by peer — service crashed
+    ETIMEDOUT: str       # Connection timed out — network drop
+    EHOSTUNREACH: str    # No route to host — network partition
+    ENETUNREACH: str     # Network is unreachable
+    EAGAIN: str          # Resource temporarily unavailable
+    ENOMEM: str          # Out of memory
+    EMFILE: str          # Too many open files
+    ENFILE: str          # Too many open files in system
+    EEXIST: str          # File exists
+    ENOSYS: str          # Function not implemented
+
+class http:
+    """HTTP status codes for assertions."""
+    OK: int              # 200
+    CREATED: int         # 201
+    NO_CONTENT: int      # 204
+    BAD_REQUEST: int     # 400
+    UNAUTHORIZED: int    # 401
+    FORBIDDEN: int       # 403
+    NOT_FOUND: int       # 404
+    CONFLICT: int        # 409
+    GONE: int            # 410
+    UNPROCESSABLE: int   # 422
+    TOO_MANY: int        # 429
+    INTERNAL: int        # 500
+    BAD_GATEWAY: int     # 502
+    UNAVAILABLE: int     # 503
+    GATEWAY_TIMEOUT: int # 504
+
+class grpc:
+    """gRPC status codes."""
+    OK: str
+    CANCELLED: str
+    UNKNOWN: str
+    INVALID_ARGUMENT: str
+    DEADLINE_EXCEEDED: str
+    NOT_FOUND: str
+    ALREADY_EXISTS: str
+    PERMISSION_DENIED: str
+    RESOURCE_EXHAUSTED: str
+    FAILED_PRECONDITION: str
+    ABORTED: str
+    OUT_OF_RANGE: str
+    UNIMPLEMENTED: str
+    INTERNAL: str
+    UNAVAILABLE: str
+    DATA_LOSS: str
+    UNAUTHENTICATED: str
 `
 
 func printUsage() {
