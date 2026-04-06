@@ -21,6 +21,7 @@ go.work.sum
 .vscode/
 *.swp
 *.swo
+faultbox.pyi
 
 # OS
 .DS_Store

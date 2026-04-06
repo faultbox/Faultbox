@@ -656,7 +656,15 @@ var fsFaultMap = map[string][]string{
 
 // initCmd handles: faultbox init [flags] <binary>
 // Generates a starter .star file for a service.
+// Also: faultbox init --vscode generates VS Code autocomplete files.
 func initCmd(args []string) int {
+	// Check for --vscode first.
+	for _, arg := range args {
+		if arg == "--vscode" {
+			return initVSCode()
+		}
+	}
+
 	name := "myapp"
 	port := "8080"
 	protocol := "http"
@@ -885,6 +893,346 @@ Flags:
 
 	return 0
 }
+
+// initVSCode generates VS Code autocomplete files for Starlark specs.
+func initVSCode() int {
+	// Create .vscode directory.
+	if err := os.MkdirAll(".vscode", 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating .vscode/: %v\n", err)
+		return 1
+	}
+
+	// Write settings.json.
+	settings := `{
+    "files.associations": {
+        "*.star": "python"
+    },
+    "python.analysis.extraPaths": ["."],
+    "python.analysis.stubPath": "."
+}
+`
+	if err := os.WriteFile(".vscode/settings.json", []byte(settings), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing settings.json: %v\n", err)
+		return 1
+	}
+
+	// Write code snippets.
+	if err := os.WriteFile(".vscode/faultbox.code-snippets", []byte(vscodeSnippets), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing snippets: %v\n", err)
+		return 1
+	}
+
+	// Write type stubs.
+	if err := os.WriteFile("faultbox.pyi", []byte(faultboxPyi), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing faultbox.pyi: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintln(os.Stderr, "wrote .vscode/settings.json")
+	fmt.Fprintln(os.Stderr, "wrote .vscode/faultbox.code-snippets")
+	fmt.Fprintln(os.Stderr, "wrote faultbox.pyi")
+	fmt.Fprintln(os.Stderr, "\nVS Code autocomplete ready. Open a .star file to use.")
+	return 0
+}
+
+var vscodeSnippets = `{
+    "Faultbox Service": {
+        "prefix": "svc",
+        "scope": "python",
+        "body": [
+            "${1:name} = service(\"${1:name}\",",
+            "    interface(\"main\", \"${2|http,tcp,postgres,redis,kafka,mysql,nats,grpc|}\", ${3:8080}),",
+            "    ${4|binary =,image =,build =|} \"${5:path}\",",
+            "    healthcheck = ${6|tcp,http|}(\"localhost:${3:8080}\"),",
+            ")"
+        ],
+        "description": "Faultbox service declaration"
+    },
+    "Faultbox Test": {
+        "prefix": "test",
+        "scope": "python",
+        "body": [
+            "def test_${1:name}():",
+            "    \"\"\"${2:description}\"\"\"",
+            "    resp = ${3:api}.${4|get,post,put,delete|}(path=\"${5:/}\")",
+            "    assert_eq(resp.status, ${6:200})"
+        ],
+        "description": "Faultbox test function"
+    },
+    "Faultbox Scenario": {
+        "prefix": "scenario",
+        "scope": "python",
+        "body": [
+            "def ${1:name}():",
+            "    \"\"\"${2:Happy path description}\"\"\"",
+            "    ${3:resp = api.post(path=\"/\", body=\"\")}",
+            "    ${4:assert_eq(resp.status, 200)}",
+            "",
+            "scenario(${1:name})"
+        ],
+        "description": "Faultbox scenario (happy path for generator)"
+    },
+    "Faultbox Fault": {
+        "prefix": "fault",
+        "scope": "python",
+        "body": [
+            "def test_${1:name}():",
+            "    \"\"\"${2:description}\"\"\"",
+            "    def scenario():",
+            "        resp = ${3:api}.${4|post,get|}(path=\"${5:/}\")",
+            "        assert_true(resp.status >= 500, \"${6:expected error}\")",
+            "    fault(${7:db}, ${8|write,connect,read,fsync|}=${9|deny,delay|}(\"${10:EIO}\", label=\"${11:label}\"), run=scenario)"
+        ],
+        "description": "Faultbox fault injection test"
+    },
+    "Faultbox Monitor": {
+        "prefix": "monitor",
+        "scope": "python",
+        "body": [
+            "monitor(lambda e: fail(\"${1:violation}\") if ${2:condition},",
+            "    service=\"${3:service}\",",
+            ")"
+        ],
+        "description": "Faultbox event monitor"
+    },
+    "Faultbox Observe": {
+        "prefix": "observe",
+        "scope": "python",
+        "body": [
+            "observe = [stdout(decoder=${1|json_decoder(),logfmt_decoder(),regex_decoder(pattern=\"\")|})]"
+        ],
+        "description": "Faultbox stdout observation"
+    },
+    "Faultbox Assert Eventually": {
+        "prefix": "assert_ev",
+        "scope": "python",
+        "body": [
+            "assert_eventually(where=lambda e: e.${1|service,type|} == \"${2:value}\")"
+        ],
+        "description": "Faultbox temporal assertion with lambda"
+    }
+}`
+
+var faultboxPyi = `"""Faultbox Starlark type stubs for VS Code autocomplete."""
+
+from typing import Any, Callable, Dict, List, Optional, Union
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+class service:
+    """A service declaration."""
+    name: str
+    def __getattr__(self, name: str) -> 'interface_ref': ...
+
+class interface:
+    """An interface declaration."""
+    def __init__(self, name: str, protocol: str, port: int, *, spec: str = ...) -> None: ...
+
+class interface_ref:
+    """Reference to a service interface."""
+    addr: str
+    host: str
+    port: int
+    internal_addr: str
+    def get(self, *, path: str = "/", headers: Dict[str, str] = ...) -> 'response': ...
+    def post(self, *, path: str = "/", body: str = "", headers: Dict[str, str] = ...) -> 'response': ...
+    def put(self, *, path: str = "/", body: str = "", headers: Dict[str, str] = ...) -> 'response': ...
+    def delete(self, *, path: str = "/", headers: Dict[str, str] = ...) -> 'response': ...
+    def patch(self, *, path: str = "/", body: str = "", headers: Dict[str, str] = ...) -> 'response': ...
+    def send(self, *, data: str) -> str: ...
+    def query(self, *, sql: str) -> 'response': ...
+    def exec(self, *, sql: str) -> 'response': ...
+    def set(self, *, key: str, value: str) -> 'response': ...
+    def get(self, *, key: str) -> 'response': ...
+    def publish(self, *, topic: str = ..., subject: str = ..., data: str = ...) -> 'response': ...
+    def consume(self, *, topic: str, group: str = ...) -> 'response': ...
+    def call(self, *, method: str, body: str = "{}") -> 'response': ...
+
+class response:
+    """Response from a protocol step method."""
+    status: int
+    body: str
+    data: Any
+    ok: bool
+    error: str
+    duration_ms: int
+
+class event:
+    """Event in the trace log."""
+    seq: int
+    service: str
+    type: str
+    event_type: str
+    data: Any
+    fields: Dict[str, str]
+    first: Optional['event']
+    op: str
+    decision: str
+    label: str
+    syscall: str
+    path: str
+
+class fault:
+    """Fault definition returned by deny()/delay()/allow()."""
+    ...
+
+class healthcheck:
+    """Healthcheck definition returned by tcp()/http()."""
+    ...
+
+class op:
+    """Operation definition for named operations."""
+    def __init__(self, *, syscalls: List[str], path: str = ...) -> None: ...
+
+class decoder:
+    """Decoder for event sources."""
+    ...
+
+class observe_source:
+    """Event source for service observation."""
+    ...
+
+# ---------------------------------------------------------------------------
+# Service & Interface
+# ---------------------------------------------------------------------------
+
+def service(
+    name: str,
+    binary: str = ...,
+    *interfaces: interface,
+    image: str = ...,
+    build: str = ...,
+    args: List[str] = ...,
+    env: Dict[str, str] = ...,
+    depends_on: List[service] = ...,
+    volumes: Dict[str, str] = ...,
+    healthcheck: healthcheck = ...,
+    observe: List[observe_source] = ...,
+    ops: Dict[str, op] = ...,
+) -> service: ...
+
+# ---------------------------------------------------------------------------
+# Healthchecks
+# ---------------------------------------------------------------------------
+
+def tcp(addr: str, *, timeout: str = "10s") -> healthcheck: ...
+def http(url: str, *, timeout: str = "10s") -> healthcheck: ...
+
+# ---------------------------------------------------------------------------
+# Fault Builders
+# ---------------------------------------------------------------------------
+
+def deny(errno: str, *, probability: str = "100%", label: str = ...) -> fault: ...
+def delay(duration: str, *, probability: str = "100%", label: str = ...) -> fault: ...
+def allow() -> fault: ...
+
+# ---------------------------------------------------------------------------
+# Fault Injection
+# ---------------------------------------------------------------------------
+
+def fault(svc: service, *, run: Callable, **syscall_faults: fault) -> Any: ...
+def fault_start(svc: service, **syscall_faults: fault) -> None: ...
+def fault_stop(svc: service) -> None: ...
+
+# ---------------------------------------------------------------------------
+# Assertions
+# ---------------------------------------------------------------------------
+
+def assert_true(condition: bool, msg: str = ...) -> None: ...
+def assert_eq(a: Any, b: Any, msg: str = ...) -> None: ...
+
+def assert_eventually(
+    *,
+    service: str = ...,
+    syscall: str = ...,
+    path: str = ...,
+    decision: str = ...,
+    where: Callable[[event], bool] = ...,
+) -> None: ...
+
+def assert_never(
+    *,
+    service: str = ...,
+    syscall: str = ...,
+    path: str = ...,
+    decision: str = ...,
+    where: Callable[[event], bool] = ...,
+) -> None: ...
+
+def assert_before(
+    *,
+    first: Union[Dict[str, str], Callable[[event], bool]] = ...,
+    then: Union[Dict[str, str], Callable[[event], bool]] = ...,
+) -> None: ...
+
+# ---------------------------------------------------------------------------
+# Events & Monitoring
+# ---------------------------------------------------------------------------
+
+def events(
+    *,
+    service: str = ...,
+    syscall: str = ...,
+    path: str = ...,
+    decision: str = ...,
+    where: Callable[[event], bool] = ...,
+) -> List[event]: ...
+
+def monitor(
+    callback: Callable[[event], None],
+    *,
+    service: str = ...,
+    syscall: str = ...,
+    path: str = ...,
+    decision: str = ...,
+) -> None: ...
+
+# ---------------------------------------------------------------------------
+# Concurrency
+# ---------------------------------------------------------------------------
+
+def parallel(*callables: Callable) -> List[Any]: ...
+def nondet(*services: service) -> None: ...
+
+# ---------------------------------------------------------------------------
+# Tracing
+# ---------------------------------------------------------------------------
+
+def trace(svc: service, *, syscalls: List[str], run: Callable) -> Any: ...
+def trace_start(svc: service, *, syscalls: List[str]) -> None: ...
+def trace_stop(svc: service) -> None: ...
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+
+def partition(svc_a: service, svc_b: service, *, run: Callable) -> Any: ...
+
+# ---------------------------------------------------------------------------
+# Scenarios
+# ---------------------------------------------------------------------------
+
+def scenario(fn: Callable) -> None: ...
+
+# ---------------------------------------------------------------------------
+# Event Sources & Decoders
+# ---------------------------------------------------------------------------
+
+def stdout(*, decoder: decoder = ...) -> observe_source: ...
+def json_decoder() -> decoder: ...
+def logfmt_decoder() -> decoder: ...
+def regex_decoder(*, pattern: str) -> decoder: ...
+
+# ---------------------------------------------------------------------------
+# Starlark builtins
+# ---------------------------------------------------------------------------
+
+def print(*args: Any) -> None: ...
+def fail(msg: str) -> None: ...
+def load(module: str, *symbols: str) -> None: ...
+`
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage:
