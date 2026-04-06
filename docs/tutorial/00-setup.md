@@ -136,10 +136,10 @@ bin/faultbox init --vscode
 ```
 
 This creates three files:
-- **`faultbox.pyi`** — type stubs so VS Code shows parameter hints and
-  attribute completion for all Faultbox builtins
+- **`typings/__builtins__.pyi`** — type stubs so VS Code shows parameter
+  hints and attribute completion for all Faultbox builtins (no import needed)
 - **`.vscode/settings.json`** — associates `.star` files with Python
-  syntax highlighting
+  syntax highlighting, points Pylance to the stubs
 - **`.vscode/faultbox.code-snippets`** — code templates triggered by
   typing prefixes:
 
@@ -153,11 +153,13 @@ This creates three files:
 | `observe` | stdout observation with decoder |
 | `assert_ev` | Lambda assertion |
 
-After setup, open any `.star` file in VS Code — you'll get autocomplete
-for `fault(`, `deny(`, `assert_eventually(`, `resp.data`, etc.
+After setup, **reload VS Code** (Cmd+Shift+P → "Developer: Reload Window"),
+then open any `.star` file — you'll get autocomplete for `fault(`, `deny(`,
+`assert_eventually(`, `resp.data`, etc. No import lines needed.
 
 > **Note:** This requires the Python extension for VS Code (ms-python.python).
 > The autocomplete works because Starlark syntax is close enough to Python.
+> Type checking is disabled — only autocomplete and parameter hints are active.
 
 ## Step 5: Docker (chapter 7 only)
 

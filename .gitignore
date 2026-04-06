@@ -22,6 +22,8 @@ go.work.sum
 *.swp
 *.swo
 faultbox.pyi
+typings/
+.faultbox-stubs/
 
 # OS
 .DS_Store

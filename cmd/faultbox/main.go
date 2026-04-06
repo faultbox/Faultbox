@@ -903,12 +903,15 @@ func initVSCode() int {
 	}
 
 	// Write settings.json.
+	// python.analysis.stubPath points to typings/ where __builtins__.pyi lives.
+	// This makes Pylance treat all stub definitions as global builtins.
 	settings := `{
     "files.associations": {
         "*.star": "python"
     },
-    "python.analysis.extraPaths": ["."],
-    "python.analysis.stubPath": "."
+    "python.analysis.stubPath": "typings",
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    "python.analysis.typeCheckingMode": "off"
 }
 `
 	if err := os.WriteFile(".vscode/settings.json", []byte(settings), 0644); err != nil {
@@ -922,16 +925,21 @@ func initVSCode() int {
 		return 1
 	}
 
-	// Write type stubs.
-	if err := os.WriteFile("faultbox.pyi", []byte(faultboxPyi), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "error writing faultbox.pyi: %v\n", err)
+	// Write type stubs as __builtins__.pyi so Pylance auto-loads them
+	// as globals for all .star files — no import line needed.
+	if err := os.MkdirAll("typings", 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating typings/: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile("typings/__builtins__.pyi", []byte(faultboxPyi), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing __builtins__.pyi: %v\n", err)
 		return 1
 	}
 
 	fmt.Fprintln(os.Stderr, "wrote .vscode/settings.json")
 	fmt.Fprintln(os.Stderr, "wrote .vscode/faultbox.code-snippets")
-	fmt.Fprintln(os.Stderr, "wrote faultbox.pyi")
-	fmt.Fprintln(os.Stderr, "\nVS Code autocomplete ready. Open a .star file to use.")
+	fmt.Fprintln(os.Stderr, "wrote typings/__builtins__.pyi")
+	fmt.Fprintln(os.Stderr, "\nVS Code autocomplete ready. Reload the window (Cmd+Shift+P → Reload).")
 	return 0
 }
 
