@@ -386,9 +386,25 @@ vm bin/linux-arm64/faultbox test fault-test.star --test everything_broken
 ## Imperative fault control
 
 For scenarios where fault timing matters, use `fault_start`/`fault_stop`
-instead of the scoped `fault()` with `run=`. Add to `fault-test.star`:
+instead of the scoped `fault()` with `run=`.
 
 ```python
+# Linux: BIN = "bin"
+# macOS (Lima): BIN = "bin/linux-arm64"
+BIN = "bin/linux-arm64"
+
+db = service("db", BIN + "/mock-db",
+    interface("main", "tcp", 5432),
+    healthcheck = tcp("localhost:5432"),
+)
+
+api = service("api", BIN + "/mock-api",
+    interface("public", "http", 8080),
+    env = {"PORT": "8080", "DB_ADDR": db.main.addr},
+    depends_on = [db],
+    healthcheck = http("localhost:8080/health"),
+)
+
 def test_fault_mid_operation():
     # Phase 1: no faults — write succeeds.
     resp = api.post(path="/data/key1", body="before")
