@@ -2,126 +2,146 @@
 
 ## Problem
 
-Users write happy-path tests and manually add failure scenarios one by one.
+Users write happy-path tests but manually add failure scenarios one by one.
 This requires knowing which syscalls to target, which errnos to use, and
 which dependencies can fail. Most engineers don't think in syscalls — they
 miss failure modes that are obvious in hindsight.
 
-**Goal:** Given a happy-path spec, automatically generate a comprehensive
-set of failure scenarios covering every dependency × every failure mode.
+Worse: the generator can't guess what API calls to make or what status
+codes a service should return under failure — only the user knows that.
 
-## Overview
+**Goal:** The user describes how the system works when everything is fine
+(`scenario()`). The generator takes that happy path and systematically
+wraps it in every possible fault — producing mutations, not inventions.
 
-```
-faultbox generate faultbox.star
-```
-
-Reads a `.star` file, analyzes the topology (services, dependencies,
-interfaces, protocols), and outputs failure test functions to stdout.
-The user reviews, edits, and saves the ones they want.
+## Core Model: Happy Path Mutation
 
 ```
+User writes:    scenario(fn)     → "this is how my system works"
+Generator:      mutate(scenario) → "here's everything that can go wrong"
+```
+
+The generator **never invents API calls or assertions**. It takes the
+user's exact happy path body and wraps it in fault scopes. The user
+then reviews each mutation and adds assertions for the behavior they want.
+
+## The `scenario()` Builtin
+
+```python
+# faultbox.star
+
+db = service("db", ..., interface("main", "postgres", 5432))
+cache = service("cache", ..., interface("main", "redis", 6379))
+api = service("api", ..., depends_on=[db, cache])
+
+# Happy path — describes how the system works when healthy.
+# Registered with scenario() so the generator knows to mutate it.
+def order_flow():
+    api.post(path="/orders", body='{"sku": "widget", "qty": 1}')
+    api.post(path="/payments", body='{"order_id": 1, "amount": 100}')
+    resp = api.get(path="/orders/1")
+    assert_eq(resp.data["status"], "paid")
+
+scenario(order_flow)
+
+# You can register multiple scenarios:
+def health_check():
+    resp = api.get(path="/health")
+    assert_eq(resp.status, 200)
+
+scenario(health_check)
+```
+
+`scenario(fn)` does two things:
+1. **Registers** the function as a happy path for the generator
+2. **Runs it as a test** (same as `test_*` functions) — so happy paths
+   are always verified
+
+## What the Generator Produces
+
+```bash
 faultbox generate faultbox.star --output failures.star
 ```
 
-## What the Generator Knows
+For each registered `scenario()` × each dependency × each failure mode,
+the generator produces a test that runs the **exact same body** under fault:
 
-From a loaded `.star` file, the generator can extract:
-
-| Source | What it reveals |
-|--------|----------------|
-| `service()` declarations | Service names, binary/image, interfaces |
-| `interface()` args | Protocol type, port — determines failure vocabulary |
-| `depends_on` | Dependency graph — which services to fault |
-| `env` wiring (`db.main.addr`) | Runtime dependencies not in depends_on |
-| `healthcheck` | Readiness contract — what "healthy" means |
-| Existing `fault()` calls | Already-tested failure modes (don't duplicate) |
-| Existing `test_*` functions | Happy-path behavior to use as baseline |
-| Protocol registry | Available step methods per protocol |
-
-## Generation Strategy
-
-### Phase 1: Dependency Analysis
-
-Build a graph of which services depend on which:
-
-```
-api → db (depends_on + env: DB_ADDR=db.main.addr)
-api → cache (env: CACHE_ADDR=cache.main.addr)
-worker → kafka (env: BROKER=kafka.main.addr)
-worker → db (depends_on)
-```
-
-Sources of dependency evidence:
-- Explicit `depends_on = [db]`
-- Environment variable referencing another service's `.addr` / `.internal_addr`
-- `partition()` calls in existing tests
-
-### Phase 2: Failure Matrix
-
-For each dependency edge (A → B), generate scenarios based on B's protocol:
-
-**Network failures (all protocols):**
-
-| Scenario | Fault | What it tests |
-|----------|-------|---------------|
-| B is down | `fault(A, connect=deny("ECONNREFUSED"))` | Connection refused handling |
-| B is slow | `fault(A, connect=delay("5s"))` | Timeout handling |
-| B drops mid-request | `fault(A, read=deny("ECONNRESET"))` | Partial failure / retry |
-| Network partition | `partition(A, B, run=scenario)` | Full isolation |
-
-**Disk/storage failures (services with write paths):**
-
-| Scenario | Fault | What it tests |
-|----------|-------|---------------|
-| Disk I/O error | `fault(B, write=deny("EIO"))` | Write error handling |
-| Disk full | `fault(B, write=deny("ENOSPC"))` | Capacity handling |
-| Sync failure | `fault(B, fsync=deny("EIO"))` | Durability guarantee |
-| Read-only filesystem | `fault(B, write=deny("EROFS"))` | Graceful degradation |
-
-**Protocol-specific failures:**
-
-| Protocol | Extra scenarios |
-|----------|----------------|
-| postgres | Query timeout (delay on read), transaction failure |
-| redis | Cache miss under fault, connection pool exhaustion |
-| kafka | Publish failure, consumer lag under delay |
-| http | 5xx from dependency, slow response cascade |
-
-### Phase 3: Assertion Generation
-
-For each failure scenario, generate appropriate assertions:
-
-**Error response assertions:**
 ```python
-# When B is down, A should return 5xx (not hang, not 200)
-assert_true(resp.status >= 500, "expected error when B is down")
-assert_true(resp.duration_ms < 5000, "should fail fast, not hang")
+# failures.star — generated by: faultbox generate faultbox.star
+load("faultbox.star", "api", "db", "cache", "order_flow", "health_check")
+
+# --- order_flow × db failures ---
+
+def test_gen_order_flow_db_down():
+    """order_flow with db connection refused."""
+    fault(api, connect=deny("ECONNREFUSED", label="db down"), run=order_flow)
+
+def test_gen_order_flow_db_slow():
+    """order_flow with db writes delayed 5s."""
+    fault(db, write=delay("5s", label="db slow"), run=order_flow)
+
+def test_gen_order_flow_db_disk_full():
+    """order_flow with db disk full."""
+    fault(db, write=deny("ENOSPC", label="disk full"), run=order_flow)
+
+def test_gen_order_flow_db_io_error():
+    """order_flow with db disk I/O error."""
+    fault(db, write=deny("EIO", label="disk I/O error"), run=order_flow)
+
+def test_gen_order_flow_db_fsync_failure():
+    """order_flow with db fsync failure."""
+    fault(db, fsync=deny("EIO", label="fsync failure"), run=order_flow)
+
+def test_gen_order_flow_db_connection_reset():
+    """order_flow with db dropping mid-request."""
+    fault(api, read=deny("ECONNRESET", label="db connection reset"), run=order_flow)
+
+def test_gen_order_flow_db_partition():
+    """order_flow with network partition between api and db."""
+    partition(api, db, run=order_flow)
+
+# --- order_flow × cache failures ---
+
+def test_gen_order_flow_cache_down():
+    """order_flow with cache connection refused."""
+    fault(api, connect=deny("ECONNREFUSED", label="cache down"), run=order_flow)
+
+def test_gen_order_flow_cache_slow():
+    """order_flow with cache delayed 5s."""
+    fault(cache, write=delay("5s", label="cache slow"), run=order_flow)
+
+# --- health_check × db failures ---
+
+def test_gen_health_check_db_down():
+    """health_check with db connection refused."""
+    fault(api, connect=deny("ECONNREFUSED", label="db down"), run=health_check)
+
+# ... etc
 ```
 
-**Graceful degradation assertions:**
-```python
-# When cache is down, API should still work (from DB)
-assert_eq(resp.status, 200, "should degrade gracefully without cache")
+**Key properties:**
+- **No generated assertions** — the happy path's own assertions will
+  either pass (system handles the fault) or fail (system doesn't).
+  The user reviews failures and decides what's correct behavior.
+- **Happy path body preserved exactly** — `run=order_flow` passes the
+  original function, same API calls, same sequence.
+- **Each mutation = one fault scope** — simple, isolated, debuggable.
+
+## User Workflow
+
+```
+1. Write happy paths with scenario()
+2. faultbox generate → produces mutations
+3. Run mutations → see which fail
+4. For each failure:
+   a. Expected failure → adjust assertion (change assert_eq to assert_true(status >= 500))
+   b. Unexpected failure → found a bug, fix the code
+   c. Irrelevant → delete the generated test
+5. Commit the kept mutations alongside happy paths
+6. Regenerate when topology changes (new dependency, new scenario)
 ```
 
-**No-data-loss assertions:**
-```python
-# After disk error, previously written data should survive
-resp = api.get(path="/data/key1")
-assert_eq(resp.status, 200, "old data should survive disk error")
-```
-
-### Phase 4: Deduplication
-
-Don't generate scenarios already covered by existing tests:
-- Scan existing `fault()` calls to find tested failure modes
-- Mark generated scenarios as "new" or "already tested"
-- In `--format json` output, include `"covered": true/false`
-
-## API
-
-### CLI
+## CLI
 
 ```bash
 # Generate to stdout (review in terminal)
@@ -130,120 +150,51 @@ faultbox generate faultbox.star
 # Write to file
 faultbox generate faultbox.star --output failures.star
 
-# Only generate for specific service
-faultbox generate faultbox.star --service api
+# Only mutate specific scenario
+faultbox generate faultbox.star --scenario order_flow
+
+# Only generate for specific dependency
+faultbox generate faultbox.star --service db
 
 # Only specific failure category
 faultbox generate faultbox.star --category network
 faultbox generate faultbox.star --category disk
 faultbox generate faultbox.star --category all     # default
 
-# Dry run — show what would be generated without code
+# Dry run — list scenarios without code
 faultbox generate faultbox.star --dry-run
 ```
 
-### Output Format
+## Failure Matrix
 
-```python
-# ============================================================
-# Auto-generated failure scenarios by: faultbox generate
-# Source: faultbox.star
-# Generated: 2026-04-06
-#
-# Review each test and keep the ones relevant to your system.
-# Delete or comment out scenarios that don't apply.
-# ============================================================
+For each dependency edge, the generator applies these fault templates:
 
-load("faultbox.star", "api", "db")
+### Network failures (all protocols)
 
-# --- Network failures: api → db ---
+| Fault | Errno | Label | Severity |
+|-------|-------|-------|----------|
+| connect refused | ECONNREFUSED | `<dep> down` | critical |
+| connect slow | delay 5s | `<dep> slow` | high |
+| connection reset | ECONNRESET | `<dep> connection reset` | high |
+| network partition | partition() | `<dep> partitioned` | critical |
 
-def test_gen_api_db_connection_refused():
-    """When db is down, api should return 5xx."""
-    def scenario():
-        resp = api.post(path="/data/test", body="value")
-        assert_true(resp.status >= 500, "expected 5xx when db is down")
-        assert_true(resp.duration_ms < 5000, "should fail fast, not hang")
-    fault(api, connect=deny("ECONNREFUSED", label="db down"), run=scenario)
+### Disk failures (services with storage)
 
-def test_gen_api_db_slow():
-    """When db is slow, api should timeout gracefully."""
-    def scenario():
-        resp = api.post(path="/data/test", body="value")
-        assert_true(resp.status in [200, 504], "expected success or gateway timeout")
-        assert_true(resp.duration_ms < 10000, "should not hang forever")
-    fault(api, connect=delay("5s", label="db slow"), run=scenario)
+| Fault | Errno | Label | Severity |
+|-------|-------|-------|----------|
+| write I/O error | EIO | `disk I/O error` | critical |
+| disk full | ENOSPC | `disk full` | high |
+| fsync failure | EIO | `fsync failure` | critical |
+| read-only FS | EROFS | `read-only filesystem` | medium |
 
-def test_gen_api_db_connection_reset():
-    """When db drops mid-request, api should handle partial failure."""
-    def scenario():
-        resp = api.post(path="/data/test", body="value")
-        assert_true(resp.status >= 500, "expected error on connection reset")
-    fault(api, read=deny("ECONNRESET", label="db dropped"), run=scenario)
+### Protocol-specific failures
 
-def test_gen_api_db_partition():
-    """Full network partition between api and db."""
-    def scenario():
-        resp = api.post(path="/data/test", body="value")
-        assert_true(resp.status >= 500, "expected error during partition")
-    partition(api, db, run=scenario)
-
-# --- Disk failures: db ---
-
-def test_gen_db_disk_io_error():
-    """DB disk I/O error — does api handle it?"""
-    def scenario():
-        resp = api.post(path="/data/test", body="value")
-        assert_true(resp.status >= 500, "expected 5xx on disk I/O error")
-    fault(db, write=deny("EIO", label="disk I/O error"), run=scenario)
-
-def test_gen_db_disk_full():
-    """DB disk full — does api report meaningful error?"""
-    def scenario():
-        resp = api.post(path="/data/test", body="value")
-        assert_true(resp.status >= 500, "expected 5xx on disk full")
-    fault(db, write=deny("ENOSPC", label="disk full"), run=scenario)
-
-def test_gen_db_fsync_failure():
-    """DB fsync failure — data durability at risk."""
-    def scenario():
-        resp = api.post(path="/data/test", body="value")
-        assert_true(resp.status >= 500 or resp.status == 200,
-            "should either fail or succeed, not corrupt")
-    fault(db, fsync=deny("EIO", label="fsync failure"), run=scenario)
-
-# --- Recovery: db ---
-
-def test_gen_db_recovery_after_error():
-    """After disk error, previously written data should survive."""
-    # Setup: write data while healthy.
-    api.post(path="/data/safe-key", body="safe-value")
-
-    # Break: disk error during new write.
-    def break_writes():
-        resp = api.post(path="/data/doomed-key", body="doomed")
-        assert_true(resp.status >= 500, "new write should fail")
-    fault(db, write=deny("EIO", label="transient disk error"), run=break_writes)
-
-    # Verify: old data survived.
-    resp = api.get(path="/data/safe-key")
-    assert_eq(resp.status, 200, "old data should survive")
-    assert_eq(resp.body, "safe-value")
-
-# --- Concurrent failures ---
-
-def test_gen_db_slow_concurrent():
-    """Concurrent requests under slow db — no race conditions."""
-    def scenario():
-        results = parallel(
-            lambda: api.post(path="/data/k1", body="v1"),
-            lambda: api.post(path="/data/k2", body="v2"),
-        )
-        for r in results:
-            assert_true(r.status in [200, 500, 503],
-                "each request should succeed or fail cleanly")
-    fault(db, write=delay("500ms", label="slow db"), run=scenario)
-```
+| Protocol | Extra faults |
+|----------|-------------|
+| postgres | read delay (query timeout) |
+| redis | read delay (cache timeout) |
+| kafka | write delay (publish backpressure) |
+| http | read delay (slow upstream response) |
 
 ## Technical Implementation
 
@@ -256,26 +207,24 @@ cmd/faultbox/main.go
             ├── Load .star file (star.New + LoadFile)
             │
             ├── internal/generate/analyzer.go
-            │   └── AnalyzeTopology(rt) → TopologyGraph
+            │   └── Analyze(rt) → Analysis
             │       ├── services, interfaces, protocols
-            │       ├── dependency edges (depends_on + env wiring)
-            │       └── existing fault coverage (source scan)
+            │       ├── dependency edges
+            │       ├── registered scenarios (from scenario() calls)
+            │       └── existing fault coverage
             │
             ├── internal/generate/matrix.go
-            │   └── BuildFailureMatrix(graph) → []Scenario
-            │       ├── network failures per edge
-            │       ├── disk failures per service
-            │       ├── protocol-specific failures
-            │       ├── recovery scenarios
-            │       └── concurrent failure scenarios
+            │   └── BuildMatrix(analysis) → []Mutation
+            │       ├── for each scenario × each edge × each fault
+            │       └── deduplication against existing faults
             │
             ├── internal/generate/codegen.go
-            │   └── GenerateStarlark(scenarios, opts) → string
-            │       ├── test function generation
-            │       ├── assertion generation
-            │       └── label and comment generation
+            │   └── Generate(mutations, opts) → string
+            │       ├── load() header
+            │       ├── test function per mutation
+            │       └── comments and labels
             │
-            └── Output (stdout / file / json)
+            └── Output (stdout / file)
 ```
 
 ### New Package: `internal/generate/`
@@ -283,262 +232,207 @@ cmd/faultbox/main.go
 **analyzer.go:**
 
 ```go
-type TopologyGraph struct {
-    Services []ServiceInfo
-    Edges    []DependencyEdge
-    Covered  []CoveredScenario  // already tested
+type Analysis struct {
+    Services   []ServiceInfo
+    Edges      []DependencyEdge
+    Scenarios  []ScenarioInfo     // from scenario() registrations
+    Covered    []CoveredFault     // already tested fault combinations
 }
 
-type ServiceInfo struct {
-    Name       string
-    Protocol   string            // primary interface protocol
-    Interfaces []InterfaceInfo
-    HasStorage bool              // true if binary/container writes to disk
+type ScenarioInfo struct {
+    Name     string   // function name (e.g., "order_flow")
+    VarName  string   // Starlark variable name
+    Services []string // services referenced in the body
 }
 
 type DependencyEdge struct {
     From     string  // service that depends
     To       string  // service depended on
-    Via      string  // "depends_on", "env", "partition"
+    Via      string  // "depends_on", "env"
     Protocol string  // protocol of the target interface
 }
 
-type CoveredScenario struct {
-    TestName string
-    Service  string
-    Syscall  string
-    Action   string  // "deny", "delay", "partition"
-    Errno    string
-}
-
-func AnalyzeTopology(rt *star.Runtime) (*TopologyGraph, error)
+func Analyze(rt *star.Runtime) (*Analysis, error)
 ```
 
 **matrix.go:**
 
 ```go
-type Scenario struct {
-    Name        string   // test function name
-    Category    string   // "network", "disk", "recovery", "concurrent"
-    Description string
-    Edge        string   // "api → db" or "db (storage)"
-    Severity    string   // "critical", "high", "medium"
-    FaultTarget string   // service to fault
-    Syscall     string   // "connect", "write", "fsync"
-    Action      string   // "deny", "delay"
-    Errno       string   // "ECONNREFUSED", "EIO"
-    Label       string   // human-readable fault label
-    CoveredBy   string   // existing test name, or empty
+type Mutation struct {
+    Name          string // test_gen_<scenario>_<target>_<fault>
+    Scenario      string // scenario function name
+    Category      string // "network", "disk"
+    Description   string
+    FaultTarget   string // service to fault
+    Syscall       string // "connect", "write", "fsync"
+    Action        string // "deny", "delay"
+    Errno         string // "ECONNREFUSED", "EIO", ""
+    Delay         string // "5s", ""
+    Label         string // human-readable
+    UsePartition  bool   // use partition() instead of fault()
+    PartitionA    string // first service for partition
+    PartitionB    string // second service for partition
+    Severity      string
 }
 
-func BuildFailureMatrix(graph *TopologyGraph) []Scenario
+func BuildMatrix(analysis *Analysis) []Mutation
 ```
 
 **codegen.go:**
 
 ```go
 type GenerateOpts struct {
-    Service   string  // filter to one service
-    Category  string  // filter to one category
+    Scenario  string // filter to one scenario
+    Service   string // filter to one dependency
+    Category  string // filter to one category
     DryRun    bool
-    Source    string  // source .star filename (for load() statement)
+    Source    string // source .star filename (for load())
 }
 
-func Generate(scenarios []Scenario, happy []HappyPath, opts GenerateOpts) string
+func Generate(mutations []Mutation, analysis *Analysis, opts GenerateOpts) string
 ```
 
-### Scenario Templates
+### `scenario()` Builtin Implementation
 
-Each scenario category has a template that generates Starlark code:
-
-**Network template:**
-```go
-func networkDenyTemplate(edge DependencyEdge, errno, label string) string
-func networkDelayTemplate(edge DependencyEdge, delay, label string) string
-func partitionTemplate(edge DependencyEdge) string
-```
-
-**Disk template:**
-```go
-func diskDenyTemplate(svc ServiceInfo, errno, label string) string
-func fsyncDenyTemplate(svc ServiceInfo) string
-```
-
-**Recovery template:**
-```go
-func recoveryTemplate(svc ServiceInfo, caller ServiceInfo) string
-```
-
-**Concurrent template:**
-```go
-func concurrentTemplate(svc ServiceInfo, caller ServiceInfo) string
-```
-
-### Happy Path Extraction
-
-The generator needs to know what step calls the happy path makes so it
-can reuse them in failure scenarios:
+In `internal/star/builtins.go`:
 
 ```go
-type HappyPath struct {
-    TestName string
-    Steps    []StepCall  // e.g., api.post(path="/data/test", body="value")
-}
+func (rt *Runtime) builtinScenario(thread *starlark.Thread, fn *starlark.Builtin,
+    args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 
-type StepCall struct {
-    Service   string
-    Interface string
-    Method    string
-    Kwargs    map[string]string
+    if len(args) != 1 {
+        return nil, fmt.Errorf("scenario() requires exactly one callable")
+    }
+    callable, ok := args[0].(starlark.Callable)
+    if !ok {
+        return nil, fmt.Errorf("scenario() argument must be a callable")
+    }
+
+    // Register as scenario for the generator.
+    rt.scenarios = append(rt.scenarios, ScenarioRegistration{
+        Name: callable.Name(),
+        Fn:   callable,
+    })
+
+    // Also register as a test (happy path should always run).
+    rt.registerTest("test_"+callable.Name(), callable)
+
+    return starlark.None, nil
 }
 ```
 
-Extracted by scanning test function bodies for step call patterns
-(same substring approach as `requiredSyscallsForService`).
+The generator reads `rt.scenarios` to know which functions to mutate.
 
-### Severity Classification
+### Scenario Extraction for Codegen
 
-| Severity | Criteria |
-|----------|----------|
-| critical | Service completely down (ECONNREFUSED), data loss risk (fsync EIO) |
-| high | Disk full (ENOSPC), connection reset (ECONNRESET), slow cascade |
-| medium | Read-only filesystem, partial failure, concurrent race |
-| low | File descriptor exhaustion, uncommon errnos |
+The generator needs the scenario function name (not its body) because
+the generated code uses `run=order_flow` — calling the original function.
+The `load()` statement imports both service variables and scenario functions.
 
-### Integration with Existing Code
+```python
+load("faultbox.star", "api", "db", "cache", "order_flow", "health_check")
+```
 
-The generator reuses:
-- `star.Runtime.LoadFile()` — parse .star
-- `star.Runtime.Services()` — service registry
-- `star.Runtime.DiscoverTests()` — existing test names
-- `protocol.Get(name).Methods()` — available step methods
-- `expandSyscallFamily()` — syscall expansion (for deduplication)
-- Source text scanning (for covered scenario detection)
+## Deduplication
 
-No changes to existing packages — `internal/generate/` is additive only.
+The generator scans existing `.star` source for `fault()` calls to avoid
+generating duplicates:
+
+```go
+// If source already contains:
+//   fault(db, write=deny("EIO"), run=order_flow)
+// Then don't generate:
+//   test_gen_order_flow_db_io_error
+```
+
+Matching is by: scenario name + fault target + syscall + errno.
 
 ## Use Cases
 
 ### 1. New Project Bootstrap
 
 ```bash
-# Generate starter spec
 faultbox init --name api --port 8080 ./api-svc --output faultbox.star
-
-# Add db dependency manually, write happy path test
-
-# Generate all failure scenarios
+# Edit faultbox.star: add dependencies, write scenario()
 faultbox generate faultbox.star --output failures.star
-
-# Review, keep relevant ones, run
 faultbox test failures.star
+# Review failures, add assertions, commit
 ```
 
-### 2. Coverage Gap Discovery
+### 2. New Dependency Added
 
 ```bash
-# See what's tested vs what's missing
-faultbox generate faultbox.star --format json | jq '.scenarios[] | select(.covered_by == null)'
-
-# Output: 13 uncovered failure modes
-```
-
-### 3. Service-Specific Generation
-
-```bash
-# Just added a new Redis dependency — generate only Redis-specific failures
+# Added Redis cache to the topology
 faultbox generate faultbox.star --service cache --output cache-failures.star
+# Only generates cache-related mutations
 ```
 
-### 4. Post-Incident Reproduction
-
-After an incident where the payment gateway timed out:
+### 3. Post-Incident
 
 ```bash
-# Generate failures, search for timeout scenarios you missed
-faultbox generate faultbox.star | grep -A5 "timeout"
+# Incident: payment gateway timeout cascaded to checkout
+faultbox generate faultbox.star | grep -A3 "slow"
+# Find: test_gen_order_flow_gateway_slow was generated but never kept
+# Add it to failures.star, add assertions, commit
 ```
 
-### 5. LLM Workflow (future Phase 2)
+### 4. Coverage Review
 
 ```bash
-# LLM reviews the generated Starlark, adds business-logic failures
-faultbox generate faultbox.star | \
-  claude "Review these failure scenarios for a payment system. \
-          Add any business-logic failures I'm missing."
-```
-
-## Naming Convention
-
-Generated test names use the `test_gen_` prefix to distinguish from
-hand-written tests:
-
-```
-test_gen_<caller>_<target>_<failure_mode>
-test_gen_api_db_connection_refused
-test_gen_api_db_slow
-test_gen_db_disk_full
-test_gen_db_recovery_after_error
+faultbox generate faultbox.star --dry-run
+# Output:
+#   order_flow × db: 7 mutations (3 already covered)
+#   order_flow × cache: 4 mutations (0 already covered)
+#   health_check × db: 3 mutations (0 already covered)
+#   Total: 14 mutations, 11 new
 ```
 
 ## File Structure
 
-Generated failures live in a **separate file** and import topology via
-Starlark's `load()` statement:
-
 ```python
-# faultbox.star — user's topology + happy paths (hand-written)
+# faultbox.star — topology + happy paths (hand-written, committed)
 db = service("db", ...)
 api = service("api", ..., depends_on=[db])
 
-def test_happy_path():
-    resp = api.post(path="/data/key", body="value")
-    assert_eq(resp.status, 200)
+def order_flow():
+    api.post(path="/orders", body='{"sku": "widget"}')
+    resp = api.get(path="/orders/1")
+    assert_eq(resp.data["status"], "created")
+
+scenario(order_flow)
 ```
 
 ```python
-# failures.star — generated by: faultbox generate faultbox.star
-load("faultbox.star", "api", "db")
+# failures.star — generated, then curated (committed)
+load("faultbox.star", "api", "db", "order_flow")
 
-def test_gen_api_db_connection_refused():
+def test_gen_order_flow_db_down():
+    """order_flow with db down."""
+    fault(api, connect=deny("ECONNREFUSED", label="db down"), run=order_flow)
+
+# User added assertion after reviewing:
+def test_gen_order_flow_db_slow():
+    """order_flow with db slow — should timeout within 5s."""
     def scenario():
-        resp = api.post(path="/data/test", body="value")
-        assert_true(resp.status >= 500, "expected 5xx when db is down")
-    fault(api, connect=deny("ECONNREFUSED", label="db down"), run=scenario)
+        order_flow()
+        # User-added assertion:
+        # assert_true(resp.duration_ms < 5000, "should timeout")
+    fault(db, write=delay("5s", label="db slow"), run=scenario)
 ```
 
 ```bash
-# Run happy paths
-faultbox test faultbox.star
-
-# Run generated failures
-faultbox test failures.star
-
-# Run both
-faultbox test faultbox.star failures.star
+faultbox test faultbox.star              # happy paths
+faultbox test failures.star              # failure mutations
+faultbox test faultbox.star failures.star # both
 ```
-
-The `load()` statement imports service variables from the topology file.
-Services are started once — the loaded module's topology is shared.
-
-### Why separate files
-
-- **Clean separation:** topology + happy paths are yours, failure scenarios
-  are generated. No merge conflicts when regenerating.
-- **Selective execution:** run only failures, only happy paths, or both.
-- **Regeneration-safe:** `faultbox generate --output failures.star` can
-  overwrite without touching your hand-written tests.
-- **Composable:** multiple generated files for different categories:
-  `network-failures.star`, `disk-failures.star`, `concurrent-failures.star`.
 
 ## Rollout Plan
 
-0. **`load()` support in Starlark runtime** — add `thread.Load` handler
-   to resolve and execute imported .star files. Prerequisite for separate
-   failure files. Share service registry + builtins across loaded modules.
-1. **`internal/generate/analyzer.go`** — topology analysis
-2. **`internal/generate/matrix.go`** — failure matrix generation
-3. **`internal/generate/codegen.go`** — Starlark code generation (with `load()` header)
-4. **`cmd/faultbox/main.go`** — `generate` subcommand
-5. **Tests** — unit tests for analyzer, matrix, codegen
-6. **Docs** — CLI reference, tutorial chapter
+0. **`scenario()` builtin** — register happy paths, run as tests
+1. **`load()` support in Starlark runtime** — prerequisite for separate files
+2. **`internal/generate/analyzer.go`** — topology + scenario extraction
+3. **`internal/generate/matrix.go`** — failure matrix from edges × faults
+4. **`internal/generate/codegen.go`** — Starlark output with load() header
+5. **`cmd/faultbox/main.go`** — `generate` subcommand
+6. **Tests** — unit tests for analyzer, matrix, codegen
+7. **Docs** — CLI reference, tutorial chapter
