@@ -352,6 +352,9 @@ vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --normalize
 find the `walAppend` function (~line 151), and add a **duplicate write**
 right after the existing one:
 
+In `poc/demo/inventory-svc/main.go`, find the `walAppend` function (~line 155)
+and add a duplicate write:
+
 ```go
 // In walAppend(), after the existing f.Write([]byte(entry)):
 f.Write([]byte(entry))   // ← existing line
