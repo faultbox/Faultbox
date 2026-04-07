@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
+
+// socketRe matches socket:[12345], pipe:[12345], anon_inode:[eventfd] etc.
+var socketRe = regexp.MustCompile(`^(socket|pipe|anon_inode):\[\d+\]$`)
 
 // TraceOutput is the JSON structure written to --output.
 type TraceOutput struct {
@@ -85,6 +89,15 @@ func classifyFailure(reason string) string {
 	}
 }
 
+// normalizePath strips non-deterministic parts from paths.
+// socket:[12345] → socket, pipe:[67890] → pipe.
+func normalizePath(path string) string {
+	if socketRe.MatchString(path) {
+		return path[:strings.Index(path, ":")]
+	}
+	return path
+}
+
 // NormalizeTrace produces a deterministic fingerprint of a test's syscall trace.
 // Groups events by service to eliminate cross-service interleaving nondeterminism
 // (caused by Go scheduler ordering). Each service's own syscall sequence is
@@ -117,6 +130,11 @@ func NormalizeTrace(result *SuiteResult) string {
 				if (decision == "allow" || decision == "allow (system path)") && path == "" {
 					continue
 				}
+
+				// Normalize non-deterministic paths:
+				// socket:[12345] → socket (inode numbers change between runs)
+				// pipe:[12345] → pipe
+				path = normalizePath(path)
 
 				line = fmt.Sprintf("%s %s", syscall, decision)
 				if path != "" {
