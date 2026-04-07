@@ -297,9 +297,9 @@ vm bin/linux-arm64/faultbox test traces-test.star --test write_count
 
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --output trace.json
+bin/faultbox test traces-test.star --test wal_written --output trace.json
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --output trace.json
+vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --output trace.json
 ```
 
 Structured JSON with every event, PObserve-compatible fields, vector clocks,
@@ -309,9 +309,9 @@ and replay commands for failed tests.
 
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --shiviz trace.shiviz
+bin/faultbox test traces-test.star --test wal_written --shiviz trace.shiviz
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --shiviz trace.shiviz
+vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --shiviz trace.shiviz
 ```
 
 Open at https://bestchai.bitbucket.io/shiviz/ to see a space-time diagram
@@ -343,9 +343,9 @@ the diff shows exactly what changed.
 **Step 1:** Capture a baseline trace:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --normalize trace-before.norm
+bin/faultbox test traces-test.star --test wal_written --normalize trace-before.norm
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --normalize trace-before.norm
+vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --normalize trace-before.norm
 ```
 
 **Step 2:** Make a small code change. Open `poc/demo/inventory-svc/main.go`,
@@ -362,10 +362,10 @@ Rebuild and capture again:
 ```bash
 # Linux:
 make build
-bin/faultbox test traces-test.star --normalize trace-after.norm
+bin/faultbox test traces-test.star --test wal_written --normalize trace-after.norm
 # macOS (Lima):
 make demo-build
-vm bin/linux-arm64/faultbox test traces-test.star --normalize trace-after.norm
+vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --normalize trace-after.norm
 ```
 
 **Step 3:** Compare:
