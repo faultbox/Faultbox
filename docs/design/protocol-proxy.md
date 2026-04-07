@@ -435,7 +435,29 @@ Parses Kafka wire protocol:
 
 Complexity: High — complex binary protocol with many API versions.
 
-### NATS Proxy (low priority)
+### MongoDB Proxy
+
+Parses MongoDB wire protocol (OP_MSG):
+- **find, insert, update, delete** commands
+- Match by collection name and operation type
+- Inject error responses with MongoDB error codes
+
+Go library: `mongo-go-driver` has wire protocol internals, or parse OP_MSG directly.
+
+Complexity: Medium — OP_MSG is well-documented binary format.
+
+### RabbitMQ/AMQP Proxy
+
+Parses AMQP 0-9-1 wire protocol:
+- **Basic.Publish**: match by exchange/routing key
+- **Basic.Deliver**: delay or drop message delivery
+- **Basic.Ack/Nack**: simulate consumer failures
+
+Go library: `streadway/amqp` for client side. Proxy needs raw AMQP frame parsing.
+
+Complexity: Medium-High — AMQP frames are well-structured but stateful.
+
+### NATS Proxy
 
 NATS protocol is text-based (like Redis):
 - `PUB subject reply-to payload`
@@ -443,6 +465,48 @@ NATS protocol is text-based (like Redis):
 - Easy to parse and intercept
 
 Complexity: Low.
+
+### Memcached Proxy
+
+Text protocol (similar to Redis):
+- `get key`, `set key flags exptime bytes`
+- Match by command and key pattern
+
+Complexity: Low.
+
+## Protocol Coverage Map
+
+Many services share wire protocols — one proxy covers multiple products:
+
+| Proxy implementation | Covers |
+|---------------------|--------|
+| **HTTP** | HTTP APIs, DynamoDB, S3, GCS, Elasticsearch, OpenSearch, REST services |
+| **Postgres** | PostgreSQL, CockroachDB, YugabyteDB, AlloyDB, Supabase |
+| **MySQL** | MySQL, Aurora, MariaDB, TiDB, PlanetScale |
+| **Redis** | Redis, Valkey, KeyDB, Dragonfly, ElastiCache |
+| **gRPC** | Any gRPC service |
+| **Kafka** | Apache Kafka, Confluent, Amazon MSK, Redpanda |
+| **MongoDB** | MongoDB, Atlas, DocumentDB |
+| **AMQP** | RabbitMQ, Amazon MQ, LavinMQ |
+| **NATS** | NATS, NATS JetStream |
+| **Memcached** | Memcached, ElastiCache (memcached mode) |
+
+**10 proxy implementations cover 30+ products.**
+
+## Go Libraries for Proxy Implementation
+
+| Proxy | Recommended library | Notes |
+|-------|-------------------|-------|
+| HTTP | `net/http/httputil.ReverseProxy` | stdlib, zero deps |
+| gRPC | `mwitkow/grpc-proxy` | Transparent proxy with interceptors |
+| Postgres | `jeroenrinzema/psql-wire` | Postgres wire protocol server |
+| MySQL | `go-mysql-org/go-mysql` | MySQL server/proxy components |
+| Redis | `tidwall/redcon` | Redis-compatible server framework |
+| Kafka | `grepplabs/kafka-proxy` | Full Kafka wire protocol proxy |
+| MongoDB | Raw TCP + OP_MSG parsing | `go.mongodb.org/mongo-driver` for reference |
+| AMQP | Raw TCP + frame parsing | `streadway/amqp` for reference |
+| NATS | Raw TCP | Text protocol, trivial |
+| Memcached | Raw TCP | Text protocol, trivial |
 
 ## Trace Integration
 
@@ -470,33 +534,43 @@ Visible in ShiViz with causal arrows between services.
 
 ## Rollout Plan
 
-### Phase 1: Core + HTTP + Redis (fastest value)
+### Phase 1: Core + HTTP + Redis
+
+Fastest value. HTTP alone covers S3, DynamoDB, Elasticsearch, etc.
 
 1. `internal/proxy/proxy.go` — Proxy interface, ProxyManager, rule types
-2. `internal/proxy/http.go` — HTTP reverse proxy with request/path matching
-3. `internal/proxy/redis.go` — Redis RESP proxy (reuse existing parser)
-4. `internal/star/builtins.go` — `proxy_fault()` builtin + HTTP/Redis fault builtins
+2. `internal/proxy/http.go` — HTTP reverse proxy (`httputil.ReverseProxy`)
+3. `internal/proxy/redis.go` — Redis RESP proxy (`tidwall/redcon`)
+4. `internal/star/builtins.go` — `fault(interface_ref, ...)` dispatch, fault builtins
 5. Address rewriting in `buildEnv()` and `executeStep()`
 6. Trace event emission
 7. Tests + docs
 
 ### Phase 2: Postgres + MySQL
 
-8. `internal/proxy/postgres.go` — Postgres wire protocol proxy
-9. `internal/proxy/mysql.go` — MySQL wire protocol proxy
+Covers CockroachDB, Aurora, YugabyteDB, MariaDB, TiDB.
+
+8. `internal/proxy/postgres.go` — Postgres wire protocol (`psql-wire`)
+9. `internal/proxy/mysql.go` — MySQL wire protocol (`go-mysql`)
 10. SQL query pattern matching
 
-### Phase 3: gRPC + Kafka + NATS
+### Phase 3: gRPC + Kafka
 
-11. `internal/proxy/grpc.go` — gRPC interceptor proxy
-12. `internal/proxy/kafka.go` — Kafka wire protocol proxy
-13. `internal/proxy/nats.go` — NATS protocol proxy
+11. `internal/proxy/grpc.go` — gRPC proxy (`grpc-proxy`)
+12. `internal/proxy/kafka.go` — Kafka wire protocol (`kafka-proxy`)
 
-### Phase 4: Advanced
+### Phase 4: MongoDB + RabbitMQ
 
-14. Message reordering (Kafka consumer ordering)
-15. Partial response corruption (TCP truncation)
-16. Connection pool exhaustion simulation
+13. `internal/proxy/mongodb.go` — MongoDB OP_MSG proxy
+14. `internal/proxy/amqp.go` — AMQP proxy (RabbitMQ)
+
+### Phase 5: NATS + Memcached + Advanced
+
+15. `internal/proxy/nats.go` — NATS text protocol proxy
+16. `internal/proxy/memcached.go` — Memcached text protocol proxy
+17. Message reordering (Kafka consumer ordering)
+18. Partial response corruption (TCP truncation)
+19. Connection pool exhaustion simulation
 
 ## Key Files to Modify
 
