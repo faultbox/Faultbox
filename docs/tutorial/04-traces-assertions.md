@@ -348,11 +348,23 @@ bin/faultbox test traces-test.star --normalize trace-before.norm
 vm bin/linux-arm64/faultbox test traces-test.star --normalize trace-before.norm
 ```
 
-**Step 2:** Make your code change, rebuild, then capture again:
+**Step 2:** Make a small code change. Open `poc/demo/inventory-svc/main.go`,
+find the `walAppend` function (~line 151), and add a **duplicate write**
+right after the existing one:
+
+```go
+// In walAppend(), after the existing f.Write([]byte(entry)):
+f.Write([]byte(entry))   // ← existing line
+f.Write([]byte(entry))   // ← add this line (double-write bug)
+```
+
+Rebuild and capture again:
 ```bash
 # Linux:
+make build
 bin/faultbox test traces-test.star --normalize trace-after.norm
 # macOS (Lima):
+make demo-build
 vm bin/linux-arm64/faultbox test traces-test.star --normalize trace-after.norm
 ```
 
@@ -369,16 +381,20 @@ If the system is deterministic (same seed + same binary), the output is:
 traces are identical
 ```
 
-If the behavior changed, you see exactly what:
+If the behavior changed (the double-write you just added), you see:
 ```
-traces differ (24 vs 26 lines):
-  line 12:
-    run1: inventory write allow
-    run2: inventory write allow
-  line 13:
-    run1: inventory fsync allow
-    run2: inventory write allow        ← extra write before fsync
+traces differ (12 vs 13 lines):
+  line 8:
+    run1: write allow /tmp/inventory.wal
+    run2: write allow /tmp/inventory.wal
+  line 9:
+    run1: fsync allow
+    run2: write allow /tmp/inventory.wal   ← extra write (your bug)
 ```
+
+The diff shows exactly one extra `write` to the WAL — the double-write
+you added. Revert your change (`git checkout poc/demo/inventory-svc/main.go`)
+and rebuild to restore the original behavior.
 
 **When to use this:**
 - Before/after a refactor — prove no behavioral change
