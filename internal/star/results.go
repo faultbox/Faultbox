@@ -233,10 +233,11 @@ func DiffTraces(a, b string) string {
 		// Show 1 context line before the diff (if not already shown).
 		ctx := d.lineNum - 1
 		if ctx >= 0 && ctx > lastShown && ctx < len(linesA) {
-			fmt.Fprintf(&sb, "  %4d   %s\n", ctx+1, linesA[ctx])
+			fmt.Fprintf(&sb, "  line %d:   %s\n", ctx+1, linesA[ctx])
 		}
-		fmt.Fprintf(&sb, "  %4d %s- %s%s\n", d.lineNum+1, colorRed, d.a, colorReset)
-		fmt.Fprintf(&sb, "  %4d %s+ %s%s\n", d.lineNum+1, colorGreen, d.b, colorReset)
+		fmt.Fprintf(&sb, "  line %d:\n", d.lineNum+1)
+		fmt.Fprintf(&sb, "    %s- %s%s\n", colorRed, d.a, colorReset)
+		fmt.Fprintf(&sb, "    %s+ %s%s\n", colorGreen, d.b, colorReset)
 		lastShown = d.lineNum
 	}
 
