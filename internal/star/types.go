@@ -366,11 +366,12 @@ func (e *StarlarkEvent) Attr(name string) (starlark.Value, error) {
 		}
 		return starlark.None, nil
 	}
-	// Also allow direct access to common fields.
+	// Direct access to event fields — returns empty string if not present
+	// (so lambda predicates like e.path don't error on events without that field).
 	if v, ok := e.ev.Fields[name]; ok {
 		return starlark.String(v), nil
 	}
-	return nil, starlark.NoSuchAttrError(fmt.Sprintf("event has no .%s attribute", name))
+	return starlark.String(""), nil
 }
 
 func (e *StarlarkEvent) AttrNames() []string {
