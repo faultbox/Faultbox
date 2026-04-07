@@ -110,19 +110,25 @@ def test_wal_written():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_eq(resp.status, 200)
 
-        # Prove: the inventory service wrote to the WAL.
+        # Prove: the inventory service wrote specifically to the WAL file.
         assert_eventually(
-            service="inventory",
-            syscall="write",
+            where=lambda e: e.service == "inventory"
+                and e.syscall == "write"
+                and ".wal" in e.path
         )
     fault(inventory, write=delay("100ms", label="slow WAL"), run=scenario)
 ```
+
+The lambda predicate checks not just "a write happened" but "a write to
+a `.wal` file happened." Without the path check, you'd also match writes
+to stdout or TCP sockets — which don't prove durability.
 
 > **Why a fault here?** Trace assertions query the syscall event log.
 > Events are only recorded for syscalls with a seccomp filter installed.
 > `fault(inventory, write=delay(...))` installs filters for
 > `[write,writev,pwrite64]` — so only write-family events appear in the
-> trace. If you need `openat` events, add an openat fault too.
+> trace. The fd→path resolution (via `/proc/PID/fd`) gives us the file
+> path for each write, making the lambda check possible.
 
 Run it:
 ```bash
