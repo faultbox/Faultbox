@@ -33,7 +33,26 @@ Services don't know the proxy exists — they connect to the same address
 
 ## Starlark API
 
-### `proxy_fault()` — protocol-level fault injection
+### Unified `fault()` — syscall and protocol level
+
+The existing `fault()` builtin is extended. The **first argument type**
+determines the mechanism:
+
+- `fault(service, ...)` → **syscall level** (existing, unchanged)
+- `fault(interface_ref, ...)` → **protocol level** (new, via proxy)
+
+```python
+# Syscall level — first arg is service:
+fault(db, write=deny("EIO"), run=scenario)
+
+# Protocol level — first arg is interface_ref (db.main):
+fault(db.main,
+    error(query="INSERT*", message="disk full"),
+    run=scenario,
+)
+```
+
+### Protocol fault examples
 
 ```python
 db = service("postgres",
@@ -41,11 +60,19 @@ db = service("postgres",
     image="postgres:16",
 )
 
+gateway = service("gateway",
+    interface("public", "http", 443),
+    image="company/gateway:latest",
+)
+
 api = service("api",
     interface("public", "http", 8080),
     build="./api",
-    env={"DB_URL": "postgres://test@" + db.main.internal_addr + "/testdb"},
-    depends_on=[db],
+    env={
+        "DB_URL": "postgres://test@" + db.main.internal_addr + "/testdb",
+        "GATEWAY_URL": "http://" + gateway.public.internal_addr,
+    },
+    depends_on=[db, gateway],
 )
 
 def test_query_timeout():
@@ -53,8 +80,8 @@ def test_query_timeout():
     def scenario():
         resp = api.post(path="/users", body='{"name":"alice"}')
         assert_true(resp.duration_ms < 3000, "should timeout, not hang")
-    proxy_fault(api, db,
-        postgres_delay(query="INSERT INTO users*", delay="5s"),
+    fault(db.main,
+        delay(query="INSERT INTO users*", delay="5s"),
         run=scenario,
     )
 
@@ -63,92 +90,103 @@ def test_http_rate_limit():
     def scenario():
         resp = api.post(path="/checkout", body='{"amount":100}')
         assert_eq(resp.status, 200, "should succeed after retry")
-    proxy_fault(api, gateway,
-        http_response(method="POST", path="/charge", status=429,
-                      body='{"error":"rate_limited"}'),
+    fault(gateway.public,
+        response(method="POST", path="/charge", status=429,
+                 body='{"error":"rate_limited"}'),
         run=scenario,
     )
 ```
 
-### Fault types per protocol
+### Protocol-generic fault builtins
 
-**HTTP:**
+Fault builtins adapt their behavior based on the interface's protocol.
+The names are protocol-generic where possible:
+
+| Builtin | HTTP | gRPC | Postgres/MySQL | Redis | Kafka/NATS |
+|---------|------|------|---------------|-------|------------|
+| `response(...)` | Return status+body | Return status | Return result | Return value | — |
+| `error(...)` | Return 5xx | Return gRPC status | Return SQL error | Return ERR | Return error response |
+| `delay(...)` | Delay response | Delay RPC | Delay query | Delay command | Delay message |
+| `drop(...)` | Close connection | Reset stream | Close connection | Close connection | Drop message |
+| `duplicate(...)` | — | — | — | — | Deliver twice |
+
+**HTTP** — `fault(gateway.public, ...)`:
 ```python
-# Return specific status/body for matching requests:
-http_response(method="POST", path="/orders", status=429, body='{"error":"rate_limited"}')
-http_response(path="/health", status=503)
-
-# Delay specific requests:
-http_delay(method="GET", path="/slow*", delay="3s")
-
-# Drop connection mid-response:
-http_reset(method="POST", path="/upload")
+response(method="POST", path="/orders", status=429, body='{"error":"rate_limited"}')
+response(path="/health", status=503)
+delay(method="GET", path="/slow*", delay="3s")
+drop(method="POST", path="/upload")   # TCP reset mid-response
 ```
 
-**gRPC:**
+**gRPC** — `fault(svc.grpc_api, ...)`:
 ```python
-# Return gRPC error for specific method:
-grpc_error(method="/pkg.OrderService/CreateOrder", status="UNAVAILABLE")
-grpc_error(method="/pkg.OrderService/*", status="DEADLINE_EXCEEDED")
-
-# Delay specific RPC:
-grpc_delay(method="/pkg.OrderService/CreateOrder", delay="5s")
+error(method="/pkg.OrderService/CreateOrder", status="UNAVAILABLE")
+error(method="/pkg.OrderService/*", status="DEADLINE_EXCEEDED")
+delay(method="/pkg.OrderService/CreateOrder", delay="5s")
 ```
 
-**Postgres / MySQL:**
+**Postgres / MySQL** — `fault(db.main, ...)`:
 ```python
-# Fail specific queries:
-postgres_error(query="INSERT INTO orders*", error="relation does not exist")
-postgres_delay(query="SELECT * FROM users*", delay="3s")
-
-# MySQL equivalent:
-mysql_error(query="INSERT INTO orders*", error="Table is read only")
+error(query="INSERT INTO orders*", message="relation does not exist")
+delay(query="SELECT * FROM users*", delay="3s")
+error(query="INSERT*", message="disk full", code="53100")  # Postgres SQLSTATE
 ```
 
-**Redis:**
+**Redis** — `fault(cache.main, ...)`:
 ```python
-# Return error for specific commands:
-redis_error(command="SET", key="session:*", error="READONLY")
-
-# Delay specific commands:
-redis_delay(command="GET", key="cache:*", delay="2s")
-
-# Return nil (simulate cache miss):
-redis_nil(command="GET", key="cache:*")
+error(command="SET", key="session:*", message="READONLY")
+delay(command="GET", key="cache:*", delay="2s")
+response(command="GET", key="cache:*", value=None)   # simulate cache miss
 ```
 
-**Kafka:**
+**Kafka** — `fault(kafka.main, ...)`:
 ```python
-# Drop messages on a topic:
-kafka_drop(topic="orders.events", probability="30%")
-
-# Delay message delivery:
-kafka_delay(topic="orders.events", delay="5s")
-
-# Duplicate messages (test idempotency):
-kafka_duplicate(topic="orders.events")
+drop(topic="orders.events", probability="30%")
+delay(topic="orders.events", delay="5s")
+duplicate(topic="orders.events")
 ```
 
-**NATS:**
+**NATS** — `fault(nats.main, ...)`:
 ```python
-# Drop messages on subject:
-nats_drop(subject="orders.*", probability="50%")
-nats_delay(subject="orders.new", delay="2s")
+drop(subject="orders.*", probability="50%")
+delay(subject="orders.new", delay="2s")
 ```
 
-### Combined with syscall faults
+### `source=` for multi-consumer targeting
+
+When multiple services connect to the same interface (e.g., Kafka broker),
+use `source=` to fault only one consumer:
 
 ```python
-# Both levels at once:
+kafka = service("kafka", interface("main", "kafka", 9092), image="...")
+api = service("api", ..., env={"BROKER": kafka.main.internal_addr})
+worker = service("worker", ..., env={"BROKER": kafka.main.internal_addr})
+
+# Only the worker gets delayed messages — api can still produce:
+fault(kafka.main, source=worker,
+    delay(topic="orders.events", delay="5s"),
+    run=scenario,
+)
+
+# Only the api gets produce errors — worker still consumes:
+fault(kafka.main, source=api,
+    error(topic="orders.events", message="LEADER_NOT_AVAILABLE"),
+    run=scenario,
+)
+```
+
+### Combined syscall + protocol faults
+
+```python
 def test_cascade():
+    """DB query fails AND api can't log the error."""
     def scenario():
         resp = api.post(path="/orders", body='...')
         assert_true(resp.status >= 500)
 
-    # Protocol level: Postgres returns error for inserts
-    # Syscall level: API disk is full (can't log the error)
-    proxy_fault(api, db,
-        postgres_error(query="INSERT*", error="disk full"),
+    # Nest: protocol fault wraps syscall fault
+    fault(db.main,
+        error(query="INSERT*", message="disk full"),
         run=lambda: fault(api, write=deny("ENOSPC"), run=scenario),
     )
 ```
