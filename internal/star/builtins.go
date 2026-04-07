@@ -3,6 +3,7 @@ package star
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -594,16 +595,25 @@ func matchesFilters(ev Event, filters []eventFilter) bool {
 }
 
 // matchValue checks if actual matches the pattern.
-// Supports trailing * for prefix matching and leading * for suffix matching.
+// Supports: trailing * (prefix), leading * (suffix), middle * (filepath.Match glob).
 func matchValue(actual, pattern string) bool {
 	if pattern == "" {
 		return true
 	}
-	if strings.HasSuffix(pattern, "*") {
-		return strings.HasPrefix(actual, strings.TrimSuffix(pattern, "*"))
-	}
-	if strings.HasPrefix(pattern, "*") {
-		return strings.HasSuffix(actual, strings.TrimPrefix(pattern, "*"))
+	// If pattern contains *, try glob matching (covers prefix, suffix, and middle *).
+	if strings.Contains(pattern, "*") {
+		matched, err := filepath.Match(pattern, actual)
+		if err == nil && matched {
+			return true
+		}
+		// Fallback: also try as substring for leading/trailing * convenience.
+		if strings.HasSuffix(pattern, "*") {
+			return strings.HasPrefix(actual, strings.TrimSuffix(pattern, "*"))
+		}
+		if strings.HasPrefix(pattern, "*") {
+			return strings.HasSuffix(actual, strings.TrimPrefix(pattern, "*"))
+		}
+		return false
 	}
 	return actual == pattern
 }

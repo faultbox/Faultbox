@@ -111,24 +111,32 @@ def test_wal_written():
         assert_eq(resp.status, 200)
 
         # Prove: the inventory service wrote specifically to the WAL file.
-        assert_eventually(
-            where=lambda e: e.service == "inventory"
-                and e.syscall == "write"
-                and ".wal" in e.path
-        )
+        assert_eventually(service="inventory", syscall="write", path="*.wal")
     fault(inventory, write=delay("100ms", label="slow WAL"), run=scenario)
 ```
 
-The lambda predicate checks not just "a write happened" but "a write to
-a `.wal` file happened." Without the path check, you'd also match writes
+The `path="*.wal"` filter checks not just "a write happened" but "a write
+to a `.wal` file happened." Without the path check, you'd also match writes
 to stdout or TCP sockets — which don't prove durability.
+
+All filter parameters support glob patterns: `path="*.wal"`, `path="/tmp/*"`,
+`decision="deny*"`. For more complex conditions, use `where=lambda`:
+
+```python
+# Lambda for conditions that globs can't express:
+assert_eventually(
+    where=lambda e: e.service == "inventory"
+        and e.syscall == "write"
+        and int(e.fields.get("size", "0")) > 1024
+)
+```
 
 > **Why a fault here?** Trace assertions query the syscall event log.
 > Events are only recorded for syscalls with a seccomp filter installed.
 > `fault(inventory, write=delay(...))` installs filters for
 > `[write,writev,pwrite64]` — so only write-family events appear in the
 > trace. The fd→path resolution (via `/proc/PID/fd`) gives us the file
-> path for each write, making the lambda check possible.
+> path for each write, making the path filter possible.
 
 Run it:
 ```bash
