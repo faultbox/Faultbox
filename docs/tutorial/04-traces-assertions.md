@@ -99,6 +99,61 @@ Every intercepted syscall is recorded with:
 
 Even `allow` decisions are recorded. The trace is a complete record.
 
+## trace() — observe without faulting
+
+By default, Faultbox only records events for syscalls that have a
+seccomp filter installed (via `fault()` or `trace()`). If you want to
+**observe** what a service does without injecting any fault, use `trace()`:
+
+```python
+def test_happy_path_observed():
+    """Watch what inventory does during a normal order — no faults."""
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_eq(resp.status, 200)
+
+        # We can now see what syscalls inventory made.
+        assert_eventually(service="inventory", syscall="write", path="*.wal")
+    trace(inventory, syscalls=["write", "openat", "fsync"], run=scenario)
+```
+
+Run it:
+```bash
+# Linux:
+bin/faultbox test traces-test.star --test happy_path_observed
+# macOS (Lima):
+vm bin/linux-arm64/faultbox test traces-test.star --test happy_path_observed
+```
+
+```
+--- PASS: test_happy_path_observed (200ms, seed=0) ---
+  syscall trace (4 events):
+  trace rule on inventory: write=trace → filter:[write,writev,pwrite64], ...
+```
+
+**trace() vs fault():** Both install seccomp filters. `fault()` modifies
+syscall outcomes (deny, delay). `trace()` allows everything but records it.
+Use `trace()` when you want to assert on internal behavior of a **healthy**
+system — no faults, just observation.
+
+There's also an imperative form:
+
+```python
+def test_observe_then_fault():
+    # Phase 1: observe healthy behavior.
+    trace_start(inventory, syscalls=["write", "fsync"])
+    resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+    assert_eq(resp.status, 200)
+    assert_eventually(service="inventory", syscall="write", path="*.wal")
+    trace_stop(inventory)
+
+    # Phase 2: now fault and verify error handling.
+    def break_it():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_true(resp.status != 200, "should fail under fault")
+    fault(inventory, write=deny("EIO"), run=break_it)
+```
+
 ## assert_eventually — "this happened"
 
 The most common temporal assertion: verify something occurred.
