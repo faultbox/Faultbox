@@ -186,7 +186,8 @@ const (
 )
 
 // DiffTraces compares two normalized trace strings and returns a human-readable diff.
-// Returns empty string if traces are identical. Output uses ANSI colors.
+// Returns empty string if traces are identical. Output uses ANSI colors
+// with context lines around each difference (like git diff).
 func DiffTraces(a, b string) string {
 	linesA := strings.Split(strings.TrimSpace(a), "\n")
 	linesB := strings.Split(strings.TrimSpace(b), "\n")
@@ -195,13 +196,17 @@ func DiffTraces(a, b string) string {
 		return ""
 	}
 
-	var sb strings.Builder
 	maxLen := len(linesA)
 	if len(linesB) > maxLen {
 		maxLen = len(linesB)
 	}
 
-	identical := true
+	// Find which lines differ.
+	type diffLine struct {
+		lineNum int
+		a, b    string
+	}
+	var diffs []diffLine
 	for i := 0; i < maxLen; i++ {
 		var la, lb string
 		if i < len(linesA) {
@@ -211,19 +216,31 @@ func DiffTraces(a, b string) string {
 			lb = linesB[i]
 		}
 		if la != lb {
-			identical = false
-			fmt.Fprintf(&sb, "  line %d:\n", i+1)
-			fmt.Fprintf(&sb, "    %s- %s%s\n", colorRed, la, colorReset)
-			fmt.Fprintf(&sb, "    %s+ %s%s\n", colorGreen, lb, colorReset)
+			diffs = append(diffs, diffLine{i, la, lb})
 		}
 	}
 
-	if identical {
+	if len(diffs) == 0 {
 		return ""
 	}
 
+	var sb strings.Builder
 	header := fmt.Sprintf("%straces differ (%d vs %d lines):%s\n", colorYellow, len(linesA), len(linesB), colorReset)
-	return header + sb.String()
+	sb.WriteString(header)
+
+	lastShown := -1
+	for _, d := range diffs {
+		// Show 1 context line before the diff (if not already shown).
+		ctx := d.lineNum - 1
+		if ctx >= 0 && ctx > lastShown && ctx < len(linesA) {
+			fmt.Fprintf(&sb, "  %4d   %s\n", ctx+1, linesA[ctx])
+		}
+		fmt.Fprintf(&sb, "  %4d %s- %s%s\n", d.lineNum+1, colorRed, d.a, colorReset)
+		fmt.Fprintf(&sb, "  %4d %s+ %s%s\n", d.lineNum+1, colorGreen, d.b, colorReset)
+		lastShown = d.lineNum
+	}
+
+	return sb.String()
 }
 
 // WriteShiVizTrace writes a ShiViz-compatible trace file for a test result.
