@@ -303,6 +303,39 @@ type FaultDef struct {
 	PathGlob    string // path glob (set when expanded from ops=)
 }
 
+// ProxyFaultDef describes a protocol-level fault rule.
+// Created by response(), error(), delay(), drop() builtins when used
+// with fault(interface_ref, ...).
+type ProxyFaultDef struct {
+	// Match criteria (glob patterns):
+	Method  string // HTTP method, gRPC method, Redis command
+	Path    string // HTTP path pattern
+	Query   string // SQL query pattern
+	Key     string // Redis key pattern
+	Topic   string // Kafka/NATS topic
+	Command string // Redis command name
+
+	// Action:
+	Action string // "respond", "error", "delay", "drop", "duplicate"
+
+	// Parameters:
+	Status      int
+	Body        string
+	Error       string
+	Delay       time.Duration
+	Probability float64
+}
+
+var _ starlark.Value = (*ProxyFaultDef)(nil)
+
+func (f *ProxyFaultDef) String() string {
+	return fmt.Sprintf("<proxy_fault %s>", f.Action)
+}
+func (f *ProxyFaultDef) Type() string           { return "proxy_fault" }
+func (f *ProxyFaultDef) Freeze()                {}
+func (f *ProxyFaultDef) Truth() starlark.Bool   { return true }
+func (f *ProxyFaultDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: proxy_fault") }
+
 var _ starlark.Value = (*FaultDef)(nil)
 
 func (f *FaultDef) String() string {

@@ -21,6 +21,7 @@ import (
 	"github.com/faultbox/Faultbox/internal/eventsource"
 	"github.com/faultbox/Faultbox/internal/logging"
 	"github.com/faultbox/Faultbox/internal/protocol"
+	"github.com/faultbox/Faultbox/internal/proxy"
 	"github.com/faultbox/Faultbox/internal/seccomp"
 )
 
@@ -88,6 +89,9 @@ type Runtime struct {
 	// Used by the generator and also run as tests.
 	scenarios []ScenarioRegistration
 
+	// Protocol-level proxy manager.
+	proxyMgr *proxy.Manager
+
 	// Monitor errors — collected during test execution, checked after test.
 	monitorMu     sync.Mutex
 	monitorErrors []error
@@ -101,7 +105,7 @@ type runningSession struct {
 
 // New creates a new Starlark runtime.
 func New(logger *slog.Logger) *Runtime {
-	return &Runtime{
+	rt := &Runtime{
 		log:      logging.WithComponent(logger, "starlark"),
 		events:   NewEventLog(),
 		eng:      engine.New(logger),
@@ -109,6 +113,10 @@ func New(logger *slog.Logger) *Runtime {
 		sessions: make(map[string]*runningSession),
 		faults:   make(map[string]map[string]*FaultDef),
 	}
+	rt.proxyMgr = proxy.NewManager(func(evt proxy.ProxyEvent) {
+		rt.events.Emit("proxy", evt.To, evt.Fields)
+	})
+	return rt
 }
 
 // LoadFile executes a .star file, populating the service registry and
@@ -1238,6 +1246,11 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	}
 	addr := fmt.Sprintf("localhost:%d", port)
 	targetSvc := ref.Service.Name
+
+	// If a proxy is running for this interface, route through it.
+	if proxyAddr := rt.proxyMgr.GetProxyAddr(targetSvc, ref.Interface.Name); proxyAddr != "" {
+		addr = proxyAddr
+	}
 
 	// Merge test driver's clock into target service — records causal "request sent".
 	rt.events.MergeClock(targetSvc, "test")

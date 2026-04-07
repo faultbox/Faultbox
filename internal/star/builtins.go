@@ -11,6 +11,7 @@ import (
 	"go.starlark.net/starlark"
 
 	"github.com/faultbox/Faultbox/internal/engine"
+	"github.com/faultbox/Faultbox/internal/proxy"
 )
 
 // parallelResult captures the outcome of one parallel callable.
@@ -47,6 +48,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
 		"scenario":          starlark.NewBuiltin("scenario", rt.builtinScenario),
 		"op":                starlark.NewBuiltin("op", builtinOp),
+		"response":          starlark.NewBuiltin("response", builtinProxyResponse),
+		"error":             starlark.NewBuiltin("error", builtinProxyError),
+		"drop":              starlark.NewBuiltin("drop", builtinProxyDrop),
+		"duplicate":         starlark.NewBuiltin("duplicate", builtinProxyDuplicate),
 		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutSource),
 		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoder),
 		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoder),
@@ -283,7 +288,50 @@ func builtinHTTP(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 }
 
 // delay(duration, probability=, label=)
+// Syscall level: delay("500ms") → FaultDef
+// Protocol level: delay(path="/data/*", delay="500ms") → ProxyFaultDef
 func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	// Protocol-level delay: no positional args, has delay= kwarg.
+	if len(args) == 0 {
+		pf := &ProxyFaultDef{Action: "delay"}
+		for _, kv := range kwargs {
+			key, _ := starlark.AsString(kv[0])
+			switch key {
+			case "delay":
+				s, _ := starlark.AsString(kv[1])
+				d, err := parseStarDuration(s)
+				if err != nil {
+					return nil, fmt.Errorf("delay() bad duration %q: %w", s, err)
+				}
+				pf.Delay = d
+			case "method":
+				pf.Method, _ = starlark.AsString(kv[1])
+			case "path":
+				pf.Path, _ = starlark.AsString(kv[1])
+			case "query":
+				pf.Query, _ = starlark.AsString(kv[1])
+			case "key":
+				pf.Key, _ = starlark.AsString(kv[1])
+			case "command":
+				pf.Command, _ = starlark.AsString(kv[1])
+			case "topic":
+				pf.Topic, _ = starlark.AsString(kv[1])
+			case "probability":
+				s, _ := starlark.AsString(kv[1])
+				s = strings.TrimSuffix(s, "%")
+				fmt.Sscanf(s, "%f", &pf.Probability)
+				if pf.Probability > 1 {
+					pf.Probability /= 100.0
+				}
+			}
+		}
+		if pf.Delay == 0 {
+			return nil, fmt.Errorf("delay() requires delay= or a positional duration argument")
+		}
+		return pf, nil
+	}
+
+	// Syscall-level delay: positional duration.
 	var durStr string
 	if err := starlark.UnpackPositionalArgs("delay", args, nil, 1, &durStr); err != nil {
 		return nil, err
@@ -335,15 +383,23 @@ func builtinAllow(thread *starlark.Thread, fn *starlark.Builtin, args starlark.T
 	return &FaultDef{Action: "allow"}, nil
 }
 
-// fault(service, run=body_fn, **syscall_faults)
-// Example: fault(db, write=delay("500ms"), run=my_func)
+// fault(service_or_interface_ref, ..., run=body_fn)
+//
+// Syscall level:   fault(db, write=deny("EIO"), run=fn)
+// Protocol level:  fault(db.main, response(status=503), run=fn)
 func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 1 {
-		return nil, fmt.Errorf("fault() requires a service argument")
+		return nil, fmt.Errorf("fault() requires a service or interface argument")
 	}
+
+	// Protocol-level fault: first arg is InterfaceRef.
+	if ifRef, ok := args[0].(*InterfaceRef); ok {
+		return rt.builtinFaultProtocol(thread, ifRef, args[1:], kwargs)
+	}
+
 	svc, ok := args[0].(*ServiceDef)
 	if !ok {
-		return nil, fmt.Errorf("fault() first arg must be a service, got %s", args[0].Type())
+		return nil, fmt.Errorf("fault() first arg must be a service or interface_ref, got %s", args[0].Type())
 	}
 
 	// Extract run= callback and fault specs from kwargs.
@@ -1218,6 +1274,241 @@ func (v *DecoderVal) Truth() starlark.Bool { return true }
 func (v *DecoderVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: decoder") }
 
 // stdout(decoder=) — creates an observe source config for stdout capture.
+// ---------------------------------------------------------------------------
+// Protocol-level fault builtins
+// ---------------------------------------------------------------------------
+
+// builtinFaultProtocol handles fault(interface_ref, *proxy_faults, run=fn).
+func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *InterfaceRef, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	svcName := ifRef.Service.Name
+	ifaceName := ifRef.Interface.Name
+	proto := ifRef.Interface.Protocol
+
+	// Extract run= and source= from kwargs, rest are ignored for protocol faults.
+	var bodyFn starlark.Callable
+	var sourceSvc string
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		if key == "run" {
+			cb, ok := kv[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("fault() run= must be a callable")
+			}
+			bodyFn = cb
+		} else if key == "source" {
+			if s, ok := kv[1].(*ServiceDef); ok {
+				sourceSvc = s.Name
+			}
+		}
+	}
+
+	if bodyFn == nil {
+		return nil, fmt.Errorf("fault() requires run= keyword with a callback function")
+	}
+
+	// Collect proxy fault defs from positional args.
+	var proxyFaults []*ProxyFaultDef
+	for _, arg := range args {
+		pf, ok := arg.(*ProxyFaultDef)
+		if !ok {
+			return nil, fmt.Errorf("fault(interface_ref, ...) arguments must be response()/error()/drop(), got %s", arg.Type())
+		}
+		proxyFaults = append(proxyFaults, pf)
+	}
+
+	if len(proxyFaults) == 0 {
+		return nil, fmt.Errorf("fault(interface_ref, ...) requires at least one protocol fault (response, error, drop, etc.)")
+	}
+
+	// Resolve target address.
+	port := ifRef.Interface.Port
+	if ifRef.Interface.HostPort > 0 {
+		port = ifRef.Interface.HostPort
+	}
+	targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	// Ensure proxy is running for this interface.
+	proxyAddr, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr)
+	if err != nil {
+		return nil, fmt.Errorf("fault(): %w", err)
+	}
+
+	// Convert ProxyFaultDefs to proxy.Rules and add them.
+	for _, pf := range proxyFaults {
+		rule := proxyFaultToRule(pf)
+		rt.proxyMgr.AddRule(svcName, ifaceName, rule)
+	}
+
+	// Emit event.
+	rt.events.Emit("proxy_fault_applied", svcName, map[string]string{
+		"interface": ifaceName,
+		"protocol":  proto,
+		"proxy":     proxyAddr,
+		"source":    sourceSvc,
+	})
+
+	// Run body, then clear rules.
+	defer func() {
+		rt.proxyMgr.ClearRules(svcName, ifaceName)
+		rt.events.Emit("proxy_fault_removed", svcName, map[string]string{
+			"interface": ifaceName,
+		})
+	}()
+
+	result, err := starlark.Call(thread, bodyFn, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return starlark.None, nil
+	}
+	return result, nil
+}
+
+// proxyFaultToRule converts a Starlark ProxyFaultDef to a proxy.Rule.
+func proxyFaultToRule(pf *ProxyFaultDef) proxy.Rule {
+	var action proxy.Action
+	switch pf.Action {
+	case "respond":
+		action = proxy.ActionRespond
+	case "error":
+		action = proxy.ActionError
+	case "delay":
+		action = proxy.ActionDelay
+	case "drop":
+		action = proxy.ActionDrop
+	case "duplicate":
+		action = proxy.ActionDuplicate
+	}
+	return proxy.Rule{
+		Method:  pf.Method,
+		Path:    pf.Path,
+		Query:   pf.Query,
+		Key:     pf.Key,
+		Topic:   pf.Topic,
+		Command: pf.Command,
+		Action:  action,
+		Status:  pf.Status,
+		Body:    pf.Body,
+		Error:   pf.Error,
+		Delay:   pf.Delay,
+		Prob:    pf.Probability,
+	}
+}
+
+// response(method=, path=, status=, body=) — return custom response.
+func builtinProxyResponse(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	pf := &ProxyFaultDef{Action: "respond"}
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "method":
+			pf.Method, _ = starlark.AsString(kv[1])
+		case "path":
+			pf.Path, _ = starlark.AsString(kv[1])
+		case "query":
+			pf.Query, _ = starlark.AsString(kv[1])
+		case "key":
+			pf.Key, _ = starlark.AsString(kv[1])
+		case "command":
+			pf.Command, _ = starlark.AsString(kv[1])
+		case "topic":
+			pf.Topic, _ = starlark.AsString(kv[1])
+		case "status":
+			if n, ok := kv[1].(starlark.Int); ok {
+				val, _ := n.Int64()
+				pf.Status = int(val)
+			}
+		case "body":
+			pf.Body, _ = starlark.AsString(kv[1])
+		case "value":
+			pf.Body, _ = starlark.AsString(kv[1])
+		case "probability":
+			s, _ := starlark.AsString(kv[1])
+			s = strings.TrimSuffix(s, "%")
+			fmt.Sscanf(s, "%f", &pf.Probability)
+			if pf.Probability > 1 {
+				pf.Probability /= 100.0
+			}
+		}
+	}
+	return pf, nil
+}
+
+// error(method=, path=, query=, command=, key=, message=, status=) — return error.
+func builtinProxyError(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	pf := &ProxyFaultDef{Action: "error"}
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "method":
+			pf.Method, _ = starlark.AsString(kv[1])
+		case "path":
+			pf.Path, _ = starlark.AsString(kv[1])
+		case "query":
+			pf.Query, _ = starlark.AsString(kv[1])
+		case "key":
+			pf.Key, _ = starlark.AsString(kv[1])
+		case "command":
+			pf.Command, _ = starlark.AsString(kv[1])
+		case "topic":
+			pf.Topic, _ = starlark.AsString(kv[1])
+		case "message":
+			pf.Error, _ = starlark.AsString(kv[1])
+		case "status":
+			if n, ok := kv[1].(starlark.Int); ok {
+				val, _ := n.Int64()
+				pf.Status = int(val)
+			}
+		case "probability":
+			s, _ := starlark.AsString(kv[1])
+			s = strings.TrimSuffix(s, "%")
+			fmt.Sscanf(s, "%f", &pf.Probability)
+			if pf.Probability > 1 {
+				pf.Probability /= 100.0
+			}
+		}
+	}
+	return pf, nil
+}
+
+// drop(method=, path=, topic=, probability=) — close connection / drop message.
+func builtinProxyDrop(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	pf := &ProxyFaultDef{Action: "drop"}
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "method":
+			pf.Method, _ = starlark.AsString(kv[1])
+		case "path":
+			pf.Path, _ = starlark.AsString(kv[1])
+		case "topic":
+			pf.Topic, _ = starlark.AsString(kv[1])
+		case "probability":
+			s, _ := starlark.AsString(kv[1])
+			s = strings.TrimSuffix(s, "%")
+			fmt.Sscanf(s, "%f", &pf.Probability)
+			if pf.Probability > 1 {
+				pf.Probability /= 100.0
+			}
+		}
+	}
+	return pf, nil
+}
+
+// duplicate(topic=) — deliver message twice.
+func builtinProxyDuplicate(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	pf := &ProxyFaultDef{Action: "duplicate"}
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "topic":
+			pf.Topic, _ = starlark.AsString(kv[1])
+		}
+	}
+	return pf, nil
+}
+
 // op(syscalls=, path=) — defines a named operation (group of syscalls + path filter).
 func builtinOp(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	op := &OpDef{}
