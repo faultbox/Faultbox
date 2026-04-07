@@ -159,8 +159,16 @@ func WriteNormalizedTrace(path string, result *SuiteResult) error {
 	return nil
 }
 
+// ANSI color codes for terminal output.
+const (
+	colorRed   = "\033[31m"
+	colorGreen = "\033[32m"
+	colorYellow = "\033[33m"
+	colorReset = "\033[0m"
+)
+
 // DiffTraces compares two normalized trace strings and returns a human-readable diff.
-// Returns empty string if traces are identical.
+// Returns empty string if traces are identical. Output uses ANSI colors.
 func DiffTraces(a, b string) string {
 	linesA := strings.Split(strings.TrimSpace(a), "\n")
 	linesB := strings.Split(strings.TrimSpace(b), "\n")
@@ -186,7 +194,9 @@ func DiffTraces(a, b string) string {
 		}
 		if la != lb {
 			identical = false
-			fmt.Fprintf(&sb, "  line %d:\n    run1: %s\n    run2: %s\n", i+1, la, lb)
+			fmt.Fprintf(&sb, "  line %d:\n", i+1)
+			fmt.Fprintf(&sb, "    %s- %s%s\n", colorRed, la, colorReset)
+			fmt.Fprintf(&sb, "    %s+ %s%s\n", colorGreen, lb, colorReset)
 		}
 	}
 
@@ -194,7 +204,7 @@ func DiffTraces(a, b string) string {
 		return ""
 	}
 
-	header := fmt.Sprintf("traces differ (%d vs %d lines):\n", len(linesA), len(linesB))
+	header := fmt.Sprintf("%straces differ (%d vs %d lines):%s\n", colorYellow, len(linesA), len(linesB), colorReset)
 	return header + sb.String()
 }
 
