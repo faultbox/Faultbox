@@ -88,7 +88,7 @@ faultbox/
 │   ├── target/               # Minimal binary for fault injection testing
 │   └── example/              # Simple 2-service example spec
 ├── docs/
-│   ├── tutorial/             # 9-chapter progressive tutorial
+│   ├── tutorial/             # 12-chapter tutorial in 5 parts (prelude, first taste, syscall, protocol, advanced)
 │   ├── design/               # Design documents (generator, etc.)
 │   ├── use-cases/            # User persona stories (BE, QA, Mobile)
 │   ├── adr/                  # Architecture Decision Records (historical)

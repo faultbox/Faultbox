@@ -1,10 +1,10 @@
 # Faultbox Tutorial
 
-Learn fault injection for distributed systems — from your first syscall fault to
-testing real Postgres containers. Each chapter introduces one concept, explains
-*why* it matters, and builds on the previous.
+Learn fault injection for distributed systems — from your first syscall
+fault to protocol-level proxy injection. Each chapter introduces one
+concept, explains *why* it matters, and builds on the previous.
 
-**Total time:** ~3 hours (15-30 min per chapter)
+**Total time:** ~4.5 hours (15-30 min per chapter)
 
 ## Platform
 
@@ -15,14 +15,11 @@ Faultbox uses Linux's seccomp-notify, which requires kernel 5.6+.
 | **Linux** | Native. All commands run directly. |
 | **macOS** | Via Lima VM. Setup: `make env-create && make env-start`. All faultbox commands run inside: `limactl shell faultbox-dev -- <command>` |
 
-Most chapters note where Linux and macOS steps differ.
-Docker (chapter 7 only) must run inside the Lima VM on macOS.
-
 ## Prerequisites
 
 - Go 1.24+ installed
 - For macOS: Lima (`brew install lima`)
-- Docker (chapter 7 only)
+- Docker (Part 4 only)
 
 ## Build
 
@@ -31,19 +28,46 @@ make build          # faultbox CLI (host)
 make demo-build     # cross-compile for Lima VM (linux/arm64)
 ```
 
-## Chapters
+---
 
-| # | Title | Duration | You'll learn why |
-|---|-------|----------|-----------------|
-| 0 | [Setup](00-setup.md) | 10 min | Build binaries, configure Lima VM (macOS), verify everything works |
-| 1 | [Your First Fault](01-first-fault.md) | 15 min | How the OS can lie to your program — and why that's useful |
-| 2 | [Writing Your First Test](02-first-test.md) | 20 min | How to codify "this system works" as a repeatable spec |
-| 3 | [Fault Injection in Tests](03-fault-injection.md) | 25 min | How to answer "what happens when X fails?" systematically |
-| 4 | [Traces & Assertions](04-traces-assertions.md) | 25 min | How to prove *what actually happened* at the kernel level |
-| 5 | [Exploring Concurrency](05-concurrency.md) | 25 min | How to find bugs that only appear under specific timing |
-| 6 | [Monitors & Partitions](06-monitors-partitions.md) | 20 min | How to define safety properties that must always hold |
-| 7 | [Containers](07-containers.md) | 30 min | How to test real infrastructure (Postgres, Redis) with the same tools |
-| 8 | [Scenarios & Generation](08-scenarios-generation.md) | 20 min | How to auto-generate failure tests from happy paths |
-| 9 | [Event Sources & Observability](09-event-sources.md) | 20 min | How to capture stdout, WAL, Kafka events as first-class trace data |
+## Part 0: Prelude & Configuration
+
+| # | Chapter | Duration |
+|---|---------|----------|
+| 0 | [Setup](00-prelude/00-setup.md) | 10 min |
+
+## Part 1: First Taste
+
+| # | Chapter | Duration |
+|---|---------|----------|
+| 1 | [Your First Fault](01-first-taste/01-first-fault.md) | 15 min |
+| 2 | [Writing Your First Test](01-first-taste/02-first-test.md) | 20 min |
+
+## Part 2: Syscall-Level Fault Injection
+
+| # | Chapter | Duration |
+|---|---------|----------|
+| 3 | [Fault Injection in Tests](02-syscall-level/03-fault-injection.md) | 25 min |
+| 4 | [Traces & Assertions](02-syscall-level/04-traces.md) | 25 min |
+| 5 | [Exploring Concurrency](02-syscall-level/05-concurrency.md) | 25 min |
+| 6 | [Monitors & Partitions](02-syscall-level/06-monitors.md) | 20 min |
+
+## Part 3: Protocol-Level Fault Injection
+
+| # | Chapter | Duration |
+|---|---------|----------|
+| 7 | [HTTP & Redis Faults](03-protocol-level/07-http-redis.md) | 25 min |
+| 8 | [Database & Broker Faults](03-protocol-level/08-databases.md) | 25 min |
+
+## Part 4: Advanced Features
+
+| # | Chapter | Duration |
+|---|---------|----------|
+| 9 | [Containers](04-advanced/09-containers.md) | 30 min |
+| 10 | [Scenarios & Generation](04-advanced/10-scenarios.md) | 20 min |
+| 11 | [Event Sources & Observability](04-advanced/11-event-sources.md) | 20 min |
+| 12 | [Named Operations](04-advanced/12-named-ops.md) | 15 min |
+
+---
 
 Each chapter ends with exercises that push slightly beyond the lesson.
