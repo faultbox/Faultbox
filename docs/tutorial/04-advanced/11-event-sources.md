@@ -1,7 +1,7 @@
 # Chapter 9: Event Sources & Observability
 
 **Duration:** 20 minutes
-**Prerequisites:** [Chapter 4 (Traces & Assertions)](04-traces-assertions.md) completed
+**Prerequisites:** [Chapter 4 (Traces & Assertions)](../02-syscall-level/04-traces.md) completed
 
 ## Goals & Purpose
 
@@ -189,7 +189,7 @@ resp = cache.main.get(key="user:1")
 print(resp.data["value"])  # "alice"
 ```
 
-See the [Spec Language Reference — Protocols](../spec-language.md#protocols)
+See the [Spec Language Reference — Protocols](../../spec-language.md#protocols)
 for the full list (postgres, redis, mysql, kafka, nats, grpc).
 
 ## What you learned

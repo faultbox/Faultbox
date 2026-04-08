@@ -1,7 +1,7 @@
 # Chapter 8: Scenarios & Failure Generation
 
 **Duration:** 20 minutes
-**Prerequisites:** [Chapter 3 (Fault Injection)](03-fault-injection.md) completed
+**Prerequisites:** [Chapter 3 (Fault Injection)](../02-syscall-level/03-fault-injection.md) completed
 
 ## Goals & Purpose
 

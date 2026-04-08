@@ -1,7 +1,7 @@
 # Chapter 1: Your First Fault
 
 **Duration:** 15 minutes
-**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
+**Prerequisites:** [Chapter 0 (Setup)](../00-prelude/00-setup.md) completed
 
 ## Goals & Purpose
 

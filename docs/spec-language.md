@@ -824,6 +824,121 @@ fault(inventory, write=delay("500ms"), run=fn)
 
 ---
 
+## Protocol-Level Faults
+
+Syscall-level `fault(service, ...)` operates at the kernel level. Protocol-level
+`fault(interface_ref, ...)` operates at the application protocol level via a
+transparent proxy.
+
+### `fault(interface_ref, *rules, run=, source=)`
+
+When the first argument is an **interface reference** (e.g., `db.main`),
+Faultbox starts a transparent proxy that speaks the interface's protocol
+and injects faults matching the rules.
+
+```python
+# Syscall level — first arg is service:
+fault(db, write=deny("EIO"), run=scenario)
+
+# Protocol level — first arg is interface_ref:
+fault(db.main, error(query="INSERT*", message="disk full"), run=scenario)
+fault(api.public, response(path="/orders", status=429), run=scenario)
+fault(kafka.main, drop(topic="orders.*"), run=scenario)
+```
+
+Optional `source=` targets a specific consumer when multiple services
+connect to the same interface:
+
+```python
+fault(kafka.main, source=worker,
+    drop(topic="orders.*"),
+    run=scenario,
+)
+```
+
+### Protocol fault builtins
+
+These create `ProxyFaultDef` values passed as positional args to `fault()`.
+All support glob patterns for matching.
+
+#### `response(method=, path=, status=, body=, command=, key=, value=)`
+
+Return a custom response without forwarding to the real service.
+
+```python
+response(method="POST", path="/orders", status=429, body='{"error":"rate_limited"}')
+response(command="GET", key="cache:*")               # Redis nil (empty body)
+response(command="GET", key="cache:*", value="stale") # Redis custom value
+```
+
+#### `error(method=, path=, query=, command=, key=, topic=, message=, status=)`
+
+Return a protocol-specific error.
+
+```python
+error(query="INSERT*", message="disk full")          # Postgres/MySQL
+error(method="/pkg.Svc/Method", status=14)            # gRPC UNAVAILABLE
+error(command="SET", key="session:*", message="READONLY")  # Redis
+error(topic="orders.*", message="LEADER_NOT_AVAILABLE")    # Kafka
+```
+
+#### `delay(method=, path=, query=, command=, key=, topic=, delay=)`
+
+Delay matching requests, then forward normally.
+
+```python
+delay(path="/data/*", delay="500ms")                 # HTTP
+delay(query="SELECT*", delay="3s")                   # Postgres/MySQL
+delay(command="GET", delay="2s")                     # Redis
+delay(topic="orders.events", delay="5s")             # Kafka
+```
+
+> **Note:** `delay()` without a positional duration returns a protocol-level
+> fault. `delay("500ms")` with a positional duration returns a syscall-level
+> fault. Same builtin, context-dependent.
+
+#### `drop(method=, path=, topic=, probability=)`
+
+Drop the connection or message.
+
+```python
+drop(method="POST", path="/upload")                  # HTTP — TCP reset
+drop(topic="orders.events", probability="30%")       # Kafka — message loss
+```
+
+#### `duplicate(topic=)`
+
+Deliver a message twice (for idempotency testing).
+
+```python
+duplicate(topic="orders.events")                     # Kafka/NATS
+```
+
+### Supported protocols
+
+| Protocol | Match by | Fault builtins |
+|----------|----------|---------------|
+| `http` | `method=`, `path=` | response, error, delay, drop |
+| `postgres` | `query=` | error, delay, drop |
+| `mysql` | `query=` | error, delay, drop |
+| `redis` | `command=`, `key=` | error, response, delay, drop |
+| `grpc` | `method=` | error, delay, drop |
+| `kafka` | `topic=` | drop, delay, error, duplicate |
+| `mongodb` | `method=` (cmd), `key=` (collection) | error, delay, drop |
+| `amqp` | `topic=` (routing key) | drop, delay, error |
+| `nats` | `topic=` (subject) | drop, delay |
+| `memcached` | `command=`, `key=` | error, response, delay, drop |
+
+### Trace events
+
+Protocol proxy actions emit `type="proxy"` events into the trace:
+
+```python
+assert_eventually(where=lambda e: e.type == "proxy" and e.data.get("action") == "error")
+```
+
+---
+
 ## Assertions
 
 Starlark has no built-in `assert` statement. Faultbox provides assertion

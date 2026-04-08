@@ -1,7 +1,7 @@
 # Chapter 4: Traces & Assertions
 
 **Duration:** 25 minutes
-**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
+**Prerequisites:** [Chapter 0 (Setup)](../00-prelude/00-setup.md) completed
 
 ## Goals & Purpose
 

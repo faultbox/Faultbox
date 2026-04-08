@@ -1,7 +1,7 @@
 # Chapter 7: Containers — Real Infrastructure
 
 **Duration:** 30 minutes
-**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed, Docker running
+**Prerequisites:** [Chapter 0 (Setup)](../00-prelude/00-setup.md) completed, Docker running
 
 ## Goals & Purpose
 
@@ -224,14 +224,14 @@ You can test real infrastructure. But writing failure tests by hand is
 slow — Chapter 8 shows how to auto-generate them.
 
 **Continue:**
-- [Chapter 8: Scenarios & Generation](08-scenarios-generation.md) — register
+- [Chapter 8: Scenarios & Generation](10-scenarios.md) — register
   happy paths with `scenario()`, auto-generate fault mutations
-- [Chapter 9: Event Sources & Observability](09-event-sources.md) — capture
+- [Chapter 9: Event Sources & Observability](11-event-sources.md) — capture
   stdout, WAL changes, Kafka messages as trace events
 
 **Reference:**
-- [Spec Language Reference](../spec-language.md) — complete API
-- [CLI Reference](../cli-reference.md) — all commands and flags
+- [Spec Language Reference](../../spec-language.md) — complete API
+- [CLI Reference](../../cli-reference.md) — all commands and flags
 - Explore the `poc/demo/faultbox.star` for a complete working example
 
 ## Exercises

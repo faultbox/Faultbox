@@ -1,7 +1,7 @@
 # Chapter 5: Exploring Concurrency
 
 **Duration:** 25 minutes
-**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
+**Prerequisites:** [Chapter 0 (Setup)](../00-prelude/00-setup.md) completed
 
 ## Goals & Purpose
 

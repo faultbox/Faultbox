@@ -1,7 +1,7 @@
 # Chapter 3: Fault Injection in Tests
 
 **Duration:** 25 minutes
-**Prerequisites:** [Chapter 0 (Setup)](00-setup.md) completed
+**Prerequisites:** [Chapter 0 (Setup)](../00-prelude/00-setup.md) completed
 
 ## Goals & Purpose
 
@@ -101,7 +101,7 @@ provides the methods.
 
 > For the full type reference (Service, Interface, InterfaceRef, Response,
 > StarlarkEvent, all protocol methods), see
-> [Spec Language Reference — Type Reference](../spec-language.md#type-reference).
+> [Spec Language Reference — Type Reference](../../spec-language.md#type-reference).
 
 **The pattern:** topology is declared, not discovered. You're writing down
 "the api depends on the db at this address" — making the architecture explicit.
@@ -348,7 +348,7 @@ component's failure while the rest of the system keeps working.
 > **When to use ops:** When you want to fault a logical operation (like
 > "persist to disk") that involves multiple syscalls. For simple cases,
 > raw syscall names work fine. See the
-> [Spec Language Reference](../spec-language.md#type-reference) for details.
+> [Spec Language Reference](../../spec-language.md#type-reference) for details.
 
 ## Multi-fault injection
 
