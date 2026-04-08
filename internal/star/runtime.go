@@ -1038,6 +1038,18 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 						found[sc] = true
 					}
 				}
+				// Named operations: check if any op name appears as a fault keyword.
+				if svc, ok := rt.services[svcName]; ok && svc.Ops != nil {
+					for opName, opDef := range svc.Ops {
+						if strings.Contains(trimmed, opName+"=deny(") ||
+							strings.Contains(trimmed, opName+"=delay(") ||
+							strings.Contains(trimmed, opName+"=allow(") {
+							for _, sc := range opDef.Syscalls {
+								found[sc] = true
+							}
+						}
+					}
+				}
 			}
 
 			// Trace calls: extract syscall names from syscalls=[...] list.
