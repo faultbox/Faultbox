@@ -235,7 +235,15 @@ func newProxy(protocol string, onEvent OnProxyEvent, svcName string) (Proxy, err
 		return newHTTPProxy(onEvent, svcName), nil
 	case "redis":
 		return newRedisProxy(onEvent, svcName), nil
+	case "postgres":
+		return newPostgresProxy(onEvent, svcName), nil
+	case "mysql":
+		return newMySQLProxy(onEvent, svcName), nil
+	case "grpc":
+		return newGRPCProxy(onEvent, svcName), nil
+	case "kafka":
+		return newKafkaProxy(onEvent, svcName), nil
 	default:
-		return nil, fmt.Errorf("protocol %q does not support proxy-level faults (supported: http, redis)", protocol)
+		return nil, fmt.Errorf("protocol %q does not support proxy-level faults (supported: http, redis, postgres, mysql, grpc, kafka)", protocol)
 	}
 }
