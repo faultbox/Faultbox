@@ -40,17 +40,27 @@ across services. `--explore` mode walks all interleavings automatically.
 **Starlark specs** -- topology, faults, and assertions in one file. No YAML.
 No separate config language. The spec is code.
 
-## Quick Start
-
-### Requirements
-
-- Go 1.24+
-- Linux with kernel 5.6+ (seccomp-notify support)
-- macOS: via [Lima](https://lima-vm.io/) VM (`brew install lima`)
-
-### Build
+## Install
 
 ```bash
+curl -fsSL https://faultbox.dev/install.sh | sh
+```
+
+This detects your platform (linux/darwin, amd64/arm64), downloads the latest
+release, verifies the checksum, and installs to `~/.faultbox/bin`.
+
+Or install a specific version:
+```bash
+FAULTBOX_VERSION=0.1.0 curl -fsSL https://faultbox.dev/install.sh | sh
+```
+
+### Build from source
+
+Requirements: Go 1.24+, Linux kernel 5.6+ (macOS via [Lima](https://lima-vm.io/))
+
+```bash
+git clone https://github.com/faultbox/faultbox.git
+cd faultbox
 make build          # Build bin/faultbox
 ```
 

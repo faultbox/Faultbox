@@ -32,11 +32,19 @@ func main() {
 	os.Exit(run())
 }
 
+// version is set via -ldflags at build time.
+var version = "dev"
+
 func run() int {
 	args := os.Args[1:]
 
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		printUsage()
+		return 0
+	}
+
+	if args[0] == "--version" || args[0] == "version" {
+		fmt.Printf("faultbox %s\n", version)
 		return 0
 	}
 
