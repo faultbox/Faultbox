@@ -2,11 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -59,6 +66,8 @@ func run() int {
 		return diffCmd(args[1:])
 	case "init":
 		return initCmd(args[1:])
+	case "self-update":
+		return selfUpdateCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
@@ -1319,6 +1328,7 @@ func printUsage() {
   faultbox generate <file.star> [flags]     Generate failure scenarios
   faultbox init [flags] <binary>             Generate starter .star file
   faultbox diff <trace1> <trace2>            Compare normalized traces
+  faultbox self-update                       Update to the latest version
 
 Run flags:
   --log-format=console   Force colored console output
@@ -1351,4 +1361,210 @@ Examples:
   faultbox test faultbox.star
   faultbox test faultbox.star --output trace.json --runs 100 --show fail
   faultbox init --name orders --port 8080 ./order-svc`)
+}
+
+func selfUpdateCmd(args []string) int {
+	const repo = "faultbox/faultbox"
+
+	// Detect platform
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	if goos != "linux" && goos != "darwin" {
+		fmt.Fprintf(os.Stderr, "self-update: unsupported OS: %s\n", goos)
+		return 1
+	}
+	platform := goos + "-" + goarch
+
+	// Get latest release version
+	fmt.Fprintf(os.Stderr, "checking for updates...\n")
+	latestVersion, err := getLatestVersion(repo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: %v\n", err)
+		return 1
+	}
+
+	if version != "dev" && latestVersion == version {
+		fmt.Fprintf(os.Stderr, "already up to date: v%s\n", version)
+		return 0
+	}
+
+	if version != "dev" {
+		fmt.Fprintf(os.Stderr, "updating v%s → v%s (%s)\n", version, latestVersion, platform)
+	} else {
+		fmt.Fprintf(os.Stderr, "installing v%s (%s)\n", latestVersion, platform)
+	}
+
+	// Download archive
+	archive := fmt.Sprintf("faultbox-%s-%s.tar.gz", latestVersion, platform)
+	downloadURL := fmt.Sprintf("https://github.com/%s/releases/download/release-%s/%s", repo, latestVersion, archive)
+	checksumURL := downloadURL + ".sha256"
+
+	tmpDir, err := os.MkdirTemp("", "faultbox-update-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: create temp dir: %v\n", err)
+		return 1
+	}
+	defer os.RemoveAll(tmpDir)
+
+	archivePath := filepath.Join(tmpDir, archive)
+	fmt.Fprintf(os.Stderr, "downloading %s...\n", archive)
+	if err := downloadFile(archivePath, downloadURL); err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: download: %v\n", err)
+		return 1
+	}
+
+	// Verify checksum
+	fmt.Fprintf(os.Stderr, "verifying checksum...\n")
+	if err := verifyChecksum(archivePath, checksumURL); err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: %v\n", err)
+		return 1
+	}
+
+	// Extract and replace
+	extractDir := filepath.Join(tmpDir, "extract")
+	if err := os.MkdirAll(extractDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: mkdir: %v\n", err)
+		return 1
+	}
+	if err := extractTarGz(archivePath, extractDir); err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: extract: %v\n", err)
+		return 1
+	}
+
+	// Find current binary path
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: find executable: %v\n", err)
+		return 1
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: resolve symlink: %v\n", err)
+		return 1
+	}
+
+	installDir := filepath.Dir(self)
+
+	// Replace faultbox binary
+	newBinary := filepath.Join(extractDir, "faultbox")
+	if err := replaceFile(newBinary, filepath.Join(installDir, "faultbox")); err != nil {
+		fmt.Fprintf(os.Stderr, "self-update: replace binary: %v\n", err)
+		return 1
+	}
+
+	// Replace faultbox-shim if present in archive
+	newShim := filepath.Join(extractDir, "faultbox-shim")
+	if _, err := os.Stat(newShim); err == nil {
+		if err := replaceFile(newShim, filepath.Join(installDir, "faultbox-shim")); err != nil {
+			fmt.Fprintf(os.Stderr, "self-update: replace shim: %v\n", err)
+			return 1
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "updated to v%s\n", latestVersion)
+	return 0
+}
+
+func getLatestVersion(repo string) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("fetch latest release: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("GitHub API returned %d (no releases yet?)", resp.StatusCode)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", fmt.Errorf("parse release: %w", err)
+	}
+
+	// Tag is "release-X.Y.Z"
+	v := strings.TrimPrefix(release.TagName, "release-")
+	if v == "" || v == release.TagName {
+		return "", fmt.Errorf("unexpected tag format: %s", release.TagName)
+	}
+	return v, nil
+}
+
+func downloadFile(dst, url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+	}
+
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, resp.Body)
+	return err
+}
+
+func verifyChecksum(archivePath, checksumURL string) error {
+	// Download expected checksum
+	resp, err := http.Get(checksumURL)
+	if err != nil {
+		return fmt.Errorf("download checksum: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("checksum HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read checksum: %w", err)
+	}
+	expected := strings.Fields(strings.TrimSpace(string(body)))[0]
+
+	// Compute actual checksum
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+
+	if expected != actual {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expected, actual)
+	}
+	return nil
+}
+
+func extractTarGz(archivePath, dst string) error {
+	cmd := exec.Command("tar", "xzf", archivePath, "-C", dst)
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func replaceFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	// Write to temp file next to dst, then rename (atomic on same filesystem).
+	tmp := dst + ".new"
+	if err := os.WriteFile(tmp, data, 0755); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
