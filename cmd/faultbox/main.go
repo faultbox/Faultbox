@@ -20,6 +20,7 @@ import (
 	"github.com/faultbox/Faultbox/internal/compose"
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/engine"
+	"github.com/faultbox/Faultbox/internal/mcp"
 	_ "github.com/faultbox/Faultbox/internal/eventsource/decoder" // register decoders
 	"github.com/faultbox/Faultbox/internal/generate"
 	"github.com/faultbox/Faultbox/internal/logging"
@@ -69,6 +70,8 @@ func run() int {
 		return initCmd(args[1:])
 	case "self-update":
 		return selfUpdateCmd(args[1:])
+	case "mcp":
+		return mcpCmd()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
@@ -1402,6 +1405,7 @@ func printUsage() {
   faultbox init [flags] <binary>             Generate starter .star file
   faultbox diff <trace1> <trace2>            Compare normalized traces
   faultbox self-update                       Update to the latest version
+  faultbox mcp                               Start MCP server (for LLM agents)
 
 Run flags:
   --log-format=console   Force colored console output
@@ -1435,6 +1439,15 @@ Examples:
   faultbox test faultbox.star
   faultbox test faultbox.star --output trace.json --runs 100 --show fail
   faultbox init --name orders --port 8080 ./order-svc`)
+}
+
+func mcpCmd() int {
+	srv := mcp.New(version)
+	if err := srv.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "mcp server error: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func selfUpdateCmd(args []string) int {
