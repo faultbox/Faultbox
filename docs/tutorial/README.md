@@ -4,7 +4,7 @@ Learn fault injection for distributed systems — from your first syscall
 fault to protocol-level proxy injection. Each chapter introduces one
 concept, explains *why* it matters, and builds on the previous.
 
-**Total time:** ~4.5 hours (15-30 min per chapter)
+**Total time:** ~5 hours (15-30 min per chapter)
 
 ## Platform
 
@@ -67,6 +67,7 @@ make demo-build     # cross-compile for Lima VM (linux/arm64)
 | 10 | [Scenarios & Generation](04-advanced/10-scenarios.md) | 20 min |
 | 11 | [Event Sources & Observability](04-advanced/11-event-sources.md) | 20 min |
 | 12 | [Named Operations](04-advanced/12-named-ops.md) | 15 min |
+| 13 | [LLM Agents & MCP](04-advanced/13-llm-mcp.md) | 15 min |
 
 ---
 

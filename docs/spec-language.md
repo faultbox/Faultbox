@@ -739,6 +739,60 @@ def test_imperative():
 
 Use `fault()` with `run=` when possible — it guarantees cleanup.
 
+### `trace(service, syscalls=[...], run=callback)`
+
+Observe syscalls without injecting faults. Installs seccomp filters that
+record events but allow all syscalls to proceed normally.
+
+```python
+def test_observe_writes():
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_eq(resp.status, 200)
+        assert_eventually(service="inventory", syscall="write", path="*.wal")
+    trace(inventory, syscalls=["write", "openat", "fsync"], run=scenario)
+```
+
+Use `trace()` when you want to assert on internal behavior of a **healthy**
+system — no faults, just observation.
+
+### `trace_start(service, syscalls=[...])` / `trace_stop(service)`
+
+Imperative trace control:
+
+```python
+def test_observe_then_fault():
+    trace_start(inventory, syscalls=["write", "fsync"])
+    resp = orders.post(path="/orders", body='...')
+    assert_eventually(service="inventory", syscall="write", path="*.wal")
+    trace_stop(inventory)
+```
+
+### `op(syscalls=[...], path=)`
+
+Define a named operation that groups related syscalls. Used in `service()`
+declarations with the `ops=` parameter.
+
+```python
+db = service("db", "./db",
+    interface("main", "tcp", 5432),
+    healthcheck=tcp("localhost:5432"),
+    ops={
+        "persist": op(syscalls=["write", "fsync"]),
+        "wal_write": op(syscalls=["write", "fsync"], path="/tmp/*.wal"),
+    },
+)
+
+def test_persist_failure():
+    def scenario():
+        resp = api.post(path="/data/key", body="val")
+        assert_true(resp.status >= 500)
+    fault(db, persist=deny("EIO"), run=scenario)
+```
+
+Named operations can include a **path filter** — only syscalls on matching
+files are faulted. The trace shows the operation name: `persist(write) deny(EIO)`.
+
 ### `delay(duration, probability=)`
 
 Delays a syscall by sleeping before allowing it to proceed.
@@ -1354,6 +1408,23 @@ faultbox diff trace1.norm trace2.norm              # verify determinism
 
 # Scaffolding
 faultbox init --name orders --port 8080 ./order-svc  # generate starter .star
+faultbox init --from-compose docker-compose.yml      # generate from compose
+faultbox init --claude                                # Claude Code integration
+faultbox init --vscode                                # VS Code autocomplete
+
+# Generate failure scenarios
+faultbox generate faultbox.star                       # per-scenario fault files
+faultbox generate faultbox.star --dry-run             # preview without writing
+
+# Structured output (for LLM agents / CI)
+faultbox test faultbox.star --format json             # JSON to stdout
+
+# MCP server (for Claude Code, Cursor, etc.)
+faultbox mcp                                          # start MCP server on stdio
+
+# Maintenance
+faultbox self-update                                  # update to latest release
+faultbox --version                                    # print version
 ```
 
 ### Exit Codes

@@ -9,3 +9,4 @@ and define high-level operations.
 | [Scenarios & Generation](10-scenarios.md) | 20 min | scenario(), faultbox generate, load(), per-scenario fault files |
 | [Event Sources](11-event-sources.md) | 20 min | observe=, stdout/WAL/Kafka events, decoders, .data, print() |
 | [Named Operations](12-named-ops.md) | 15 min | ops=, op(), operation-level faults, trace output |
+| [LLM Agents & MCP](13-llm-mcp.md) | 15 min | Claude Code setup, MCP server, --format json, CI integration |

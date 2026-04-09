@@ -16,9 +16,12 @@ faultbox test [flags] <file.star>
 | `--runs <N>` | Run each test N times (stops on first failure per test) |
 | `--seed <N>` | Use specific seed for deterministic replay |
 | `--show all\|fail` | Filter output: `all` (default) or `fail` (only failures) |
-| `--output <file>` | Write JSON trace results (with events, seeds, replay commands) |
+| `--format json` | Output structured JSON to stdout (human output on stderr) |
+| `--output <file>` | Write JSON trace results to file |
 | `--shiviz <file>` | Write ShiViz-compatible visualization trace |
 | `--normalize <file>` | Write normalized trace for determinism comparison |
+| `--explore all\|sample` | Explore all interleavings or sample randomly |
+| `--virtual-time` | Use virtual time (delays advance clock instead of sleeping) |
 | `--log-format=console\|json` | Log output format |
 | `--debug` | Enable debug logging |
 
@@ -27,10 +30,32 @@ faultbox test [flags] <file.star>
 ```bash
 faultbox test faultbox.star                             # run all tests
 faultbox test faultbox.star --test happy_path           # run one test
-faultbox test faultbox.star --output trace.json         # JSON trace output
+faultbox test faultbox.star --format json               # structured JSON to stdout
+faultbox test faultbox.star --output trace.json         # JSON trace to file
 faultbox test faultbox.star --runs 100 --show fail      # counterexample discovery
 faultbox test faultbox.star --seed 42                   # deterministic replay
 faultbox test faultbox.star --normalize run.norm        # normalized trace
+faultbox test faultbox.star --explore all               # all interleavings
+```
+
+**JSON output (`--format json`):**
+
+Writes machine-parseable JSON to stdout with:
+- Per-test results with pass/fail, seed, duration
+- Fault info: service, syscall, action, errno, hits, label
+- Syscall summary: per-service total, faulted, breakdown
+- Diagnostics: actionable hints (FAULT_NOT_FIRED, SERVICE_CRASHED, etc.)
+- Full event trace with vector clocks
+
+Human-readable output (logs, summaries) goes to stderr, keeping stdout
+clean for piping to `jq`, LLM agents, or CI systems.
+
+```bash
+# Parse with jq
+faultbox test spec.star --format json | jq '.tests[] | {name, result}'
+
+# Check diagnostics
+faultbox test spec.star --format json | jq '.tests[].diagnostics[]'
 ```
 
 **Counterexample discovery (P-lang style):**
@@ -51,10 +76,14 @@ See [Spec Language Reference](spec-language.md) for `.star` file syntax.
 
 ### `faultbox init`
 
-Generate a starter `.star` file for a service.
+Generate a starter `.star` file for a service, from docker-compose, or set up
+Claude Code integration.
 
 ```
 faultbox init [flags] <binary>
+faultbox init --from-compose [docker-compose.yml]
+faultbox init --claude
+faultbox init --vscode
 ```
 
 | Flag | Default | Description |
@@ -63,14 +92,38 @@ faultbox init [flags] <binary>
 | `--port <port>` | `8080` | Port number |
 | `--protocol http\|tcp` | `http` | Protocol type |
 | `--output <file>` | stdout | Write to file instead of printing |
+| `--from-compose [file]` | `docker-compose.yml` | Generate spec from docker-compose |
+| `--claude` | | Set up Claude Code integration (commands + MCP config) |
+| `--vscode` | | Generate VS Code autocomplete stubs |
 
 **Examples:**
 
 ```bash
-faultbox init --name orders --port 8080 ./order-svc           # print to stdout
-faultbox init --name db --port 5432 --protocol tcp ./db-svc   # TCP service
-faultbox init --name api --output faultbox.star ./api-svc      # write to file
+# From a binary
+faultbox init --name orders --port 8080 ./order-svc
+faultbox init --name db --port 5432 --protocol tcp ./db-svc
+faultbox init --name api --output faultbox.star ./api-svc
+
+# From docker-compose.yml
+faultbox init --from-compose                               # auto-detect compose file
+faultbox init --from-compose docker-compose.prod.yml       # specific file
+faultbox init --from-compose --output faultbox.star         # write to file
+
+# Claude Code integration
+faultbox init --claude        # creates .claude/commands/ + .mcp.json
+
+# VS Code autocomplete
+faultbox init --vscode        # creates typings/ + .vscode/ stubs
 ```
+
+**From compose:** Parses docker-compose.yml services, detects protocols from
+image names and ports (postgres→5432, redis→6379, etc.), generates service
+declarations with correct depends_on ordering, healthchecks, and a happy-path
+test with `scenario()` registration.
+
+**Claude integration:** Creates three slash commands (`/fault-test`,
+`/fault-generate`, `/fault-diagnose`) and `.mcp.json` for automatic MCP
+server connection.
 
 ---
 
@@ -497,6 +550,72 @@ Without `--debug`, only denied (faulted) syscalls are logged at INFO level.
 
 ```bash
 faultbox run --debug --fault "openat=ENOENT:50%" ./my-service
+```
+
+---
+
+### `faultbox self-update`
+
+Update the faultbox binary to the latest release.
+
+```
+faultbox self-update
+```
+
+Downloads the latest release from GitHub, verifies the SHA-256 checksum,
+and replaces the current binary in-place. Also updates `faultbox-shim`
+if present in the release archive.
+
+```bash
+faultbox self-update          # update to latest
+faultbox --version            # verify new version
+```
+
+---
+
+### `faultbox mcp`
+
+Start a Model Context Protocol (MCP) server on stdio for LLM agent integration.
+
+```
+faultbox mcp
+```
+
+The server exposes 6 tools over JSON-RPC 2.0:
+
+| Tool | Description |
+|------|-------------|
+| `run_test` | Run all tests in a .star file, return structured JSON |
+| `run_single_test` | Run a specific test by name |
+| `list_tests` | Discover test functions in a .star file |
+| `generate_faults` | Run the failure scenario generator |
+| `init_from_compose` | Generate a .star spec from docker-compose.yml |
+| `init_spec` | Generate a starter .star spec for a binary |
+
+**Usage with Claude Code / Claude Desktop:**
+
+```json
+{
+  "mcpServers": {
+    "faultbox": {
+      "command": "faultbox",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Or run `faultbox init --claude` to auto-configure.
+
+---
+
+### `faultbox --version`
+
+Print the version and exit.
+
+```bash
+faultbox --version
+# faultbox 0.2.0
 ```
 
 ---
