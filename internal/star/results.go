@@ -23,20 +23,46 @@ type TraceOutput struct {
 
 // TestTraceOutput is the per-test section of the trace output.
 type TestTraceOutput struct {
-	Name        string  `json:"name"`
-	Result      string  `json:"result"`
-	Reason      string  `json:"reason,omitempty"`
-	FailureType string  `json:"failure_type,omitempty"`
-	Seed        uint64  `json:"seed"`
-	DurationMs  int64   `json:"duration_ms"`
-	ReplayCmd   string  `json:"replay_command,omitempty"`
-	Events      []Event `json:"events"`
+	Name           string                          `json:"name"`
+	Result         string                          `json:"result"`
+	Reason         string                          `json:"reason,omitempty"`
+	FailureType    string                          `json:"failure_type,omitempty"`
+	Seed           uint64                          `json:"seed"`
+	DurationMs     int64                           `json:"duration_ms"`
+	ReplayCmd      string                          `json:"replay_command,omitempty"`
+	ErrorDetail    *ErrorDetail                    `json:"error_detail,omitempty"`
+	Faults         []FaultInfo                     `json:"faults,omitempty"`
+	SyscallSummary map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
+	Events         []Event                         `json:"events"`
 }
 
-// WriteTraceResults writes the suite result with full event traces to a JSON file.
-func WriteTraceResults(path, starFile string, result *SuiteResult) error {
+// FaultInfo describes a fault rule that was active during a test.
+type FaultInfo struct {
+	Service string `json:"service"`
+	Syscall string `json:"syscall"`
+	Action  string `json:"action"`
+	Errno   string `json:"errno,omitempty"`
+	Hits    int    `json:"hits"`
+	Label   string `json:"label,omitempty"`
+}
+
+// SyscallSummaryEntry is per-service syscall statistics.
+type SyscallSummaryEntry struct {
+	Total     int            `json:"total"`
+	Faulted   int            `json:"faulted"`
+	Breakdown map[string]int `json:"breakdown"`
+}
+
+// ErrorDetail provides structured error info for machine consumption.
+type ErrorDetail struct {
+	AssertionType string `json:"assertion_type,omitempty"`
+	Message       string `json:"message,omitempty"`
+}
+
+// BuildTraceOutput constructs the full JSON output structure from suite results.
+func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 	out := TraceOutput{
-		Version:    1,
+		Version:    2,
 		StarFile:   starFile,
 		DurationMs: result.DurationMs,
 		Pass:       result.Pass,
@@ -57,9 +83,15 @@ func WriteTraceResults(path, starFile string, result *SuiteResult) error {
 			tto.ReplayCmd = fmt.Sprintf("faultbox test %s --test %s --seed %d",
 				starFile, strings.TrimPrefix(tr.Name, "test_"), tr.Seed)
 		}
+		enrichTestOutput(&tto, &tr)
 		out.Tests = append(out.Tests, tto)
 	}
+	return out
+}
 
+// WriteTraceResults writes the suite result with full event traces to a JSON file.
+func WriteTraceResults(path, starFile string, result *SuiteResult) error {
+	out := BuildTraceOutput(starFile, result)
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal trace results: %w", err)
@@ -68,6 +100,113 @@ func WriteTraceResults(path, starFile string, result *SuiteResult) error {
 		return fmt.Errorf("write trace results: %w", err)
 	}
 	return nil
+}
+
+// enrichTestOutput populates Faults, SyscallSummary, and ErrorDetail from events.
+func enrichTestOutput(tto *TestTraceOutput, tr *TestResult) {
+	// --- Error detail ---
+	if tr.Result == "fail" && tr.Reason != "" {
+		tto.ErrorDetail = &ErrorDetail{
+			AssertionType: classifyFailure(tr.Reason),
+			Message:       tr.Reason,
+		}
+	}
+
+	// --- Syscall summary (per-service) ---
+	summary := make(map[string]*SyscallSummaryEntry)
+	for _, ev := range tr.Events {
+		if ev.Type != "syscall" {
+			continue
+		}
+		svc := ev.Service
+		if summary[svc] == nil {
+			summary[svc] = &SyscallSummaryEntry{Breakdown: make(map[string]int)}
+		}
+		s := summary[svc]
+		s.Total++
+		sc := ev.Fields["syscall"]
+		s.Breakdown[sc]++
+		decision := ev.Fields["decision"]
+		if decision != "allow" && decision != "allow (system path)" && decision != "" {
+			s.Faulted++
+		}
+	}
+	if len(summary) > 0 {
+		tto.SyscallSummary = summary
+	}
+
+	// --- Faults (from fault_applied/fault_removed events) ---
+	type faultScope struct {
+		service string
+		syscall string
+		details string
+		seq     int64
+	}
+	var scopes []faultScope
+	for _, ev := range tr.Events {
+		if ev.Type != "fault_applied" {
+			continue
+		}
+		for k, v := range ev.Fields {
+			scopes = append(scopes, faultScope{
+				service: ev.Service,
+				syscall: k,
+				details: v,
+				seq:     ev.Seq,
+			})
+		}
+	}
+
+	for _, scope := range scopes {
+		fi := FaultInfo{
+			Service: scope.service,
+			Syscall: scope.syscall,
+		}
+
+		// Parse action and errno from details like "deny(EIO) → filter:[...]"
+		d := scope.details
+		if strings.HasPrefix(d, "deny(") {
+			fi.Action = "deny"
+			if idx := strings.Index(d, ")"); idx > 5 {
+				fi.Errno = d[5:idx]
+			}
+		} else if strings.HasPrefix(d, "delay(") {
+			fi.Action = "delay"
+			if idx := strings.Index(d, ")"); idx > 6 {
+				fi.Errno = d[6:idx] // duration, reuse field
+			}
+		} else if strings.HasPrefix(d, "trace") {
+			fi.Action = "trace"
+		}
+
+		// Extract label
+		if idx := strings.Index(d, `label="`); idx >= 0 {
+			rest := d[idx+7:]
+			if end := strings.Index(rest, `"`); end >= 0 {
+				fi.Label = rest[:end]
+			}
+		}
+
+		// Count hits: syscall events on this service between fault_applied and fault_removed
+		endSeq := int64(1<<62 - 1)
+		for _, ev := range tr.Events {
+			if ev.Type == "fault_removed" && ev.Service == scope.service && ev.Seq > scope.seq {
+				endSeq = ev.Seq
+				break
+			}
+		}
+		for _, ev := range tr.Events {
+			if ev.Type == "syscall" && ev.Service == scope.service &&
+				ev.Seq > scope.seq && ev.Seq < endSeq {
+				decision := ev.Fields["decision"]
+				if decision != "allow" && decision != "allow (system path)" && decision != "" {
+					fi.Hits++
+				}
+			}
+		}
+
+		tto.Faults = append(tto.Faults, fi)
+	}
 }
 
 // classifyFailure categorizes a failure reason for machine consumption.

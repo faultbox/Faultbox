@@ -139,8 +139,17 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 		return 0, -1, fmt.Errorf("get executable path: %w", err)
 	}
 
-	// Build file descriptors: stdin, stdout, stderr, pipeW
-	fds := []uintptr{0, 1, 2, uintptr(pipeW)}
+	// Build file descriptors: stdin, stdout, stderr, pipeW.
+	// StdoutFd/StderrFd override stdout/stderr if set (for --format json).
+	stdoutFd := uintptr(1)
+	stderrFd := uintptr(2)
+	if cfg.StdoutFd != 0 {
+		stdoutFd = cfg.StdoutFd
+	}
+	if cfg.StderrFd != 0 {
+		stderrFd = cfg.StderrFd
+	}
+	fds := []uintptr{0, stdoutFd, stderrFd, uintptr(pipeW)}
 
 	// Build environment with shim config.
 	env := append(os.Environ(), ShimEnvKey+"="+string(cfgJSON))

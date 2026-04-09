@@ -17,6 +17,10 @@ type LaunchConfig struct {
 	UidMappings []IDMapping
 	// GidMappings for USER namespace (Linux-specific, ignored on other platforms).
 	GidMappings []IDMapping
+	// StdoutFd overrides the child's stdout. 0 = inherit parent's stdout.
+	StdoutFd uintptr
+	// StderrFd overrides the child's stderr. 0 = inherit parent's stderr.
+	StderrFd uintptr
 }
 
 // IDMapping is a portable uid/gid mapping for user namespaces.

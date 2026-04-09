@@ -167,6 +167,7 @@ func testCmd(args []string) int {
 	showFilter := "all" // common output filter: "all", "fail"
 	virtualTime := false
 	exploreMode := ""
+	formatFlag := "" // "json" for structured output to stdout
 
 	for len(args) > 0 {
 		switch {
@@ -227,6 +228,11 @@ func testCmd(args []string) int {
 		case args[0] == "--explore" && len(args) > 1:
 			exploreMode = args[1]
 			args = args[1:]
+		case args[0] == "--format=json":
+			formatFlag = "json"
+		case args[0] == "--format" && len(args) > 1:
+			formatFlag = args[1]
+			args = args[1:]
 		case args[0] == "--show" && len(args) > 1:
 			showFilter = args[1]
 			args = args[1:]
@@ -263,16 +269,21 @@ func testCmd(args []string) int {
 			VirtualTime: virtualTime,
 			ExploreMode: exploreMode,
 		}
-		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, logFormat, logLevel)
+		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, formatFlag, logFormat, logLevel)
 	}
 
 	return testYAMLCmd(configPath, specPath, outputPath, logFormat, logLevel)
 }
 
 // testStarCmd runs tests from a .star file.
-func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath string, logFormat logging.Format, logLevel slog.Level) int {
+func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level) int {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
+
+	// When --format json, redirect service stdout to stderr to keep stdout clean.
+	if formatFlag == "json" {
+		rt.ServiceStdout = os.Stderr
+	}
 
 	if err := rt.LoadFile(starFile); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -329,6 +340,17 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 
 	// Print summary.
 	fmt.Fprintf(os.Stderr, "\n%d passed, %d failed\n", result.Pass, result.Fail)
+
+	// JSON output to stdout.
+	if formatFlag == "json" {
+		out := star.BuildTraceOutput(starFile, result)
+		data, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			logger.Error("failed to marshal JSON output", slog.String("error", err.Error()))
+			return 1
+		}
+		fmt.Fprintln(os.Stdout, string(data))
+	}
 
 	if result.Fail > 0 {
 		return 2
@@ -1346,6 +1368,7 @@ Test flags:
   --output results.json    Write JSON trace results
   --shiviz trace.shiviz    Write ShiViz visualization
   --normalize trace.norm   Write normalized trace for diff
+  --format json              Output structured JSON to stdout (human output on stderr)
   --log-format=console     Force colored console output
   --debug                  Enable debug logging
 

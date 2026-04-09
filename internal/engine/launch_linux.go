@@ -118,6 +118,15 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 		)
 	}
 
+	// Resolve stdout/stderr fd overrides for the child process.
+	var stdoutFd, stderrFd uintptr
+	if f, ok := s.cfg.Stdout.(*os.File); ok && f != os.Stdout {
+		stdoutFd = f.Fd()
+	}
+	if f, ok := s.cfg.Stderr.(*os.File); ok && f != os.Stderr {
+		stderrFd = f.Fd()
+	}
+
 	// Launch via unified shim.
 	childPid, listenerFd, err := seccomp.Launch(seccomp.LaunchConfig{
 		TargetBinary: s.cfg.Binary,
@@ -127,6 +136,8 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 		Cloneflags:   cloneflags,
 		UidMappings:  uidMappings,
 		GidMappings:  gidMappings,
+		StdoutFd:     stdoutFd,
+		StderrFd:     stderrFd,
 	})
 	if err != nil {
 		s.setState(StateFailed)

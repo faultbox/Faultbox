@@ -92,6 +92,10 @@ type Runtime struct {
 	// Protocol-level proxy manager.
 	proxyMgr *proxy.Manager
 
+	// ServiceStdout is where service stdout is written (default: os.Stdout).
+	// Set to os.Stderr when --format json to keep stdout clean for JSON.
+	ServiceStdout io.Writer
+
 	// Monitor errors — collected during test execution, checked after test.
 	monitorMu     sync.Mutex
 	monitorErrors []error
@@ -106,12 +110,13 @@ type runningSession struct {
 // New creates a new Starlark runtime.
 func New(logger *slog.Logger) *Runtime {
 	rt := &Runtime{
-		log:      logging.WithComponent(logger, "starlark"),
-		events:   NewEventLog(),
-		eng:      engine.New(logger),
-		services: make(map[string]*ServiceDef),
-		sessions: make(map[string]*runningSession),
-		faults:   make(map[string]map[string]*FaultDef),
+		log:           logging.WithComponent(logger, "starlark"),
+		events:        NewEventLog(),
+		eng:           engine.New(logger),
+		services:      make(map[string]*ServiceDef),
+		sessions:      make(map[string]*runningSession),
+		faults:        make(map[string]map[string]*FaultDef),
+		ServiceStdout: os.Stdout,
 	}
 	rt.proxyMgr = proxy.NewManager(func(evt proxy.ProxyEvent) {
 		rt.events.Emit("proxy", evt.To, evt.Fields)
@@ -529,14 +534,15 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 
 	// Set up stdout: if observe includes stdout source, create a pipe
 	// so we can decode output lines as events.
-	var stdout io.Writer = os.Stdout
+	svcStdout := rt.ServiceStdout
+	var stdout io.Writer = svcStdout
 	var stdoutSources []*eventsource.StdoutSourceHandle
 
 	for _, obs := range svc.Observe {
 		if obs.SourceName == "stdout" {
 			pr, pw := io.Pipe()
-			// Tee: send stdout to both the pipe (for decoding) and os.Stdout.
-			stdout = io.MultiWriter(os.Stdout, pw)
+			// Tee: send stdout to both the pipe (for decoding) and the configured output.
+			stdout = io.MultiWriter(svcStdout, pw)
 
 			// Create and start the stdout event source.
 			var dec eventsource.Decoder
@@ -569,7 +575,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 		Args:               svc.Args,
 		Env:                envVars,
 		Stdout:             stdout,
-		Stderr:             os.Stderr,
+		Stderr:             rt.ServiceStdout,
 		Namespaces:         ns,
 		FaultRules:         faultRules,
 		OnSyscall:          onSyscall,
