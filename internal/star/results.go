@@ -33,7 +33,18 @@ type TestTraceOutput struct {
 	ErrorDetail    *ErrorDetail                    `json:"error_detail,omitempty"`
 	Faults         []FaultInfo                     `json:"faults,omitempty"`
 	SyscallSummary map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
+	Diagnostics    []Diagnostic                    `json:"diagnostics,omitempty"`
 	Events         []Event                         `json:"events"`
+}
+
+// Diagnostic is an actionable hint for LLM agents and humans.
+type Diagnostic struct {
+	Level      string `json:"level"`                 // "error", "warning", "info"
+	Code       string `json:"code"`                  // machine-readable code
+	Message    string `json:"message"`               // human-readable description
+	Suggestion string `json:"suggestion"`            // what to do about it
+	Service    string `json:"service,omitempty"`      // related service
+	Syscall    string `json:"syscall,omitempty"`      // related syscall
 }
 
 // FaultInfo describes a fault rule that was active during a test.
@@ -207,6 +218,129 @@ func enrichTestOutput(tto *TestTraceOutput, tr *TestResult) {
 
 		tto.Faults = append(tto.Faults, fi)
 	}
+
+	// --- Diagnostics ---
+	tto.Diagnostics = buildDiagnostics(tto, tr)
+}
+
+// buildDiagnostics analyzes test results and produces actionable hints.
+func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
+	var diags []Diagnostic
+
+	hasFaults := len(tto.Faults) > 0
+	passed := tr.Result == "pass"
+	failed := tr.Result == "fail"
+
+	// FAULT_FIRED_BUT_SUCCESS: faults hit > 0, test passed — possible missing error handling.
+	if hasFaults && passed {
+		for _, fi := range tto.Faults {
+			if fi.Action == "deny" && fi.Hits > 0 {
+				diags = append(diags, Diagnostic{
+					Level:   "warning",
+					Code:    "FAULT_FIRED_BUT_SUCCESS",
+					Message: fmt.Sprintf("%s fault fired %d time(s) on '%s' but test passed", fi.Syscall, fi.Hits, fi.Service),
+					Suggestion: fmt.Sprintf(
+						"Service '%s' may not be checking %s errors. Verify error handling in the %s path, or add an assertion that the response reflects the failure.",
+						fi.Service, fi.Syscall, fi.Syscall),
+					Service: fi.Service,
+					Syscall: fi.Syscall,
+				})
+			}
+		}
+	}
+
+	// FAULT_NOT_FIRED: fault installed but 0 hits — wrong syscall or path.
+	if hasFaults {
+		for _, fi := range tto.Faults {
+			if fi.Action != "trace" && fi.Hits == 0 {
+				diags = append(diags, Diagnostic{
+					Level:   "warning",
+					Code:    "FAULT_NOT_FIRED",
+					Message: fmt.Sprintf("%s fault on '%s' was installed but never fired", fi.Syscall, fi.Service),
+					Suggestion: fmt.Sprintf(
+						"Service '%s' may use a different syscall variant (e.g., pwrite64 instead of write), "+
+							"or the path filter doesn't match. Run with --debug to see actual syscalls.",
+						fi.Service),
+					Service: fi.Service,
+					Syscall: fi.Syscall,
+				})
+			}
+		}
+	}
+
+	// SERVICE_CRASHED: service exited non-zero during the test.
+	for _, ev := range tr.Events {
+		if ev.Type == "service_stopped" || ev.Type == "session_completed" {
+			if code, ok := ev.Fields["exit_code"]; ok && code != "0" && code != "" {
+				svc := ev.Service
+				diags = append(diags, Diagnostic{
+					Level:      "error",
+					Code:       "SERVICE_CRASHED",
+					Message:    fmt.Sprintf("service '%s' exited with code %s", svc, code),
+					Suggestion: fmt.Sprintf("Service '%s' crashed — check for unhandled errors, panics, or missing error recovery.", svc),
+					Service:    svc,
+				})
+			}
+		}
+	}
+
+	// TIMEOUT: test timed out.
+	if failed && tto.FailureType == "timeout" {
+		// Find which service had faults active.
+		faultedSvc := ""
+		for _, fi := range tto.Faults {
+			if fi.Hits > 0 {
+				faultedSvc = fi.Service
+				break
+			}
+		}
+		suggestion := "Check for infinite retry loops, missing timeouts on network calls, or deadlocks."
+		if faultedSvc != "" {
+			suggestion = fmt.Sprintf(
+				"Service may be stuck retrying requests to '%s' without a timeout. "+
+					"Add a context deadline or circuit breaker.", faultedSvc)
+		}
+		diags = append(diags, Diagnostic{
+			Level:      "error",
+			Code:       "TIMEOUT_DURING_FAULT",
+			Message:    "test timed out while faults were active",
+			Suggestion: suggestion,
+			Service:    faultedSvc,
+		})
+	}
+
+	// ASSERTION_MISMATCH: assertion failed with specific values.
+	if failed && tto.FailureType == "assertion" && tr.Reason != "" {
+		diags = append(diags, Diagnostic{
+			Level:      "error",
+			Code:       "ASSERTION_MISMATCH",
+			Message:    tr.Reason,
+			Suggestion: "Check the service's error handling logic. The response doesn't match the expected behavior under the injected fault.",
+		})
+	}
+
+	// MULTIPLE_FAULTS_INTERACTION: >1 fault active, test failed — might be cascading.
+	if failed && len(tto.Faults) > 1 {
+		activeFaults := 0
+		for _, fi := range tto.Faults {
+			if fi.Hits > 0 {
+				activeFaults++
+			}
+		}
+		if activeFaults > 1 {
+			diags = append(diags, Diagnostic{
+				Level:      "info",
+				Code:       "MULTIPLE_FAULTS_INTERACTION",
+				Message:    fmt.Sprintf("%d faults were active and firing simultaneously", activeFaults),
+				Suggestion: "Test each fault in isolation first to identify which one causes the failure, then combine them.",
+			})
+		}
+	}
+
+	if len(diags) == 0 {
+		return nil
+	}
+	return diags
 }
 
 // classifyFailure categorizes a failure reason for machine consumption.
