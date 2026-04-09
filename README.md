@@ -148,6 +148,55 @@ faultbox/
 └── Makefile
 ```
 
+## LLM Agent Integration
+
+Faultbox is designed to work with LLM agents (Claude, Cursor, etc.) for
+automated code → test → fix workflows.
+
+### Claude Code setup
+
+```bash
+faultbox init --claude
+```
+
+This creates:
+- `.claude/commands/fault-test.md` — `/fault-test` slash command
+- `.claude/commands/fault-generate.md` — `/fault-generate` slash command
+- `.claude/commands/fault-diagnose.md` — `/fault-diagnose` slash command
+- `.mcp.json` — MCP server config (auto-connects `faultbox mcp`)
+
+### MCP server (manual)
+
+Add to your Claude Code or Claude Desktop config:
+```json
+{
+  "mcpServers": {
+    "faultbox": {
+      "command": "faultbox",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Available tools: `run_test`, `run_single_test`, `list_tests`, `generate_faults`,
+`init_from_compose`, `init_spec`.
+
+### Structured output
+
+```bash
+faultbox test spec.star --format json
+```
+
+Machine-parseable JSON with test results, fault info, syscall summary, and
+actionable diagnostics.
+
+### Docker (CI / agents)
+
+```bash
+docker run --privileged ghcr.io/faultbox/faultbox test /workspace/spec.star
+```
+
 ## Contributing
 
 ```bash

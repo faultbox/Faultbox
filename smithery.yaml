@@ -1,0 +1,10 @@
+# Smithery MCP Registry configuration
+# https://smithery.ai/docs/build/project-config/smithery-yaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+  commandFunction: |-
+    (config) => ({ command: 'faultbox', args: ['mcp'] })

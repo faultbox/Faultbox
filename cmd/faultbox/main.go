@@ -20,12 +20,13 @@ import (
 	"github.com/faultbox/Faultbox/internal/compose"
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/engine"
-	"github.com/faultbox/Faultbox/internal/mcp"
 	_ "github.com/faultbox/Faultbox/internal/eventsource/decoder" // register decoders
 	"github.com/faultbox/Faultbox/internal/generate"
 	"github.com/faultbox/Faultbox/internal/logging"
+	"github.com/faultbox/Faultbox/internal/mcp"
 	"github.com/faultbox/Faultbox/internal/seccomp"
 	"github.com/faultbox/Faultbox/internal/star"
+	"github.com/faultbox/Faultbox/internal/templates"
 )
 
 func main() {
@@ -723,6 +724,13 @@ func initCmd(args []string) int {
 		}
 	}
 
+	// Check for --claude.
+	for _, arg := range args {
+		if arg == "--claude" {
+			return initClaude()
+		}
+	}
+
 
 	name := "myapp"
 	port := "8080"
@@ -869,6 +877,63 @@ func initFromCompose(composePath string, args []string) int {
 	} else {
 		fmt.Print(spec)
 	}
+	return 0
+}
+
+func initClaude() int {
+	// Create .claude/commands/ directory.
+	cmdDir := ".claude/commands"
+	if err := os.MkdirAll(cmdDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating %s: %v\n", cmdDir, err)
+		return 1
+	}
+
+	// Write command templates from embedded files.
+	entries, err := templates.ClaudeCommands.ReadDir("claude_commands")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading templates: %v\n", err)
+		return 1
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := templates.ClaudeCommands.ReadFile("claude_commands/" + entry.Name())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading template %s: %v\n", entry.Name(), err)
+			return 1
+		}
+
+		target := entry.Name()
+		targetDir := cmdDir
+		if target == "mcp.json" {
+			// MCP config goes to .mcp.json in project root.
+			targetDir = "."
+			target = ".mcp.json"
+		}
+
+		path := filepath.Join(targetDir, target)
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing %s: %v\n", path, err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "  created %s\n", path)
+	}
+
+	fmt.Fprintf(os.Stderr, `
+Faultbox Claude Code integration ready!
+
+Custom commands (type in Claude Code):
+  /fault-test       Run fault injection tests
+  /fault-generate   Generate a spec from your project
+  /fault-diagnose   Analyze failures and suggest fixes
+
+MCP server (auto-configured in .mcp.json):
+  Claude Code will connect to faultbox mcp automatically.
+  Tools: run_test, list_tests, generate_faults, init_from_compose, init_spec
+
+`)
 	return 0
 }
 
