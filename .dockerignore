@@ -1,0 +1,10 @@
+bin/
+poc/
+docs/
+lima/
+typings/
+*.star
+*.test
+.git
+.github
+.vscode

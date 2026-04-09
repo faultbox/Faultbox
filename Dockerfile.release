@@ -1,0 +1,14 @@
+FROM ubuntu:24.04
+
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY build/linux-${TARGETARCH}/faultbox /usr/local/bin/faultbox
+COPY build/linux-${TARGETARCH}/faultbox-shim /usr/local/bin/faultbox-shim
+
+RUN chmod +x /usr/local/bin/faultbox /usr/local/bin/faultbox-shim
+
+ENTRYPOINT ["faultbox"]
