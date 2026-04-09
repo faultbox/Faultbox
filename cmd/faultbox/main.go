@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/faultbox/Faultbox/internal/compose"
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/engine"
 	_ "github.com/faultbox/Faultbox/internal/eventsource/decoder" // register decoders
@@ -704,6 +705,22 @@ func initCmd(args []string) int {
 		}
 	}
 
+	// Check for --from-compose.
+	for i, arg := range args {
+		if arg == "--from-compose" || strings.HasPrefix(arg, "--from-compose=") {
+			var composePath string
+			if strings.HasPrefix(arg, "--from-compose=") {
+				composePath = strings.TrimPrefix(arg, "--from-compose=")
+			} else if i+1 < len(args) {
+				composePath = args[i+1]
+			} else {
+				composePath = "docker-compose.yml"
+			}
+			return initFromCompose(composePath, args)
+		}
+	}
+
+
 	name := "myapp"
 	port := "8080"
 	protocol := "http"
@@ -734,14 +751,17 @@ func initCmd(args []string) int {
 			output = strings.TrimPrefix(args[i], "--output=")
 		case args[i] == "-h" || args[i] == "--help":
 			fmt.Fprintln(os.Stderr, `Usage: faultbox init [flags] <binary>
+       faultbox init --from-compose [docker-compose.yml]
 
-Generate a starter .star file for a service.
+Generate a starter .star file for a service or from docker-compose.
 
 Flags:
-  --name <name>          Service name (default: myapp)
-  --port <port>          Port number (default: 8080)
-  --protocol http|tcp    Protocol (default: http)
-  --output <file>        Write to file instead of stdout`)
+  --name <name>                   Service name (default: myapp)
+  --port <port>                   Port number (default: 8080)
+  --protocol http|tcp             Protocol (default: http)
+  --output <file>                 Write to file instead of stdout
+  --from-compose [file]           Generate from docker-compose.yml
+  --vscode                        Generate VS Code autocomplete stubs`)
 			return 0
 		case !strings.HasPrefix(args[i], "-"):
 			binary = args[i]
@@ -814,6 +834,37 @@ Flags:
 		fmt.Fprintf(os.Stderr, "wrote %s\n", output)
 	} else {
 		fmt.Print(content)
+	}
+	return 0
+}
+
+func initFromCompose(composePath string, args []string) int {
+	// Parse --output from remaining args.
+	output := ""
+	for i, arg := range args {
+		if arg == "--output" && i+1 < len(args) {
+			output = args[i+1]
+		} else if strings.HasPrefix(arg, "--output=") {
+			output = strings.TrimPrefix(arg, "--output=")
+		}
+	}
+
+	services, err := compose.Parse(composePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	spec := compose.GenerateSpec(services)
+
+	if output != "" {
+		if err := os.WriteFile(output, []byte(spec), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing %s: %v\n", output, err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "generated %s from %s (%d services)\n", output, composePath, len(services))
+	} else {
+		fmt.Print(spec)
 	}
 	return 0
 }
