@@ -44,9 +44,9 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.version }}" = "latest" ]; then
-          curl -fsSL https://faultbox.dev/install.sh | FAULTBOX_DIR=/usr/local/bin sh
+          curl -fsSL https://faultbox.io/install.sh | FAULTBOX_DIR=/usr/local/bin sh
         else
-          FAULTBOX_VERSION=${{ inputs.version }} curl -fsSL https://faultbox.dev/install.sh | FAULTBOX_DIR=/usr/local/bin sh
+          FAULTBOX_VERSION=${{ inputs.version }} curl -fsSL https://faultbox.io/install.sh | FAULTBOX_DIR=/usr/local/bin sh
         fi
         faultbox --version
 

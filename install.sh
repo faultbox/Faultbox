@@ -1,6 +1,6 @@
 #!/bin/sh
 # Faultbox installer
-# Usage: curl -fsSL https://faultbox.dev/install.sh | sh
+# Usage: curl -fsSL https://faultbox.io/install.sh | sh
 #
 # Environment variables:
 #   FAULTBOX_VERSION  - specific version (default: latest)
@@ -156,7 +156,7 @@ main() {
     say "note: faultbox uses Linux seccomp-notify."
     say "on macOS, run inside a Lima VM:"
     say "  brew install lima"
-    say "  see: https://faultbox.dev/docs/tutorial/00-prelude/00-setup"
+    say "  see: https://faultbox.io/docs/tutorial/00-prelude/00-setup"
   fi
 }
 

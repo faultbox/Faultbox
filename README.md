@@ -43,7 +43,7 @@ No separate config language. The spec is code.
 ## Install
 
 ```bash
-curl -fsSL https://faultbox.dev/install.sh | sh
+curl -fsSL https://faultbox.io/install.sh | sh
 ```
 
 This detects your platform (linux/darwin, amd64/arm64), downloads the latest
@@ -51,7 +51,7 @@ release, verifies the checksum, and installs to `~/.faultbox/bin`.
 
 Or install a specific version:
 ```bash
-FAULTBOX_VERSION=0.1.0 curl -fsSL https://faultbox.dev/install.sh | sh
+FAULTBOX_VERSION=0.1.0 curl -fsSL https://faultbox.io/install.sh | sh
 ```
 
 ### Build from source
