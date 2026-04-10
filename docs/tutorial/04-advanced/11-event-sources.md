@@ -31,7 +31,7 @@ This chapter teaches you to:
 Add `observe=[stdout(...)]` to a service to capture its output:
 
 ```python
-BIN = "bin/linux-arm64"
+BIN = "bin/linux"
 
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),

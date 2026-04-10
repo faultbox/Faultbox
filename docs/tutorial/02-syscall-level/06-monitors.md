@@ -40,9 +40,9 @@ orders (HTTP :8080) ──→ inventory (TCP :5432 + WAL file)
 Create `monitors-test.star` in the project root:
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 inventory = service("inventory", BIN + "/inventory-svc",
     interface("main", "tcp", 5432),
@@ -130,9 +130,9 @@ def test_network_partition():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test monitors-test.star --test network_partition
+faultbox test monitors-test.star --test network_partition
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test monitors-test.star --test network_partition
+vm faultbox test monitors-test.star --test network_partition
 ```
 
 ```
@@ -181,9 +181,9 @@ def test_partition_safety():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test monitors-test.star --test partition_safety
+faultbox test monitors-test.star --test partition_safety
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test monitors-test.star --test partition_safety
+vm faultbox test monitors-test.star --test partition_safety
 ```
 
 ```

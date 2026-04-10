@@ -31,7 +31,7 @@ Just functions, variables, and data. Configuration is code.
 
 ## The mock database
 
-The mock-db binary was built in Chapter 0 (`make build` or `make demo-build`).
+The mock-db binary was built in Chapter 0 (`make build` or `make lima-build`).
 
 It's a simple TCP key-value store:
 ```
@@ -48,9 +48,9 @@ where `bin/` lives). All binary paths in specs are relative to where you run
 `faultbox test` from, so run everything from the project root.
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
@@ -75,12 +75,12 @@ specification — a concrete, executable claim about system behavior.
 
 **Linux:**
 ```bash
-bin/faultbox test my-first-test.star
+faultbox test my-first-test.star
 ```
 
 **macOS (Lima):**
 ```bash
-vm bin/linux-arm64/faultbox test my-first-test.star
+vm faultbox test my-first-test.star
 ```
 
 ```
@@ -169,14 +169,14 @@ def test_set_and_get():
     assert_eq(resp, "hello")
 ```
 
-Run all (on Linux; on macOS prefix with `vm bin/linux-arm64/`):
+Run all (on Linux; on macOS use `vm` alias (see Chapter 0)):
 ```bash
-bin/faultbox test my-first-test.star
+faultbox test my-first-test.star
 ```
 
 Run one:
 ```bash
-bin/faultbox test my-first-test.star --test set_and_get
+faultbox test my-first-test.star --test set_and_get
 ```
 
 **Each test is independent.** The database restarts between tests, so

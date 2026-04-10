@@ -26,9 +26,9 @@ A scenario is a function that describes how your system works when
 everything is healthy. Register it with `scenario()`:
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
@@ -62,9 +62,9 @@ Save this as `scenario-test.star`.
 Run it:
 ```bash
 # Linux:
-bin/faultbox test scenario-test.star
+faultbox test scenario-test.star
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test scenario-test.star
+vm faultbox test scenario-test.star
 ```
 
 ```
@@ -79,9 +79,9 @@ Now generate all possible failures for your scenarios:
 
 ```bash
 # Linux:
-bin/faultbox generate scenario-test.star
+faultbox generate scenario-test.star
 # macOS (Lima):
-vm bin/linux-arm64/faultbox generate scenario-test.star
+vm faultbox generate scenario-test.star
 ```
 
 ```
@@ -136,9 +136,9 @@ under different failure conditions.
 
 ```bash
 # Linux:
-bin/faultbox test order_flow.faults.star
+faultbox test order_flow.faults.star
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test order_flow.faults.star
+vm faultbox test order_flow.faults.star
 ```
 
 Some tests will pass (your system handles the fault), others will fail
@@ -182,9 +182,9 @@ def test_custom_failure():
 
 ```bash
 # Linux:
-bin/faultbox generate scenario-test.star --dry-run
+faultbox generate scenario-test.star --dry-run
 # macOS (Lima):
-vm bin/linux-arm64/faultbox generate scenario-test.star --dry-run
+vm faultbox generate scenario-test.star --dry-run
 ```
 
 ```

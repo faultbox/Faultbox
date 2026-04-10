@@ -37,9 +37,9 @@ checks rules, and either injects a fault or forwards normally.
 ## Setup
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
@@ -78,9 +78,9 @@ def test_api_returns_503():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test protocol-test.star --test api_returns_503
+faultbox test protocol-test.star --test api_returns_503
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test protocol-test.star --test api_returns_503
+vm faultbox test protocol-test.star --test api_returns_503
 ```
 
 **What happened:**

@@ -27,7 +27,7 @@ After this chapter, your mental checklist for any new feature will include:
 
 ## The two-service system
 
-Both binaries were built in Chapter 0 (`make build` or `make demo-build`).
+Both binaries were built in Chapter 0 (`make build` or `make lima-build`).
 
 The mock-api is an HTTP service that stores data in mock-db via TCP.
 Two services, one dependency — the simplest distributed system.
@@ -37,9 +37,9 @@ Two services, one dependency — the simplest distributed system.
 Create `fault-test.star` in the project root:
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
@@ -64,20 +64,20 @@ def test_happy_path():
 
 **Linux:**
 ```bash
-bin/faultbox test fault-test.star
+faultbox test fault-test.star
 ```
 
 **macOS (Lima):**
 ```bash
-vm bin/linux-arm64/faultbox test fault-test.star
+vm faultbox test fault-test.star
 ```
 
 Expected output:
 ```
 ... [starlark] running test  test=test_happy_path
-... [starlark] starting session  binary=bin/linux-arm64/mock-db  service=db
+... [starlark] starting session  binary=bin/linux/mock-db  service=db
 ... [starlark] target started  pid=...  service=db
-... [starlark] starting session  binary=bin/linux-arm64/mock-api  service=api
+... [starlark] starting session  binary=bin/linux/mock-api  service=api
 ... [starlark] target started  pid=...  service=api
 ... [starlark] test completed  test=test_happy_path  result=pass
 
@@ -129,9 +129,9 @@ def test_db_write_failure():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test fault-test.star --test db_write_failure
+faultbox test fault-test.star --test db_write_failure
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test fault-test.star --test db_write_failure
+vm faultbox test fault-test.star --test db_write_failure
 ```
 
 ```
@@ -181,9 +181,9 @@ def test_recovery_after_disk_error():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test fault-test.star --test recovery_after_disk_error
+faultbox test fault-test.star --test recovery_after_disk_error
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test fault-test.star --test recovery_after_disk_error
+vm faultbox test fault-test.star --test recovery_after_disk_error
 ```
 
 ```
@@ -212,9 +212,9 @@ def test_db_failure_modes():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test fault-test.star --test db_failure_modes
+faultbox test fault-test.star --test db_failure_modes
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test fault-test.star --test db_failure_modes
+vm faultbox test fault-test.star --test db_failure_modes
 ```
 
 Without scoping, you'd need to restart services between tests to change
@@ -285,9 +285,9 @@ Instead of thinking in syscalls, you can define **named operations** that
 group related syscalls:
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
@@ -312,9 +312,9 @@ write to specific files. The inventory-svc from Chapters 4-6 writes a
 WAL file to `/tmp/inventory.wal`. Here's a working example:
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 inventory = service("inventory", BIN + "/inventory-svc",
     interface("main", "tcp", 5432),
@@ -370,9 +370,9 @@ def test_everything_broken():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test fault-test.star --test everything_broken
+faultbox test fault-test.star --test everything_broken
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test fault-test.star --test everything_broken
+vm faultbox test fault-test.star --test everything_broken
 ```
 
 ```
@@ -389,9 +389,9 @@ For scenarios where fault timing matters, use `fault_start`/`fault_stop`
 instead of the scoped `fault()` with `run=`.
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
@@ -422,9 +422,9 @@ def test_fault_mid_operation():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test fault-test.star --test fault_mid_operation
+faultbox test fault-test.star --test fault_mid_operation
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test fault-test.star --test fault_mid_operation
+vm faultbox test fault-test.star --test fault_mid_operation
 ```
 
 ```

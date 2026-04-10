@@ -42,9 +42,9 @@ orders (HTTP :8080) ──→ inventory (TCP :5432 + WAL file)
 Create `concurrency-test.star` in the project root:
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 inventory = service("inventory", BIN + "/inventory-svc",
     interface("main", "tcp", 5432),
@@ -83,9 +83,9 @@ def test_concurrent_orders():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --test concurrent_orders
+faultbox test concurrency-test.star --test concurrent_orders
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders
+vm faultbox test concurrency-test.star --test concurrent_orders
 ```
 
 ```
@@ -118,9 +118,9 @@ you need to explore many:
 ```bash
 # Run with a specific seed:
 # Linux:
-bin/faultbox test concurrency-test.star --test concurrent_orders --seed 42
+faultbox test concurrency-test.star --test concurrent_orders --seed 42
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders --seed 42
+vm faultbox test concurrency-test.star --test concurrent_orders --seed 42
 ```
 
 **Same seed = same interleaving = same result.** This makes concurrency bugs
@@ -179,9 +179,9 @@ Run the same test many times with different seeds to hunt for failures:
 
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail
+faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail
+vm faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail
 ```
 
 `--runs 100` runs the test 100 times, each with a different seed
@@ -198,9 +198,9 @@ If seed 7 fails, replay it:
 
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --test flaky_network --seed 7
+faultbox test concurrency-test.star --test flaky_network --seed 7
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test flaky_network --seed 7
+vm faultbox test concurrency-test.star --test flaky_network --seed 7
 ```
 
 **The full workflow:**
@@ -216,9 +216,9 @@ For small state spaces, try EVERY possible ordering:
 
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --test concurrent_orders --explore=all
+faultbox test concurrency-test.star --test concurrent_orders --explore=all
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_orders --explore=all
+vm faultbox test concurrency-test.star --test concurrent_orders --explore=all
 ```
 
 ```
@@ -241,9 +241,9 @@ For larger spaces, sample randomly:
 
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --explore=sample --runs 500
+faultbox test concurrency-test.star --explore=sample --runs 500
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --explore=sample --runs 500
+vm faultbox test concurrency-test.star --explore=sample --runs 500
 ```
 
 **When to use which:**
@@ -274,9 +274,9 @@ for real delays). Virtual time skips the waits:
 
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --virtual-time --explore=all
+faultbox test concurrency-test.star --virtual-time --explore=all
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --virtual-time --explore=all
+vm faultbox test concurrency-test.star --virtual-time --explore=all
 ```
 
 A test with `delay("2s")` completes in milliseconds. Virtual time advances
@@ -316,9 +316,9 @@ the race window wider, increasing the chance of exposing an oversell bug.
 Run it:
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --test concurrent_under_failure
+faultbox test concurrency-test.star --test concurrent_under_failure
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test concurrent_under_failure
+vm faultbox test concurrency-test.star --test concurrent_under_failure
 ```
 
 ```
@@ -356,9 +356,9 @@ def test_oversell_bug():
 Run it with multiple seeds to find a failure:
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --test oversell_bug --runs 10
+faultbox test concurrency-test.star --test oversell_bug --runs 10
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test oversell_bug --runs 10
+vm faultbox test concurrency-test.star --test oversell_bug --runs 10
 ```
 
 One of the seeds will fail (the second order gets "insufficient stock").
@@ -369,17 +369,17 @@ failing seed:
 ```bash
 # Replace --seed 3 with your failing seed:
 # Linux:
-bin/faultbox test concurrency-test.star --test oversell_bug --seed 3 --shiviz fail.shiviz
+faultbox test concurrency-test.star --test oversell_bug --seed 3 --shiviz fail.shiviz
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test oversell_bug --seed 3 --shiviz fail.shiviz
+vm faultbox test concurrency-test.star --test oversell_bug --seed 3 --shiviz fail.shiviz
 ```
 
 **Step 2:** Capture a passing interleaving:
 ```bash
 # Linux:
-bin/faultbox test concurrency-test.star --test oversell_bug --seed 0 --shiviz pass.shiviz
+faultbox test concurrency-test.star --test oversell_bug --seed 0 --shiviz pass.shiviz
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test concurrency-test.star --test oversell_bug --seed 0 --shiviz pass.shiviz
+vm faultbox test concurrency-test.star --test oversell_bug --seed 0 --shiviz pass.shiviz
 ```
 
 **Step 3:** Open both at https://bestchai.bitbucket.io/shiviz/ and compare.

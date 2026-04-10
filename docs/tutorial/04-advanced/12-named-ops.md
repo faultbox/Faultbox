@@ -15,9 +15,9 @@ then fault those operations by name.
 Add `ops=` to a service declaration:
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 inventory = service("inventory", BIN + "/inventory-svc",
     interface("main", "tcp", 5432),

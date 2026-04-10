@@ -44,9 +44,9 @@ orders (HTTP :8080) ──→ inventory (TCP :5432 + WAL file)
 Create `traces-test.star` in the project root:
 
 ```python
-# Linux: BIN = "bin"
-# macOS (Lima): BIN = "bin/linux-arm64"
-BIN = "bin/linux-arm64"
+# Linux (native): BIN = "bin"
+# macOS (Lima): BIN = "bin/linux"
+BIN = "bin/linux"
 
 inventory = service("inventory", BIN + "/inventory-svc",
     interface("main", "tcp", 5432),
@@ -75,9 +75,9 @@ def test_happy_path():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test happy_path
+faultbox test traces-test.star --test happy_path
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test happy_path
+vm faultbox test traces-test.star --test happy_path
 ```
 
 ```
@@ -120,9 +120,9 @@ def test_happy_path_observed():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test happy_path_observed
+faultbox test traces-test.star --test happy_path_observed
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test happy_path_observed
+vm faultbox test traces-test.star --test happy_path_observed
 ```
 
 ```
@@ -196,9 +196,9 @@ assert_eventually(
 Run it:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test wal_written
+faultbox test traces-test.star --test wal_written
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test wal_written
+vm faultbox test traces-test.star --test wal_written
 ```
 
 ```
@@ -241,9 +241,9 @@ def test_no_write_when_unreachable():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test no_write_when_unreachable
+faultbox test traces-test.star --test no_write_when_unreachable
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test no_write_when_unreachable
+vm faultbox test traces-test.star --test no_write_when_unreachable
 ```
 
 ```
@@ -282,9 +282,9 @@ def test_delay_then_deny():
 Run it:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test delay_then_deny
+faultbox test traces-test.star --test delay_then_deny
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test delay_then_deny
+vm faultbox test traces-test.star --test delay_then_deny
 ```
 
 ```
@@ -335,9 +335,9 @@ combination of `service`, `syscall`, `decision`, `path` — then use
 Run it:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test write_count
+faultbox test traces-test.star --test write_count
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test write_count
+vm faultbox test traces-test.star --test write_count
 ```
 
 ```
@@ -352,9 +352,9 @@ vm bin/linux-arm64/faultbox test traces-test.star --test write_count
 
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test wal_written --output trace.json
+faultbox test traces-test.star --test wal_written --output trace.json
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --output trace.json
+vm faultbox test traces-test.star --test wal_written --output trace.json
 ```
 
 Structured JSON with every event, PObserve-compatible fields, vector clocks,
@@ -364,9 +364,9 @@ and replay commands for failed tests.
 
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test wal_written --shiviz trace.shiviz
+faultbox test traces-test.star --test wal_written --shiviz trace.shiviz
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --shiviz trace.shiviz
+vm faultbox test traces-test.star --test wal_written --shiviz trace.shiviz
 ```
 
 Open at https://bestchai.bitbucket.io/shiviz/ to see a space-time diagram
@@ -398,16 +398,16 @@ the diff shows exactly what changed.
 **Step 1:** Capture a baseline trace:
 ```bash
 # Linux:
-bin/faultbox test traces-test.star --test wal_written --normalize trace-before.norm
+faultbox test traces-test.star --test wal_written --normalize trace-before.norm
 # macOS (Lima):
-vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --normalize trace-before.norm
+vm faultbox test traces-test.star --test wal_written --normalize trace-before.norm
 ```
 
-**Step 2:** Make a small code change. Open `poc/demo/inventory-svc/main.go`,
+**Step 2:** Make a small code change. Open `demo/inventory-svc/main.go`,
 find the `walAppend` function (~line 151), and add a **duplicate write**
 right after the existing one:
 
-In `poc/demo/inventory-svc/main.go`, find the `walAppend` function and
+In `demo/inventory-svc/main.go`, find the `walAppend` function and
 add a duplicate write after the existing `WriteString`:
 
 ```go
@@ -421,18 +421,18 @@ Rebuild and capture again:
 ```bash
 # Linux:
 make build
-bin/faultbox test traces-test.star --test wal_written --normalize trace-after.norm
+faultbox test traces-test.star --test wal_written --normalize trace-after.norm
 # macOS (Lima):
-make demo-build
-vm bin/linux-arm64/faultbox test traces-test.star --test wal_written --normalize trace-after.norm
+make lima-build
+vm faultbox test traces-test.star --test wal_written --normalize trace-after.norm
 ```
 
 **Step 3:** Compare:
 ```bash
 # Linux:
-bin/faultbox diff trace-before.norm trace-after.norm
+faultbox diff trace-before.norm trace-after.norm
 # macOS (Lima):
-vm bin/linux-arm64/faultbox diff trace-before.norm trace-after.norm
+vm faultbox diff trace-before.norm trace-after.norm
 ```
 
 If the system is deterministic (same seed + same binary), the output is:
@@ -452,7 +452,7 @@ traces differ (12 vs 13 lines):
 ```
 
 The diff shows exactly one extra `write` to the WAL — the double-write
-you added. Revert your change (`git checkout poc/demo/inventory-svc/main.go`)
+you added. Revert your change (`git checkout demo/inventory-svc/main.go`)
 and rebuild to restore the original behavior.
 
 **When to use this:**

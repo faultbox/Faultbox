@@ -6,27 +6,22 @@ concept, explains *why* it matters, and builds on the previous.
 
 **Total time:** ~5 hours (15-30 min per chapter)
 
-## Platform
+## Quick start
 
-Faultbox uses Linux's seccomp-notify, which requires kernel 5.6+.
+```bash
+curl -fsSL https://faultbox.io/install.sh | sh    # install faultbox
+git clone https://github.com/faultbox/demo.git    # clone demo services
+cd demo
+make build                                         # Linux
+make lima-create && make lima-build                 # macOS (one-time)
+```
+
+## Platform
 
 | Platform | How to run |
 |----------|-----------|
-| **Linux** | Native. All commands run directly. |
-| **macOS** | Via Lima VM. Setup: `make env-create && make env-start`. All faultbox commands run inside: `limactl shell faultbox-dev -- <command>` |
-
-## Prerequisites
-
-- Go 1.24+ installed
-- For macOS: Lima (`brew install lima`)
-- Docker (Part 4 only)
-
-## Build
-
-```bash
-make build          # faultbox CLI (host)
-make demo-build     # cross-compile for Lima VM (linux/arm64)
-```
+| **Linux** | `faultbox test first-test.star` |
+| **macOS** | `make lima-run CMD="faultbox test first-test.star"` |
 
 ---
 

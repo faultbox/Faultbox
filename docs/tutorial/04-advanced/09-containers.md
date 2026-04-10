@@ -51,8 +51,8 @@ nothing changed — except faultbox can now intercept its syscalls.
 
 **macOS (Lima VM):**
 ```bash
-make env-start                 # start Lima VM (has Docker pre-installed)
-make demo-build                # cross-compile faultbox + shim
+make lima-start                 # start Lima VM (has Docker pre-installed)
+make lima-build                # cross-compile faultbox + shim
 ```
 
 **Linux:**
@@ -122,10 +122,10 @@ resp = api.get(path="/health")  # hits localhost:32847
 
 ```bash
 # macOS (Lima VM):
-limactl shell faultbox-dev -- sudo bin/linux-arm64/faultbox test poc/demo-container/faultbox.star
+limactl shell faultbox-dev -- sudo faultbox test container-demo/faultbox.star
 
 # Linux:
-sudo faultbox test poc/demo-container/faultbox.star
+sudo faultbox test container-demo/faultbox.star
 ```
 
 ```
@@ -152,9 +152,9 @@ def test_postgres_disk_full():
 Run it:
 ```bash
 # macOS (Lima VM):
-limactl shell faultbox-dev -- sudo bin/linux-arm64/faultbox test poc/demo-container/faultbox.star --test postgres_disk_full
+limactl shell faultbox-dev -- sudo faultbox test container-demo/faultbox.star --test postgres_disk_full
 # Linux:
-sudo bin/faultbox test poc/demo-container/faultbox.star --test postgres_disk_full
+sudo faultbox test container-demo/faultbox.star --test postgres_disk_full
 ```
 
 ```
@@ -232,7 +232,7 @@ slow — Chapter 8 shows how to auto-generate them.
 **Reference:**
 - [Spec Language Reference](../../spec-language.md) — complete API
 - [CLI Reference](../../cli-reference.md) — all commands and flags
-- Explore the `poc/demo/faultbox.star` for a complete working example
+- Explore the `demo/faultbox.star` for a complete working example
 
 ## Exercises
 

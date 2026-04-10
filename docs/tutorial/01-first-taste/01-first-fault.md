@@ -49,7 +49,7 @@ bin/target
 
 **macOS (Lima):**
 ```bash
-vm bin/linux-arm64/target
+vm bin/linux/target
 ```
 
 You'll see faultbox engine logs followed by the target's output:
@@ -80,12 +80,12 @@ The filesystem write+read succeeded. Now break it.
 
 **Linux:**
 ```bash
-bin/faultbox run --fault "write=EIO:100%" bin/target
+faultbox run --fault "write=EIO:100%" bin/target
 ```
 
 **macOS (Lima):**
 ```bash
-vm bin/linux-arm64/faultbox run --fault "write=EIO:100%" bin/linux-arm64/target
+vm faultbox run --fault "write=EIO:100%" bin/linux/target
 ```
 
 Now look at the output:
@@ -124,12 +124,12 @@ Real failures are intermittent. Make writes fail 30% of the time:
 
 **Linux:**
 ```bash
-bin/faultbox run --fault "write=EIO:30%" bin/target
+faultbox run --fault "write=EIO:30%" bin/target
 ```
 
 **macOS (Lima):**
 ```bash
-vm bin/linux-arm64/faultbox run --fault "write=EIO:30%" bin/linux-arm64/target
+vm faultbox run --fault "write=EIO:30%" bin/linux/target
 ```
 
 Run it several times. Sometimes it works, sometimes it fails. This is how
@@ -142,12 +142,12 @@ Deny opens only for files under `/data/`:
 
 **Linux:**
 ```bash
-bin/faultbox run --fault "openat=ENOENT:100%:/data/*" bin/target
+faultbox run --fault "openat=ENOENT:100%:/data/*" bin/target
 ```
 
 **macOS (Lima):**
 ```bash
-vm bin/linux-arm64/faultbox run --fault "openat=ENOENT:100%:/data/*" bin/linux-arm64/target
+vm faultbox run --fault "openat=ENOENT:100%:/data/*" bin/linux/target
 ```
 
 The target writes to `/tmp/` (not `/data/`), so the filesystem test succeeds.
@@ -169,12 +169,12 @@ Slow down every write by 500ms:
 
 **Linux:**
 ```bash
-bin/faultbox run --fault "write=delay:500ms:100%" bin/target
+faultbox run --fault "write=delay:500ms:100%" bin/target
 ```
 
 **macOS (Lima):**
 ```bash
-vm bin/linux-arm64/faultbox run --fault "write=delay:500ms:100%" bin/linux-arm64/target
+vm faultbox run --fault "write=delay:500ms:100%" bin/linux/target
 ```
 
 The filesystem operation now takes >500ms. **The intuition:** slow I/O is
