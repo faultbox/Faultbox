@@ -150,29 +150,34 @@ faultbox test order_flow.faults.star
 make lima-run CMD="faultbox test order_flow.faults.star"
 ```
 
-> **Important:** Generated fault files use `load()` to import services
-> from your source spec. Currently, faults in `load()`-ed files require
-> the BPF filter to be pre-installed at service start. For generated tests
-> to fire correctly, **run them together with the source file** by copying
-> the generated test functions into your main spec, or run the source and
-> generated file as a single spec.
->
-> This is a known limitation — a future release will handle `load()` file
-> analysis automatically.
-
 The generated tests wrap your exact happy-path function in fault scopes.
-When a fault fires, the happy-path assertions test whether your service
-handles the failure correctly:
+When a fault fires, the happy-path assertions reveal how the service
+behaves under failure:
 
-- **Test fails** → the happy-path assertion (e.g., `assert_eq(resp.status, 200)`)
-  failed because the service didn't return 200 under fault. This means
-  the fault successfully broke the service — now decide: should the service
-  handle this fault, or is the failure expected?
-- **Test passes** → the service handled the fault gracefully (e.g.,
-  returned a proper error code). The happy-path assertions still passed.
-- **Fault not fired (WARNING)** → the service doesn't use the faulted
-  syscall. Delete this test — it's irrelevant (e.g., fsync on a service
-  that doesn't call fsync).
+```
+--- FAIL: test_gen_order_flow_db_io_error (5215ms) ---
+  reason: assert_eq failed: 500 != 200
+--- FAIL: test_gen_order_flow_db_down (212ms) ---
+  reason: assert_eq failed: 500 != 200
+--- PASS: test_gen_order_flow_db_fsync_fail (210ms) ---
+  WARNING: fault rules were installed but no injections fired
+--- PASS: test_order_flow (210ms) ---
+
+2 passed, 6 failed
+```
+
+How to read the results:
+
+- **Test fails** (`500 != 200`) — the fault fired and the service returned
+  an error instead of 200. The happy-path assertion caught it. This is a
+  **discovered failure mode** — now decide: should the service handle this
+  gracefully, or is 500 the correct response?
+- **Test passes** — the service handled the fault and still satisfied all
+  happy-path assertions. Either the fault didn't affect this code path,
+  or the service has proper error handling.
+- **Fault not fired (WARNING)** — the service doesn't use the faulted
+  syscall. Delete this test (e.g., `fsync_fail` on a service that never
+  calls fsync).
 
 ## The `load()` statement
 

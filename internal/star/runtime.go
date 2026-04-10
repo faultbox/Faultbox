@@ -998,9 +998,18 @@ func (rt *Runtime) requiredSyscalls() []string {
 // e.g., if the user wrote `pg = service("postgres", ...)`, returns {"pg": "postgres"}.
 func (rt *Runtime) serviceVarMap() map[string]string {
 	result := make(map[string]string)
+	// Check globals (main file variables).
 	for varName, val := range rt.globals {
 		if svc, ok := val.(*ServiceDef); ok {
 			result[varName] = svc.Name
+		}
+	}
+	// Also map service names to themselves — covers load() imports
+	// where the variable name matches the service name, and covers
+	// cases where the variable isn't in globals (loaded via load()).
+	for name := range rt.services {
+		if _, exists := result[name]; !exists {
+			result[name] = name
 		}
 	}
 	return result
