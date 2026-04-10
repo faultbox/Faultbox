@@ -1,4 +1,4 @@
-# Chapter 7: Containers — Real Infrastructure
+# Chapter 9: Containers — Real Infrastructure
 
 **Duration:** 30 minutes
 **Prerequisites:** [Chapter 0 (Setup)](../00-prelude/00-setup.md) completed, Docker running
@@ -49,15 +49,19 @@ nothing changed — except faultbox can now intercept its syscalls.
 
 ## Prerequisites
 
-**macOS (Lima VM):**
+Container tests require Docker and `sudo` (seccomp on containers needs
+`pidfd_getfd` with `PTRACE_MODE_ATTACH`).
+
+**macOS (Lima VM):** Docker is pre-installed in the Lima VM.
+
 ```bash
-make lima-start                 # start Lima VM (has Docker pre-installed)
-make lima-build                # cross-compile faultbox + shim
+make lima-start                 # start VM if stopped
 ```
 
-**Linux:**
+**Linux:** Install Docker normally.
+
 ```bash
-make build
+docker version                  # verify Docker is available
 # Docker must be running
 # sudo required for pidfd_getfd across Docker PID namespaces
 ```
@@ -127,7 +131,7 @@ sudo faultbox test container-demo/faultbox.star
 
 **macOS (Lima):**
 ```bash
-limactl shell faultbox-dev -- sudo faultbox test container-demo/faultbox.star
+make lima-run CMD="sudo faultbox test container-demo/faultbox.star"
 ```
 
 ```
@@ -151,7 +155,6 @@ def test_postgres_disk_full():
     fault(postgres, write=deny("ENOSPC", label="disk full"), run=scenario)
 ```
 
-Run it:
 **Linux:**
 ```bash
 sudo faultbox test container-demo/faultbox.star --test postgres_disk_full
@@ -159,7 +162,7 @@ sudo faultbox test container-demo/faultbox.star --test postgres_disk_full
 
 **macOS (Lima):**
 ```bash
-limactl shell faultbox-dev -- sudo faultbox test container-demo/faultbox.star --test postgres_disk_full
+make lima-run CMD="sudo faultbox test container-demo/faultbox.star --test postgres_disk_full"
 ```
 
 ```
@@ -226,12 +229,12 @@ real Postgres.
 ## What's next
 
 You can test real infrastructure. But writing failure tests by hand is
-slow — Chapter 8 shows how to auto-generate them.
+slow — Chapter 10 shows how to auto-generate them.
 
 **Continue:**
-- [Chapter 8: Scenarios & Generation](10-scenarios.md) — register
+- [Chapter 10: Scenarios & Generation](10-scenarios.md) — register
   happy paths with `scenario()`, auto-generate fault mutations
-- [Chapter 9: Event Sources & Observability](11-event-sources.md) — capture
+- [Chapter 11: Event Sources & Observability](11-event-sources.md) — capture
   stdout, WAL changes, Kafka messages as trace events
 
 **Reference:**
