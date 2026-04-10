@@ -1,4 +1,4 @@
-# Chapter 8: Scenarios & Failure Generation
+# Chapter 10: Scenarios & Failure Generation
 
 **Duration:** 20 minutes
 **Prerequisites:** [Chapter 3 (Fault Injection)](../02-syscall-level/03-fault-injection.md) completed
@@ -150,14 +150,29 @@ faultbox test order_flow.faults.star
 make lima-run CMD="faultbox test order_flow.faults.star"
 ```
 
-Some tests will pass (your system handles the fault), others will fail
-(your happy-path assertions fail under fault — expected). For each failure:
+> **Important:** Generated fault files use `load()` to import services
+> from your source spec. Currently, faults in `load()`-ed files require
+> the BPF filter to be pre-installed at service start. For generated tests
+> to fire correctly, **run them together with the source file** by copying
+> the generated test functions into your main spec, or run the source and
+> generated file as a single spec.
+>
+> This is a known limitation — a future release will handle `load()` file
+> analysis automatically.
 
-- **Expected failure** → the system doesn't handle this fault mode.
-  Either fix the code or adjust the assertion.
-- **Unexpected pass** → the system gracefully handles this fault. Great!
-- **Irrelevant** → delete the test (e.g., fsync on a service that
-  doesn't use fsync).
+The generated tests wrap your exact happy-path function in fault scopes.
+When a fault fires, the happy-path assertions test whether your service
+handles the failure correctly:
+
+- **Test fails** → the happy-path assertion (e.g., `assert_eq(resp.status, 200)`)
+  failed because the service didn't return 200 under fault. This means
+  the fault successfully broke the service — now decide: should the service
+  handle this fault, or is the failure expected?
+- **Test passes** → the service handled the fault gracefully (e.g.,
+  returned a proper error code). The happy-path assertions still passed.
+- **Fault not fired (WARNING)** → the service doesn't use the faulted
+  syscall. Delete this test — it's irrelevant (e.g., fsync on a service
+  that doesn't call fsync).
 
 ## The `load()` statement
 
@@ -280,6 +295,6 @@ fire under fault — catching real bugs.
 ## What's next
 
 You've automated failure discovery. But so far you're only observing
-syscall events. Chapter 9 introduces **event sources** — capturing
+syscall events. Chapter 11 introduces **event sources** — capturing
 structured stdout, database WAL changes, and message queue events
 as first-class trace data.
