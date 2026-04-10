@@ -73,11 +73,14 @@ def test_happy_path():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test happy_path
-# macOS (Lima):
-vm faultbox test traces-test.star --test happy_path
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test happy_path"
 ```
 
 ```
@@ -118,11 +121,14 @@ def test_happy_path_observed():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test happy_path_observed
-# macOS (Lima):
-vm faultbox test traces-test.star --test happy_path_observed
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test happy_path_observed"
 ```
 
 ```
@@ -194,11 +200,14 @@ assert_eventually(
 > path for each write, making the path filter possible.
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test wal_written
-# macOS (Lima):
-vm faultbox test traces-test.star --test wal_written
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test wal_written"
 ```
 
 ```
@@ -239,11 +248,14 @@ def test_no_write_when_unreachable():
 > denied) rather than the **effect** (no writes).
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test no_write_when_unreachable
-# macOS (Lima):
-vm faultbox test traces-test.star --test no_write_when_unreachable
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test no_write_when_unreachable"
 ```
 
 ```
@@ -280,11 +292,14 @@ def test_delay_then_deny():
 > write attempt preceded the sync failure.
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test delay_then_deny
-# macOS (Lima):
-vm faultbox test traces-test.star --test delay_then_deny
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test delay_then_deny"
 ```
 
 ```
@@ -333,11 +348,14 @@ combination of `service`, `syscall`, `decision`, `path` — then use
 `len()`, loop, or inspect individual fields.
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test write_count
-# macOS (Lima):
-vm faultbox test traces-test.star --test write_count
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test write_count"
 ```
 
 ```
@@ -350,11 +368,14 @@ vm faultbox test traces-test.star --test write_count
 
 ### JSON trace — for programmatic analysis
 
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test wal_written --output trace.json
-# macOS (Lima):
-vm faultbox test traces-test.star --test wal_written --output trace.json
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test wal_written --output trace.json"
 ```
 
 Structured JSON with every event, PObserve-compatible fields, vector clocks,
@@ -362,11 +383,14 @@ and replay commands for failed tests.
 
 ### ShiViz — for visual causality
 
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test wal_written --shiviz trace.shiviz
-# macOS (Lima):
-vm faultbox test traces-test.star --test wal_written --shiviz trace.shiviz
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test wal_written --shiviz trace.shiviz"
 ```
 
 Open at https://bestchai.bitbucket.io/shiviz/ to see a space-time diagram
@@ -396,11 +420,14 @@ If the traces are identical, the behavior is unchanged. If they differ,
 the diff shows exactly what changed.
 
 **Step 1:** Capture a baseline trace:
+**Linux:**
 ```bash
-# Linux:
 faultbox test traces-test.star --test wal_written --normalize trace-before.norm
-# macOS (Lima):
-vm faultbox test traces-test.star --test wal_written --normalize trace-before.norm
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test traces-test.star --test wal_written --normalize trace-before.norm"
 ```
 
 **Step 2:** Make a small code change. Open `demo/inventory-svc/main.go`,
@@ -418,21 +445,25 @@ f.WriteString(entry)   // ← add this line (double-write bug)
 ```
 
 Rebuild and capture again:
+**Linux:**
 ```bash
-# Linux:
 make build
-faultbox test traces-test.star --test wal_written --normalize trace-after.norm
-# macOS (Lima):
+```
+
+**macOS (Lima):**
+```bash
 make lima-build
-vm faultbox test traces-test.star --test wal_written --normalize trace-after.norm
 ```
 
 **Step 3:** Compare:
+**Linux:**
 ```bash
-# Linux:
 faultbox diff trace-before.norm trace-after.norm
-# macOS (Lima):
-vm faultbox diff trace-before.norm trace-after.norm
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox diff trace-before.norm trace-after.norm"
 ```
 
 If the system is deterministic (same seed + same binary), the output is:

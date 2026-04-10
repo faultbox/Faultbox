@@ -81,11 +81,14 @@ def test_concurrent_orders():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --test concurrent_orders
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test concurrent_orders
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test concurrent_orders"
 ```
 
 ```
@@ -115,12 +118,14 @@ different orderings:
 The default seed (0) gives you **one** interleaving. That's not enough —
 you need to explore many:
 
+**Linux:**
 ```bash
-# Run with a specific seed:
-# Linux:
 faultbox test concurrency-test.star --test concurrent_orders --seed 42
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test concurrent_orders --seed 42
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test concurrent_orders --seed 42"
 ```
 
 **Same seed = same interleaving = same result.** This makes concurrency bugs
@@ -177,11 +182,14 @@ enumerates every possible permutation of syscall release order.
 
 Run the same test many times with different seeds to hunt for failures:
 
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test flaky_network --runs 100 --show fail"
 ```
 
 `--runs 100` runs the test 100 times, each with a different seed
@@ -196,11 +204,14 @@ When a run fails, you see the full trace detail for the first failure.
 
 If seed 7 fails, replay it:
 
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --test flaky_network --seed 7
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test flaky_network --seed 7
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test flaky_network --seed 7"
 ```
 
 **The full workflow:**
@@ -214,11 +225,14 @@ vm faultbox test concurrency-test.star --test flaky_network --seed 7
 
 For small state spaces, try EVERY possible ordering:
 
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --test concurrent_orders --explore=all
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test concurrent_orders --explore=all
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test concurrent_orders --explore=all"
 ```
 
 ```
@@ -239,11 +253,14 @@ produces a different permutation.
 
 For larger spaces, sample randomly:
 
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --explore=sample --runs 500
-# macOS (Lima):
-vm faultbox test concurrency-test.star --explore=sample --runs 500
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --explore=sample --runs 500"
 ```
 
 **When to use which:**
@@ -272,11 +289,14 @@ of calling `nondet()` separately for each.
 Delay faults + exhaustive exploration = very slow (each permutation waits
 for real delays). Virtual time skips the waits:
 
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --virtual-time --explore=all
-# macOS (Lima):
-vm faultbox test concurrency-test.star --virtual-time --explore=all
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --virtual-time --explore=all"
 ```
 
 A test with `delay("2s")` completes in milliseconds. Virtual time advances
@@ -314,11 +334,14 @@ see insufficient stock. The `delay("500ms")` on inventory writes makes
 the race window wider, increasing the chance of exposing an oversell bug.
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --test concurrent_under_failure
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test concurrent_under_failure
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test concurrent_under_failure"
 ```
 
 ```
@@ -354,11 +377,14 @@ def test_oversell_bug():
 ```
 
 Run it with multiple seeds to find a failure:
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --test oversell_bug --runs 10
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test oversell_bug --runs 10
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test oversell_bug --runs 10"
 ```
 
 One of the seeds will fail (the second order gets "insufficient stock").
@@ -366,20 +392,25 @@ Note which seed, then capture ShiViz output for both a passing and
 failing seed:
 
 **Step 1:** Capture the failing interleaving:
+**Linux:**
 ```bash
-# Replace --seed 3 with your failing seed:
-# Linux:
 faultbox test concurrency-test.star --test oversell_bug --seed 3 --shiviz fail.shiviz
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test oversell_bug --seed 3 --shiviz fail.shiviz
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test oversell_bug --seed 3 --shiviz fail.shiviz"
 ```
 
 **Step 2:** Capture a passing interleaving:
+**Linux:**
 ```bash
-# Linux:
 faultbox test concurrency-test.star --test oversell_bug --seed 0 --shiviz pass.shiviz
-# macOS (Lima):
-vm faultbox test concurrency-test.star --test oversell_bug --seed 0 --shiviz pass.shiviz
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test concurrency-test.star --test oversell_bug --seed 0 --shiviz pass.shiviz"
 ```
 
 **Step 3:** Open both at https://bestchai.bitbucket.io/shiviz/ and compare.

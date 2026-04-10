@@ -1,7 +1,14 @@
 # Chapter 8: Database & Broker Protocol Faults
 
 **Duration:** 25 minutes
-**Prerequisites:** [Chapter 7 (HTTP & Redis Faults)](07-http-redis.md) completed
+**Prerequisites:** [Chapter 7 (HTTP Protocol Faults)](07-http-redis.md) completed
+
+> **This chapter uses containers.** The examples below use `image=` to run
+> real Postgres, Redis, and Kafka instances in Docker containers. If you
+> haven't used containers with Faultbox before, see
+> [Chapter 9: Containers](../04-advanced/09-containers.md) for setup
+> instructions and how `image=` mode works. Docker must be available in
+> your environment (it's pre-installed in the Lima VM).
 
 ## Goals & Purpose
 

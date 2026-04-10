@@ -49,7 +49,7 @@ bin/target
 
 **macOS (Lima):**
 ```bash
-vm bin/linux/target
+make lima-run CMD="bin/linux/target"
 ```
 
 You'll see faultbox engine logs followed by the target's output:
@@ -85,7 +85,7 @@ faultbox run --fault "write=EIO:100%" bin/target
 
 **macOS (Lima):**
 ```bash
-vm faultbox run --fault "write=EIO:100%" bin/linux/target
+make lima-run CMD='faultbox run --fault "write=EIO:100%" bin/linux/target'
 ```
 
 Now look at the output:
@@ -129,7 +129,7 @@ faultbox run --fault "write=EIO:30%" bin/target
 
 **macOS (Lima):**
 ```bash
-vm faultbox run --fault "write=EIO:30%" bin/linux/target
+make lima-run CMD='faultbox run --fault "write=EIO:30%" bin/linux/target'
 ```
 
 Run it several times. Sometimes it works, sometimes it fails. This is how
@@ -147,7 +147,7 @@ faultbox run --fault "openat=ENOENT:100%:/data/*" bin/target
 
 **macOS (Lima):**
 ```bash
-vm faultbox run --fault "openat=ENOENT:100%:/data/*" bin/linux/target
+make lima-run CMD='faultbox run --fault "openat=ENOENT:100%:/data/*" bin/linux/target'
 ```
 
 The target writes to `/tmp/` (not `/data/`), so the filesystem test succeeds.
@@ -174,7 +174,7 @@ faultbox run --fault "write=delay:500ms:100%" bin/target
 
 **macOS (Lima):**
 ```bash
-vm faultbox run --fault "write=delay:500ms:100%" bin/linux/target
+make lima-run CMD='faultbox run --fault "write=delay:500ms:100%" bin/linux/target'
 ```
 
 The filesystem operation now takes >500ms. **The intuition:** slow I/O is

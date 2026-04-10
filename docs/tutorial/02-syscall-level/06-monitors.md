@@ -128,11 +128,14 @@ def test_network_partition():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test monitors-test.star --test network_partition
-# macOS (Lima):
-vm faultbox test monitors-test.star --test network_partition
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test monitors-test.star --test network_partition"
 ```
 
 ```
@@ -179,11 +182,14 @@ def test_partition_safety():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test monitors-test.star --test partition_safety
-# macOS (Lima):
-vm faultbox test monitors-test.star --test partition_safety
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test monitors-test.star --test partition_safety"
 ```
 
 ```

@@ -80,7 +80,7 @@ faultbox test my-first-test.star
 
 **macOS (Lima):**
 ```bash
-vm faultbox test my-first-test.star
+make lima-run CMD="faultbox test my-first-test.star"
 ```
 
 ```
@@ -169,7 +169,7 @@ def test_set_and_get():
     assert_eq(resp, "hello")
 ```
 
-Run all (on Linux; on macOS use `vm` alias (see Chapter 0)):
+Run all (on macOS, prefix with `make lima-run CMD="..."`):
 ```bash
 faultbox test my-first-test.star
 ```

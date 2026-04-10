@@ -60,11 +60,14 @@ Save this as `scenario-test.star`.
 2. **Runs it as a test** — equivalent to naming it `test_order_flow`
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test scenario-test.star
-# macOS (Lima):
-vm faultbox test scenario-test.star
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test scenario-test.star"
 ```
 
 ```
@@ -77,11 +80,14 @@ vm faultbox test scenario-test.star
 
 Now generate all possible failures for your scenarios:
 
+**Linux:**
 ```bash
-# Linux:
 faultbox generate scenario-test.star
-# macOS (Lima):
-vm faultbox generate scenario-test.star
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox generate scenario-test.star"
 ```
 
 ```
@@ -134,11 +140,14 @@ under different failure conditions.
 
 ## Running generated tests
 
+**Linux:**
 ```bash
-# Linux:
 faultbox test order_flow.faults.star
-# macOS (Lima):
-vm faultbox test order_flow.faults.star
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test order_flow.faults.star"
 ```
 
 Some tests will pass (your system handles the fault), others will fail
@@ -180,11 +189,14 @@ def test_custom_failure():
 
 ## Dry run — preview without generating
 
+**Linux:**
 ```bash
-# Linux:
 faultbox generate scenario-test.star --dry-run
-# macOS (Lima):
-vm faultbox generate scenario-test.star --dry-run
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox generate scenario-test.star --dry-run"
 ```
 
 ```

@@ -1,4 +1,4 @@
-# Chapter 7: HTTP & Redis Protocol Faults
+# Chapter 7: HTTP Protocol Faults
 
 **Duration:** 25 minutes
 **Prerequisites:** [Chapter 3 (Fault Injection)](../02-syscall-level/03-fault-injection.md) completed
@@ -36,6 +36,8 @@ checks rules, and either injects a fault or forwards normally.
 
 ## Setup
 
+Create `protocol-test.star` in the demo directory:
+
 ```python
 # Linux (native): BIN = "bin"
 # macOS (Lima): BIN = "bin/linux"
@@ -54,7 +56,39 @@ api = service("api", BIN + "/mock-api",
 )
 ```
 
-Save as `protocol-test.star`.
+## Happy path first
+
+Before injecting faults, verify the system works:
+
+```python
+def test_happy_path():
+    """Verify API works normally."""
+    resp = api.post(path="/data/testkey", body="hello")
+    assert_eq(resp.status, 200)
+
+    resp = api.get(path="/data/testkey")
+    assert_eq(resp.status, 200)
+    assert_eq(resp.body, "hello")
+```
+
+Run it:
+
+**Linux:**
+```bash
+faultbox test protocol-test.star --test happy_path
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test protocol-test.star --test happy_path"
+```
+
+```
+--- PASS: test_happy_path (200ms, seed=0) ---
+1 passed, 0 failed
+```
+
+Good — the system works. Now break it.
 
 ## HTTP: Return a specific status code
 
@@ -75,12 +109,14 @@ def test_api_returns_503():
     )
 ```
 
-Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test protocol-test.star --test api_returns_503
-# macOS (Lima):
-vm faultbox test protocol-test.star --test api_returns_503
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test protocol-test.star --test api_returns_503"
 ```
 
 **What happened:**
@@ -112,6 +148,16 @@ def test_slow_data_endpoint():
     )
 ```
 
+**Linux:**
+```bash
+faultbox test protocol-test.star --test slow_data_endpoint
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test protocol-test.star --test slow_data_endpoint"
+```
+
 Notice: `delay()` without a positional argument returns a protocol-level
 fault. With a positional argument (`delay("500ms")`), it returns a
 syscall-level fault. Same builtin, different behavior based on usage.
@@ -130,6 +176,16 @@ def test_connection_drop():
     )
 ```
 
+**Linux:**
+```bash
+faultbox test protocol-test.star --test connection_drop
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test protocol-test.star --test connection_drop"
+```
+
 ## Request matching
 
 All protocol fault builtins support glob patterns:
@@ -143,17 +199,33 @@ All protocol fault builtins support glob patterns:
 
 ## Multiple rules
 
-Apply multiple rules in one `fault()` call:
+### Why multiple rules?
+
+In production, failures rarely come alone. A degraded database might respond
+slowly to reads AND reject writes entirely. An overloaded upstream might
+return 429 for mutations while serving stale data for queries. Testing each
+fault in isolation tells you how the service handles one problem — testing
+them together tells you how it behaves under realistic degradation.
+
+Multiple rules in a single `fault()` call simulate this. Each rule matches
+independently — a request that matches any rule gets that fault applied.
 
 ```python
 def test_mixed_faults():
-    """503 for writes, delay for reads."""
+    """Writes fail with 503, reads are slow — a degraded but alive upstream."""
     def scenario():
+        # Write path: should fail fast with 503.
         resp = api.post(path="/data/key", body="value")
         assert_eq(resp.status, 503)
 
+        # Read path: still works, but slow.
         resp = api.get(path="/data/key")
-        assert_true(resp.duration_ms >= 400)
+        assert_true(resp.duration_ms >= 400,
+            "reads should be delayed, got " + str(resp.duration_ms) + "ms")
+
+        # Health endpoint: unaffected (no matching rule).
+        resp = api.get(path="/health")
+        assert_true(resp.duration_ms < 100, "health should be fast")
     fault(api.public,
         response(method="POST", path="/data/*", status=503),
         delay(method="GET", path="/data/*", delay="500ms"),
@@ -161,23 +233,124 @@ def test_mixed_faults():
     )
 ```
 
+**Linux:**
+```bash
+faultbox test protocol-test.star --test mixed_faults
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test protocol-test.star --test mixed_faults"
+```
+
+**What happened here:**
+
+1. Faultbox installed two proxy rules simultaneously
+2. `POST /data/key` matched the `response(method="POST", ...)` rule → proxy returned 503 immediately, the real API never saw the request
+3. `GET /data/key` matched the `delay(method="GET", ...)` rule → proxy waited 500ms, then forwarded to the real API
+4. `GET /health` matched neither rule → proxy forwarded directly, no delay
+
+**The key insight:** rules are independent filters. The proxy checks each
+incoming request against all rules and applies the first match. Unmatched
+requests pass through unmodified. This lets you simulate partial degradation
+— some operations fail, others slow down, the rest work normally.
+
 ## Combining syscall + protocol faults
 
-You can nest both levels:
+### Why combine both levels?
+
+Protocol faults and syscall faults test different things:
+
+- **Protocol faults** simulate upstream failures — "the database returned an error for this query"
+- **Syscall faults** simulate local failures — "the disk is full, writes fail"
+
+In production, these happen together. Your database starts rejecting
+writes (protocol-level), and your API also can't write to its own log
+or cache (syscall-level). Testing each in isolation only tells you half
+the story. Testing them together tells you if the service degrades
+gracefully or falls apart.
+
+### Example: proxy blocks one request, syscall fault slows another
+
+This test applies two faults at different levels simultaneously. Two
+requests exercise different fault paths — the first hits the protocol
+fault, the second hits the syscall fault.
+
+1. **Protocol fault** — proxy returns 503 for `POST /data/key`
+2. **Syscall fault** — DB write syscalls are delayed 200ms
 
 ```python
 def test_cascade():
-    """API gets 503 from upstream AND can't write to disk."""
+    """Protocol fault blocks one POST, syscall fault slows DB on another.
+
+    Two requests in one test:
+    - POST /data/key → intercepted by proxy, returns 503 immediately
+    - POST /data/other → passes through proxy (different path), reaches
+      the API, which writes to the DB. The DB write is delayed 200ms
+      by the syscall fault.
+    """
     def scenario():
-        def inner():
-            resp = api.post(path="/data/key", body="value")
-            assert_true(resp.status >= 500)
-        fault(api, write=deny("ENOSPC"), run=inner)
+        # Request 1: matches proxy rule → 503 (proxy intercepts, fast).
+        resp = api.post(path="/data/key", body="value")
+        assert_eq(resp.status, 503, "should get 503 from proxy")
+
+        # Request 2: doesn't match proxy rule → goes through to API → DB.
+        # DB write is delayed 200ms by the syscall fault.
+        resp = api.post(path="/data/other", body="setup")
+        assert_eq(resp.status, 200, "should succeed but be slow")
+
+    def with_slow_db():
+        fault(db, write=delay("200ms"), run=scenario)
+
     fault(api.public,
-        response(method="POST", path="/data/*", status=503),
-        run=scenario,
+        response(method="POST", path="/data/key", status=503),
+        run=with_slow_db,
     )
 ```
+
+**Linux:**
+```bash
+faultbox test protocol-test.star --test cascade
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test protocol-test.star --test cascade"
+```
+
+```
+--- PASS: test_cascade (416ms, seed=0) ---
+  syscall trace (2 events):
+    #12  db    write    delay(200ms)  socket:[38131]  (+200ms)
+  fault rule on db: write=delay() → filter:[write,writev,pwrite64] (1 hits)
+```
+
+**What happened here:**
+
+```
+              Protocol fault              Syscall fault
+              (POST /data/key → 503)      (write → delay 200ms)
+                    ↓                          ↓
+Caller → Faultbox Proxy → API process → mock-db
+```
+
+1. The outer `fault(api.public, response(...))` started a proxy that intercepts HTTP requests to the API
+2. The inner `fault(db, write=delay("200ms"))` installed a seccomp filter on the DB that delays all write syscalls
+3. `POST /data/key` matched the proxy rule → proxy returned 503 immediately. The API and DB never saw this request
+4. `POST /data/other` did NOT match the proxy rule (path is `/data/other`, not `/data/key`) → passed through to the API → API forwarded to DB → DB's write syscall was delayed 200ms
+5. Both faults fired during the same test, but on different requests
+
+**The key insight:** protocol faults and syscall faults operate at different
+layers and compose cleanly. The proxy matches HTTP requests (method + path),
+the seccomp filter matches syscalls. They don't interfere — you can stack
+them to simulate scenarios where different parts of the system degrade
+differently.
+
+> **When to use this:** Test cascading failures where your service faces
+> multiple simultaneous problems:
+> - API gateway rejecting some writes + slow database (partial degradation)
+> - Network partition to one dependency + disk fault on another
+> - Rate limiting specific endpoints + timeout on a downstream service
 
 ## What you learned
 

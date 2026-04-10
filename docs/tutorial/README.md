@@ -51,7 +51,7 @@ make lima-create && make lima-build                 # macOS (one-time)
 
 | # | Chapter | Duration |
 |---|---------|----------|
-| 7 | [HTTP & Redis Faults](03-protocol-level/07-http-redis.md) | 25 min |
+| 7 | [HTTP Protocol Faults](03-protocol-level/07-http-redis.md) | 25 min |
 | 8 | [Database & Broker Faults](03-protocol-level/08-databases.md) | 25 min |
 
 ## Part 4: Advanced Features

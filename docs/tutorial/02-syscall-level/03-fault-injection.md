@@ -69,7 +69,7 @@ faultbox test fault-test.star
 
 **macOS (Lima):**
 ```bash
-vm faultbox test fault-test.star
+make lima-run CMD="faultbox test fault-test.star"
 ```
 
 Expected output:
@@ -127,11 +127,14 @@ def test_db_write_failure():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test fault-test.star --test db_write_failure
-# macOS (Lima):
-vm faultbox test fault-test.star --test db_write_failure
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test fault-test.star --test db_write_failure"
 ```
 
 ```
@@ -179,11 +182,14 @@ def test_recovery_after_disk_error():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test fault-test.star --test recovery_after_disk_error
-# macOS (Lima):
-vm faultbox test fault-test.star --test recovery_after_disk_error
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test fault-test.star --test recovery_after_disk_error"
 ```
 
 ```
@@ -210,11 +216,14 @@ def test_db_failure_modes():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test fault-test.star --test db_failure_modes
-# macOS (Lima):
-vm faultbox test fault-test.star --test db_failure_modes
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test fault-test.star --test db_failure_modes"
 ```
 
 Without scoping, you'd need to restart services between tests to change
@@ -368,11 +377,14 @@ def test_everything_broken():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test fault-test.star --test everything_broken
-# macOS (Lima):
-vm faultbox test fault-test.star --test everything_broken
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test fault-test.star --test everything_broken"
 ```
 
 ```
@@ -420,11 +432,14 @@ def test_fault_mid_operation():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# Linux:
 faultbox test fault-test.star --test fault_mid_operation
-# macOS (Lima):
-vm faultbox test fault-test.star --test fault_mid_operation
+```
+
+**macOS (Lima):**
+```bash
+make lima-run CMD="faultbox test fault-test.star --test fault_mid_operation"
 ```
 
 ```

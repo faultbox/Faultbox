@@ -6,5 +6,5 @@ specific messages.
 
 | Chapter | Duration | What you'll learn |
 |---------|----------|------------------|
-| [HTTP & Redis Faults](07-http-redis.md) | 25 min | fault(interface_ref), response(), error(), delay(), drop() for HTTP and Redis |
+| [HTTP Protocol Faults](07-http-redis.md) | 25 min | fault(interface_ref), response(), delay(), drop() for HTTP protocol |
 | [Database & Broker Faults](08-databases.md) | 25 min | Postgres query errors, Kafka message drops, gRPC status codes |

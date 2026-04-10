@@ -120,12 +120,14 @@ resp = api.get(path="/health")  # hits localhost:32847
 
 ## Run the demo
 
+**Linux:**
 ```bash
-# macOS (Lima VM):
-limactl shell faultbox-dev -- sudo faultbox test container-demo/faultbox.star
-
-# Linux:
 sudo faultbox test container-demo/faultbox.star
+```
+
+**macOS (Lima):**
+```bash
+limactl shell faultbox-dev -- sudo faultbox test container-demo/faultbox.star
 ```
 
 ```
@@ -150,11 +152,14 @@ def test_postgres_disk_full():
 ```
 
 Run it:
+**Linux:**
 ```bash
-# macOS (Lima VM):
-limactl shell faultbox-dev -- sudo faultbox test container-demo/faultbox.star --test postgres_disk_full
-# Linux:
 sudo faultbox test container-demo/faultbox.star --test postgres_disk_full
+```
+
+**macOS (Lima):**
+```bash
+limactl shell faultbox-dev -- sudo faultbox test container-demo/faultbox.star --test postgres_disk_full
 ```
 
 ```
