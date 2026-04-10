@@ -8,140 +8,132 @@ Faultbox uses Linux's seccomp-notify, which only works on Linux kernel 5.6+.
 If you're on macOS, you'll run everything inside a lightweight Linux VM (Lima).
 This chapter gets your environment ready so every subsequent chapter "just works."
 
-## Step 1: Clone and build
+## Step 1: Install Faultbox
 
 ```bash
-git clone https://github.com/faultbox/Faultbox.git
-cd Faultbox
+curl -fsSL https://faultbox.io/install.sh | sh
 ```
 
-## Step 2: Choose your platform
+This installs the `faultbox` binary to `~/.faultbox/bin/`. Add it to your PATH
+if the installer suggests it.
+
+Verify:
+```bash
+faultbox --version
+```
+
+> **Note:** On macOS the binary installs but can't run tests directly —
+> seccomp-notify requires Linux. Step 2 sets up a Lima VM for that.
+
+## Step 2: Clone the demo
+
+The tutorial uses demo services from a separate repo:
+
+```bash
+git clone https://github.com/faultbox/demo.git
+cd demo
+```
+
+This contains:
+
+| Service | Description | Chapters |
+|---------|-------------|----------|
+| `target/` | Minimal binary (write + HTTP) | 1 |
+| `mock-db/` | TCP key-value store | 2-3 |
+| `mock-api/` | HTTP API wrapping mock-db | 2-3 |
+| `inventory-svc/` | TCP service with WAL | 4-6 |
+| `order-svc/` | HTTP API calling inventory | 4-6 |
+
+## Step 3: Choose your platform
 
 ### Linux (native)
 
-You're running directly on Linux. Build everything:
-
+Build the demo services:
 ```bash
-make build          # builds bin/faultbox (host binary)
-go build -o bin/target     ./poc/target/
-go build -o bin/mock-db    ./poc/mock-db/
-go build -o bin/mock-api   ./poc/mock-api/
+make build
+```
+
+This creates binaries in `bin/`. Edit the `BIN` variable in `.star` files
+to point to `"bin"`:
+
+```python
+BIN = "bin"   # Linux native
 ```
 
 Verify:
 ```bash
-bin/faultbox --help
-```
-
-For the rest of the tutorial, all commands use `bin/` paths:
-```bash
-bin/faultbox run ...
-bin/target
-bin/mock-db
+faultbox test first-test.star
 ```
 
 ### macOS (via Lima VM)
 
 Lima creates a lightweight Linux VM that mounts your Mac's filesystem.
-Faultbox binaries are cross-compiled for Linux and run inside the VM.
 
 **One-time setup:**
 ```bash
-brew install lima              # if not installed
-make env-create                # creates and starts the 'faultbox-dev' VM (~2 min)
+brew install lima                # if not installed
+make lima-create                 # creates VM with kernel 5.6+ (~3 min)
 ```
 
 **Every session:**
 ```bash
-make env-start                 # start the VM (if stopped)
-make demo-build                # cross-compile ALL binaries for linux/arm64
+make lima-start                  # start VM (if stopped)
+make lima-build                  # cross-compile demos + install faultbox in VM
 ```
 
-This builds into `bin/linux-arm64/`:
-```
-bin/linux-arm64/
-├── faultbox        # CLI
-├── faultbox-shim   # container entrypoint shim
-├── target          # chapter 1
-├── mock-db         # chapters 2-3
-├── mock-api        # chapter 3
-├── inventory-svc   # chapters 4-6
-└── order-svc       # chapters 4-6
-```
+This cross-compiles demo binaries to `bin/linux/` and installs `faultbox`
+inside the VM.
 
 **Running commands inside the VM:**
 
-Every faultbox command is wrapped with `limactl shell`. Run from the
-Faultbox project root:
 ```bash
-limactl shell --workdir /host-home/<path-from-home>/Faultbox faultbox-dev -- <command>
+make lima-test                   # run demo.star
+make lima-run CMD="faultbox test first-test.star"
+make lima-run CMD="faultbox run --fault 'write=EIO:100%' bin/linux/target"
 ```
 
-For convenience, create an alias that maps your Mac's working directory
-into the VM (your home `~` is mounted at `/host-home`):
+Or create an alias for direct access:
 ```bash
-# From the Faultbox project root:
 alias vm="limactl shell --workdir /host-home/${PWD#$HOME/} faultbox-dev --"
+vm faultbox --help
+vm faultbox test first-test.star
 ```
 
-> **Example:** if you cloned to `~/git/faultbox-demo/Faultbox`, the alias
-> resolves to `--workdir /host-home/git/faultbox-demo/Faultbox`.
+**Binary paths on macOS:** The `.star` files default to `BIN = "bin/linux"`.
+This works for Lima. On Linux native, change to `BIN = "bin"`.
 
-Then:
-```bash
-vm bin/linux-arm64/faultbox --help
-vm bin/linux-arm64/target
-```
-
-**Binary paths on macOS:** Throughout the tutorial, when you see `bin/faultbox`
-or `bin/target`, use `bin/linux-arm64/faultbox` or `bin/linux-arm64/target`
-instead, and run inside the VM.
-
-## Step 3: Verify it works
+## Step 4: Verify it works
 
 **Linux:**
 ```bash
-bin/faultbox --help
-bin/target
+faultbox test first-test.star
 ```
 
 **macOS:**
 ```bash
-vm bin/linux-arm64/faultbox --help
-vm bin/linux-arm64/target
+make lima-run CMD="faultbox test first-test.star"
 ```
 
 You should see:
 ```
-PID: 12345
-filesystem: write+read OK (2ms)
-network: HTTP 200 OK (150ms)
+--- PASS: test_ping (200ms, seed=0) ---
+--- PASS: test_set_and_get (200ms, seed=0) ---
+--- PASS: test_happy_path (210ms, seed=0) ---
+--- PASS: test_write_failure (5200ms, seed=0) ---
+
+4 passed, 0 failed
 ```
 
 If you see this, you're ready for Chapter 1.
 
-## Step 4: VS Code autocomplete (recommended)
+## Step 5: VS Code autocomplete (optional)
 
-If you use VS Code, set up autocomplete for `.star` files.
-
-**Linux:**
 ```bash
-bin/faultbox init --vscode
+faultbox init --vscode
 ```
 
-**macOS:** Build a host-native binary first (init doesn't need Linux):
-```bash
-go build -o bin/faultbox ./cmd/faultbox/
-bin/faultbox init --vscode
-```
-
-This creates three files:
-- **`typings/__builtins__.pyi`** — type stubs so VS Code shows parameter
-  hints and attribute completion for all Faultbox builtins (no import needed)
-- **`.vscode/settings.json`** — associates `.star` files with Python
-  syntax highlighting, points Pylance to the stubs
-- **`.vscode/faultbox.code-snippets`** — code templates triggered by
-  typing prefixes:
+This creates type stubs and snippets for `.star` files. Works on both
+macOS and Linux (doesn't need seccomp).
 
 | Prefix | Expands to |
 |--------|-----------|
@@ -149,45 +141,34 @@ This creates three files:
 | `test` | Test function skeleton |
 | `scenario` | Scenario with `scenario()` registration |
 | `fault` | Fault injection test |
-| `monitor` | Event monitor |
-| `observe` | stdout observation with decoder |
-| `assert_ev` | Lambda assertion |
 
-After setup, **reload VS Code** (Cmd+Shift+P → "Developer: Reload Window"),
-then open any `.star` file. You'll get:
-- **Autocomplete** for builtin functions (`fault(`, `deny(`, `assert_eventually(`)
-- **Parameter hints** showing argument names and types
-- **Snippet expansion** via the prefixes above (type `svc` + Tab)
+> **Requires** the Python extension for VS Code (ms-python.python).
 
-> **Note:** This requires the Python extension for VS Code (ms-python.python).
-> Attribute completion on variables (e.g., `resp.data`) is limited — a
-> dedicated Starlark LSP is planned for full context-aware support.
+## Step 6: Claude Code integration (optional)
 
-## Step 5: Docker (chapter 7 only)
-
-Docker is only needed for Chapter 7 (containers). Skip this for now.
-
-**Linux:** Install Docker normally.
-
-**macOS:** Docker is already installed inside the Lima VM. Verify:
 ```bash
-vm docker version
+faultbox init --claude
 ```
 
-Container tests require `sudo`:
+Creates `/fault-test`, `/fault-generate`, `/fault-diagnose` slash commands
+and auto-configures the MCP server. See [Chapter 13](../04-advanced/13-llm-mcp.md).
+
+## Step 7: Docker (Chapter 9 only)
+
+Docker is only needed for Chapter 9 (containers). Skip for now.
+
+**macOS:** Docker is available inside the Lima VM:
 ```bash
-vm sudo bin/linux-arm64/faultbox test poc/demo-container/faultbox.star
+make lima-run CMD="docker version"
 ```
 
 ## Quick reference
 
 | What | Linux | macOS (Lima) |
 |------|-------|-------------|
-| Build | `make build` | `make demo-build` |
-| VS Code setup | `bin/faultbox init --vscode` | `bin/faultbox init --vscode` (host binary, see Step 4) |
-| Faultbox binary | `bin/faultbox` | `bin/linux-arm64/faultbox` (run inside VM) |
-| Target binary | `bin/target` | `bin/linux-arm64/target` (run inside VM) |
-| Run command | `bin/faultbox run ...` | `vm bin/linux-arm64/faultbox run ...` |
-| Test command | `bin/faultbox test ...` | `vm bin/linux-arm64/faultbox test ...` |
-| Generate faults | `bin/faultbox generate ...` | `vm bin/linux-arm64/faultbox generate ...` |
-| Container test | `sudo bin/faultbox test ...` | `vm sudo bin/linux-arm64/faultbox test ...` |
+| Install faultbox | `curl -fsSL https://faultbox.io/install.sh \| sh` | Same (runs on host, installs macOS binary) |
+| Build demos | `make build` | `make lima-build` |
+| BIN path in .star | `BIN = "bin"` | `BIN = "bin/linux"` (default) |
+| Run tests | `faultbox test first-test.star` | `make lima-run CMD="faultbox test first-test.star"` |
+| Run faultbox | `faultbox run ...` | `make lima-run CMD="faultbox run ..."` |
+| Container tests | `sudo faultbox test ...` | `make lima-run CMD="sudo faultbox test ..."` |
