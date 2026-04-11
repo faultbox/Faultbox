@@ -3,6 +3,13 @@
 **Duration:** 20 minutes
 **Prerequisites:** [Chapter 3 (Fault Injection)](../02-syscall-level/03-fault-injection.md) completed
 
+> **Experimental.** The scenario generator and `load()` support are under
+> active development. APIs may change between releases. The `scenario()`
+> builtin and `faultbox generate` work for common cases but edge cases
+> (complex topologies, nested loads, multi-file specs) may behave
+> unexpectedly. Please report issues on
+> [GitHub](https://github.com/faultbox/faultbox/issues).
+
 ## Goals & Purpose
 
 In chapters 2-7 you wrote fault tests by hand — picking specific failure
