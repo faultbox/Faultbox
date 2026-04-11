@@ -45,7 +45,7 @@ make lima-create && make lima-build                 # macOS (one-time)
 | 3 | [Fault Injection in Tests](02-syscall-level/03-fault-injection.md) | 25 min |
 | 4 | [Traces & Assertions](02-syscall-level/04-traces.md) | 25 min |
 | 5 | [Exploring Concurrency](02-syscall-level/05-concurrency.md) | 25 min |
-| 6 | [Monitors & Partitions](02-syscall-level/06-monitors.md) | 20 min |
+| 6 | [Monitors & Partitions (Preview)](02-syscall-level/06-monitors.md) | 10 min |
 
 ## Part 3: Protocol-Level Fault Injection
 
@@ -54,15 +54,23 @@ make lima-create && make lima-build                 # macOS (one-time)
 | 7 | [HTTP Protocol Faults](03-protocol-level/07-http-redis.md) | 25 min |
 | 8 | [Database & Broker Faults](03-protocol-level/08-databases.md) | 25 min |
 
-## Part 4: Advanced Features
+## Part 4: Safety & Verification
 
 | # | Chapter | Duration |
 |---|---------|----------|
-| 9 | [Containers](04-advanced/09-containers.md) | 30 min |
-| 10 | [Scenarios & Generation](04-advanced/10-scenarios.md) | 20 min |
-| 11 | [Event Sources & Observability](04-advanced/11-event-sources.md) | 20 min |
-| 12 | [Named Operations](04-advanced/12-named-ops.md) | 15 min |
-| 13 | [LLM Agents & MCP](04-advanced/13-llm-mcp.md) | 15 min |
+| 14 | [Invariants & Safety Properties](04-safety/14-invariants.md) | 30 min |
+| 15 | [Monitors & Temporal Properties](04-safety/15-monitors.md) | 30 min |
+| 16 | [Network Partitions](04-safety/16-partitions.md) | 20 min |
+
+## Part 5: Advanced Features
+
+| # | Chapter | Duration |
+|---|---------|----------|
+| 9 | [Containers](05-advanced/09-containers.md) | 30 min |
+| 10 | [Scenarios & Generation](05-advanced/10-scenarios.md) | 20 min |
+| 11 | [Event Sources & Observability](05-advanced/11-event-sources.md) | 25 min |
+| 12 | [Named Operations](05-advanced/12-named-ops.md) | 15 min |
+| 13 | [LLM Agents & MCP](05-advanced/13-llm-mcp.md) | 15 min |
 
 ---
 
