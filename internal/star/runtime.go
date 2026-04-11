@@ -532,17 +532,22 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 	ns := engine.NamespaceConfig{PID: true, Mount: true, User: true}
 	onSyscall := rt.makeSyscallCallback(svcName)
 
-	// Set up stdout: if observe includes stdout source, create a pipe
-	// so we can decode output lines as events.
+	// Set up stdout: if observe includes stdout source, create an OS pipe
+	// so the child process writes directly to it. We tee from the read-end
+	// to both the decoder and the configured output.
 	svcStdout := rt.ServiceStdout
-	var stdout io.Writer = svcStdout
+	var stdoutFile *os.File // if set, overrides child's fd 1
 	var stdoutSources []*eventsource.StdoutSourceHandle
 
 	for _, obs := range svc.Observe {
 		if obs.SourceName == "stdout" {
-			pr, pw := io.Pipe()
-			// Tee: send stdout to both the pipe (for decoding) and the configured output.
-			stdout = io.MultiWriter(svcStdout, pw)
+			// Create a real OS pipe — the child writes to pipeW (fd),
+			// we read from pipeR in a goroutine.
+			pipeR, pipeW, err := os.Pipe()
+			if err != nil {
+				return fmt.Errorf("os.Pipe for stdout observe: %w", err)
+			}
+			stdoutFile = pipeW
 
 			// Create and start the stdout event source.
 			var dec eventsource.Decoder
@@ -550,31 +555,48 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 				if factory, ok := eventsource.GetDecoder(obs.DecoderName); ok {
 					d, err := factory(obs.Params)
 					if err != nil {
-						pw.Close()
+						pipeR.Close()
+						pipeW.Close()
 						return fmt.Errorf("decoder %q: %w", obs.DecoderName, err)
 					}
 					dec = d
 				}
 			}
+
+			// Tee: copy pipe output to both the decoder and the console.
+			decoderPR, decoderPW := io.Pipe()
+			go func() {
+				defer decoderPW.Close()
+				defer pipeR.Close()
+				io.Copy(io.MultiWriter(svcStdout, decoderPW), pipeR)
+			}()
+
 			src := eventsource.StdoutSource(dec)
 			src.StartWithReader(ctx, eventsource.SourceConfig{
 				ServiceName: svcName,
 				Emit: func(typ string, fields map[string]string) {
 					rt.events.Emit(typ, svcName, fields)
 				},
-			}, pr)
+			}, decoderPR)
 			stdoutSources = append(stdoutSources, &eventsource.StdoutSourceHandle{
 				Source:    src,
-				PipeWrite: pw,
+				PipeWrite: decoderPW,
 			})
 		}
+	}
+
+	// Build session stdout: use the OS pipe file if observe is active,
+	// otherwise use the configured writer.
+	var sessStdout io.Writer = svcStdout
+	if stdoutFile != nil {
+		sessStdout = stdoutFile
 	}
 
 	sessCfg := engine.SessionConfig{
 		Binary:             svc.Binary,
 		Args:               svc.Args,
 		Env:                envVars,
-		Stdout:             stdout,
+		Stdout:             sessStdout,
 		Stderr:             rt.ServiceStdout,
 		Namespaces:         ns,
 		FaultRules:         faultRules,
