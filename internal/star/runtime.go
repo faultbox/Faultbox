@@ -27,12 +27,13 @@ import (
 
 // TestResult captures the outcome of one test function.
 type TestResult struct {
-	Name       string  `json:"name"`
-	Result     string  `json:"result"` // "pass" or "fail"
-	Reason     string  `json:"reason,omitempty"`
-	Seed       uint64  `json:"seed"`
-	DurationMs int64   `json:"duration_ms"`
-	Events     []Event `json:"events,omitempty"`
+	Name        string         `json:"name"`
+	Result      string         `json:"result"` // "pass" or "fail"
+	Reason      string         `json:"reason,omitempty"`
+	Seed        uint64         `json:"seed"`
+	DurationMs  int64          `json:"duration_ms"`
+	Events      []Event        `json:"events,omitempty"`
+	ReturnValue starlark.Value `json:"-"` // scenario return value for fault_scenario/fault_matrix
 }
 
 // SuiteResult captures the outcome of all test functions.
@@ -430,7 +431,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			fmt.Fprintln(os.Stderr, msg)
 		},
 	}
-	_, err := starlark.Call(thread, fn, nil, nil)
+	retVal, err := starlark.Call(thread, fn, nil, nil)
 
 	// Stop services.
 	rt.stopServices()
@@ -460,9 +461,11 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	}
 
 	return TestResult{
-		Name: name, Result: "pass",
-		DurationMs: time.Since(start).Milliseconds(),
-		Events:     events,
+		Name:        name,
+		Result:      "pass",
+		DurationMs:  time.Since(start).Milliseconds(),
+		Events:      events,
+		ReturnValue: retVal,
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"go.starlark.net/starlark"
 )
 
 // socketRe matches socket:[12345], pipe:[12345], anon_inode:[eventfd] etc.
@@ -29,6 +31,7 @@ type TestTraceOutput struct {
 	FailureType    string                          `json:"failure_type,omitempty"`
 	Seed           uint64                          `json:"seed"`
 	DurationMs     int64                           `json:"duration_ms"`
+	ReturnValue    string                          `json:"return_value,omitempty"`
 	ReplayCmd      string                          `json:"replay_command,omitempty"`
 	ErrorDetail    *ErrorDetail                    `json:"error_detail,omitempty"`
 	Faults         []FaultInfo                     `json:"faults,omitempty"`
@@ -89,6 +92,9 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 			Seed:        tr.Seed,
 			DurationMs:  tr.DurationMs,
 			Events:      tr.Events,
+		}
+		if tr.ReturnValue != nil && tr.ReturnValue != starlark.None {
+			tto.ReturnValue = tr.ReturnValue.String()
 		}
 		if tr.Result == "fail" {
 			tto.ReplayCmd = fmt.Sprintf("faultbox test %s --test %s --seed %d",

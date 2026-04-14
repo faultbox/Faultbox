@@ -308,11 +308,12 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	// In multi-run mode (explicit --runs or auto-explore), group passing runs
 	// into a compact summary.
 	totalRuns := result.Pass + result.Fail
+	isDebug := logLevel == slog.LevelDebug
 	if rcfg.Runs > 1 || (rcfg.ExploreMode == "all" && totalRuns > 1) {
-		printMultiRunSummary(os.Stderr, result, totalRuns)
+		printMultiRunSummary(os.Stderr, result, totalRuns, isDebug)
 	} else {
 		for _, tr := range result.Tests {
-			printTraceSummary(os.Stderr, &tr)
+			printTraceSummary(os.Stderr, &tr, isDebug)
 		}
 	}
 
@@ -365,7 +366,7 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 
 // printMultiRunSummary prints compact output for multi-run mode.
 // Passing tests get one summary line; failing tests get full trace detail.
-func printMultiRunSummary(w io.Writer, result *star.SuiteResult, totalRuns int) {
+func printMultiRunSummary(w io.Writer, result *star.SuiteResult, totalRuns int, debug bool) {
 	// Group results by test name.
 	type testGroup struct {
 		name     string
@@ -408,7 +409,7 @@ func printMultiRunSummary(w io.Writer, result *star.SuiteResult, totalRuns int) 
 			fmt.Fprintf(w, "\n--- PASS: %s (%d/%d runs) ---\n", name, g.passed, totalRuns)
 		} else {
 			// Print full detail for the first failure.
-			printTraceSummary(w, g.failedTR)
+			printTraceSummary(w, g.failedTR, debug)
 			if g.passed > 0 {
 				fmt.Fprintf(w, "  (%d/%d runs passed before failure)\n", g.passed, g.passed+g.failed)
 			}
@@ -417,13 +418,18 @@ func printMultiRunSummary(w io.Writer, result *star.SuiteResult, totalRuns int) 
 }
 
 // printTraceSummary prints a human-readable syscall trace for a test.
-func printTraceSummary(w io.Writer, tr *star.TestResult) {
+func printTraceSummary(w io.Writer, tr *star.TestResult, debug bool) {
 	// Status marker.
 	status := "PASS"
 	if tr.Result == "fail" {
 		status = "FAIL"
 	}
 	fmt.Fprintf(w, "\n--- %s: %s (%dms, seed=%d) ---\n", status, tr.Name, tr.DurationMs, tr.Seed)
+
+	// Show scenario return value in debug mode.
+	if debug && tr.ReturnValue != nil && tr.ReturnValue.String() != "None" {
+		fmt.Fprintf(w, "  return: %s\n", tr.ReturnValue.String())
+	}
 
 	if tr.Result == "fail" && tr.Reason != "" {
 		fmt.Fprintf(w, "  reason: %s\n", tr.Reason)
