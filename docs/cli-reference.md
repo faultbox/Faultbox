@@ -42,10 +42,13 @@ faultbox test faultbox.star --explore all               # all interleavings
 
 Writes machine-parseable JSON to stdout with:
 - Per-test results with pass/fail, seed, duration
+- Scenario return value (`return_value` field, when non-None)
 - Fault info: service, syscall, action, errno, hits, label
 - Syscall summary: per-service total, faulted, breakdown
 - Diagnostics: actionable hints (FAULT_NOT_FIRED, SERVICE_CRASHED, etc.)
 - Full event trace with vector clocks
+- **Matrix section** (when `fault_matrix()` tests are present): scenarios,
+  faults, per-cell results, pass/fail counts
 
 Human-readable output (logs, summaries) goes to stderr, keeping stdout
 clean for piping to `jq`, LLM agents, or CI systems.
@@ -56,6 +59,30 @@ faultbox test spec.star --format json | jq '.tests[] | {name, result}'
 
 # Check diagnostics
 faultbox test spec.star --format json | jq '.tests[].diagnostics[]'
+
+# Matrix results
+faultbox test spec.star --format json | jq '.matrix'
+
+# Scenario return values
+faultbox test spec.star --format json | jq '.tests[] | {name, return_value}'
+```
+
+**Test naming conventions:**
+
+| Source | Name pattern | Example |
+|--------|-------------|---------|
+| `def test_*()` | `test_<name>` | `test_happy_path` |
+| `scenario(fn)` | `test_<fn_name>` | `test_order_flow` |
+| `fault_scenario("x", ...)` | `test_<x>` | `test_order_db_down` |
+| `fault_matrix(...)` | `test_matrix_<scenario>_<fault>` | `test_matrix_order_flow_db_down` |
+
+**Debug output (`--debug`):**
+
+Shows scenario return values after each test:
+
+```
+--- PASS: test_order_flow (12ms, seed=42) ---
+  return: response(status=200, body="confirmed", duration_ms=8)
 ```
 
 **Counterexample discovery (P-lang style):**
@@ -178,17 +205,35 @@ faultbox generate faultbox.star --dry-run                  # preview
 
 1. Loads the `.star` file and finds all `scenario()` registrations
 2. Analyzes the topology (services, dependencies, protocols)
-3. For each scenario × dependency × failure mode, generates a test
-   that wraps the scenario function in a fault scope
-4. Generated tests use `load()` to import topology and scenario functions
+3. Generates `fault_assumption()` definitions — one per unique fault mode
+4. Generates a `fault_matrix()` call composing scenarios × assumptions
+5. Generated files use `load()` to import topology and scenario functions
 
-**Generated test naming:** `test_gen_<scenario>_<target>_<failure_mode>`
+**Generated output format:**
 
+```python
+load("faultbox.star", "orders", "inventory", "order_flow")
+
+# network faults
+inventory_down = fault_assumption("inventory_down",
+    target = orders,
+    connect = deny("ECONNREFUSED"),
+)
+
+# disk faults
+disk_eio = fault_assumption("disk_eio",
+    target = inventory,
+    write = deny("EIO"),
+)
+
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [inventory_down, disk_eio],
+)
 ```
-test_gen_order_flow_db_down
-test_gen_order_flow_db_disk_full
-test_gen_order_flow_cache_slow
-```
+
+Add `overrides=` to `fault_matrix()` for per-cell expected behavior.
+Network partitions are generated as standalone `test_*` functions.
 
 ---
 

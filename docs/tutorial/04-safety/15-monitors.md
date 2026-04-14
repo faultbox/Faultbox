@@ -313,48 +313,109 @@ This single monitor watches:
 
 And verifies the ordering constraint across all four.
 
+## First-class monitors
+
+`monitor()` returns a **MonitorDef** value — a first-class object you can
+store in a variable and reuse across fault assumptions, scenarios, and matrices.
+
+```python
+# Define once, reuse everywhere.
+def check_no_orphan(event):
+    if event["type"] == "topic" and event["data"].get("order_id"):
+        if event["data"]["order_id"] not in persisted_ids["set"]:
+            fail("orphan event: " + event["data"]["order_id"])
+
+no_orphan = monitor(check_no_orphan)
+
+def check_max_retries(event):
+    if int(event.get("retry_count", "0")) > 3:
+        fail("too many retries")
+
+max_retries = monitor(check_max_retries, service="api", syscall="connect")
+```
+
+**At top level** (load time), `monitor()` creates the value without
+registering it. **Inside a `test_*` function**, it auto-registers for
+backward compatibility.
+
+## Monitors on fault assumptions
+
+Attach monitors to `fault_assumption()` — they fire automatically in every
+test that uses the assumption:
+
+```python
+def check_no_db_traffic(event):
+    fail("traffic reached DB despite being down")
+
+no_db_traffic = monitor(check_no_db_traffic, service="db", syscall="read")
+
+db_down = fault_assumption("db_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+    monitors = [no_db_traffic],  # active in every test using db_down
+)
+```
+
+Now use it in a matrix — monitors travel with the assumption:
+
+```python
+fault_matrix(
+    scenarios = [order_flow, health_check],
+    faults = [db_down, disk_full],
+    monitors = [max_retries],  # matrix-wide monitor on top
+)
+# Every cell gets: db_down's no_db_traffic + matrix's max_retries
+```
+
 ## Shared monitors across tests
 
 Put invariant monitors in a separate file and load them everywhere:
 
 ```python
 # invariants.star
-def register_order_invariants():
-    """Call this at the start of any test file that involves orders."""
-    monitor(no_orphan_events)
-    monitor(no_negative_stock, service="inventory")
-    monitor(no_duplicate_orders)
-    monitor(max_retries_check, service="api")
+def check_no_orphan_events(event):
+    # ...business logic...
+    pass
+
+def check_no_negative_stock(event):
+    # ...business logic...
+    pass
+
+no_orphan = monitor(check_no_orphan_events)
+no_negative_stock = monitor(check_no_negative_stock, service="inventory")
 ```
 
 ```python
 # any-test.star
-load("invariants.star", "register_order_invariants")
-register_order_invariants()
+load("invariants.star", "no_orphan", "no_negative_stock")
 
-def test_happy_path():
-    # All invariants active during this test
-    api.post(path="/orders", body='...')
+db_down = fault_assumption("db_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+    monitors = [no_orphan, no_negative_stock],
+)
 
-def test_db_failure():
-    # Same invariants, under fault
-    def scenario():
-        api.post(path="/orders", body='...')
-    fault(db, write=deny("EIO"), run=scenario)
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [db_down],
+)
+# Every matrix cell runs with both invariant monitors active.
 ```
 
-Every test — happy path and fault — runs with the same invariants active.
-If you add a new test, the invariants protect it automatically.
+Every test that uses `db_down` — whether via `fault_scenario()` or
+`fault_matrix()` — gets the invariants automatically.
 
 ## What you learned
 
 - **Monitors** fire on every event in real-time — catch violations immediately
 - **Lifecycle:** start at `monitor()`, fire on each event, stop at test end
+- **First-class MonitorDef:** `monitor()` returns a value, stored in variables
+- **Monitors on assumptions:** travel with `fault_assumption(monitors=)`
+- **Matrix-wide monitors:** apply to every cell via `fault_matrix(monitors=)`
 - **Temporal properties:** "A before B", "never A after B", "at most N times"
 - **Syscall monitors:** infrastructure invariants (denied syscalls, write ordering)
 - **Event source monitors:** business invariants (no orphan events, no duplicates)
 - **Combined monitors:** cross-layer verification (syscall + WAL + Kafka + HTTP)
-- **Shared monitors:** load invariants in every test file
 
 ## What's next
 

@@ -527,27 +527,45 @@ msgs = events(where=lambda e: e.type == "topic" and e.data["topic"] == "orders.e
 
 ### `scenario(fn)`
 
-Registers a function as a **happy-path scenario**. The function runs as a
-test (like `test_*`) and is also available to `faultbox generate` for
-automatic failure mutation.
+Registers a function as a **scenario probe**. The function runs as a test
+(like `test_*`) and is also available to `faultbox generate`, `fault_scenario()`,
+and `fault_matrix()`.
+
+A scenario is a **probe** — it exercises the system and returns an observable
+result. Scenarios SHOULD return values (for use with `fault_scenario(expect=)`)
+and SHOULD NOT contain `assert_*` calls. Assertions belong in the `expect`
+callback of `fault_scenario()` or `fault_matrix()`.
 
 ```python
 def order_flow():
-    api.post(path="/orders", body='{"sku": "widget", "qty": 1}')
-    api.post(path="/payments", body='{"order_id": 1, "amount": 100}')
-    resp = api.get(path="/orders/1")
-    assert_eq(resp.data["status"], "paid")
+    """Place an order — returns response for external validation."""
+    return orders.post(path="/orders", body='{"sku":"widget","qty":1}')
 
-scenario(order_flow)  # runs as test_order_flow + registered for generator
+scenario(order_flow)  # runs as test_order_flow + registered for composition
 ```
 
-Everything that works in `test_*` functions works inside scenarios:
-`fault()`, `trace()`, `monitor()`, `assert_eventually()`, `parallel()`, etc.
+Multi-step scenarios return a dict of observables:
+
+```python
+def order_lifecycle():
+    place = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+    if place.status != 200:
+        return {"phase": "place", "resp": place}
+    check = orders.get(path="/inventory/widget")
+    return {"phase": "check_stock", "resp": check, "order": place}
+
+scenario(order_lifecycle)
+```
+
+**Backward compatibility:** Existing scenarios with inline `assert_*` calls
+still work — the return value is simply `None`. The convention of returning
+values is optional but recommended for composition with `fault_scenario()`.
 
 ### `faultbox generate`
 
-Takes registered scenarios and systematically wraps each in every possible
-fault — one mutation per scenario × dependency × failure mode:
+Takes registered scenarios and systematically generates `fault_assumption()`
+definitions and a `fault_matrix()` call — one assumption per dependency ×
+failure mode:
 
 ```bash
 faultbox generate faultbox.star
@@ -556,8 +574,30 @@ faultbox generate faultbox.star
 ```
 
 Generated `.faults.star` files use `load()` to import topology and scenario
-functions from the source file. See [CLI Reference](cli-reference.md) for
-all flags.
+functions, then define fault assumptions and a matrix:
+
+```python
+# order_flow.faults.star (auto-generated)
+load("faultbox.star", "orders", "inventory", "order_flow")
+
+inventory_down = fault_assumption("inventory_down",
+    target = orders,
+    connect = deny("ECONNREFUSED"),
+)
+
+inventory_slow = fault_assumption("inventory_slow",
+    target = orders,
+    connect = delay("500ms"),
+)
+
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [inventory_down, inventory_slow],
+)
+```
+
+Add `overrides=` to `fault_matrix()` for per-cell expectations. See
+[CLI Reference](cli-reference.md) for all flags.
 
 ### `load(filename, symbol1, symbol2, ...)`
 
@@ -565,11 +605,19 @@ Imports symbols from another `.star` file. The loaded file shares the same
 runtime (service registry, builtins, event log).
 
 ```python
-# failures.star
-load("faultbox.star", "api", "db", "order_flow")
+# custom-failures.star
+load("faultbox.star", "orders", "inventory", "order_flow")
 
-def test_gen_order_flow_db_down():
-    fault(api, connect=deny("ECONNREFUSED", label="db down"), run=order_flow)
+inventory_down = fault_assumption("inventory_down",
+    target = inventory,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_scenario("order_inventory_down",
+    scenario = order_flow,
+    faults = inventory_down,
+    expect = lambda r: assert_eq(r.status, 503),
+)
 ```
 
 Paths are resolved relative to the loading file's directory. Modules are
@@ -1198,24 +1246,275 @@ which is the main bottleneck in multi-run exploration.
 
 ## Monitors
 
-### `monitor(callback, service=, syscall=, path=, decision=)`
+### `monitor(callback, service=, syscall=, path=, decision=) → MonitorDef`
 
-Registers a continuous monitor that is called on every matching syscall event
-during the test. If the callback raises an error, the test fails with
-"monitor violation".
+Creates a **first-class monitor** — a reusable value that can be stored in
+variables and passed to `fault_assumption(monitors=)`, `fault_scenario(monitors=)`,
+and `fault_matrix(monitors=)`.
+
+The callback receives a dict with event fields and is called on every matching
+event during test execution. If the callback raises an error (via `fail()` or
+`assert_*`), the test fails with "monitor violation".
+
+**Event dict fields passed to callback:**
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"seq"` | int | Monotonic sequence number |
+| `"type"` | string | `"syscall"`, `"proxy"`, `"lifecycle"`, etc. |
+| `"service"` | string | Service that produced the event |
+| `"syscall"` | string | Syscall name (for syscall events) |
+| `"path"` | string | File path (for file syscalls) |
+| `"decision"` | string | `"allow"`, `"deny(EIO)"`, `"delay(500ms)"`, etc. |
+| `"label"` | string | Fault label if set |
+| `"latency_ms"` | string | Latency (for delay faults) |
+
+Filter kwargs support glob patterns (e.g., `decision="deny*"`).
 
 ```python
-def check_no_unhandled_io_error(event):
-    """Safety: no I/O errors should go unhandled."""
-    if event["decision"].startswith("deny"):
-        # This monitor fires on every denied syscall.
-        # A real monitor would check application state here.
-        pass
+# First-class monitor — stored as variable, reusable.
+def check_no_wal_write(event):
+    fail("unexpected WAL write: seq=" + str(event["seq"]))
 
-monitor(check_no_unhandled_io_error, service="inventory", decision="deny*")
+no_wal_write = monitor(check_no_wal_write,
+    service = "inventory",
+    syscall = "openat",
+    path = "/tmp/inventory.wal",
+)
+
+# Use with fault_assumption:
+inventory_down = fault_assumption("inventory_down",
+    target = inventory,
+    connect = deny("ECONNREFUSED"),
+    monitors = [no_wal_write],  # fires during any test using this assumption
+)
+```
+
+**Inline usage** (backward compatible): When called inside a running `test_*`
+function, `monitor()` auto-registers on the event log immediately:
+
+```python
+def test_manual():
+    monitor(lambda e: fail("bad") if e["decision"].startswith("deny") else None,
+            service="inventory", syscall="write")
+    orders.post(path="/orders", body='{"sku":"widget","qty":1}')
 ```
 
 Monitors are cleared between tests automatically.
+
+---
+
+## Fault Composition
+
+The fault composition builtins separate **what the system does** (scenario),
+**what goes wrong** (fault assumption), and **what correct means** (expect oracle).
+
+### `fault_assumption(name, target=, **syscall_faults, rules=, monitors=, faults=, description=)`
+
+Creates a named, reusable fault configuration. Returns a `FaultAssumption`
+value that can be stored in variables and passed to `fault_scenario()`,
+`fault_matrix()`, or `fault()`.
+
+```python
+# Syscall-level fault: deny connections to inventory.
+inventory_down = fault_assumption("inventory_down",
+    target = inventory,
+    connect = deny("ECONNREFUSED"),
+)
+
+# Syscall-level fault: disk full on inventory WAL writes.
+disk_full = fault_assumption("disk_full",
+    target = inventory,
+    write = deny("ENOSPC"),
+)
+
+# Latency fault on the order service network.
+slow_network = fault_assumption("slow_network",
+    target = orders,
+    connect = delay("200ms"),
+    write = delay("100ms"),
+)
+```
+
+**Syscall kwargs** resolve in the same order as `fault()`:
+
+1. Named operation on `target.ops` → expands to the op's syscalls + path glob
+2. Syscall family name → expands via family (e.g., `write` → write, writev, pwrite64)
+3. Raw syscall name → used as-is
+
+**Named operations:**
+
+```python
+inventory = service("inventory", "/tmp/inventory-svc",
+    interface("main", "tcp", 5432),
+    ops = {"persist": op(syscalls=["write", "fsync"], path="/tmp/*.wal")},
+)
+
+wal_corrupt = fault_assumption("wal_corrupt",
+    target = inventory,
+    persist = deny("EIO"),  # expands to write+fsync on /tmp/*.wal
+)
+```
+
+**Protocol-level faults** (when target is an interface reference):
+
+```python
+pg_insert_fail = fault_assumption("pg_insert_fail",
+    target = postgres.main,
+    rules = [error(query="INSERT*", message="disk full")],
+)
+```
+
+**Composition** — combine multiple assumptions into one:
+
+```python
+cascade = fault_assumption("cascade",
+    faults = [inventory_down, slow_network],
+    description = "Inventory unreachable AND slow network",
+)
+# cascade inherits all rules and monitors from both children.
+```
+
+**With monitors:**
+
+```python
+def check_no_traffic(event):
+    fail("traffic reached inventory despite being down")
+
+no_traffic = monitor(check_no_traffic, service="inventory", syscall="read")
+
+inventory_down = fault_assumption("inventory_down",
+    target = inventory,
+    connect = deny("ECONNREFUSED"),
+    monitors = [no_traffic],  # active whenever this assumption is applied
+)
+```
+
+**Using with `fault()`** directly:
+
+```python
+def test_order_down():
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_eq(resp.status, 503)
+    fault(inventory_down, run=scenario)
+```
+
+### `fault_scenario(name, scenario=, faults=, expect=, monitors=, timeout=)`
+
+Composes a scenario probe with fault assumptions and an expect oracle.
+Registers as `test_<name>`.
+
+```python
+# Basic: scenario + fault + oracle.
+fault_scenario("order_inventory_down",
+    scenario = order_flow,
+    faults = inventory_down,
+    expect = lambda r: (
+        assert_eq(r.status, 503),
+        assert_never(service="inventory", syscall="openat", path="/tmp/inventory.wal"),
+    ),
+)
+
+# Multiple faults applied simultaneously.
+fault_scenario("order_cascade",
+    scenario = order_flow,
+    faults = [inventory_down, slow_network],
+    expect = lambda r: assert_true(r.status >= 500),
+)
+
+# Smoke test — no expect, just "must not crash".
+fault_scenario("order_disk_full_smoke",
+    scenario = order_lifecycle,
+    faults = disk_full,
+)
+
+# With scenario-level monitor and custom timeout.
+fault_scenario("order_retries",
+    scenario = order_flow,
+    faults = inventory_down,
+    monitors = [retry_monitor],
+    expect = lambda r: assert_eq(r.status, 503),
+    timeout = "10s",
+)
+```
+
+**Execution model:**
+
+1. Register monitors (from fault assumptions + scenario-level)
+2. Apply fault rules from all assumptions
+3. Run the scenario function, capture its return value
+4. If any monitor fired a violation → test fails (expect not called)
+5. Call `expect(return_value)` — expect validates via `assert_*` side-effects
+6. Remove faults and monitors
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Test name → registered as `test_<name>` |
+| `scenario` | callable | The probe function (should return observable) |
+| `faults` | `FaultAssumption` or list | Fault(s) to apply |
+| `expect` | callable or None | Oracle: `(result) → void`, calls `assert_*` to validate |
+| `monitors` | list of `MonitorDef` | Scenario-level invariants |
+| `timeout` | string | Max duration (default `"30s"`) |
+
+### `fault_matrix(scenarios=, faults=, default_expect=, overrides={}, monitors=[], exclude=[])`
+
+Generates the cross-product of scenarios × fault assumptions. Each cell
+becomes a `fault_scenario` registered as `test_matrix_<scenario>_<fault>`.
+
+```python
+fault_matrix(
+    scenarios = [order_flow, health_check],
+    faults = [inventory_down, disk_full, slow_network],
+    default_expect = lambda r: assert_true(r != None, "must return a response"),
+    overrides = {
+        (order_flow, inventory_down): lambda r: (
+            assert_eq(r.status, 503),
+            assert_true("unreachable" in r.body),
+        ),
+        (order_flow, slow_network): lambda r: (
+            assert_eq(r.status, 200),
+            assert_true(r.duration_ms > 100),
+        ),
+        (health_check, inventory_down): lambda r: assert_eq(r.status, 503),
+    },
+    exclude = [
+        (health_check, disk_full),  # health check doesn't touch disk
+    ],
+)
+# Generates 5 tests: 2×3 - 1 excluded
+```
+
+**Override precedence:** cell-specific override > default\_expect > None (smoke test).
+
+**Matrix report** — when matrix tests run, the terminal shows a summary table:
+
+```
+Fault Matrix: 2 scenarios × 3 faults = 5 cells
+
+                    │ inventory_down │ disk_full     │ slow_network
+────────────────────┼────────────────┼───────────────┼──────────────
+order_flow          │ PASS (12ms)    │ PASS (8ms)    │ PASS (310ms)
+health_check        │ PASS (5ms)     │ — (excluded)  │ PASS (205ms)
+
+Result: 5/5 passed
+```
+
+JSON output (`--format json`) includes a `"matrix"` section with scenarios,
+faults, cells, and pass/fail counts.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `scenarios` | list of callables | Scenario probe functions |
+| `faults` | list of `FaultAssumption` | Fault assumptions |
+| `default_expect` | callable or None | Default oracle for cells without overrides |
+| `overrides` | dict | `(scenario, fault)` tuple → cell-specific expect |
+| `monitors` | list of `MonitorDef` | Matrix-wide invariants (all cells) |
+| `exclude` | list of tuples | `(scenario, fault)` pairs to skip |
 
 ---
 

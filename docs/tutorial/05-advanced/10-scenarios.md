@@ -3,12 +3,6 @@
 **Duration:** 20 minutes
 **Prerequisites:** [Chapter 3 (Fault Injection)](../02-syscall-level/03-fault-injection.md) completed
 
-> **Experimental.** The scenario generator and `load()` support are under
-> active development. APIs may change between releases. The `scenario()`
-> builtin and `faultbox generate` work for common cases but edge cases
-> (complex topologies, nested loads, multi-file specs) may behave
-> unexpectedly. Please report issues on
-> [GitHub](https://github.com/faultbox/faultbox/issues).
 
 ## Goals & Purpose
 
@@ -29,8 +23,8 @@ generate all failures automatically, review, commit.
 
 ## The `scenario()` builtin
 
-A scenario is a function that describes how your system works when
-everything is healthy. Register it with `scenario()`:
+A scenario is a **probe** — a function that exercises the system and returns
+an observable result. Register it with `scenario()`:
 
 ```python
 # Linux (native): BIN = "bin"
@@ -51,11 +45,8 @@ api = service("api", BIN + "/mock-api",
 
 def order_flow():
     """Write data through the API, read it back."""
-    resp = api.post(path="/data/mykey", body="myvalue")
-    assert_eq(resp.status, 200)
-    resp = api.get(path="/data/mykey")
-    assert_eq(resp.status, 200)
-    assert_eq(resp.body, "myvalue")
+    api.post(path="/data/mykey", body="myvalue")
+    return api.get(path="/data/mykey")
 
 scenario(order_flow)
 ```
@@ -63,8 +54,11 @@ scenario(order_flow)
 Save this as `scenario-test.star`.
 
 `scenario(order_flow)` does two things:
-1. **Registers** the function for the failure generator
+1. **Registers** the function for the failure generator and fault composition
 2. **Runs it as a test** — equivalent to naming it `test_order_flow`
+
+The return value is captured and available for use with `fault_scenario(expect=)`
+and `fault_matrix(overrides=)`. See the "Fault Composition" section below.
 
 Run it:
 **Linux:**
@@ -107,43 +101,59 @@ Look at the generated file:
 # order_flow.faults.star (generated)
 load("scenario-test.star", "api", "db", "order_flow")
 
-# --- network failures ---
+# --- Fault Assumptions ---
 
-def test_gen_order_flow_db_down():
-    """order_flow with db connection refused."""
-    fault(api, connect=deny("ECONNREFUSED", label="db down"), run=order_flow)
+# network faults
+db_down = fault_assumption("db_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+)
 
-def test_gen_order_flow_db_slow():
-    """order_flow with db delayed 5s."""
-    fault(api, connect=delay("5s", label="db slow"), run=order_flow)
+db_slow = fault_assumption("db_slow",
+    target = api,
+    connect = delay("5s"),
+)
 
-def test_gen_order_flow_db_reset():
-    """order_flow with db dropping mid-request."""
-    fault(api, read=deny("ECONNRESET", label="db connection reset"), run=order_flow)
+db_connection_reset = fault_assumption("db_connection_reset",
+    target = api,
+    read = deny("ECONNRESET"),
+)
 
-def test_gen_order_flow_db_partition():
+# disk faults
+disk_io_error = fault_assumption("disk_io_error",
+    target = db,
+    write = deny("EIO"),
+)
+
+disk_full = fault_assumption("disk_full",
+    target = db,
+    write = deny("ENOSPC"),
+)
+
+fsync_failure = fault_assumption("fsync_failure",
+    target = db,
+    fsync = deny("EIO"),
+)
+
+# --- Fault Matrix ---
+
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [db_down, db_slow, db_connection_reset, disk_io_error, disk_full, fsync_failure],
+)
+
+# --- Network Partitions ---
+
+def test_order_flow_db_partition():
     """order_flow with network partition between api and db."""
     partition(api, db, run=order_flow)
-
-# --- disk failures ---
-
-def test_gen_order_flow_db_io_error():
-    """order_flow with db disk I/O error."""
-    fault(db, write=deny("EIO", label="disk I/O error"), run=order_flow)
-
-def test_gen_order_flow_db_disk_full():
-    """order_flow with db disk full."""
-    fault(db, write=deny("ENOSPC", label="disk full"), run=order_flow)
-
-def test_gen_order_flow_db_fsync_fail():
-    """order_flow with db fsync failure."""
-    fault(db, fsync=deny("EIO", label="fsync failure"), run=order_flow)
 ```
 
-**What happened:** the generator took your `order_flow` function and
-wrapped it in every fault applicable to the `api → db` dependency.
-No invented API calls, no guessed assertions — your exact happy path
-under different failure conditions.
+**What happened:** the generator created named `fault_assumption()` for each
+fault mode and composed them into a `fault_matrix()`. Each assumption is
+reusable — you can reference `db_down` in custom `fault_scenario()` calls.
+No invented API calls, no guessed assertions — your exact happy path under
+different failure conditions.
 
 ## Running generated tests
 
@@ -157,34 +167,42 @@ faultbox test order_flow.faults.star
 make lima-run CMD="faultbox test order_flow.faults.star"
 ```
 
-The generated tests wrap your exact happy-path function in fault scopes.
-When a fault fires, the happy-path assertions reveal how the service
-behaves under failure:
+The generated tests run your scenario under each fault assumption.
+The matrix report shows results at a glance:
 
 ```
---- FAIL: test_gen_order_flow_db_io_error (5215ms) ---
-  reason: assert_eq failed: 500 != 200
---- FAIL: test_gen_order_flow_db_down (212ms) ---
-  reason: assert_eq failed: 500 != 200
---- PASS: test_gen_order_flow_db_fsync_fail (210ms) ---
-  WARNING: fault rules were installed but no injections fired
---- PASS: test_order_flow (210ms) ---
+Fault Matrix: 1 scenarios × 6 faults = 6 cells
 
-2 passed, 6 failed
+                  │ db_down       │ db_slow       │ db_connection_reset │ disk_io_error │ disk_full     │ fsync_failure
+──────────────────┼───────────────┼───────────────┼─────────────────────┼───────────────┼───────────────┼──────────────
+order_flow        │ PASS (212ms)  │ PASS (5215ms) │ PASS (210ms)        │ PASS (210ms)  │ PASS (208ms)  │ PASS (210ms)
+
+Result: 6/6 passed
 ```
 
 How to read the results:
 
-- **Test fails** (`500 != 200`) — the fault fired and the service returned
-  an error instead of 200. The happy-path assertion caught it. This is a
-  **discovered failure mode** — now decide: should the service handle this
-  gracefully, or is 500 the correct response?
-- **Test passes** — the service handled the fault and still satisfied all
-  happy-path assertions. Either the fault didn't affect this code path,
-  or the service has proper error handling.
-- **Fault not fired (WARNING)** — the service doesn't use the faulted
-  syscall. Delete this test (e.g., `fsync_fail` on a service that never
-  calls fsync).
+- **PASS** — the scenario completed without crashing under this fault.
+  Since no `expect` was set, "pass" just means "didn't crash". Add
+  `overrides=` to `fault_matrix()` to specify expected behavior per cell.
+- **FAIL** — the scenario crashed or timed out under this fault.
+  This is a **discovered failure mode** worth investigating.
+
+To add expected behavior, edit the generated file and add overrides:
+
+```python
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [db_down, db_slow, disk_io_error, disk_full, fsync_failure],
+    overrides = {
+        (order_flow, db_down): lambda r: assert_true(r.status >= 500),
+        (order_flow, db_slow): lambda r: assert_true(r.duration_ms > 4000),
+    },
+    exclude = [
+        (order_flow, fsync_failure),  # service doesn't use fsync
+    ],
+)
+```
 
 ## The `load()` statement
 
@@ -204,14 +222,18 @@ You can also use `load()` in hand-written files:
 
 ```python
 # my-custom-failures.star
-load("scenario-test.star", "api", "db")
+load("scenario-test.star", "api", "db", "order_flow")
 
-def test_custom_failure():
-    """My specific failure scenario."""
-    def scenario():
-        resp = api.post(path="/data/key", body="value")
-        assert_true(resp.status >= 500, "should fail")
-    fault(db, write=deny("EIO"), run=scenario)
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_scenario("order_custom_failure",
+    scenario = order_flow,
+    faults = db_down,
+    expect = lambda r: assert_true(r.status >= 500, "should fail when DB is down"),
+)
 ```
 
 ## Dry run — preview without generating
@@ -256,57 +278,104 @@ faultbox generate scenario-test.star
 # → health_check.faults.star
 ```
 
-## Monitors and assertions in scenarios
+## Fault composition — writing tests by hand
 
-Scenarios are full test functions — use monitors, trace assertions,
-and parallel operations:
+Auto-generation is great for discovery, but real tests need specific
+expectations. That's what `fault_assumption()`, `fault_scenario()`,
+and `fault_matrix()` are for.
+
+### Named fault assumptions
+
+Instead of repeating `fault(api, connect=deny("ECONNREFUSED"), run=...)`
+everywhere, name it once:
 
 ```python
-def order_with_verification():
-    # Monitor: fail if any write is denied during happy path.
-    monitor(lambda e: fail("unexpected denial") if e.decision.startswith("deny"),
-        service="db", syscall="write")
+db_down = fault_assumption("db_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+)
 
-    # Trace db writes for temporal assertions.
-    trace_start(db, syscalls=["write"])
-
-    api.post(path="/data/key1", body="value1")
-    resp = api.get(path="/data/key1")
-    assert_eq(resp.body, "value1")
-
-    # Verify write happened before read response.
-    assert_eventually(service="db", syscall="write")
-
-    trace_stop(db)
-
-scenario(order_with_verification)
+disk_full = fault_assumption("disk_full",
+    target = db,
+    write = deny("ENOSPC"),
+)
 ```
 
-When the generator wraps this in a fault scope, the monitor and assertions
-fire under fault — catching real bugs.
+### Fault scenarios — one scenario, one fault, one oracle
+
+```python
+fault_scenario("order_db_down",
+    scenario = order_flow,
+    faults = db_down,
+    expect = lambda r: assert_true(r.status >= 500, "should fail when DB is down"),
+)
+```
+
+This registers `test_order_db_down`. The `expect` callback receives the
+scenario's return value and validates it with assertions.
+
+### Fault matrix — the cross-product
+
+Instead of writing N×M tests by hand:
+
+```python
+fault_matrix(
+    scenarios = [order_flow, health_check],
+    faults = [db_down, disk_full],
+    default_expect = lambda r: assert_true(r != None),
+    overrides = {
+        (order_flow, db_down): lambda r: assert_true(r.status >= 500),
+        (health_check, db_down): lambda r: assert_eq(r.status, 503),
+    },
+)
+# Generates 4 tests: 2 scenarios × 2 faults
+```
+
+### Monitors on fault assumptions
+
+Attach invariants to fault assumptions — they fire automatically in every
+test that uses the assumption:
+
+```python
+def check_no_db_traffic(event):
+    fail("traffic reached DB despite being down")
+
+no_db_traffic = monitor(check_no_db_traffic, service="db", syscall="read")
+
+db_down = fault_assumption("db_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+    monitors = [no_db_traffic],
+)
+```
+
+Now every `fault_scenario()` and `fault_matrix()` cell that uses `db_down`
+gets `no_db_traffic` automatically.
 
 ## The workflow
 
 ```
-1. Write scenario() functions — describe how things work
-2. faultbox generate → creates <scenario>.faults.star files
-3. faultbox test *.faults.star → run all failures
-4. Review: keep, adjust, or delete each generated test
-5. Commit both source and curated .faults.star files
-6. Regenerate when topology changes (new service, new dependency)
+1. Write scenario() probes — describe how things work, return results
+2. faultbox generate → creates <scenario>.faults.star with fault_matrix()
+3. faultbox test *.faults.star → discover failures
+4. Add overrides= with expected behavior per (scenario, fault) cell
+5. Add monitors to fault_assumptions for invariants
+6. Commit both source and .faults.star files
+7. Regenerate when topology changes
 ```
 
 ## What you learned
 
-- `scenario(fn)` registers a happy path — runs as test + available to generator
-- `faultbox generate` creates one `.faults.star` per scenario
-- Generated tests wrap your exact happy path in fault scopes
+- `scenario(fn)` registers a probe — runs as test + available for composition
+- `faultbox generate` creates `fault_assumption()` + `fault_matrix()` per scenario
+- `fault_assumption()` names and reuses fault configurations
+- `fault_scenario()` composes probe + fault + expect oracle
+- `fault_matrix()` generates the cross-product of scenarios × faults
 - `load()` imports topology and functions across files
-- Monitors and assertions work inside scenarios
+- Monitors travel with fault assumptions
 
 ## What's next
 
-You've automated failure discovery. But so far you're only observing
-syscall events. Chapter 11 introduces **event sources** — capturing
-structured stdout, database WAL changes, and message queue events
-as first-class trace data.
+You've automated failure discovery and structured fault composition.
+Chapter 11 introduces **event sources** — capturing structured stdout,
+database WAL changes, and message queue events as first-class trace data.
