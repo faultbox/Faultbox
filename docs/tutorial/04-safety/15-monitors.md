@@ -169,19 +169,18 @@ api = service("api", BIN + "/mock-api",
     healthcheck = http("localhost:8080/health"),
 )
 
-denied_count = {"n": 0}
-response_seen = {"status": 0}
-
-def denied_syscall_handled(event):
-    """If a syscall is denied, the service MUST return an error response."""
-    if (event.type == "syscall" and event.service == "api"
-            and event.fields.get("decision", "").startswith("deny")):
-        denied_count["n"] += 1
-
-monitor(denied_syscall_handled, service="api")
-
 def test_denied_writes_produce_errors():
-    denied_count["n"] = 0
+    denied_count = {"n": 0}
+
+    def denied_syscall_handled(event):
+        """If a syscall is denied, the service MUST return an error response."""
+        if (event["type"] == "syscall" and event["service"] == "api"
+                and event.get("decision", "").startswith("deny")):
+            denied_count["n"] += 1
+
+    # monitor() inside a test auto-registers immediately.
+    monitor(denied_syscall_handled, service="api")
+
     def scenario():
         resp = api.post(path="/data/key", body="value")
         # If any syscall was denied, the response must reflect it.
@@ -190,6 +189,11 @@ def test_denied_writes_produce_errors():
                 "denied syscalls but got " + str(resp.status))
     fault(db, write=deny("EIO"), run=scenario)
 ```
+
+> **Note:** `monitor()` inside a `test_*` function auto-registers on the
+> event log immediately (backward compatible). At top level, `monitor()`
+> returns a `MonitorDef` value without registering — use it with
+> `fault_assumption(monitors=)` for reusable monitors.
 
 **Linux:**
 ```bash
