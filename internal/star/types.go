@@ -356,6 +356,42 @@ func (f *FaultDef) Truth() starlark.Bool   { return true }
 func (f *FaultDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: fault") }
 
 // ---------------------------------------------------------------------------
+// MonitorDef — first-class monitor value
+// ---------------------------------------------------------------------------
+
+// MonitorDef is a first-class Starlark value representing a monitor.
+// Created by monitor() builtin, can be stored in variables and passed
+// to fault_assumption(monitors=) and fault_scenario(monitors=).
+type MonitorDef struct {
+	Callback starlark.Callable
+	Filters  []EventFilter
+}
+
+// EventFilter is a key-value pair for filtering events.
+// Exported so MonitorDef can reference it from types.go.
+type EventFilter struct {
+	Key   string // "service", "syscall", "path", "decision", "type"
+	Value string // value to match (supports trailing * for glob)
+}
+
+var _ starlark.Value = (*MonitorDef)(nil)
+
+func (m *MonitorDef) String() string {
+	var parts []string
+	for _, f := range m.Filters {
+		parts = append(parts, f.Key+"="+f.Value)
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("<monitor %s>", m.Callback.Name())
+	}
+	return fmt.Sprintf("<monitor %s %s>", m.Callback.Name(), strings.Join(parts, " "))
+}
+func (m *MonitorDef) Type() string           { return "monitor" }
+func (m *MonitorDef) Freeze()                {}
+func (m *MonitorDef) Truth() starlark.Bool   { return true }
+func (m *MonitorDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: monitor") }
+
+// ---------------------------------------------------------------------------
 // StarlarkEvent — wraps Event for lambda predicate access
 // ---------------------------------------------------------------------------
 

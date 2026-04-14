@@ -996,7 +996,9 @@ func (rt *Runtime) collectParallelResults(results []parallelResult) (starlark.Va
 }
 
 // monitor(callback, service=, syscall=, path=, decision=)
-// Registers a continuous monitor that is called on every matching event.
+// Creates a MonitorDef — a first-class monitor value.
+// When called inside a running test (inTest=true), also auto-registers
+// the monitor on the event log for backward compatibility.
 // The callback receives an event dict. If the callback raises an error,
 // the test fails with "monitor violation".
 func (rt *Runtime) builtinMonitor(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -1009,37 +1011,21 @@ func (rt *Runtime) builtinMonitor(thread *starlark.Thread, fn *starlark.Builtin,
 	}
 
 	// Remaining kwargs are event filters.
-	var filters []eventFilter
+	var filters []EventFilter
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
 		val, _ := starlark.AsString(kv[1])
-		filters = append(filters, eventFilter{key: key, value: val})
+		filters = append(filters, EventFilter{Key: key, Value: val})
 	}
 
-	// Subscribe to matching events.
-	rt.events.Subscribe(filters, func(ev Event) error {
-		// Build event dict for the Starlark callback.
-		d := starlark.NewDict(6)
-		d.SetKey(starlark.String("seq"), starlark.MakeInt64(ev.Seq))
-		d.SetKey(starlark.String("type"), starlark.String(ev.Type))
-		d.SetKey(starlark.String("service"), starlark.String(ev.Service))
-		for k, v := range ev.Fields {
-			d.SetKey(starlark.String(k), starlark.String(v))
-		}
+	m := &MonitorDef{Callback: callback, Filters: filters}
 
-		// Call Starlark callback on a fresh thread (safe from goroutines).
-		t := &starlark.Thread{Name: "monitor"}
-		_, err := starlark.Call(t, callback, starlark.Tuple{d}, nil)
-		if err != nil {
-			rt.monitorMu.Lock()
-			rt.monitorErrors = append(rt.monitorErrors, err)
-			rt.monitorMu.Unlock()
-			return err
-		}
-		return nil
-	})
+	// Auto-register when called inside a running test (backward compat).
+	if rt.inTest {
+		rt.RegisterMonitor(m)
+	}
 
-	return starlark.None, nil
+	return m, nil
 }
 
 // partition(svc_a, svc_b, run=callback)

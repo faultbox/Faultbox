@@ -1017,6 +1017,145 @@ scenario(health_check)
 	}
 }
 
+func TestMonitorReturnsMonitorDef(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+svc = service("svc", "/tmp/svc", interface("main", "tcp", 8080))
+
+def check_no_write(event):
+    fail("unexpected write")
+
+m = monitor(check_no_write, service="svc", syscall="write")
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// monitor() at top level should return a MonitorDef, not None.
+	mVal, ok := rt.globals["m"]
+	if !ok {
+		t.Fatal("global 'm' not found")
+	}
+	md, ok := mVal.(*MonitorDef)
+	if !ok {
+		t.Fatalf("expected *MonitorDef, got %T (%s)", mVal, mVal.Type())
+	}
+
+	// Check type and string representation.
+	if md.Type() != "monitor" {
+		t.Errorf("Type() = %q, want monitor", md.Type())
+	}
+	if md.Truth() != true {
+		t.Error("Truth() should be true")
+	}
+
+	// Check callback name.
+	if md.Callback.Name() != "check_no_write" {
+		t.Errorf("Callback.Name() = %q, want check_no_write", md.Callback.Name())
+	}
+
+	// Check filters.
+	if len(md.Filters) != 2 {
+		t.Fatalf("expected 2 filters, got %d", len(md.Filters))
+	}
+	filterMap := make(map[string]string)
+	for _, f := range md.Filters {
+		filterMap[f.Key] = f.Value
+	}
+	if filterMap["service"] != "svc" {
+		t.Errorf("service filter = %q, want svc", filterMap["service"])
+	}
+	if filterMap["syscall"] != "write" {
+		t.Errorf("syscall filter = %q, want write", filterMap["syscall"])
+	}
+}
+
+func TestMonitorStringRepresentation(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+svc = service("svc", "/tmp/svc", interface("main", "tcp", 8080))
+
+def my_check(e):
+    pass
+
+m_with_filters = monitor(my_check, service="svc")
+m_no_filters = monitor(my_check)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	mf := rt.globals["m_with_filters"].(*MonitorDef)
+	if got := mf.String(); got != "<monitor my_check service=svc>" {
+		t.Errorf("String() with filters = %q", got)
+	}
+
+	mnf := rt.globals["m_no_filters"].(*MonitorDef)
+	if got := mnf.String(); got != "<monitor my_check>" {
+		t.Errorf("String() without filters = %q", got)
+	}
+}
+
+func TestMonitorNotAutoRegisteredAtTopLevel(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+svc = service("svc", "/tmp/svc", interface("main", "tcp", 8080))
+
+def my_check(e):
+    pass
+
+m = monitor(my_check, service="svc")
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// At top level (not inside a test), monitor() should NOT auto-register
+	// as an event subscriber. The subscriber list should be empty.
+	rt.events.subMu.RLock()
+	subCount := len(rt.events.subscribers)
+	rt.events.subMu.RUnlock()
+
+	if subCount != 0 {
+		t.Errorf("expected 0 subscribers at top level, got %d", subCount)
+	}
+}
+
+func TestRegisterMonitorSubscribes(t *testing.T) {
+	rt := New(testLogger())
+
+	cb := starlark.NewBuiltin("test_cb", func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
+		return starlark.None, nil
+	})
+
+	m := &MonitorDef{
+		Callback: cb,
+		Filters:  []EventFilter{{Key: "service", Value: "svc"}},
+	}
+
+	id := rt.RegisterMonitor(m)
+	if id <= 0 {
+		t.Errorf("expected positive subscriber ID, got %d", id)
+	}
+
+	// Should have 1 subscriber.
+	rt.events.subMu.RLock()
+	subCount := len(rt.events.subscribers)
+	rt.events.subMu.RUnlock()
+	if subCount != 1 {
+		t.Errorf("expected 1 subscriber after RegisterMonitor, got %d", subCount)
+	}
+
+	// Unregister.
+	rt.UnregisterMonitor(id)
+	rt.events.subMu.RLock()
+	subCount = len(rt.events.subscribers)
+	rt.events.subMu.RUnlock()
+	if subCount != 0 {
+		t.Errorf("expected 0 subscribers after UnregisterMonitor, got %d", subCount)
+	}
+}
+
 func TestResponseData(t *testing.T) {
 	// Test that Response.data auto-decodes JSON body.
 	resp := &Response{

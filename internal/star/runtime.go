@@ -100,6 +100,10 @@ type Runtime struct {
 	// Monitor errors — collected during test execution, checked after test.
 	monitorMu     sync.Mutex
 	monitorErrors []error
+
+	// inTest is true when RunTest is executing a test function.
+	// Used by monitor() to auto-register when called inside a test.
+	inTest bool
 }
 
 type runningSession struct {
@@ -431,7 +435,9 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			fmt.Fprintln(os.Stderr, msg)
 		},
 	}
+	rt.inTest = true
 	retVal, err := starlark.Call(thread, fn, nil, nil)
+	rt.inTest = false
 
 	// Stop services.
 	rt.stopServices()
@@ -932,6 +938,42 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 		result = append(result, k+"="+v)
 	}
 	return result
+}
+
+// RegisterMonitor subscribes a MonitorDef to the event log.
+// Returns the subscription ID for later unregistration.
+func (rt *Runtime) RegisterMonitor(m *MonitorDef) int {
+	// Convert EventFilter to eventFilter for the event log.
+	filters := make([]eventFilter, len(m.Filters))
+	for i, f := range m.Filters {
+		filters[i] = eventFilter{key: f.Key, value: f.Value}
+	}
+
+	callback := m.Callback
+	return rt.events.Subscribe(filters, func(ev Event) error {
+		d := starlark.NewDict(6)
+		d.SetKey(starlark.String("seq"), starlark.MakeInt64(ev.Seq))
+		d.SetKey(starlark.String("type"), starlark.String(ev.Type))
+		d.SetKey(starlark.String("service"), starlark.String(ev.Service))
+		for k, v := range ev.Fields {
+			d.SetKey(starlark.String(k), starlark.String(v))
+		}
+
+		t := &starlark.Thread{Name: "monitor"}
+		_, err := starlark.Call(t, callback, starlark.Tuple{d}, nil)
+		if err != nil {
+			rt.monitorMu.Lock()
+			rt.monitorErrors = append(rt.monitorErrors, err)
+			rt.monitorMu.Unlock()
+			return err
+		}
+		return nil
+	})
+}
+
+// UnregisterMonitor removes a monitor subscription by ID.
+func (rt *Runtime) UnregisterMonitor(id int) {
+	rt.events.Unsubscribe(id)
 }
 
 // expandSyscallFamily maps a user-facing fault keyword to all underlying syscalls.
