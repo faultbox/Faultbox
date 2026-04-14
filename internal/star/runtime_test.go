@@ -1419,6 +1419,262 @@ bad = fault_assumption("bad", connect=deny("ECONNREFUSED"))
 	}
 }
 
+func TestFaultScenarioBasic(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+scenario(order_flow)
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_scenario("order_db_down",
+    scenario = order_flow,
+    faults = db_down,
+    expect = lambda r: assert_eq(r, "ok"),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Should be registered in faultScenarios.
+	if rt.faultScenarios == nil {
+		t.Fatal("faultScenarios map is nil")
+	}
+	fs, ok := rt.faultScenarios["order_db_down"]
+	if !ok {
+		t.Fatal("order_db_down not found in faultScenarios")
+	}
+	if fs.Scenario.Name() != "order_flow" {
+		t.Errorf("Scenario.Name() = %q, want order_flow", fs.Scenario.Name())
+	}
+	if len(fs.Faults) != 1 {
+		t.Fatalf("expected 1 fault, got %d", len(fs.Faults))
+	}
+	if fs.Faults[0].Name != "db_down" {
+		t.Errorf("Faults[0].Name = %q, want db_down", fs.Faults[0].Name)
+	}
+	if fs.Expect == nil {
+		t.Error("Expect should not be nil")
+	}
+}
+
+func TestFaultScenarioDiscoverTests(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+scenario(order_flow)
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_scenario("order_db_down",
+    scenario = order_flow,
+    faults = db_down,
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	tests := rt.DiscoverTests()
+	found := make(map[string]bool)
+	for _, name := range tests {
+		found[name] = true
+	}
+
+	// Should have both test_order_flow (from scenario) and test_order_db_down (from fault_scenario).
+	if !found["test_order_flow"] {
+		t.Error("expected test_order_flow in discovered tests")
+	}
+	if !found["test_order_db_down"] {
+		t.Error("expected test_order_db_down in discovered tests")
+	}
+}
+
+func TestFaultScenarioSmokeTest(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+# No expect= → smoke test (must not crash).
+fault_scenario("order_smoke",
+    scenario = order_flow,
+    faults = db_down,
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	fs := rt.faultScenarios["order_smoke"]
+	if fs.Expect != nil {
+		t.Error("expect should be nil for smoke test")
+	}
+}
+
+func TestFaultScenarioMultipleFaults(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+orders = service("orders", "/tmp/orders",
+    interface("public", "http", 8080),
+    depends_on = [db],
+)
+
+def order_flow():
+    return "ok"
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+slow_net = fault_assumption("slow_net",
+    target = orders,
+    connect = delay("200ms"),
+)
+
+fault_scenario("order_cascade",
+    scenario = order_flow,
+    faults = [db_down, slow_net],
+    expect = lambda r: assert_true(r != None),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	fs := rt.faultScenarios["order_cascade"]
+	if len(fs.Faults) != 2 {
+		t.Fatalf("expected 2 faults, got %d", len(fs.Faults))
+	}
+}
+
+func TestFaultScenarioWithMonitors(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+def check_retry(e):
+    pass
+
+retry_mon = monitor(check_retry, service="orders", syscall="connect")
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_scenario("order_db_down_retries",
+    scenario = order_flow,
+    faults = db_down,
+    monitors = [retry_mon],
+    expect = lambda r: assert_true(r != None),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	fs := rt.faultScenarios["order_db_down_retries"]
+	if len(fs.Monitors) != 1 {
+		t.Fatalf("expected 1 scenario-level monitor, got %d", len(fs.Monitors))
+	}
+	if fs.Monitors[0].Callback.Name() != "check_retry" {
+		t.Errorf("monitor callback = %q, want check_retry", fs.Monitors[0].Callback.Name())
+	}
+}
+
+func TestFaultScenarioWithTimeout(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_scenario("order_slow",
+    scenario = order_flow,
+    faults = db_down,
+    timeout = "10s",
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	fs := rt.faultScenarios["order_slow"]
+	if fs.Timeout.Seconds() != 10 {
+		t.Errorf("Timeout = %v, want 10s", fs.Timeout)
+	}
+}
+
+func TestFaultScenarioErrorMissingScenario(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+# Missing scenario=
+fault_scenario("bad", faults=db_down)
+`)
+	if err == nil {
+		t.Fatal("expected error for fault_scenario without scenario=")
+	}
+	if !strings.Contains(err.Error(), "requires scenario=") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestFaultAssumptionProtocolRules(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `

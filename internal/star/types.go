@@ -403,6 +403,22 @@ func (a *FaultAssumptionDef) Truth() starlark.Bool   { return true }
 func (a *FaultAssumptionDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: fault_assumption") }
 
 // ---------------------------------------------------------------------------
+// FaultScenarioDef — composed scenario + faults + oracle
+// ---------------------------------------------------------------------------
+
+// FaultScenarioDef is a test definition that composes a scenario probe
+// with fault assumptions, monitors, and an expect oracle.
+// Created by fault_scenario() builtin, registered as test_<name>.
+type FaultScenarioDef struct {
+	Name     string
+	Scenario starlark.Callable
+	Faults   []*FaultAssumptionDef
+	Expect   starlark.Callable // may be nil (smoke test)
+	Monitors []*MonitorDef
+	Timeout  time.Duration
+}
+
+// ---------------------------------------------------------------------------
 // MonitorDef — first-class monitor value
 // ---------------------------------------------------------------------------
 

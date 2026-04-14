@@ -48,6 +48,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
 		"scenario":          starlark.NewBuiltin("scenario", rt.builtinScenario),
 		"fault_assumption":  starlark.NewBuiltin("fault_assumption", rt.builtinFaultAssumption),
+		"fault_scenario":    starlark.NewBuiltin("fault_scenario", rt.builtinFaultScenario),
 		"op":                starlark.NewBuiltin("op", builtinOp),
 		"response":          starlark.NewBuiltin("response", builtinProxyResponse),
 		"error":             starlark.NewBuiltin("error", builtinProxyError),
@@ -1030,6 +1031,91 @@ func (rt *Runtime) builtinFaultAssumption(thread *starlark.Thread, fn *starlark.
 	rt.faultAssumptions[name] = assumption
 
 	return assumption, nil
+}
+
+// fault_scenario(name, scenario=, faults=, expect=, monitors=, timeout=)
+// Composes a scenario probe with fault assumptions and an oracle.
+// Registers a test as test_<name>.
+func (rt *Runtime) builtinFaultScenario(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("fault_scenario() requires a name")
+	}
+	name, ok := starlark.AsString(args[0])
+	if !ok {
+		return nil, fmt.Errorf("fault_scenario() name must be a string, got %s", args[0].Type())
+	}
+
+	fs := &FaultScenarioDef{
+		Name:    name,
+		Timeout: 30 * time.Second,
+	}
+
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "scenario":
+			cb, ok := kv[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("fault_scenario() scenario= must be a callable, got %s", kv[1].Type())
+			}
+			fs.Scenario = cb
+		case "faults":
+			// Accept single FaultAssumptionDef or list.
+			switch v := kv[1].(type) {
+			case *FaultAssumptionDef:
+				fs.Faults = []*FaultAssumptionDef{v}
+			case *starlark.List:
+				for i := 0; i < v.Len(); i++ {
+					fa, ok := v.Index(i).(*FaultAssumptionDef)
+					if !ok {
+						return nil, fmt.Errorf("fault_scenario() faults[%d] must be a fault_assumption, got %s", i, v.Index(i).Type())
+					}
+					fs.Faults = append(fs.Faults, fa)
+				}
+			default:
+				return nil, fmt.Errorf("fault_scenario() faults= must be a fault_assumption or list, got %s", kv[1].Type())
+			}
+		case "expect":
+			cb, ok := kv[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("fault_scenario() expect= must be a callable, got %s", kv[1].Type())
+			}
+			fs.Expect = cb
+		case "monitors":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("fault_scenario() monitors= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				m, ok := list.Index(i).(*MonitorDef)
+				if !ok {
+					return nil, fmt.Errorf("fault_scenario() monitors[%d] must be a monitor, got %s", i, list.Index(i).Type())
+				}
+				fs.Monitors = append(fs.Monitors, m)
+			}
+		case "timeout":
+			s, _ := starlark.AsString(kv[1])
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return nil, fmt.Errorf("fault_scenario() timeout= invalid duration %q: %w", s, err)
+			}
+			fs.Timeout = d
+		default:
+			return nil, fmt.Errorf("fault_scenario() unexpected keyword %q", key)
+		}
+	}
+
+	if fs.Scenario == nil {
+		return nil, fmt.Errorf("fault_scenario() requires scenario= keyword")
+	}
+
+	// Register in runtime.
+	if rt.faultScenarios == nil {
+		rt.faultScenarios = make(map[string]*FaultScenarioDef)
+	}
+	rt.faultScenarios[name] = fs
+
+	return starlark.None, nil
 }
 
 // nondet(service, ...) — marks one or more services as nondeterministic,

@@ -93,6 +93,9 @@ type Runtime struct {
 	// Registered fault assumptions — named fault configurations.
 	faultAssumptions map[string]*FaultAssumptionDef
 
+	// Registered fault scenarios — composed tests from fault_scenario().
+	faultScenarios map[string]*FaultScenarioDef
+
 	// Protocol-level proxy manager.
 	proxyMgr *proxy.Manager
 
@@ -234,6 +237,16 @@ func (rt *Runtime) DiscoverTests() []string {
 			seen[testName] = true
 			// Register in globals so RunTest can find it.
 			rt.globals[testName] = s.Fn
+		}
+	}
+	// Add fault_scenario-registered tests as test_<name>.
+	for _, fs := range rt.faultScenarios {
+		testName := "test_" + fs.Name
+		if !seen[testName] {
+			names = append(names, testName)
+			seen[testName] = true
+			// Register a wrapper callable in globals so RunTest can find it.
+			rt.globals[testName] = rt.makeFaultScenarioRunner(fs)
 		}
 	}
 	sort.Strings(names)
@@ -941,6 +954,81 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 		result = append(result, k+"="+v)
 	}
 	return result
+}
+
+// makeFaultScenarioRunner creates a Starlark callable that, when invoked by
+// RunTest, executes the fault_scenario lifecycle: apply faults → register
+// monitors → run scenario → call expect → cleanup.
+func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callable {
+	return starlark.NewBuiltin("test_"+fs.Name, func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		// 1. Collect and register all monitors (from assumptions + scenario-level).
+		var monitorIDs []int
+		for _, fa := range fs.Faults {
+			for _, m := range fa.Monitors {
+				monitorIDs = append(monitorIDs, rt.RegisterMonitor(m))
+			}
+		}
+		for _, m := range fs.Monitors {
+			monitorIDs = append(monitorIDs, rt.RegisterMonitor(m))
+		}
+		defer func() {
+			for _, id := range monitorIDs {
+				rt.UnregisterMonitor(id)
+			}
+		}()
+
+		// 2. Apply fault rules from all assumptions.
+		appliedServices := make(map[string]bool)
+		for _, fa := range fs.Faults {
+			// Group rules by target service.
+			faultsByService := make(map[string]map[string]*FaultDef)
+			for _, r := range fa.Rules {
+				svcName := r.Target.Name
+				if faultsByService[svcName] == nil {
+					faultsByService[svcName] = make(map[string]*FaultDef)
+				}
+				faultsByService[svcName][r.Syscall] = r.Fault
+			}
+			for svcName, faults := range faultsByService {
+				if err := rt.applyFaults(svcName, faults); err != nil {
+					return nil, fmt.Errorf("fault_scenario %q: %w", fs.Name, err)
+				}
+				appliedServices[svcName] = true
+			}
+		}
+		defer func() {
+			for svcName := range appliedServices {
+				rt.removeFaults(svcName)
+			}
+		}()
+
+		// 3. Run the scenario function and capture the return value.
+		result, err := starlark.Call(thread, fs.Scenario, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		// 4. Check monitor errors before calling expect.
+		rt.monitorMu.Lock()
+		monErrs := rt.monitorErrors
+		rt.monitorMu.Unlock()
+		if len(monErrs) > 0 {
+			return nil, fmt.Errorf("monitor violation: %v", monErrs[0])
+		}
+
+		// 5. Call expect(result) if provided.
+		if fs.Expect != nil {
+			if result == nil {
+				result = starlark.None
+			}
+			_, err := starlark.Call(thread, fs.Expect, starlark.Tuple{result}, nil)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		return result, nil
+	})
 }
 
 // RegisterMonitor subscribes a MonitorDef to the event log.
