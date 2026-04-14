@@ -33,7 +33,8 @@ type TestResult struct {
 	Seed        uint64         `json:"seed"`
 	DurationMs  int64          `json:"duration_ms"`
 	Events      []Event        `json:"events,omitempty"`
-	ReturnValue starlark.Value `json:"-"` // scenario return value for fault_scenario/fault_matrix
+	ReturnValue starlark.Value `json:"-"`          // scenario return value for fault_scenario/fault_matrix
+	Matrix      *MatrixInfo    `json:"-"`          // non-nil if from fault_matrix()
 }
 
 // SuiteResult captures the outcome of all test functions.
@@ -110,6 +111,10 @@ type Runtime struct {
 	// inTest is true when RunTest is executing a test function.
 	// Used by monitor() to auto-register when called inside a test.
 	inTest bool
+
+	// currentFaultScenario is set by makeFaultScenarioRunner during execution
+	// so RunTest can copy MatrixInfo to the TestResult.
+	currentFaultScenario *FaultScenarioDef
 }
 
 type runningSession struct {
@@ -455,6 +460,12 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	retVal, err := starlark.Call(thread, fn, nil, nil)
 	rt.inTest = false
 
+	// Capture matrix info before clearing (set by makeFaultScenarioRunner).
+	var matrixInfo *MatrixInfo
+	if rt.currentFaultScenario != nil {
+		matrixInfo = rt.currentFaultScenario.Matrix
+	}
+
 	// Stop services.
 	rt.stopServices()
 
@@ -466,6 +477,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			Reason:     err.Error(),
 			DurationMs: time.Since(start).Milliseconds(),
 			Events:     events,
+			Matrix:     matrixInfo,
 		}
 	}
 
@@ -479,6 +491,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			Reason:     fmt.Sprintf("monitor violation: %v", monErrs[0]),
 			DurationMs: time.Since(start).Milliseconds(),
 			Events:     events,
+			Matrix:     matrixInfo,
 		}
 	}
 
@@ -488,6 +501,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		DurationMs:  time.Since(start).Milliseconds(),
 		Events:      events,
 		ReturnValue: retVal,
+		Matrix:      matrixInfo,
 	}
 }
 
@@ -961,6 +975,10 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 // monitors → run scenario → call expect → cleanup.
 func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callable {
 	return starlark.NewBuiltin("test_"+fs.Name, func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		// Track current fault_scenario so RunTest can copy MatrixInfo.
+		rt.currentFaultScenario = fs
+		defer func() { rt.currentFaultScenario = nil }()
+
 		// 1. Collect and register all monitors (from assumptions + scenario-level).
 		var monitorIDs []int
 		for _, fa := range fs.Faults {

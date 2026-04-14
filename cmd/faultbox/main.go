@@ -312,9 +312,14 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	if rcfg.Runs > 1 || (rcfg.ExploreMode == "all" && totalRuns > 1) {
 		printMultiRunSummary(os.Stderr, result, totalRuns, isDebug)
 	} else {
+		// Print non-matrix tests with standard trace summary.
 		for _, tr := range result.Tests {
-			printTraceSummary(os.Stderr, &tr, isDebug)
+			if tr.Matrix == nil {
+				printTraceSummary(os.Stderr, &tr, isDebug)
+			}
 		}
+		// Print matrix summary if any matrix tests exist.
+		printMatrixSummary(os.Stderr, result)
 	}
 
 	// Write results if requested.
@@ -590,6 +595,137 @@ func printTraceSummary(w io.Writer, tr *star.TestResult, debug bool) {
 			}
 			sort.Strings(scList)
 			fmt.Fprintf(w, "    %-12s %d total, %d faulted  [%s]\n", svc, st.total, st.faultHits, strings.Join(scList, " "))
+		}
+	}
+}
+
+// printMatrixSummary prints a fault matrix table if any matrix tests exist.
+func printMatrixSummary(w io.Writer, result *star.SuiteResult) {
+	// Collect matrix results.
+	type cellResult struct {
+		passed     bool
+		durationMs int64
+		reason     string
+	}
+
+	scenarioSet := make(map[string]bool)
+	faultSet := make(map[string]bool)
+	var scenarioOrder []string
+	var faultOrder []string
+	cells := make(map[string]*cellResult) // "scenario:fault" → result
+
+	for _, tr := range result.Tests {
+		if tr.Matrix == nil {
+			continue
+		}
+		sn := tr.Matrix.ScenarioName
+		fn := tr.Matrix.FaultName
+		if !scenarioSet[sn] {
+			scenarioSet[sn] = true
+			scenarioOrder = append(scenarioOrder, sn)
+		}
+		if !faultSet[fn] {
+			faultSet[fn] = true
+			faultOrder = append(faultOrder, fn)
+		}
+		cells[sn+":"+fn] = &cellResult{
+			passed:     tr.Result == "pass",
+			durationMs: tr.DurationMs,
+			reason:     tr.Reason,
+		}
+	}
+
+	if len(scenarioOrder) == 0 {
+		return
+	}
+
+	total := len(cells)
+	passed := 0
+	failed := 0
+	for _, c := range cells {
+		if c.passed {
+			passed++
+		} else {
+			failed++
+		}
+	}
+
+	// Calculate column widths.
+	scenarioColWidth := 0
+	for _, s := range scenarioOrder {
+		if len(s) > scenarioColWidth {
+			scenarioColWidth = len(s)
+		}
+	}
+	if scenarioColWidth < 8 {
+		scenarioColWidth = 8
+	}
+
+	faultColWidth := 14
+	for _, f := range faultOrder {
+		if len(f)+2 > faultColWidth {
+			faultColWidth = len(f) + 2
+		}
+	}
+
+	// Print header.
+	fmt.Fprintf(w, "\nFault Matrix: %d scenarios × %d faults = %d cells\n\n", len(scenarioOrder), len(faultOrder), total)
+
+	// Header row.
+	fmt.Fprintf(w, "%-*s", scenarioColWidth+2, "")
+	for _, f := range faultOrder {
+		fmt.Fprintf(w, "│ %-*s", faultColWidth, f)
+	}
+	fmt.Fprintln(w)
+
+	// Separator.
+	for i := 0; i < scenarioColWidth+2; i++ {
+		fmt.Fprint(w, "─")
+	}
+	for range faultOrder {
+		fmt.Fprint(w, "┼")
+		for i := 0; i < faultColWidth+1; i++ {
+			fmt.Fprint(w, "─")
+		}
+	}
+	fmt.Fprintln(w)
+
+	// Data rows.
+	for _, s := range scenarioOrder {
+		fmt.Fprintf(w, "%-*s", scenarioColWidth+2, s)
+		for _, f := range faultOrder {
+			key := s + ":" + f
+			c, ok := cells[key]
+			if !ok {
+				fmt.Fprintf(w, "│ %-*s", faultColWidth, "— (excluded)")
+			} else if c.passed {
+				cell := fmt.Sprintf("PASS (%dms)", c.durationMs)
+				fmt.Fprintf(w, "│ %-*s", faultColWidth, cell)
+			} else {
+				cell := "FAIL"
+				fmt.Fprintf(w, "│ %-*s", faultColWidth, cell)
+			}
+		}
+		fmt.Fprintln(w)
+	}
+
+	// Summary.
+	fmt.Fprintf(w, "\nResult: %d/%d passed", passed, total)
+	if failed > 0 {
+		fmt.Fprintf(w, ", %d failed", failed)
+	}
+	fmt.Fprintln(w)
+
+	// Show failures.
+	if failed > 0 {
+		fmt.Fprintln(w, "Failures:")
+		for _, s := range scenarioOrder {
+			for _, f := range faultOrder {
+				c := cells[s+":"+f]
+				if c != nil && !c.passed {
+					fmt.Fprintf(w, "  %s × %s: %s\n", s, f, c.reason)
+				}
+			}
 		}
 	}
 }

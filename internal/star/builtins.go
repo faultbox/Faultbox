@@ -1274,6 +1274,7 @@ func (rt *Runtime) builtinFaultMatrix(thread *starlark.Thread, fn *starlark.Buil
 				Expect:   expect,
 				Monitors: monitors, // matrix-wide monitors
 				Timeout:  30 * time.Second,
+				Matrix:   &MatrixInfo{ScenarioName: sc.Name(), FaultName: fa.Name},
 			}
 			rt.faultScenarios[name] = fs
 		}

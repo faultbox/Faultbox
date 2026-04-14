@@ -21,6 +21,27 @@ type TraceOutput struct {
 	Pass       int               `json:"pass"`
 	Fail       int               `json:"fail"`
 	Tests      []TestTraceOutput `json:"tests"`
+	Matrix     *MatrixOutput     `json:"matrix,omitempty"`
+}
+
+// MatrixOutput is the fault_matrix section of the JSON trace output.
+type MatrixOutput struct {
+	Scenarios []string           `json:"scenarios"`
+	Faults    []string           `json:"faults"`
+	Cells     []MatrixCellOutput `json:"cells"`
+	Excluded  [][]string         `json:"excluded,omitempty"`
+	Total     int                `json:"total"`
+	Passed    int                `json:"passed"`
+	Failed    int                `json:"failed"`
+}
+
+// MatrixCellOutput is one cell in the fault matrix.
+type MatrixCellOutput struct {
+	Scenario   string `json:"scenario"`
+	Fault      string `json:"fault"`
+	Passed     bool   `json:"passed"`
+	DurationMs int64  `json:"duration_ms"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // TestTraceOutput is the per-test section of the trace output.
@@ -103,7 +124,65 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 		enrichTestOutput(&tto, &tr)
 		out.Tests = append(out.Tests, tto)
 	}
+	// Build matrix section if any tests came from fault_matrix().
+	out.Matrix = buildMatrixOutput(result)
+
 	return out
+}
+
+// buildMatrixOutput extracts matrix test results into a structured matrix report.
+func buildMatrixOutput(result *SuiteResult) *MatrixOutput {
+	scenarioSet := make(map[string]bool)
+	faultSet := make(map[string]bool)
+	var scenarioOrder []string
+	var faultOrder []string
+	var cells []MatrixCellOutput
+	hasMatrix := false
+
+	for _, tr := range result.Tests {
+		if tr.Matrix == nil {
+			continue
+		}
+		hasMatrix = true
+		if !scenarioSet[tr.Matrix.ScenarioName] {
+			scenarioSet[tr.Matrix.ScenarioName] = true
+			scenarioOrder = append(scenarioOrder, tr.Matrix.ScenarioName)
+		}
+		if !faultSet[tr.Matrix.FaultName] {
+			faultSet[tr.Matrix.FaultName] = true
+			faultOrder = append(faultOrder, tr.Matrix.FaultName)
+		}
+		cells = append(cells, MatrixCellOutput{
+			Scenario:   tr.Matrix.ScenarioName,
+			Fault:      tr.Matrix.FaultName,
+			Passed:     tr.Result == "pass",
+			DurationMs: tr.DurationMs,
+			Reason:     tr.Reason,
+		})
+	}
+
+	if !hasMatrix {
+		return nil
+	}
+
+	passed := 0
+	failed := 0
+	for _, c := range cells {
+		if c.Passed {
+			passed++
+		} else {
+			failed++
+		}
+	}
+
+	return &MatrixOutput{
+		Scenarios: scenarioOrder,
+		Faults:    faultOrder,
+		Cells:     cells,
+		Total:     len(cells),
+		Passed:    passed,
+		Failed:    failed,
+	}
 }
 
 // WriteTraceResults writes the suite result with full event traces to a JSON file.
