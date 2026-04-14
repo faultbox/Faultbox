@@ -90,6 +90,9 @@ type Runtime struct {
 	// Used by the generator and also run as tests.
 	scenarios []ScenarioRegistration
 
+	// Registered fault assumptions — named fault configurations.
+	faultAssumptions map[string]*FaultAssumptionDef
+
 	// Protocol-level proxy manager.
 	proxyMgr *proxy.Manager
 

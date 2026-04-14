@@ -356,6 +356,53 @@ func (f *FaultDef) Truth() starlark.Bool   { return true }
 func (f *FaultDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: fault") }
 
 // ---------------------------------------------------------------------------
+// FaultAssumptionDef — named, reusable fault configuration
+// ---------------------------------------------------------------------------
+
+// FaultAssumptionRule is a single syscall-level fault targeting a service.
+type FaultAssumptionRule struct {
+	Target  *ServiceDef
+	Syscall string    // resolved syscall name (after family expansion)
+	Fault   *FaultDef
+}
+
+// FaultAssumptionProxyRule is a single protocol-level fault targeting an interface.
+type FaultAssumptionProxyRule struct {
+	Target     *InterfaceRef
+	ProxyFault *ProxyFaultDef
+}
+
+// FaultAssumptionDef is a first-class Starlark value representing a named,
+// reusable fault configuration. Created by fault_assumption() builtin.
+type FaultAssumptionDef struct {
+	Name        string
+	Description string
+	Rules       []FaultAssumptionRule
+	ProxyRules  []FaultAssumptionProxyRule
+	Monitors    []*MonitorDef
+}
+
+var _ starlark.Value = (*FaultAssumptionDef)(nil)
+
+func (a *FaultAssumptionDef) String() string {
+	parts := []string{}
+	for _, r := range a.Rules {
+		parts = append(parts, fmt.Sprintf("%s.%s=%s", r.Target.Name, r.Syscall, r.Fault.Action))
+	}
+	for _, r := range a.ProxyRules {
+		parts = append(parts, fmt.Sprintf("%s.%s=%s", r.Target.Service.Name, r.Target.Interface.Name, r.ProxyFault.Action))
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("<fault_assumption %s>", a.Name)
+	}
+	return fmt.Sprintf("<fault_assumption %s %s>", a.Name, strings.Join(parts, " "))
+}
+func (a *FaultAssumptionDef) Type() string           { return "fault_assumption" }
+func (a *FaultAssumptionDef) Freeze()                {}
+func (a *FaultAssumptionDef) Truth() starlark.Bool   { return true }
+func (a *FaultAssumptionDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: fault_assumption") }
+
+// ---------------------------------------------------------------------------
 // MonitorDef — first-class monitor value
 // ---------------------------------------------------------------------------
 

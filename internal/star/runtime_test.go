@@ -3,6 +3,7 @@ package star
 import (
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"go.starlark.net/starlark"
@@ -1153,6 +1154,296 @@ func TestRegisterMonitorSubscribes(t *testing.T) {
 	rt.events.subMu.RUnlock()
 	if subCount != 0 {
 		t.Errorf("expected 0 subscribers after UnregisterMonitor, got %d", subCount)
+	}
+}
+
+func TestFaultAssumptionBasic(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	v, ok := rt.globals["db_down"]
+	if !ok {
+		t.Fatal("global 'db_down' not found")
+	}
+	a, ok := v.(*FaultAssumptionDef)
+	if !ok {
+		t.Fatalf("expected *FaultAssumptionDef, got %T", v)
+	}
+
+	if a.Name != "db_down" {
+		t.Errorf("Name = %q, want db_down", a.Name)
+	}
+	if a.Type() != "fault_assumption" {
+		t.Errorf("Type() = %q, want fault_assumption", a.Type())
+	}
+
+	// connect expands to just "connect" (no family expansion).
+	if len(a.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(a.Rules))
+	}
+	if a.Rules[0].Syscall != "connect" {
+		t.Errorf("rule syscall = %q, want connect", a.Rules[0].Syscall)
+	}
+	if a.Rules[0].Fault.Action != "deny" {
+		t.Errorf("rule action = %q, want deny", a.Rules[0].Fault.Action)
+	}
+	if a.Rules[0].Fault.Errno != "ECONNREFUSED" {
+		t.Errorf("rule errno = %q, want ECONNREFUSED", a.Rules[0].Fault.Errno)
+	}
+	if a.Rules[0].Target.Name != "db" {
+		t.Errorf("rule target = %q, want db", a.Rules[0].Target.Name)
+	}
+}
+
+func TestFaultAssumptionFamilyExpansion(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+disk_full = fault_assumption("disk_full",
+    target = db,
+    write = deny("ENOSPC"),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	a := rt.globals["disk_full"].(*FaultAssumptionDef)
+	// "write" family expands to: write, writev, pwrite64.
+	if len(a.Rules) != 3 {
+		t.Fatalf("expected 3 rules (write family), got %d", len(a.Rules))
+	}
+	syscalls := make(map[string]bool)
+	for _, r := range a.Rules {
+		syscalls[r.Syscall] = true
+	}
+	for _, expected := range []string{"write", "writev", "pwrite64"} {
+		if !syscalls[expected] {
+			t.Errorf("expected syscall %q in expanded rules", expected)
+		}
+	}
+}
+
+func TestFaultAssumptionNamedOp(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+    ops = {"persist": op(syscalls=["write", "fsync"], path="/data/*")},
+)
+
+wal_corrupt = fault_assumption("wal_corrupt",
+    target = db,
+    persist = deny("EIO"),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	a := rt.globals["wal_corrupt"].(*FaultAssumptionDef)
+	// "persist" op has syscalls=["write", "fsync"].
+	// "write" → write, writev, pwrite64; "fsync" → fsync, fdatasync.
+	// Total: 5 rules.
+	if len(a.Rules) != 5 {
+		names := []string{}
+		for _, r := range a.Rules {
+			names = append(names, r.Syscall)
+		}
+		t.Fatalf("expected 5 rules (persist op expanded), got %d: %v", len(a.Rules), names)
+	}
+	// All should have the op name and path glob set.
+	for _, r := range a.Rules {
+		if r.Fault.Op != "persist" {
+			t.Errorf("rule %s: Op = %q, want persist", r.Syscall, r.Fault.Op)
+		}
+		if r.Fault.PathGlob != "/data/*" {
+			t.Errorf("rule %s: PathGlob = %q, want /data/*", r.Syscall, r.Fault.PathGlob)
+		}
+	}
+}
+
+func TestFaultAssumptionWithMonitors(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def check(e):
+    pass
+
+m = monitor(check, service="db")
+
+a = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+    monitors = [m],
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	a := rt.globals["a"].(*FaultAssumptionDef)
+	if len(a.Monitors) != 1 {
+		t.Fatalf("expected 1 monitor, got %d", len(a.Monitors))
+	}
+	if a.Monitors[0].Callback.Name() != "check" {
+		t.Errorf("monitor callback = %q, want check", a.Monitors[0].Callback.Name())
+	}
+}
+
+func TestFaultAssumptionComposition(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+orders = service("orders", "/tmp/orders",
+    interface("public", "http", 8080),
+    depends_on = [db],
+)
+
+def check_db(e):
+    pass
+
+m_db = monitor(check_db, service="db")
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+    monitors = [m_db],
+)
+
+slow_net = fault_assumption("slow_net",
+    target = orders,
+    connect = delay("200ms"),
+)
+
+cascade = fault_assumption("cascade",
+    faults = [db_down, slow_net],
+    description = "DB down and slow network",
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	c := rt.globals["cascade"].(*FaultAssumptionDef)
+
+	// Should have rules from both children.
+	if len(c.Rules) != 2 {
+		t.Fatalf("expected 2 rules (1 from db_down + 1 from slow_net), got %d", len(c.Rules))
+	}
+
+	// First rule should be from db_down (connect deny on db).
+	if c.Rules[0].Target.Name != "db" {
+		t.Errorf("rule[0].Target = %q, want db", c.Rules[0].Target.Name)
+	}
+	// Second rule should be from slow_net (connect delay on orders).
+	if c.Rules[1].Target.Name != "orders" {
+		t.Errorf("rule[1].Target = %q, want orders", c.Rules[1].Target.Name)
+	}
+
+	// Should inherit monitors from db_down.
+	if len(c.Monitors) != 1 {
+		t.Fatalf("expected 1 inherited monitor, got %d", len(c.Monitors))
+	}
+	if c.Monitors[0].Callback.Name() != "check_db" {
+		t.Errorf("inherited monitor = %q, want check_db", c.Monitors[0].Callback.Name())
+	}
+
+	// Description.
+	if c.Description != "DB down and slow network" {
+		t.Errorf("Description = %q", c.Description)
+	}
+}
+
+func TestFaultAssumptionRegistry(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Should be registered in rt.faultAssumptions.
+	if rt.faultAssumptions == nil {
+		t.Fatal("faultAssumptions map is nil")
+	}
+	a, ok := rt.faultAssumptions["db_down"]
+	if !ok {
+		t.Fatal("db_down not found in faultAssumptions registry")
+	}
+	if a.Name != "db_down" {
+		t.Errorf("registered Name = %q, want db_down", a.Name)
+	}
+}
+
+func TestFaultAssumptionErrorNoTarget(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+# Missing target= when specifying syscall faults.
+bad = fault_assumption("bad", connect=deny("ECONNREFUSED"))
+`)
+	if err == nil {
+		t.Fatal("expected error for fault_assumption without target")
+	}
+	if !strings.Contains(err.Error(), "requires target=") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestFaultAssumptionProtocolRules(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+pg = service("pg", "/tmp/pg",
+    interface("main", "tcp", 5432),
+)
+
+pg_insert_fail = fault_assumption("pg_insert_fail",
+    target = pg.main,
+    rules = [error(query="INSERT*", message="disk full")],
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	a := rt.globals["pg_insert_fail"].(*FaultAssumptionDef)
+	if len(a.ProxyRules) != 1 {
+		t.Fatalf("expected 1 proxy rule, got %d", len(a.ProxyRules))
+	}
+	if a.ProxyRules[0].ProxyFault.Action != "error" {
+		t.Errorf("proxy rule action = %q, want error", a.ProxyRules[0].ProxyFault.Action)
+	}
+	if a.ProxyRules[0].Target.Interface.Name != "main" {
+		t.Errorf("proxy rule target interface = %q, want main", a.ProxyRules[0].Target.Interface.Name)
 	}
 }
 

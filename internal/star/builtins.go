@@ -47,6 +47,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
 		"scenario":          starlark.NewBuiltin("scenario", rt.builtinScenario),
+		"fault_assumption":  starlark.NewBuiltin("fault_assumption", rt.builtinFaultAssumption),
 		"op":                starlark.NewBuiltin("op", builtinOp),
 		"response":          starlark.NewBuiltin("response", builtinProxyResponse),
 		"error":             starlark.NewBuiltin("error", builtinProxyError),
@@ -392,6 +393,11 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 		return nil, fmt.Errorf("fault() requires a service or interface argument")
 	}
 
+	// FaultAssumption as first arg: apply all its rules.
+	if assumption, ok := args[0].(*FaultAssumptionDef); ok {
+		return rt.builtinFaultFromAssumption(thread, assumption, kwargs)
+	}
+
 	// Protocol-level fault: first arg is InterfaceRef.
 	if ifRef, ok := args[0].(*InterfaceRef); ok {
 		return rt.builtinFaultProtocol(thread, ifRef, args[1:], kwargs)
@@ -399,7 +405,7 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 
 	svc, ok := args[0].(*ServiceDef)
 	if !ok {
-		return nil, fmt.Errorf("fault() first arg must be a service or interface_ref, got %s", args[0].Type())
+		return nil, fmt.Errorf("fault() first arg must be a service, interface_ref, or fault_assumption, got %s", args[0].Type())
 	}
 
 	// Extract run= callback and fault specs from kwargs.
@@ -448,6 +454,64 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 		return nil, fmt.Errorf("fault(): %w", err)
 	}
 	defer rt.removeFaults(svc.Name)
+
+	result, err := starlark.Call(thread, bodyFn, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return starlark.None, nil
+	}
+	return result, nil
+}
+
+// builtinFaultFromAssumption applies a FaultAssumptionDef's rules, runs the callback, then removes faults.
+func (rt *Runtime) builtinFaultFromAssumption(thread *starlark.Thread, assumption *FaultAssumptionDef, kwargs []starlark.Tuple) (starlark.Value, error) {
+	// Extract run= callback.
+	var bodyFn starlark.Callable
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		if key == "run" {
+			cb, ok := kv[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("fault() run= must be a callable")
+			}
+			bodyFn = cb
+		}
+	}
+	if bodyFn == nil {
+		return nil, fmt.Errorf("fault() requires run= keyword with a callback function")
+	}
+
+	// Apply syscall-level faults grouped by target service.
+	faultsByService := make(map[string]map[string]*FaultDef)
+	for _, r := range assumption.Rules {
+		svcName := r.Target.Name
+		if faultsByService[svcName] == nil {
+			faultsByService[svcName] = make(map[string]*FaultDef)
+		}
+		faultsByService[svcName][r.Syscall] = r.Fault
+	}
+	for svcName, faults := range faultsByService {
+		if err := rt.applyFaults(svcName, faults); err != nil {
+			return nil, fmt.Errorf("fault(): %w", err)
+		}
+		defer rt.removeFaults(svcName)
+	}
+
+	// Apply protocol-level faults.
+	// TODO: wire protocol proxy rules when fault_scenario uses this path.
+
+	// Register monitors for the duration of the callback.
+	var monitorIDs []int
+	for _, m := range assumption.Monitors {
+		monitorIDs = append(monitorIDs, rt.RegisterMonitor(m))
+	}
+	defer func() {
+		for _, id := range monitorIDs {
+			rt.UnregisterMonitor(id)
+		}
+	}()
 
 	result, err := starlark.Call(thread, bodyFn, nil, nil)
 	if err != nil {
@@ -804,6 +868,168 @@ func (rt *Runtime) builtinScenario(thread *starlark.Thread, fn *starlark.Builtin
 	})
 
 	return starlark.None, nil
+}
+
+// fault_assumption(name, target=, **syscall_faults, rules=, monitors=, faults=, description=)
+// Creates a named, reusable fault configuration. Returns a FaultAssumptionDef.
+func (rt *Runtime) builtinFaultAssumption(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	// Parse name — first positional arg.
+	if len(args) < 1 {
+		return nil, fmt.Errorf("fault_assumption() requires a name")
+	}
+	name, ok := starlark.AsString(args[0])
+	if !ok {
+		return nil, fmt.Errorf("fault_assumption() name must be a string, got %s", args[0].Type())
+	}
+
+	// Parse kwargs.
+	var target starlark.Value   // *ServiceDef or *InterfaceRef
+	var description string
+	var monitors []*MonitorDef
+	var children []*FaultAssumptionDef
+	var proxyRules []*ProxyFaultDef
+	syscallFaults := make(map[string]*FaultDef)
+
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "target":
+			target = kv[1]
+		case "description":
+			s, _ := starlark.AsString(kv[1])
+			description = s
+		case "monitors":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("fault_assumption() monitors= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				m, ok := list.Index(i).(*MonitorDef)
+				if !ok {
+					return nil, fmt.Errorf("fault_assumption() monitors[%d] must be a monitor, got %s", i, list.Index(i).Type())
+				}
+				monitors = append(monitors, m)
+			}
+		case "faults":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("fault_assumption() faults= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				child, ok := list.Index(i).(*FaultAssumptionDef)
+				if !ok {
+					return nil, fmt.Errorf("fault_assumption() faults[%d] must be a fault_assumption, got %s", i, list.Index(i).Type())
+				}
+				children = append(children, child)
+			}
+		case "rules":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("fault_assumption() rules= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				pf, ok := list.Index(i).(*ProxyFaultDef)
+				if !ok {
+					return nil, fmt.Errorf("fault_assumption() rules[%d] must be a proxy fault (response/error/drop/...), got %s", i, list.Index(i).Type())
+				}
+				proxyRules = append(proxyRules, pf)
+			}
+		default:
+			// Syscall fault kwarg.
+			fd, ok := kv[1].(*FaultDef)
+			if !ok {
+				return nil, fmt.Errorf("fault_assumption() %s= must be a fault (delay/deny/allow), got %s", key, kv[1].Type())
+			}
+			syscallFaults[key] = fd
+		}
+	}
+
+	assumption := &FaultAssumptionDef{
+		Name:        name,
+		Description: description,
+		Monitors:    monitors,
+	}
+
+	// Resolve syscall faults against the target.
+	if len(syscallFaults) > 0 {
+		if target == nil {
+			return nil, fmt.Errorf("fault_assumption() requires target= when syscall faults are specified")
+		}
+		svc, isSvc := target.(*ServiceDef)
+		ifRef, isIfRef := target.(*InterfaceRef)
+		if isIfRef {
+			svc = ifRef.Service
+		}
+		if !isSvc && !isIfRef {
+			return nil, fmt.Errorf("fault_assumption() target= must be a service or interface_ref, got %s", target.Type())
+		}
+
+		for key, fd := range syscallFaults {
+			// Resolution order: named op → family → raw syscall.
+			if svc.Ops != nil {
+				if opDef, isOp := svc.Ops[key]; isOp {
+					for _, sc := range opDef.Syscalls {
+						opFd := *fd
+						opFd.Op = key
+						if opDef.Path != "" {
+							opFd.PathGlob = opDef.Path
+						}
+						for _, expanded := range expandSyscallFamily(sc) {
+							assumption.Rules = append(assumption.Rules, FaultAssumptionRule{
+								Target:  svc,
+								Syscall: expanded,
+								Fault:   &opFd,
+							})
+						}
+					}
+					continue
+				}
+			}
+			// Family or raw syscall expansion.
+			for _, expanded := range expandSyscallFamily(key) {
+				copyFd := *fd
+				assumption.Rules = append(assumption.Rules, FaultAssumptionRule{
+					Target:  svc,
+					Syscall: expanded,
+					Fault:   &copyFd,
+				})
+			}
+		}
+	}
+
+	// Resolve protocol-level faults.
+	if len(proxyRules) > 0 {
+		if target == nil {
+			return nil, fmt.Errorf("fault_assumption() requires target= when rules= is specified")
+		}
+		ifRef, ok := target.(*InterfaceRef)
+		if !ok {
+			return nil, fmt.Errorf("fault_assumption() rules= requires target to be an interface_ref (e.g., service.interface), got %s", target.Type())
+		}
+		for _, pf := range proxyRules {
+			assumption.ProxyRules = append(assumption.ProxyRules, FaultAssumptionProxyRule{
+				Target:     ifRef,
+				ProxyFault: pf,
+			})
+		}
+	}
+
+	// Merge children (composition).
+	for _, child := range children {
+		// Rules: append (last-wins on conflict handled at apply time).
+		assumption.Rules = append(assumption.Rules, child.Rules...)
+		assumption.ProxyRules = append(assumption.ProxyRules, child.ProxyRules...)
+		// Monitors: inherit from children.
+		assumption.Monitors = append(assumption.Monitors, child.Monitors...)
+	}
+
+	// Register in the runtime for string-based lookup.
+	if rt.faultAssumptions == nil {
+		rt.faultAssumptions = make(map[string]*FaultAssumptionDef)
+	}
+	rt.faultAssumptions[name] = assumption
+
+	return assumption, nil
 }
 
 // nondet(service, ...) — marks one or more services as nondeterministic,
