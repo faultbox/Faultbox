@@ -36,6 +36,12 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | RFC-007 | `faultbox schema export` & VS Code Extension | — | RFC-006 |
 | RFC-008 | HTML Report & Fault Matrix Output | — | RFC-001 |
 
+### Phase 2b: Input Coverage
+
+| RFC | Title | Status | Depends On |
+|-----|-------|--------|------------|
+| [RFC-013](0013-parameterized-scenarios.md) | Parameterized Scenarios & Value Generators | Draft | RFC-001 |
+
 ### Phase 3: Trace Equivalence & Specification Mining
 
 | RFC | Title | Status | Depends On |
