@@ -127,27 +127,37 @@ func TestGenerate(t *testing.T) {
 		t.Error("expected load() statement")
 	}
 
-	// Should contain test functions.
-	if !strings.Contains(code, "def test_gen_order_flow_db_down") {
-		t.Error("expected test_gen_order_flow_db_down")
+	// Should contain fault_assumption() definitions.
+	if !strings.Contains(code, "fault_assumption(") {
+		t.Error("expected fault_assumption() definitions")
 	}
 
-	// Should reference the scenario function.
-	if !strings.Contains(code, "run=order_flow") {
-		t.Error("expected run=order_flow in generated code")
+	// Should contain fault_matrix() call.
+	if !strings.Contains(code, "fault_matrix(") {
+		t.Error("expected fault_matrix() call")
 	}
 
-	// Should contain fault() calls.
-	if !strings.Contains(code, "fault(") {
-		t.Error("expected fault() calls")
+	// Should reference the scenario in fault_matrix.
+	if !strings.Contains(code, "order_flow") {
+		t.Error("expected order_flow in generated code")
 	}
 
-	// Should contain partition() call.
+	// Should contain deny/delay fault constructors.
+	if !strings.Contains(code, "deny(") {
+		t.Error("expected deny() in generated code")
+	}
+
+	// Should contain partition() calls for network partitions.
 	if !strings.Contains(code, "partition(") {
-		t.Error("expected partition() call")
+		t.Error("expected partition() call for network partition")
 	}
 
-	// Should NOT contain any assertions (user adds them).
+	// Should NOT contain old-style test_gen_ functions.
+	if strings.Contains(code, "def test_gen_") {
+		t.Error("generated code should not contain old-style test_gen_ functions")
+	}
+
+	// Should NOT contain any assertions (user adds them via overrides).
 	if strings.Contains(code, "assert_") {
 		t.Error("generated code should not contain assertions")
 	}
