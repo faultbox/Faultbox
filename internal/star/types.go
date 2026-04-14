@@ -400,7 +400,14 @@ func (a *FaultAssumptionDef) String() string {
 func (a *FaultAssumptionDef) Type() string           { return "fault_assumption" }
 func (a *FaultAssumptionDef) Freeze()                {}
 func (a *FaultAssumptionDef) Truth() starlark.Bool   { return true }
-func (a *FaultAssumptionDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: fault_assumption") }
+func (a *FaultAssumptionDef) Hash() (uint32, error) {
+	// Hash by name — names are unique in the registry.
+	var h uint32
+	for _, c := range a.Name {
+		h = h*31 + uint32(c)
+	}
+	return h, nil
+}
 
 // ---------------------------------------------------------------------------
 // FaultScenarioDef — composed scenario + faults + oracle

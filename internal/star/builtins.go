@@ -49,6 +49,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"scenario":          starlark.NewBuiltin("scenario", rt.builtinScenario),
 		"fault_assumption":  starlark.NewBuiltin("fault_assumption", rt.builtinFaultAssumption),
 		"fault_scenario":    starlark.NewBuiltin("fault_scenario", rt.builtinFaultScenario),
+		"fault_matrix":      starlark.NewBuiltin("fault_matrix", rt.builtinFaultMatrix),
 		"op":                starlark.NewBuiltin("op", builtinOp),
 		"response":          starlark.NewBuiltin("response", builtinProxyResponse),
 		"error":             starlark.NewBuiltin("error", builtinProxyError),
@@ -1114,6 +1115,169 @@ func (rt *Runtime) builtinFaultScenario(thread *starlark.Thread, fn *starlark.Bu
 		rt.faultScenarios = make(map[string]*FaultScenarioDef)
 	}
 	rt.faultScenarios[name] = fs
+
+	return starlark.None, nil
+}
+
+// fault_matrix(scenarios=, faults=, default_expect=, overrides={}, monitors=[], exclude=[])
+// Generates the cross-product of scenarios × fault assumptions.
+// Each cell becomes a fault_scenario registered as test_matrix_<scenario>_<fault>.
+func (rt *Runtime) builtinFaultMatrix(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var scenarios []starlark.Callable
+	var faults []*FaultAssumptionDef
+	var defaultExpect starlark.Callable
+	var monitors []*MonitorDef
+	var overridesDict *starlark.Dict
+	var excludeList *starlark.List
+
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		switch key {
+		case "scenarios":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() scenarios= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				cb, ok := list.Index(i).(starlark.Callable)
+				if !ok {
+					return nil, fmt.Errorf("fault_matrix() scenarios[%d] must be callable, got %s", i, list.Index(i).Type())
+				}
+				scenarios = append(scenarios, cb)
+			}
+		case "faults":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() faults= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				fa, ok := list.Index(i).(*FaultAssumptionDef)
+				if !ok {
+					return nil, fmt.Errorf("fault_matrix() faults[%d] must be a fault_assumption, got %s", i, list.Index(i).Type())
+				}
+				faults = append(faults, fa)
+			}
+		case "default_expect":
+			if kv[1] != starlark.None {
+				cb, ok := kv[1].(starlark.Callable)
+				if !ok {
+					return nil, fmt.Errorf("fault_matrix() default_expect= must be callable or None, got %s", kv[1].Type())
+				}
+				defaultExpect = cb
+			}
+		case "overrides":
+			d, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() overrides= must be a dict, got %s", kv[1].Type())
+			}
+			overridesDict = d
+		case "monitors":
+			list, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() monitors= must be a list, got %s", kv[1].Type())
+			}
+			for i := 0; i < list.Len(); i++ {
+				m, ok := list.Index(i).(*MonitorDef)
+				if !ok {
+					return nil, fmt.Errorf("fault_matrix() monitors[%d] must be a monitor, got %s", i, list.Index(i).Type())
+				}
+				monitors = append(monitors, m)
+			}
+		case "exclude":
+			l, ok := kv[1].(*starlark.List)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() exclude= must be a list, got %s", kv[1].Type())
+			}
+			excludeList = l
+		default:
+			return nil, fmt.Errorf("fault_matrix() unexpected keyword %q", key)
+		}
+	}
+
+	if len(scenarios) == 0 {
+		return nil, fmt.Errorf("fault_matrix() requires scenarios= with at least one scenario")
+	}
+	if len(faults) == 0 {
+		return nil, fmt.Errorf("fault_matrix() requires faults= with at least one fault_assumption")
+	}
+
+	// Build exclude set for fast lookup.
+	type cellKey struct {
+		scenarioName string
+		faultName    string
+	}
+	excluded := make(map[cellKey]bool)
+	if excludeList != nil {
+		for i := 0; i < excludeList.Len(); i++ {
+			tup, ok := excludeList.Index(i).(starlark.Tuple)
+			if !ok || len(tup) != 2 {
+				return nil, fmt.Errorf("fault_matrix() exclude[%d] must be a (scenario, fault) tuple", i)
+			}
+			sc, ok := tup[0].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() exclude[%d][0] must be callable", i)
+			}
+			fa, ok := tup[1].(*FaultAssumptionDef)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() exclude[%d][1] must be a fault_assumption", i)
+			}
+			excluded[cellKey{sc.Name(), fa.Name}] = true
+		}
+	}
+
+	// Build overrides map: (scenario_name, fault_name) → expect callable.
+	overrides := make(map[cellKey]starlark.Callable)
+	if overridesDict != nil {
+		for _, item := range overridesDict.Items() {
+			tup, ok := item[0].(starlark.Tuple)
+			if !ok || len(tup) != 2 {
+				return nil, fmt.Errorf("fault_matrix() overrides key must be a (scenario, fault) tuple")
+			}
+			sc, ok := tup[0].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() overrides key[0] must be callable")
+			}
+			fa, ok := tup[1].(*FaultAssumptionDef)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() overrides key[1] must be a fault_assumption")
+			}
+			expect, ok := item[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() overrides value must be callable")
+			}
+			overrides[cellKey{sc.Name(), fa.Name}] = expect
+		}
+	}
+
+	// Generate cross-product.
+	if rt.faultScenarios == nil {
+		rt.faultScenarios = make(map[string]*FaultScenarioDef)
+	}
+
+	for _, sc := range scenarios {
+		for _, fa := range faults {
+			ck := cellKey{sc.Name(), fa.Name}
+			if excluded[ck] {
+				continue
+			}
+
+			name := "matrix_" + sc.Name() + "_" + fa.Name
+			expect := defaultExpect
+			if override, ok := overrides[ck]; ok {
+				expect = override
+			}
+
+			fs := &FaultScenarioDef{
+				Name:     name,
+				Scenario: sc,
+				Faults:   []*FaultAssumptionDef{fa},
+				Expect:   expect,
+				Monitors: monitors, // matrix-wide monitors
+				Timeout:  30 * time.Second,
+			}
+			rt.faultScenarios[name] = fs
+		}
+	}
 
 	return starlark.None, nil
 }

@@ -1675,6 +1675,282 @@ fault_scenario("bad", faults=db_down)
 	}
 }
 
+func TestFaultMatrixBasic(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+def health_check():
+    return "healthy"
+
+scenario(order_flow)
+scenario(health_check)
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+disk_full = fault_assumption("disk_full",
+    target = db,
+    write = deny("ENOSPC"),
+)
+
+fault_matrix(
+    scenarios = [order_flow, health_check],
+    faults = [db_down, disk_full],
+    default_expect = lambda r: assert_true(r != None),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Should generate 2×2 = 4 fault scenarios.
+	if len(rt.faultScenarios) != 4 {
+		names := []string{}
+		for k := range rt.faultScenarios {
+			names = append(names, k)
+		}
+		t.Fatalf("expected 4 fault_scenarios, got %d: %v", len(rt.faultScenarios), names)
+	}
+
+	expected := []string{
+		"matrix_order_flow_db_down",
+		"matrix_order_flow_disk_full",
+		"matrix_health_check_db_down",
+		"matrix_health_check_disk_full",
+	}
+	for _, name := range expected {
+		if _, ok := rt.faultScenarios[name]; !ok {
+			t.Errorf("missing fault_scenario %q", name)
+		}
+	}
+}
+
+func TestFaultMatrixDiscoverTests(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+scenario(order_flow)
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [db_down],
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	tests := rt.DiscoverTests()
+	found := make(map[string]bool)
+	for _, name := range tests {
+		found[name] = true
+	}
+
+	if !found["test_matrix_order_flow_db_down"] {
+		t.Error("expected test_matrix_order_flow_db_down in discovered tests")
+	}
+	// scenario(order_flow) also registers test_order_flow.
+	if !found["test_order_flow"] {
+		t.Error("expected test_order_flow in discovered tests")
+	}
+}
+
+func TestFaultMatrixWithOverrides(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+def health_check():
+    return "healthy"
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+disk_full = fault_assumption("disk_full",
+    target = db,
+    write = deny("ENOSPC"),
+)
+
+def custom_expect(r):
+    assert_eq(r, "ok")
+
+fault_matrix(
+    scenarios = [order_flow, health_check],
+    faults = [db_down, disk_full],
+    default_expect = lambda r: assert_true(r != None),
+    overrides = {
+        (order_flow, db_down): custom_expect,
+    },
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// The overridden cell should have custom_expect.
+	fs := rt.faultScenarios["matrix_order_flow_db_down"]
+	if fs.Expect == nil {
+		t.Fatal("expect should not be nil")
+	}
+	if fs.Expect.Name() != "custom_expect" {
+		t.Errorf("expect = %q, want custom_expect", fs.Expect.Name())
+	}
+
+	// Other cells should have the lambda (default_expect).
+	fs2 := rt.faultScenarios["matrix_order_flow_disk_full"]
+	if fs2.Expect == nil {
+		t.Fatal("default expect should not be nil")
+	}
+	if fs2.Expect.Name() == "custom_expect" {
+		t.Error("non-overridden cell should not have custom_expect")
+	}
+}
+
+func TestFaultMatrixWithExclude(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+def health_check():
+    return "healthy"
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+disk_full = fault_assumption("disk_full",
+    target = db,
+    write = deny("ENOSPC"),
+)
+
+fault_matrix(
+    scenarios = [order_flow, health_check],
+    faults = [db_down, disk_full],
+    exclude = [
+        (health_check, disk_full),
+    ],
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// 2×2 - 1 excluded = 3.
+	if len(rt.faultScenarios) != 3 {
+		names := []string{}
+		for k := range rt.faultScenarios {
+			names = append(names, k)
+		}
+		t.Fatalf("expected 3 fault_scenarios (1 excluded), got %d: %v", len(rt.faultScenarios), names)
+	}
+
+	if _, ok := rt.faultScenarios["matrix_health_check_disk_full"]; ok {
+		t.Error("excluded cell matrix_health_check_disk_full should not exist")
+	}
+}
+
+func TestFaultMatrixWithMonitors(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+def check_all(e):
+    pass
+
+global_mon = monitor(check_all, service="db")
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [db_down],
+    monitors = [global_mon],
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	fs := rt.faultScenarios["matrix_order_flow_db_down"]
+	if len(fs.Monitors) != 1 {
+		t.Fatalf("expected 1 matrix-wide monitor, got %d", len(fs.Monitors))
+	}
+	if fs.Monitors[0].Callback.Name() != "check_all" {
+		t.Errorf("monitor = %q, want check_all", fs.Monitors[0].Callback.Name())
+	}
+}
+
+func TestFaultMatrixSmokeNoExpect(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def order_flow():
+    return "ok"
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+# No default_expect → all cells are smoke tests.
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [db_down],
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	fs := rt.faultScenarios["matrix_order_flow_db_down"]
+	if fs.Expect != nil {
+		t.Error("expect should be nil for smoke test (no default_expect)")
+	}
+}
+
 func TestFaultAssumptionProtocolRules(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `
