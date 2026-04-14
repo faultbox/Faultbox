@@ -45,7 +45,7 @@ make lima-create && make lima-build                 # macOS (one-time)
 | 3 | [Fault Injection in Tests](02-syscall-level/03-fault-injection.md) | 25 min |
 | 4 | [Traces & Assertions](02-syscall-level/04-traces.md) | 25 min |
 | 5 | [Exploring Concurrency](02-syscall-level/05-concurrency.md) | 25 min |
-| 6 | [Monitors & Partitions (Preview)](02-syscall-level/06-monitors.md) | 10 min |
+| 6 | [From Tests to Domains](02-syscall-level/06-domain-model.md) | 20 min |
 
 ## Part 3: Protocol-Level Fault Injection
 

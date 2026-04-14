@@ -194,12 +194,38 @@ def test_one_way_partition():
 | Network is slow between A and B | `fault(A, connect=delay("2s"))` |
 | Total isolation of service A | `partition(A, B)` + `partition(A, C)` for all dependencies |
 
+## Partitions and the domain-centric model
+
+`partition()` is bidirectional — it affects two services at once. This
+means it can't be expressed as a single `fault_assumption()` (which targets
+one service). Partitions remain standalone test functions, even in
+domain-centric specs:
+
+```python
+# Domain-centric: matrix for standard faults.
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [db_down, disk_full, slow_network],
+)
+
+# Partitions: standalone tests (not in matrix).
+def test_partition():
+    def scenario():
+        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+        assert_eq(resp.status, 503)
+    partition(orders, inventory, run=scenario)
+```
+
+`faultbox generate` handles this automatically — it produces a `fault_matrix()`
+for standard faults and separate `def test_*` functions for partitions.
+
 ## What you learned
 
 - `partition(A, B)` creates a bidirectional network split
 - Partitions + monitors verify safety under network failure
 - Test recovery after partition resolution
 - One-way partitions use `fault()` with `connect=deny()`
+- Partitions are standalone tests — not part of `fault_matrix()`
 - Partitions are the hardest failure mode — test them explicitly
 
 ## What's next

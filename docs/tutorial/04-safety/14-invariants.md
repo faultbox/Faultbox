@@ -26,33 +26,66 @@ This chapter teaches you to:
 
 ## Tests vs invariants
 
-### A test verifies one scenario
+### A test verifies one scenario under one fault
+
+In the domain-centric model ([Chapter 6](../02-syscall-level/06-domain-model.md)),
+you define scenarios (what the system does) and fault assumptions (what can
+go wrong) as separate layers, then compose them with `fault_matrix()`:
 
 ```python
-def test_db_down_returns_503():
-    def scenario():
-        resp = api.post(path="/orders", body='...')
-        assert_eq(resp.status, 503)
-    fault(api, connect=deny("ECONNREFUSED"), run=scenario)
+def order_flow():
+    return api.post(path="/orders", body='...')
+
+scenario(order_flow)
+
+db_down = fault_assumption("db_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_matrix(
+    scenarios = [order_flow],
+    faults = [db_down],
+    overrides = {
+        (order_flow, db_down): lambda r: assert_eq(r.status, 503),
+    },
+)
 ```
 
 This checks: "when the DB is down, the API returns 503." It says nothing
 about what happens when the DB is slow, when the disk is full, or when
 two requests race.
 
-### An invariant verifies a property across all scenarios
+### An invariant verifies a property across ALL scenarios and faults
 
 "An order confirmed to the user is always persisted in the database."
 
-This must hold when:
-- The DB is healthy (happy path)
-- The DB is slow (delay fault)
-- The disk is full (ENOSPC fault)
-- Two orders arrive simultaneously (concurrency)
-- The cache is down (degraded mode)
-- The network partitions mid-request (partition)
+This must hold in every cell of the matrix:
+- Every scenario (order flow, health check, bulk import, ...)
+- Under every fault (DB down, slow, disk full, partition, ...)
+- In every interleaving (concurrent requests, retries, ...)
 
-If ANY scenario violates this, you have a data loss bug.
+If ANY combination violates this, you have a data loss bug.
+
+In the domain-centric model, invariants live on **fault assumptions** as
+monitors — they fire automatically in every test that uses the assumption:
+
+```python
+def order_persisted(event):
+    # If API confirmed, DB must have the row
+    if event["type"] == "stdout" and "confirmed" in event.get("body", ""):
+        rows = events(where=lambda e: e.type == "wal" and e.data.get("action") == "INSERT")
+        if len(rows) == 0:
+            fail("order confirmed but not persisted!")
+
+persistence_check = monitor(order_persisted)
+
+db_down = fault_assumption("db_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+    monitors = [persistence_check],  # checked in every test using db_down
+)
+```
 
 ## Safety vs liveness
 

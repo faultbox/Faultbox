@@ -6,16 +6,17 @@
 
 ## Goals & Purpose
 
-In chapters 2-7 you wrote fault tests by hand — picking specific failure
-modes, writing assertions, running them. This works, but it's slow and
-you inevitably miss failure modes.
+[Chapter 6](../02-syscall-level/06-domain-model.md) introduced the domain-centric
+model — separating scenarios, fault assumptions, and oracles into three
+independent layers. This chapter builds on that with `faultbox generate`:
+automatic failure discovery that outputs the domain-centric format.
 
 **The question:** "Have I tested every way this system can break?"
 
 This chapter teaches you to:
-- **Register happy-path scenarios** — describe how your system works
-- **Auto-generate failure mutations** — let Faultbox propose what can break
-- **Review and curate** — keep the relevant tests, discard noise
+- **Register scenario probes** — describe what the system does
+- **Auto-generate fault assumptions** — let Faultbox propose failure modes
+- **Review and curate** — add overrides with expected behavior
 - **Organize specs across files** — use `load()` for clean separation
 
 After this chapter, your workflow becomes: write the happy path once,
