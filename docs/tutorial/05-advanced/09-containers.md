@@ -15,8 +15,9 @@ predictably. Real Postgres has connection pools, WAL persistence, buffer
 management, and its own error handling. The failure modes are different.
 
 Faultbox solves this by running real Docker containers with the same seccomp
-fault injection used for binaries. The same `fault()` API, the same
-assertions, the same trace output — but now against real infrastructure.
+fault injection used for binaries. The same `fault_assumption()` and
+`fault_scenario()` API, the same assertions, the same trace output — but
+now against real infrastructure.
 
 This chapter teaches you to:
 - **Orchestrate Docker containers** with Faultbox (instead of docker-compose)
@@ -135,24 +136,39 @@ make lima-run CMD="sudo faultbox test container-demo/faultbox.star"
 ```
 
 ```
---- PASS: test_happy_path (9.7s) ---
---- PASS: test_postgres_write_enospc (10.4s) ---
---- PASS: test_postgres_write_failure (9.4s) ---
---- PASS: test_write_and_read (9.7s) ---
+--- PASS: happy_path (9.7s) ---
+--- PASS: postgres_write_enospc (10.4s) ---
+--- PASS: postgres_write_failure (9.4s) ---
+--- PASS: write_and_read (9.7s) ---
 4 passed, 0 failed
 ```
 
 ## Fault injection on containers
 
-Same API — Faultbox doesn't care if it's a binary or container:
+The domain-centric model separates scenarios, faults, and expectations.
+Faultbox doesn't care if it's a binary or container:
 
 ```python
-def test_postgres_disk_full():
-    """Postgres can't write — API should return 503."""
-    def scenario():
-        resp = api.post(path="/data?key=full&value=test")
-        assert_true(resp.status >= 500, "expected 5xx on ENOSPC")
-    fault(postgres, write=deny("ENOSPC", label="disk full"), run=scenario)
+# --- Scenario: probe function returning an observable ---
+
+def write_data():
+    return api.post(path="/data?key=full&value=test")
+scenario(write_data)
+
+# --- Fault assumption: named, reusable ---
+
+pg_disk_full = fault_assumption("pg_disk_full",
+    target = postgres,
+    write = deny("ENOSPC", label="disk full"),
+)
+
+# --- Fault scenario: composed test ---
+
+fault_scenario("postgres_disk_full",
+    scenario = write_data,
+    faults = pg_disk_full,
+    expect = lambda r: assert_true(r.status >= 500, "expected 5xx on ENOSPC"),
+)
 ```
 
 **Linux:**
@@ -166,7 +182,7 @@ make lima-run CMD="sudo faultbox test container-demo/faultbox.star --test postgr
 ```
 
 ```
---- PASS: test_postgres_disk_full (10.4s, seed=0) ---
+--- PASS: postgres_disk_full (10.4s, seed=0) ---
   fault rule on postgres: write=deny(ENOSPC) → filter:[write,writev,pwrite64] label="disk full"
     #5319  postgres  pwrite64  deny(no space left on device)  [disk full]
 ```
@@ -189,8 +205,8 @@ it covers all write variants.
 
 Faultbox only installs seccomp filters on services that are actually faulted.
 In the demo:
-- **test_happy_path**: no faults → all containers run at native speed
-- **test_postgres_write_failure**: only Postgres gets a seccomp filter
+- **happy_path**: no faults → all containers run at native speed
+- **postgres_write_failure**: only Postgres gets a seccomp filter
 
 Redis and the API always run without interception overhead. This is why
 fault tests and non-fault tests have similar timing (~10s).
@@ -217,6 +233,8 @@ pg = service("postgres",
 
 - `image=` pulls Docker images, `build=` builds from Dockerfile
 - `.internal_addr` for container-to-container, `.addr` for host access
+- `scenario(fn)` registers probes, `fault_assumption()` defines reusable faults
+- `fault_scenario()` composes scenarios + faults + expectations
 - Fault injection works identically on containers and binaries
 - Syscall family expansion handles differences (pwrite64 vs write)
 - Per-service filtering: only faulted services get seccomp overhead
@@ -244,18 +262,20 @@ slow — Chapter 10 shows how to auto-generate them.
 
 ## Exercises
 
-1. **Read the trace**: Run test_postgres_write_failure with `--output trace.json`.
+1. **Read the trace**: Run postgres_write_failure with `--output trace.json`.
    Find the `pwrite64` events. What files was Postgres writing to? (Look at
    the `path` field.)
 
 2. **Build your own service**: Create a directory with a Go HTTP server and
    Dockerfile. Declare it with `build="./my-svc"`. Does it build and start?
 
-3. **Multiple faults**: Write a test that faults BOTH Postgres (`write=deny("EIO")`)
-   AND the API (`connect=delay("1s")`). What happens when everything breaks?
+3. **Multiple faults**: Write a `fault_assumption` that faults BOTH Postgres
+   (`write=deny("EIO")`) and create a second one for the API
+   (`connect=delay("1s")`). Combine them in a `fault_scenario` with
+   `faults=[pg_fault, api_fault]`. What happens when everything breaks?
 
 4. **Graceful degradation**: The demo API connects to Redis but doesn't use it
-   yet. Imagine it cached values in Redis. Write a test that faults Redis
-   (`connect=deny("ECONNREFUSED")`) and asserts the API still works via
-   Postgres. This tests graceful degradation — a key production resilience
-   pattern.
+   yet. Imagine it cached values in Redis. Write a `fault_assumption` that
+   faults Redis (`connect=deny("ECONNREFUSED")`) and a `fault_scenario` that
+   expects the API still works via Postgres. This tests graceful degradation —
+   a key production resilience pattern.

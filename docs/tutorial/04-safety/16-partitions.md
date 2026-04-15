@@ -19,6 +19,10 @@ your system handles partitions without violating safety invariants.
 
 ## partition() builtin
 
+Partitions are bidirectional — they affect two services at once. Unlike
+`fault_assumption()` (which targets one service), partitions remain as
+standalone test functions:
+
 ```python
 def test_network_split():
     """Orders can't reach inventory — should return 503."""
@@ -53,12 +57,13 @@ orders = service("orders", BIN + "/order-svc",
 
 Save as `partition-test.star`.
 
-## Happy path first
+## Scenario
 
 ```python
-def test_happy_path():
-    resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-    assert_eq(resp.status, 200)
+def place_order():
+    return orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+
+scenario(place_order)
 ```
 
 **Linux:**

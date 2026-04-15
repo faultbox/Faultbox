@@ -344,6 +344,10 @@ assumptions. Add a third fault and you get 6 matrix tests automatically.
 
 ## What's next
 
+**From here forward, all tutorial examples use the domain-centric model.**
+When you see a scenario, a fault assumption, or a matrix — that's the
+standard approach for writing Faultbox specs.
+
 Continue to:
 - [Part 3: Protocol-Level Faults](../03-protocol-level/07-http-redis.md) — HTTP, database, broker faults
 - [Part 4: Safety & Verification](../04-safety/14-invariants.md) — invariants, monitors, partitions

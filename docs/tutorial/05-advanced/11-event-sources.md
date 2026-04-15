@@ -52,13 +52,18 @@ Save as `events-test.star`.
 ### Happy path: verify logs exist
 
 ```python
-def test_db_logs_operations():
-    """Verify the DB logs SET operations to stdout."""
+def post_data():
     api.post(path="/data/key1", body="value1")
-
     logs = events(where=lambda e: e.type == "stdout" and e.service == "db")
     print("db logged", len(logs), "lines")
-    assert_true(len(logs) > 0, "db should produce log output")
+    return logs
+scenario(post_data)
+
+fault_scenario("db_logs_operations",
+    scenario = post_data,
+    faults = [],
+    expect = lambda r: assert_true(len(r) > 0, "db should produce log output"),
+)
 ```
 
 **Linux:**
@@ -77,13 +82,13 @@ All event source events have a `.data` attribute that auto-decodes JSON
 into native Starlark dicts. You never call `json.decode()`:
 
 ```python
-def test_inspect_log_structure():
-    """Print log structure to discover available fields."""
+def inspect_logs():
     api.post(path="/data/key1", body="value1")
-
     logs = events(where=lambda e: e.type == "stdout" and e.service == "db")
     for log in logs:
         print("fields:", log.data)
+    return logs
+scenario(inspect_logs)
 ```
 
 **Linux:**
@@ -108,9 +113,10 @@ For services that output structured JSON logs (most Go/Node services):
 ```python
 observe = [stdout(decoder=json_decoder())]
 
+# In an expect lambda or assertion:
 # If service outputs: {"level":"INFO","msg":"SET key1 value1","op":"SET"}
-assert_eventually(where=lambda e:
-    e.type == "stdout" and e.data.get("op") == "SET")
+# assert_eventually(where=lambda e:
+#     e.type == "stdout" and e.data.get("op") == "SET")
 ```
 
 ### Logfmt decoder
@@ -121,8 +127,8 @@ For services using logfmt (`key=value` pairs):
 observe = [stdout(decoder=logfmt_decoder())]
 
 # If service outputs: level=INFO msg="SET key1 value1" op=SET
-assert_eventually(where=lambda e:
-    e.type == "stdout" and e.data.get("op") == "SET")
+# assert_eventually(where=lambda e:
+#     e.type == "stdout" and e.data.get("op") == "SET")
 ```
 
 ### Regex decoder
@@ -135,8 +141,8 @@ observe = [stdout(decoder=regex_decoder(
 ))]
 
 # If service outputs: 2026-04-10T12:00:00Z [ERROR] connection refused
-assert_eventually(where=lambda e:
-    e.type == "stdout" and e.data.get("level") == "ERROR")
+# assert_eventually(where=lambda e:
+#     e.type == "stdout" and e.data.get("level") == "ERROR")
 ```
 
 Named capture groups (`?P<name>`) become fields in `.data`.
@@ -147,16 +153,18 @@ Monitors fire on every event as it arrives — use them to catch errors
 the moment they happen:
 
 ```python
-def test_no_errors_in_logs():
-    """Fail immediately if any service logs an ERROR."""
-    def check_no_errors(event):
-        if event.data.get("level") == "ERROR":
-            fail("unexpected error in logs: " + event.data.get("msg", ""))
-
-    monitor(check_no_errors, service="db")
-
+def post_and_get():
     api.post(path="/data/key1", body="value1")
     api.get(path="/data/key1")
+scenario(post_and_get)
+
+fault_scenario("no_errors_in_logs",
+    scenario = post_and_get,
+    faults = [],
+    expect = lambda r: assert_never(where=lambda e:
+        e.type == "stdout" and e.service == "db"
+        and e.data.get("level") == "ERROR"),
+)
 ```
 
 **Linux:**
@@ -171,27 +179,27 @@ make lima-run CMD="faultbox test events-test.star --test no_errors_in_logs"
 
 ### Monitor + fault: catching error handling
 
-The real power: inject a fault AND monitor logs for the expected error
+The real power: inject a fault AND check logs for the expected error
 message. This verifies not just that the service returns an error, but
 that it logs something useful for operators:
 
 ```python
-def test_error_logged_on_write_failure():
-    """When DB write fails, verify error appears in logs."""
-    error_seen = {"count": 0}
+def post_data_simple():
+    return api.post(path="/data/key1", body="value1")
+scenario(post_data_simple)
 
-    def watch_errors(event):
-        if "error" in event.data.get("msg", "").lower():
-            error_seen["count"] += 1
+db_write_fail = fault_assumption("db_write_fail",
+    target = db,
+    write = deny("EIO"),
+)
 
-    monitor(watch_errors, service="api")
-
-    def scenario():
-        api.post(path="/data/key1", body="value1")
-        assert_true(error_seen["count"] > 0,
-            "API should log an error when DB write fails")
-
-    fault(db, write=deny("EIO"), run=scenario)
+fault_scenario("error_logged_on_write_failure",
+    scenario = post_data_simple,
+    faults = db_write_fail,
+    expect = lambda r: assert_eventually(where=lambda e:
+        e.type == "stdout" and e.service == "api"
+        and "error" in e.data.get("msg", "").lower()),
+)
 ```
 
 **Linux:**
@@ -232,33 +240,43 @@ api = service("api",
 and emits an event for every INSERT, UPDATE, DELETE on the `orders` table.
 
 ```python
-def test_order_persisted_to_db():
-    """Verify the order actually reaches the database."""
-    resp = api.http.post(path="/orders", body='{"item":"widget","qty":1}')
-    assert_eq(resp.status, 201)
+def create_order():
+    return api.http.post(path="/orders", body='{"item":"widget","qty":1}')
+scenario(create_order)
 
-    # The WAL event proves the row was inserted — not just that
-    # the API returned 201. It actually reached the database.
-    assert_eventually(where=lambda e:
-        e.type == "wal" and e.data.get("table") == "orders"
-        and e.data.get("action") == "INSERT")
+fault_scenario("order_persisted_to_db",
+    scenario = create_order,
+    faults = [],
+    expect = lambda r: [
+        assert_eq(r.status, 201),
+        # The WAL event proves the row was inserted — not just that
+        # the API returned 201. It actually reached the database.
+        assert_eventually(where=lambda e:
+            e.type == "wal" and e.data.get("table") == "orders"
+            and e.data.get("action") == "INSERT"),
+    ],
+)
 ```
 
 ### WAL + fault: verify rollback
 
 ```python
-def test_no_insert_on_payment_failure():
-    """When payment service is down, order should NOT be persisted."""
-    def scenario():
-        resp = api.http.post(path="/orders", body='{"item":"widget","qty":1}')
-        assert_true(resp.status >= 400, "should fail without payment")
+payment_down = fault_assumption("payment_down",
+    target = api,
+    connect = deny("ECONNREFUSED", label="payment down"),
+)
 
+fault_scenario("no_insert_on_payment_failure",
+    scenario = create_order,
+    faults = payment_down,
+    expect = lambda r: [
+        assert_true(r.status >= 400, "should fail without payment"),
         # Prove: no INSERT happened in the database.
         assert_never(where=lambda e:
             e.type == "wal" and e.data.get("table") == "orders"
-            and e.data.get("action") == "INSERT")
-
-    fault(api, connect=deny("ECONNREFUSED", label="payment down"), run=scenario)
+            and e.data.get("action") == "INSERT"),
+    ],
+)
 ```
 
 **Why this matters:** the API returned an error, but did it actually
@@ -292,36 +310,49 @@ worker = service("worker",
 `order-events` topic and decodes each message as JSON.
 
 ```python
-def test_order_event_published():
-    """Verify the worker publishes an event to Kafka."""
-    resp = worker.http.post(path="/process", body='{"order_id": 42}')
-    assert_eq(resp.status, 200)
+def process_order():
+    return worker.http.post(path="/process", body='{"order_id": 42}')
+scenario(process_order)
 
-    # The event should appear on the topic.
-    assert_eventually(where=lambda e:
-        e.type == "topic" and e.data.get("order_id") == 42)
+fault_scenario("order_event_published",
+    scenario = process_order,
+    faults = [],
+    expect = lambda r: [
+        assert_eq(r.status, 200),
+        # The event should appear on the topic.
+        assert_eventually(where=lambda e:
+            e.type == "topic" and e.data.get("order_id") == 42),
+    ],
+)
 ```
 
 ### Topic + fault: message loss detection
 
 ```python
-def test_no_orphan_events_on_db_failure():
-    """If DB write fails, no event should be published to Kafka.
+def process_order_99():
+    return worker.http.post(path="/process", body='{"order_id": 99}')
+scenario(process_order_99)
 
-    This catches a common bug: publishing an event before confirming
-    the database write. If the DB fails after publish, the event is
-    orphaned — consumers process an order that doesn't exist.
-    """
-    def scenario():
-        resp = worker.http.post(path="/process", body='{"order_id": 99}')
-        assert_true(resp.status >= 500, "should fail on DB error")
+db_down = fault_assumption("db_down",
+    target = pg,
+    write = deny("EIO", label="db down"),
+)
 
+fault_scenario("no_orphan_events_on_db_failure",
+    scenario = process_order_99,
+    faults = db_down,
+    expect = lambda r: [
+        assert_true(r.status >= 500, "should fail on DB error"),
         # No event should appear — the DB write failed.
         assert_never(where=lambda e:
-            e.type == "topic" and e.data.get("order_id") == 99)
-
-    fault(pg, write=deny("EIO", label="db down"), run=scenario)
+            e.type == "topic" and e.data.get("order_id") == 99),
+    ],
+)
 ```
+
+This catches a common bug: publishing an event before confirming
+the database write. If the DB fails after publish, the event is
+orphaned — consumers process an order that doesn't exist.
 
 ## Redis: polling state
 
@@ -342,14 +373,20 @@ redis = service("redis",
 the result changes:
 
 ```python
-def test_session_created():
-    """Verify the service creates a session in Redis."""
-    resp = api.http.post(path="/login", body='{"user":"alice"}')
-    assert_eq(resp.status, 200)
+def login_user():
+    return api.http.post(path="/login", body='{"user":"alice"}')
+scenario(login_user)
 
-    assert_eventually(where=lambda e:
-        e.type == "poll" and e.service == "redis"
-        and e.data.get("value") != "")
+fault_scenario("session_created",
+    scenario = login_user,
+    faults = [],
+    expect = lambda r: [
+        assert_eq(r.status, 200),
+        assert_eventually(where=lambda e:
+            e.type == "poll" and e.service == "redis"
+            and e.data.get("value") != ""),
+    ],
+)
 ```
 
 ## Combining event sources with syscall faults
@@ -358,18 +395,25 @@ The full power: fault at the syscall level, observe at the application
 level. This tests the **end-to-end effect** of a low-level failure:
 
 ```python
-def test_disk_fault_produces_error_log():
-    """Syscall fault → does the service log a useful error?"""
-    def scenario():
-        api.post(path="/data/key1", body="value1")
+def write_data():
+    return api.post(path="/data/key1", body="value1")
+scenario(write_data)
 
+disk_failure = fault_assumption("disk_failure",
+    target = db,
+    write = deny("EIO", label="disk failure"),
+)
+
+fault_scenario("disk_fault_produces_error_log",
+    scenario = write_data,
+    faults = disk_failure,
+    expect = lambda r:
         # Syscall fault caused the write to fail.
         # Did the service log something useful?
         assert_eventually(where=lambda e:
             e.type == "stdout" and e.service == "api"
-            and "error" in e.data.get("msg", "").lower())
-
-    fault(db, write=deny("EIO", label="disk failure"), run=scenario)
+            and "error" in e.data.get("msg", "").lower()),
+)
 ```
 
 ## Exporting events: JSON and ShiViz
@@ -402,7 +446,8 @@ publish happen before or after the database commit?
 - `wal_stream(tables=[...])` watches Postgres WAL for INSERT/UPDATE/DELETE
 - `topic("name", decoder=...)` consumes Kafka messages
 - `poll(command="...", interval="...")` polls Redis or any command
-- Event source events work with `assert_eventually`, `assert_never`, monitors
+- `fault_scenario()` with `expect=` handles both response assertions and trace assertions
+- `assert_eventually` and `assert_never` work in `expect=` for event source verification
 - Combine syscall faults + event sources to test end-to-end failure effects
 
 ## What's next

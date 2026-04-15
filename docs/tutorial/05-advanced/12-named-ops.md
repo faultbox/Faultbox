@@ -41,22 +41,38 @@ orders = service("orders", BIN + "/order-svc",
 - `syscalls=` — list of syscall names (expanded by family: `write` → write, writev, pwrite64)
 - `path=` — optional glob filter (only fault writes to matching files)
 
-## Using operations in fault()
+## Using operations in fault assumptions
 
-Use the operation name as the fault keyword:
+Use the operation name as the fault keyword in a `fault_assumption`:
 
 ```python
-def test_persist_failure():
-    """All persist syscalls fail — inventory can't write or sync."""
-    def scenario():
-        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-        assert_true(resp.status != 200, "expected failure on persist")
-    fault(inventory, persist=deny("EIO", label="persist broken"), run=scenario)
+# --- Scenario ---
+
+def place_order():
+    return orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+scenario(place_order)
+
+# --- Fault assumptions using named operations ---
+
+persist_broken = fault_assumption("persist_broken",
+    target = inventory,
+    persist = deny("EIO", label="persist broken"),
+)
+
+fault_scenario("persist_failure",
+    scenario = place_order,
+    faults = persist_broken,
+    expect = lambda r: assert_true(r.status != 200, "expected failure on persist"),
+)
 ```
 
 This is equivalent to:
 ```python
-fault(inventory, write=deny("EIO"), fsync=deny("EIO"), run=scenario)
+fault_assumption("persist_broken_expanded",
+    target = inventory,
+    write = deny("EIO"),
+    fsync = deny("EIO"),
+)
 ```
 
 But clearer — you're faulting the *persist operation*, not individual syscalls.
@@ -66,16 +82,39 @@ But clearer — you're faulting the *persist operation*, not individual syscalls
 With `path=`, only writes to matching files are faulted:
 
 ```python
-def test_wal_failure():
-    """Only WAL writes fail — stdout and TCP responses still work."""
-    def scenario():
-        resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-        assert_eq(resp.status, 409, "expected 409 on WAL failure")
-    fault(inventory, wal_write=deny("EIO", label="WAL broken"), run=scenario)
+wal_broken = fault_assumption("wal_broken",
+    target = inventory,
+    wal_write = deny("EIO", label="WAL broken"),
+)
+
+fault_scenario("wal_failure",
+    scenario = place_order,
+    faults = wal_broken,
+    expect = lambda r: assert_eq(r.status, 409, "expected 409 on WAL failure"),
+)
 ```
 
 The inventory service can still log to stdout and respond via TCP — only
 writes to `/tmp/*.wal` are denied.
+
+## Fault matrix: cross-product testing
+
+Named operations shine with `fault_matrix` — test every scenario against
+every fault automatically:
+
+```python
+def check_inventory():
+    return orders.get(path="/inventory/widget")
+scenario(check_inventory)
+
+fault_matrix(
+    scenarios = [place_order, check_inventory],
+    faults = [persist_broken, wal_broken],
+    expect = lambda r: assert_true(r.status != 200, "expected failure under fault"),
+)
+```
+
+This generates 4 test cases (2 scenarios x 2 faults) automatically.
 
 ## Trace output
 
@@ -97,11 +136,13 @@ Format: `operation(syscall)` instead of just `syscall`.
 | Named ops: `persist=deny("EIO")` | Multiple related syscalls, path filtering, readable traces |
 | Protocol faults: `fault(db.main, error(query="INSERT*"))` | Protocol-specific (HTTP status, SQL error, Redis command) |
 
-All three can be combined in the same test.
+All three can be combined in the same `fault_scenario`.
 
 ## What you learned
 
 - `ops={"name": op(syscalls=[...], path=...)}` defines named operations
-- Use operation names in `fault()`: `fault(svc, persist=deny("EIO"))`
+- Use operation names in `fault_assumption()`: `persist=deny("EIO")`
+- `fault_scenario()` composes scenarios + fault assumptions + expectations
+- `fault_matrix()` generates cross-product tests from scenarios and faults
 - Path filters target specific files without affecting stdout/network
 - Trace output shows `op(syscall)` for clarity

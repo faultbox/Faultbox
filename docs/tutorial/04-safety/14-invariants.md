@@ -176,15 +176,24 @@ kafka.Publish("order-created", order)
 ```
 
 This code assumes: "if Insert fails, don't publish to Kafka." The
-invariant is: **no Kafka event without a successful DB insert.** Test it:
+invariant is: **no Kafka event without a successful DB insert.** Express
+it as a monitor on the fault assumption:
 
 ```python
-def test_no_orphan_events():
-    def scenario():
-        api.post(path="/orders", body='...')
-        assert_never(where=lambda e:
-            e.type == "topic" and e.data.get("topic") == "order-created")
-    fault(db, write=deny("EIO"), run=scenario)
+def no_orphan_events(event):
+    if event["type"] == "topic" and event.get("topic") == "order-created":
+        db_rows = events(where=lambda e:
+            e.type == "wal" and e.data.get("action") == "INSERT")
+        if len(db_rows) == 0:
+            fail("Kafka event published without DB insert")
+
+orphan_check = monitor(no_orphan_events)
+
+db_write_fail = fault_assumption("db_write_fail",
+    target = db,
+    write = deny("EIO"),
+    monitors = [orphan_check],
+)
 ```
 
 ### Technique 3: Production incidents
@@ -205,16 +214,22 @@ For any pair of operations, ask: "what if both happen at the same time?"
 - Retry + original succeed simultaneously → duplicate processing?
 
 ```python
-def test_no_overselling():
-    def order1():
-        return api.post(path="/orders", body='{"item":"widget","qty":25}')
-    def order2():
-        return api.post(path="/orders", body='{"item":"widget","qty":25}')
+def concurrent_orders():
+    results = parallel(
+        lambda: api.post(path="/orders", body='{"item":"widget","qty":25}'),
+        lambda: api.post(path="/orders", body='{"item":"widget","qty":25}'),
+    )
+    return results
 
-    results = parallel(order1, order2)
-    # At most one should succeed if stock is 25.
-    successes = [r for r in results if r.status == 200]
-    assert_true(len(successes) <= 1, "oversold: both orders succeeded")
+scenario(concurrent_orders)
+
+# Use fault_scenario with an expect that checks the invariant:
+fault_scenario("no_overselling",
+    scenario = concurrent_orders,
+    expect = lambda results: assert_true(
+        len([r for r in results if r.status == 200]) <= 1,
+        "oversold: both orders succeeded"),
+)
 ```
 
 ## Expressing invariants in Faultbox
@@ -248,69 +263,92 @@ assert_before(
 )
 ```
 
-### Combining: a complete invariant
+### Combining: a complete invariant as expect oracle
 
 ```python
-def test_order_durability():
-    """An order confirmed to the user is always persisted.
+def create_order():
+    return api.post(path="/orders", body='{"item":"widget","qty":1}')
 
-    Safety: no confirmation without persistence.
-    Liveness: persistence happens before the response.
-    """
-    def scenario():
-        resp = api.post(path="/orders", body='{"item":"widget","qty":1}')
-        assert_eq(resp.status, 200)
+scenario(create_order)
+
+fault_scenario("order_durability",
+    scenario = create_order,
+    expect = lambda r: (
+        assert_eq(r.status, 200),
 
         # Safety: the data was actually written
         assert_eventually(where=lambda e:
-            e.type == "wal" and e.data.get("table") == "orders")
+            e.type == "wal" and e.data.get("table") == "orders"),
 
         # Ordering: write happened before response
         assert_before(
             first={"service": "db", "type": "wal"},
             then={"service": "test", "type": "step_recv"},
-        )
-
-    # Test under multiple conditions:
-    trace(db, syscalls=["write", "fsync"], run=scenario)
+        ),
+    ),
+)
 ```
 
-## Invariants under fault
+## Invariants under fault — the domain-centric approach
 
-The real test: do your invariants hold when things break?
+The real test: do invariants hold when things break? In the domain model,
+invariants travel with fault assumptions — you don't wire them per-test:
 
 ```python
-def test_durability_under_slow_disk():
-    """Even with slow disk, confirmed orders are persisted."""
-    def scenario():
-        resp = api.post(path="/orders", body='...')
-        if resp.status == 200:
-            # If we told the user "success", it MUST be in the DB.
-            assert_eventually(where=lambda e:
-                e.type == "wal" and e.data.get("action") == "INSERT")
+# Invariant monitor: confirmed orders must be persisted
+def order_persisted_check(event):
+    if (event["type"] == "stdout" and event["service"] == "api"
+            and event.get("status") == "confirmed"):
+        rows = events(where=lambda e:
+            e.type == "wal" and e.data.get("action") == "INSERT")
+        if len(rows) == 0:
+            fail("order confirmed but not persisted!")
 
-    fault(db, write=delay("500ms"), run=scenario)
+persistence_monitor = monitor(order_persisted_check, service="api")
 
-def test_no_orphan_events_under_fault():
-    """When DB fails, no Kafka event should be published."""
-    def scenario():
-        api.post(path="/orders", body='...')
-        assert_never(where=lambda e:
-            e.type == "topic" and e.data.get("order_id") is not None)
+# Fault assumptions carry the invariant
+db_slow = fault_assumption("db_slow",
+    target = db,
+    write = delay("500ms"),
+    monitors = [persistence_monitor],
+)
 
-    fault(db, write=deny("EIO"), run=scenario)
+db_write_fail = fault_assumption("db_write_fail",
+    target = db,
+    write = deny("EIO"),
+    monitors = [persistence_monitor],
+)
+
+# Matrix: every cell verifies the invariant automatically
+fault_matrix(
+    scenarios = [create_order],
+    faults = [db_slow, db_write_fail],
+    overrides = {
+        (create_order, db_slow): lambda r: (
+            assert_true(r.status == 200 or r.status >= 500),
+        ),
+        (create_order, db_write_fail): lambda r: (
+            assert_true(r.status >= 500),
+        ),
+    },
+)
 ```
+
+Both matrix cells run `persistence_monitor` — if the API confirms an order
+that isn't persisted, the monitor catches it regardless of which fault is
+active.
 
 ## What you learned
 
 - **Tests** verify one scenario; **invariants** verify a property across all scenarios
 - **Safety properties:** bad things never happen (`assert_never`, monitors)
 - **Liveness properties:** good things eventually happen (`assert_eventually`)
+- **Domain-centric invariants:** monitors on `fault_assumption(monitors=)` fire across all matrix cells
 - **Finding invariants:** follow the money, read error handling, learn from incidents
-- **Expressing invariants:** `assert_never`, `assert_eventually`, `assert_before`, and combinations
+- **Expressing invariants:** monitors for real-time, `assert_*` in `expect` for post-hoc
 
 ## What's next
 
-Chapter 15 introduces **monitors** — continuous invariant checking that
-runs on every event in real-time, catching violations the moment they
-happen rather than at the end of the test.
+Chapter 15 introduces **monitors** in depth — the lifecycle, temporal
+property patterns, and how first-class `MonitorDef` values compose with
+fault assumptions and matrices.

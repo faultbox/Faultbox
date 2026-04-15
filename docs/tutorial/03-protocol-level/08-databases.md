@@ -20,7 +20,8 @@ happen at the **database and message broker** level:
 - "What if Redis returns READONLY for SET commands?"
 - "What if a gRPC call returns UNAVAILABLE?"
 
-The same `fault(interface_ref, ...)` mechanism works for all protocols.
+The domain-centric model separates **what you do** (scenarios) from
+**what breaks** (fault assumptions) and **what you expect** (assertions).
 Each proxy speaks the real wire protocol and can inject protocol-specific
 errors.
 
@@ -42,26 +43,42 @@ api = service("api",
     healthcheck = http("localhost:8080/health"),
 )
 
-def test_insert_fails():
-    """INSERT queries return an error — API should handle gracefully."""
-    def scenario():
-        resp = api.post(path="/users", body='{"name":"alice"}')
-        assert_true(resp.status >= 400,
-            "expected error when INSERT fails, got " + str(resp.status))
-    fault(db.main,
-        error(query="INSERT*", message="disk full"),
-        run=scenario,
-    )
+# --- Scenarios: probe functions that return observables ---
 
-def test_slow_query():
-    """SELECT queries are delayed 3s — API should timeout."""
-    def scenario():
-        resp = api.get(path="/users/1")
-        assert_true(resp.duration_ms > 2000, "expected slow response")
-    fault(db.main,
-        delay(query="SELECT*", delay="3s"),
-        run=scenario,
-    )
+def create_user():
+    return api.post(path="/users", body='{"name":"alice"}')
+scenario(create_user)
+
+def get_user():
+    return api.get(path="/users/1")
+scenario(get_user)
+
+# --- Fault assumptions: named, reusable fault configs ---
+
+insert_error = fault_assumption("insert_error",
+    target = db.main,
+    error(query="INSERT*", message="disk full"),
+)
+
+slow_select = fault_assumption("slow_select",
+    target = db.main,
+    delay(query="SELECT*", delay="3s"),
+)
+
+# --- Fault scenarios: composed tests ---
+
+fault_scenario("insert_fails",
+    scenario = create_user,
+    faults = insert_error,
+    expect = lambda r: assert_true(r.status >= 400,
+        "expected error when INSERT fails, got " + str(r.status)),
+)
+
+fault_scenario("slow_query",
+    scenario = get_user,
+    faults = slow_select,
+    expect = lambda r: assert_true(r.duration_ms > 2000, "expected slow response"),
+)
 ```
 
 The proxy parses the Postgres wire protocol — it sees the actual SQL query
@@ -77,19 +94,24 @@ db = service("mysql",
     healthcheck = tcp("localhost:3306"),
 )
 
-def test_mysql_read_only():
-    """All INSERT queries fail — simulating a read-only replica."""
-    def scenario():
-        resp = api.post(path="/users", body='{"name":"alice"}')
-        assert_true(resp.status >= 400)
-    fault(db.main,
-        error(query="INSERT*", message="Table is read only"),
-        run=scenario,
-    )
+def create_user_mysql():
+    return api.post(path="/users", body='{"name":"alice"}')
+scenario(create_user_mysql)
+
+mysql_readonly = fault_assumption("mysql_readonly",
+    target = db.main,
+    error(query="INSERT*", message="Table is read only"),
+)
+
+fault_scenario("mysql_read_only",
+    scenario = create_user_mysql,
+    faults = mysql_readonly,
+    expect = lambda r: assert_true(r.status >= 400),
+)
 ```
 
-Same `fault(db.main, error(query=..., message=...))` — the proxy knows
-to speak MySQL wire protocol because the interface is declared as `"mysql"`.
+Same fault assumption API — the proxy knows to speak MySQL wire protocol
+because the interface is declared as `"mysql"`.
 
 ## Redis: Command-level faults
 
@@ -100,36 +122,52 @@ cache = service("redis",
     healthcheck = tcp("localhost:6379"),
 )
 
-def test_redis_readonly():
-    """SET commands return READONLY error — simulating a replica."""
-    def scenario():
-        resp = api.post(path="/data/key", body="value")
-        assert_true(resp.status >= 500, "expected error on READONLY Redis")
-    fault(cache.main,
-        error(command="SET", key="*", message="READONLY"),
-        run=scenario,
-    )
+# --- Scenarios ---
 
-def test_cache_miss():
-    """GET commands return nil — simulating empty cache."""
-    def scenario():
-        resp = api.get(path="/data/key")
-        # API should fall back to database.
-        assert_eq(resp.status, 200, "should serve from DB on cache miss")
-    fault(cache.main,
-        response(command="GET", key="*"),  # empty body = nil response
-        run=scenario,
-    )
+def write_cache():
+    return api.post(path="/data/key", body="value")
+scenario(write_cache)
 
-def test_slow_cache():
-    """Redis GET is delayed 2s — API should timeout and use DB."""
-    def scenario():
-        resp = api.get(path="/data/key")
-        assert_true(resp.duration_ms < 3000, "should timeout, not hang")
-    fault(cache.main,
-        delay(command="GET", delay="2s"),
-        run=scenario,
-    )
+def read_cache():
+    return api.get(path="/data/key")
+scenario(read_cache)
+
+# --- Fault assumptions ---
+
+redis_readonly = fault_assumption("redis_readonly",
+    target = cache.main,
+    error(command="SET", key="*", message="READONLY"),
+)
+
+cache_miss = fault_assumption("cache_miss",
+    target = cache.main,
+    response(command="GET", key="*"),  # empty body = nil response
+)
+
+slow_cache = fault_assumption("slow_cache",
+    target = cache.main,
+    delay(command="GET", delay="2s"),
+)
+
+# --- Fault scenarios ---
+
+fault_scenario("redis_readonly",
+    scenario = write_cache,
+    faults = redis_readonly,
+    expect = lambda r: assert_true(r.status >= 500, "expected error on READONLY Redis"),
+)
+
+fault_scenario("cache_miss",
+    scenario = read_cache,
+    faults = cache_miss,
+    expect = lambda r: assert_eq(r.status, 200, "should serve from DB on cache miss"),
+)
+
+fault_scenario("slow_cache",
+    scenario = read_cache,
+    faults = slow_cache,
+    expect = lambda r: assert_true(r.duration_ms < 3000, "should timeout, not hang"),
+)
 ```
 
 ## Kafka: Message-level faults
@@ -147,27 +185,42 @@ worker = service("worker",
     depends_on = [kafka],
 )
 
-def test_message_drop():
-    """30% of Kafka messages are dropped — worker should handle gaps."""
-    def scenario():
-        # Publish 10 messages.
-        for i in range(10):
-            api.post(path="/orders", body='{"id":' + str(i) + '}')
-        # Worker should process most but handle missing ones.
-    fault(kafka.main,
-        drop(topic="orders.events", probability="30%"),
-        run=scenario,
-    )
+# --- Scenarios ---
 
-def test_slow_delivery():
-    """Kafka messages are delayed 5s — worker should handle lag."""
-    def scenario():
-        api.post(path="/orders", body='{"id":1}')
-        # Worker eventually processes, but with delay.
-    fault(kafka.main,
-        delay(topic="orders.events", delay="5s"),
-        run=scenario,
-    )
+def publish_orders():
+    for i in range(10):
+        api.post(path="/orders", body='{"id":' + str(i) + '}')
+scenario(publish_orders)
+
+def publish_single_order():
+    api.post(path="/orders", body='{"id":1}')
+scenario(publish_single_order)
+
+# --- Fault assumptions ---
+
+message_drop = fault_assumption("message_drop",
+    target = kafka.main,
+    drop(topic="orders.events", probability="30%"),
+)
+
+slow_delivery = fault_assumption("slow_delivery",
+    target = kafka.main,
+    delay(topic="orders.events", delay="5s"),
+)
+
+# --- Fault scenarios ---
+
+fault_scenario("message_drop",
+    scenario = publish_orders,
+    faults = message_drop,
+    # Worker should process most but handle missing ones.
+)
+
+fault_scenario("slow_delivery",
+    scenario = publish_single_order,
+    faults = slow_delivery,
+    # Worker eventually processes, but with delay.
+)
 ```
 
 ## gRPC: Method-level faults
@@ -178,25 +231,37 @@ auth_svc = service("auth",
     image = "company/auth:latest",
 )
 
-def test_auth_unavailable():
-    """Auth service returns UNAVAILABLE — API should return 503."""
-    def scenario():
-        resp = api.post(path="/login", body='{"user":"alice"}')
-        assert_eq(resp.status, 503)
-    fault(auth_svc.grpc,
-        error(method="/auth.AuthService/Authenticate", status=14),  # UNAVAILABLE
-        run=scenario,
-    )
+# --- Scenarios ---
 
-def test_slow_auth():
-    """Auth RPC is delayed — API should timeout."""
-    def scenario():
-        resp = api.post(path="/login", body='{"user":"alice"}')
-        assert_true(resp.duration_ms > 4000)
-    fault(auth_svc.grpc,
-        delay(method="/auth.AuthService/*", delay="5s"),
-        run=scenario,
-    )
+def login():
+    return api.post(path="/login", body='{"user":"alice"}')
+scenario(login)
+
+# --- Fault assumptions ---
+
+auth_unavailable = fault_assumption("auth_unavailable",
+    target = auth_svc.grpc,
+    error(method="/auth.AuthService/Authenticate", status=14),  # UNAVAILABLE
+)
+
+slow_auth = fault_assumption("slow_auth",
+    target = auth_svc.grpc,
+    delay(method="/auth.AuthService/*", delay="5s"),
+)
+
+# --- Fault scenarios ---
+
+fault_scenario("auth_unavailable",
+    scenario = login,
+    faults = auth_unavailable,
+    expect = lambda r: assert_eq(r.status, 503),
+)
+
+fault_scenario("slow_auth",
+    scenario = login,
+    faults = slow_auth,
+    expect = lambda r: assert_true(r.duration_ms > 4000),
+)
 ```
 
 ## Protocol fault reference
@@ -216,7 +281,9 @@ def test_slow_auth():
 
 ## What you learned
 
-- Same `fault(interface_ref, ...)` API for all protocols
+- `scenario(fn)` registers probe functions that return observables
+- `fault_assumption(name, target=, ...)` defines named, reusable fault configs
+- `fault_scenario(name, scenario=, faults=, expect=)` composes tests from scenarios and faults
 - The proxy speaks the real wire protocol — matches SQL queries, Redis commands, Kafka topics
 - 10 protocols supported, covering 30+ products
 - Combine with syscall faults for cascading failure scenarios
