@@ -168,9 +168,73 @@ db_down = fault_assumption("db_down",
 Now every test that uses `db_down` automatically verifies that no traffic
 reaches the DB. You write the invariant once.
 
-## The fault matrix
+## Fault scenarios — one scenario, one fault, one oracle
 
-The matrix is the cross-product of scenarios and fault assumptions:
+The simplest composition: pair one scenario with one fault assumption and
+an `expect` oracle that validates the result:
+
+```python
+fault_scenario("order_db_down",
+    scenario = order_flow,
+    faults = db_down,
+    expect = lambda r: assert_true(r.status >= 500, "should fail when DB is down"),
+)
+```
+
+This registers `test_order_db_down`. When it runs:
+1. Installs `db_down` fault rules (and its monitors)
+2. Calls `order_flow()`, captures the return value
+3. Passes the return value to `expect` — which asserts on it
+4. Cleans up
+
+**No fault (happy path oracle):**
+
+```python
+fault_scenario("order_happy",
+    scenario = order_flow,
+    expect = lambda r: (
+        assert_eq(r.status, 200),
+        assert_eq(r.body, "myvalue"),
+    ),
+)
+```
+
+Without `faults=`, the scenario runs under normal conditions — useful for
+validating the happy path with explicit expectations.
+
+**Smoke test (no oracle):**
+
+```python
+fault_scenario("order_disk_full_smoke",
+    scenario = order_flow,
+    faults = disk_full,
+)
+```
+
+Without `expect=`, the test passes as long as the scenario completes
+without crashing. Good for initial discovery — "does it survive this fault?"
+
+**Multiple faults simultaneously:**
+
+```python
+cascade = fault_assumption("cascade",
+    faults = [db_down, slow_network],
+)
+
+fault_scenario("order_cascade",
+    scenario = order_flow,
+    faults = cascade,
+    expect = lambda r: assert_true(r.status >= 500),
+)
+```
+
+`fault_scenario()` is the right tool when you have **one specific combination**
+to test. When you have many scenarios × many faults, use `fault_matrix()`.
+
+## The fault matrix — the cross-product
+
+When you have multiple scenarios and multiple fault assumptions, the matrix
+generates all combinations automatically:
 
 ```python
 fault_matrix(
@@ -209,15 +273,17 @@ Result: 6/6 passed
 The domain-centric model doesn't replace the test-centric model — it builds
 on top of it:
 
-| Approach | When to use |
-|----------|------------|
-| `def test_*()` with inline `fault()` | Learning, small specs (< 5 tests), debugging one specific case |
-| `fault_scenario()` | One-off composed tests that don't fit a matrix pattern |
-| `fault_matrix()` | Systematic coverage: many scenarios × many faults |
-| `faultbox generate` | Discovery: let Faultbox propose failure modes you didn't think of |
+| Approach | When to use | Example |
+|----------|------------|---------|
+| `def test_*()` with inline `fault()` | Learning, debugging one specific case | Chapters 2-5 |
+| `fault_scenario()` | One scenario + one fault + specific expected behavior | "When DB is down, order returns 503" |
+| `fault_scenario()` (smoke) | Quick check: "does it survive this fault?" | No `expect=`, just no crash |
+| `fault_matrix()` | Systematic coverage: many scenarios × many faults | 5 scenarios × 4 faults = 20 tests |
+| `faultbox generate` | Discovery: let Faultbox propose failure modes | Auto-generates assumptions + matrix |
 
-**Start with `def test_*()`** in chapters 2-5. **Graduate to `fault_matrix()`**
-when you have more than a few scenarios and faults.
+**Most users start with `fault_scenario()`** — it's the workhorse for
+individual fault tests. **Graduate to `fault_matrix()`** when you have
+multiple scenarios and faults that should be cross-tested.
 
 ## Composition — combining fault assumptions
 
