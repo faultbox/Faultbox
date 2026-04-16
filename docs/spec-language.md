@@ -1556,6 +1556,184 @@ faults, cells, and pass/fail counts.
 
 ---
 
+## Data Integrity Verification
+
+The `expect` oracle in `fault_scenario()` and `fault_matrix()` can use
+**protocol steps** to query service state directly — not just check the
+HTTP response. This is how you verify data integrity after fault injection.
+
+### Querying the database in expect
+
+After a fault scenario, ask the database whether the data is correct:
+
+```python
+def create_order():
+    return api.public.post(path="/orders", body='{"item":"widget","qty":1}')
+
+scenario(create_order)
+
+db_write_error = fault_assumption("db_write_error",
+    target = db,
+    write = deny("EIO"),
+)
+
+fault_scenario("no_partial_rows_on_error",
+    scenario = create_order,
+    faults = db_write_error,
+    expect = lambda r: (
+        # 1. API returned an error
+        assert_true(r.status >= 500, "should fail on DB write error"),
+
+        # 2. No orphaned rows in the database
+        assert_eq(
+            db.main.query(sql="SELECT count(*) as n FROM orders WHERE status='pending'").data[0]["n"],
+            0,
+            "no partial rows should exist after failed INSERT"),
+
+        # 3. The fault actually fired
+        assert_eventually(type="syscall", service="db", decision="deny*"),
+    ),
+)
+```
+
+The key: `db.main.query(sql=...)` is a protocol step — it talks to the
+running database over the wire. Inside `expect`, the service is still
+running, so you can query its actual state.
+
+### Querying Redis in expect
+
+Verify cache state after a fault:
+
+```python
+redis_down = fault_assumption("redis_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_scenario("no_stale_cache_after_failure",
+    scenario = create_order,
+    faults = redis_down,
+    expect = lambda r: (
+        assert_true(r.status >= 500),
+
+        # No stale cache entries should remain
+        assert_eq(
+            len(redis.main.keys(pattern="order:*").data),
+            0,
+            "no cached order keys after Redis failure"),
+    ),
+)
+```
+
+### Verifying Kafka message integrity
+
+Use event sources (`observe=`) to track produced and consumed messages,
+then verify in `expect`:
+
+```python
+kafka = service("kafka",
+    interface("broker", "kafka", 9092),
+    image = "confluentinc/cp-kafka:7.6",
+    observe = [topic("order-events", decoder=json_decoder())],
+    healthcheck = tcp("localhost:9092"),
+)
+
+fault_scenario("no_message_loss_on_db_error",
+    scenario = create_order,
+    faults = db_write_error,
+    expect = lambda r: (
+        assert_true(r.status >= 500),
+
+        # No Kafka events should be published if DB write failed
+        assert_never(where=lambda e:
+            e.type == "topic" and e.data.get("topic") == "order-events"),
+    ),
+)
+```
+
+For "all produced messages were consumed" (no message loss):
+
+```python
+fault_scenario("consumer_catches_up",
+    scenario = publish_and_consume,
+    faults = consumer_slow,
+    expect = lambda r: (
+        assert_eq(
+            len(events(where=lambda e: e.type == "topic"
+                and e.data.get("action") == "produce")),
+            len(events(where=lambda e: e.type == "topic"
+                and e.data.get("action") == "consume")),
+            "every produced message must be consumed"),
+    ),
+)
+```
+
+### Verifying proxy-injected errors
+
+When using protocol-level faults (via `rules=`), the proxy logs every
+injected error as a `type="proxy"` event. Verify the fault actually
+fired:
+
+```python
+db_insert_fail = fault_assumption("db_insert_fail",
+    target = db.main,
+    rules = [error(query="INSERT*", message="disk full")],
+)
+
+fault_scenario("insert_rejected_by_proxy",
+    scenario = create_order,
+    faults = db_insert_fail,
+    expect = lambda r: (
+        assert_true(r.status >= 500),
+
+        # Verify the proxy intercepted and rejected the INSERT
+        assert_eventually(type="proxy", where=lambda e:
+            "INSERT" in e.data.get("query", "")
+            and e.data.get("action") == "error"),
+    ),
+)
+```
+
+### Monitor pattern: continuous data integrity
+
+For invariants that must hold across ALL scenarios and faults — not just
+one specific test — use monitors on fault assumptions:
+
+```python
+def no_orphan_events(event):
+    """If Kafka event published, DB row must exist."""
+    if event["type"] == "topic" and event.get("order_id"):
+        rows = db.main.query(
+            sql="SELECT count(*) as n FROM orders WHERE id='" + event["order_id"] + "'"
+        ).data[0]["n"]
+        if rows == 0:
+            fail("orphan Kafka event: order " + event["order_id"] + " not in DB")
+
+orphan_check = monitor(no_orphan_events)
+
+# Attach to every fault that could cause this inconsistency
+db_write_error = fault_assumption("db_write_error",
+    target = db,
+    write = deny("EIO"),
+    monitors = [orphan_check],
+)
+```
+
+### Summary: which tool for which check
+
+| What you want to verify | Tool | Example |
+|------------------------|------|---------|
+| HTTP response status/body | `expect` lambda on `r` | `assert_eq(r.status, 503)` |
+| Database row exists/absent | `db.main.query(sql=...)` in `expect` | `assert_eq(row_count, 0)` |
+| Redis key exists/absent | `redis.main.keys(pattern=...)` in `expect` | `assert_eq(len(keys), 0)` |
+| Kafka message published/absent | `assert_eventually`/`assert_never` on events | `assert_never(type="topic", ...)` |
+| Proxy-injected error fired | `assert_eventually(type="proxy", ...)` | Verify INSERT was rejected |
+| Fault actually fired | `assert_eventually(decision="deny*")` | Avoid silent test pass |
+| Continuous invariant across all tests | `monitor()` on `fault_assumption` | "no orphan events" |
+| Message loss / consumer lag | Compare `events()` counts in `expect` | produced count == consumed count |
+
+---
+
 ## Network Partitions
 
 ### `partition(svc_a, svc_b, run=callback)`
