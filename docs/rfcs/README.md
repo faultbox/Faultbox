@@ -48,6 +48,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 |-----|-------|--------|------------|
 | [RFC-014](0014-unix-socket-fd-passing.md) | Unix Socket FD Passing for Container Seccomp | Draft | — |
 | [RFC-015](0015-container-reuse.md) | Container Reuse with Seed/Reset Lifecycle | Draft | — |
+| [RFC-016](0016-new-protocols.md) | New Protocols: UDP, QUIC, HTTP/2, MongoDB, ClickHouse, Cassandra | Draft | — |
 
 ### Phase 3: Trace Equivalence & Specification Mining
 
