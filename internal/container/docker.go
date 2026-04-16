@@ -299,8 +299,9 @@ type ShimConfig struct {
 	SyscallNrs []uint32 `json:"syscall_nrs"`
 	Entrypoint []string `json:"entrypoint"`
 	Cmd        []string `json:"cmd"`
-	ReportPath string   `json:"report_path"`
-	AckPath    string   `json:"ack_path"`
+	SocketPath string   `json:"socket_path,omitempty"`  // Unix socket for fd passing (preferred)
+	ReportPath string   `json:"report_path,omitempty"`  // legacy file-based reporting
+	AckPath    string   `json:"ack_path,omitempty"`     // legacy ACK file
 }
 
 // ShimConfigJSON serializes a ShimConfig to JSON for the env var.

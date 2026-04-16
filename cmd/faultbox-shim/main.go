@@ -2,8 +2,9 @@
 
 // faultbox-shim is a tiny entrypoint binary for container fault injection.
 // It is bind-mounted into Docker containers, overriding the entrypoint.
-// The shim installs a seccomp-notify filter, writes the listener fd to a
-// shared file, then exec's the original container entrypoint.
+// The shim installs a seccomp-notify filter, sends the listener fd to the
+// host via a Unix domain socket (SCM_RIGHTS), then exec's the original
+// container entrypoint.
 //
 // Build: GOOS=linux CGO_ENABLED=0 go build -o faultbox-shim ./cmd/faultbox-shim/
 package main
@@ -11,10 +12,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/faultbox/Faultbox/internal/seccomp"
@@ -24,10 +25,13 @@ import (
 // ShimConfig is passed via the _FAULTBOX_SHIM_CONFIG env var.
 type ShimConfig struct {
 	SyscallNrs []uint32 `json:"syscall_nrs"`
-	Entrypoint []string `json:"entrypoint"` // original container entrypoint
-	Cmd        []string `json:"cmd"`        // original container cmd
-	ReportPath string   `json:"report_path"` // where to write listener fd (e.g., /var/run/faultbox/listener-fd)
-	AckPath    string   `json:"ack_path"`    // faultbox writes here after acquiring the fd
+	Entrypoint []string `json:"entrypoint"`   // original container entrypoint
+	Cmd        []string `json:"cmd"`          // original container cmd
+	SocketPath string   `json:"socket_path"`  // Unix socket for fd passing to host
+
+	// Legacy fields (ignored if SocketPath is set).
+	ReportPath string `json:"report_path"`
+	AckPath    string `json:"ack_path"`
 }
 
 const envKey = "_FAULTBOX_SHIM_CONFIG"
@@ -64,13 +68,6 @@ func run() error {
 	// Lock to OS thread — seccomp filters are per-thread.
 	runtime.LockOSThread()
 
-	// Open the report file BEFORE installing the filter (so we can whitelist this fd).
-	reportFile, err := os.Create(cfg.ReportPath)
-	if err != nil {
-		return fmt.Errorf("create report file %s: %w", cfg.ReportPath, err)
-	}
-	reportFd := int(reportFile.Fd())
-
 	listenerFd := 0
 
 	if len(cfg.SyscallNrs) > 0 {
@@ -79,41 +76,30 @@ func run() error {
 			return fmt.Errorf("prctl(NO_NEW_PRIVS): %w", err)
 		}
 
-		// Install seccomp filter, whitelisting the report fd for writes.
-		fd, err := seccomp.InstallFilter(cfg.SyscallNrs, reportFd)
+		// Install seccomp filter. Pass -1 as whitelist fd (no file-based reporting).
+		fd, err := seccomp.InstallFilter(cfg.SyscallNrs, -1)
 		if err != nil {
 			return fmt.Errorf("install seccomp filter: %w", err)
 		}
 		listenerFd = fd
 	}
 
-	// Write the listener fd number to the report file.
-	if _, err := reportFile.WriteString(strconv.Itoa(listenerFd) + "\n"); err != nil {
-		return fmt.Errorf("write listener fd to report: %w", err)
-	}
-	reportFile.Close()
-
-	// Wait for faultbox to acknowledge it has acquired the listener fd.
-	// This handshake ensures pidfd_getfd succeeds before we exec (which may
-	// cause the shell entrypoint to close the listener fd).
-	if cfg.AckPath != "" {
-		for {
-			if _, err := os.Stat(cfg.AckPath); err == nil {
-				break
-			}
-			// Busy-wait with a tiny sleep. Can't use time.Sleep (it may use
-			// intercepted syscalls). Use nanosleep directly.
-			ts := unix.Timespec{Nsec: 10_000_000} // 10ms
-			unix.Nanosleep(&ts, nil)
+	// Send the listener fd to the host via Unix domain socket (SCM_RIGHTS).
+	if cfg.SocketPath != "" {
+		if err := sendFdViaSocket(cfg.SocketPath, listenerFd); err != nil {
+			return fmt.Errorf("send fd via socket: %w", err)
+		}
+	} else if cfg.ReportPath != "" {
+		// Legacy fallback: file-based reporting + busy-wait ACK.
+		if err := legacyReportFd(cfg, listenerFd); err != nil {
+			return err
 		}
 	}
 
-	// Keep the listener fd open across exec — the host-side copy (via pidfd_getfd)
-	// may become invalid if the kernel's seccomp listener refcount drops to zero.
-	// Dup to a well-known fd (255) that most shells won't close.
+	// Keep the listener fd open across exec — the kernel's seccomp listener
+	// refcount must stay > 0. Dup to fd 255 (shells won't close it).
 	if listenerFd > 0 {
 		unix.Dup3(listenerFd, 255, 0)
-		// Don't close the original — let exec handle it.
 	}
 
 	// Build clean environment (remove shim config).
@@ -126,4 +112,58 @@ func run() error {
 
 	// Exec the original entrypoint — seccomp filter survives exec.
 	return unix.Exec(binary, execArgs, cleanEnv)
+}
+
+// sendFdViaSocket connects to the host's Unix socket and sends the listener
+// fd using SCM_RIGHTS. Waits for a single ACK byte before returning.
+// This replaces the pidfd_getfd approach — no PID tracking needed.
+func sendFdViaSocket(socketPath string, fd int) error {
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", socketPath, err)
+	}
+	defer conn.Close()
+
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return fmt.Errorf("not a unix connection")
+	}
+
+	// Send the fd via SCM_RIGHTS ancillary data.
+	rights := unix.UnixRights(fd)
+	_, _, err = uc.WriteMsgUnix([]byte("fd"), rights, nil)
+	if err != nil {
+		return fmt.Errorf("send fd: %w", err)
+	}
+
+	// Wait for host ACK (1 byte).
+	buf := make([]byte, 1)
+	_, err = uc.Read(buf)
+	if err != nil {
+		return fmt.Errorf("read ack: %w", err)
+	}
+
+	return nil
+}
+
+// legacyReportFd writes the fd number to a file and busy-waits for an ACK file.
+// Used when SocketPath is not set (backward compat with older host binaries).
+func legacyReportFd(cfg ShimConfig, listenerFd int) error {
+	reportFile, err := os.Create(cfg.ReportPath)
+	if err != nil {
+		return fmt.Errorf("create report file %s: %w", cfg.ReportPath, err)
+	}
+	fmt.Fprintf(reportFile, "%d\n", listenerFd)
+	reportFile.Close()
+
+	if cfg.AckPath != "" {
+		for {
+			if _, err := os.Stat(cfg.AckPath); err == nil {
+				break
+			}
+			ts := unix.Timespec{Nsec: 10_000_000} // 10ms
+			unix.Nanosleep(&ts, nil)
+		}
+	}
+	return nil
 }

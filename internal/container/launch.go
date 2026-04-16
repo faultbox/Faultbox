@@ -28,7 +28,7 @@ type LaunchConfig struct {
 // LaunchResult contains the result of launching a container.
 type LaunchResult struct {
 	ContainerID string
-	HostPID     int
+	HostPID     int             // container init PID (for process exit detection)
 	ListenerFd  int
 	HostPorts   map[int]int // container_port → actual host_port
 }
@@ -68,21 +68,18 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 		slog.Any("cmd", origCmd),
 	)
 
-	// Create host-side directory for fd reporting.
+	// Create host-side directory for Unix socket fd passing.
 	socketDir := filepath.Join(os.TempDir(), "faultbox-sockets", cfg.Name)
 	os.MkdirAll(socketDir, 0755)
-	reportPath := filepath.Join(socketDir, "listener-fd")
-	ackPath := filepath.Join(socketDir, "ack")
-	os.Remove(reportPath) // clean up from previous run
-	os.Remove(ackPath)
+	socketPath := filepath.Join(socketDir, "fd.sock")
+	os.Remove(socketPath) // clean up from previous run
 
-	// Build shim config.
+	// Build shim config — use SocketPath for Unix socket fd passing.
 	shimCfg := ShimConfig{
 		SyscallNrs: cfg.SyscallNrs,
 		Entrypoint: origEntrypoint,
 		Cmd:        origCmd,
-		ReportPath: "/var/run/faultbox/listener-fd",
-		AckPath:    "/var/run/faultbox/ack",
+		SocketPath: "/var/run/faultbox/fd.sock",
 	}
 
 	// Build binds.
@@ -111,6 +108,19 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 		env[0] = "_FAULTBOX_SHIM_CONFIG=" + ShimConfigJSON(shimCfg)
 	}
 
+	// Start the Unix socket listener BEFORE starting the container.
+	// The socket file must exist in the bind-mounted directory when the
+	// shim tries to connect.
+	type fdResult struct {
+		fd  int
+		err error
+	}
+	fdCh := make(chan fdResult, 1)
+	go func() {
+		fd, err := waitForListenerFd(ctx, socketPath)
+		fdCh <- fdResult{fd, err}
+	}()
+
 	// Create container.
 	containerID, err := client.CreateContainer(ctx, CreateOpts{
 		Name:       "faultbox-" + cfg.Name,
@@ -132,60 +142,38 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 		return nil, fmt.Errorf("start container %s: %w", cfg.Name, err)
 	}
 
-	// Get host PID (retry briefly — Docker may need a moment to register it).
-	var hostPID int
-	for attempt := 0; attempt < 10; attempt++ {
-		hostPID, err = client.ContainerPID(ctx, containerID)
-		if err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			client.RemoveContainer(ctx, containerID)
-			return nil, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	if err != nil {
-		// Log container logs for debugging.
-		log.Error("container failed to start", slog.String("name", cfg.Name))
-		client.StopContainer(ctx, containerID, 5)
-		client.RemoveContainer(ctx, containerID)
-		return nil, err
-	}
-
 	log.Info("container started",
 		slog.String("name", cfg.Name),
 		slog.String("id", containerID[:12]),
-		slog.Int("host_pid", hostPID),
 	)
 
-	// Wait for the shim to report the listener fd (platform-specific: uses pidfd on Linux).
-	listenerFd, err := waitForListenerFd(ctx, reportPath, hostPID)
+	// Wait for the shim to connect and send the listener fd via the socket.
+	result := <-fdCh
+	listenerFd, err := result.fd, result.err
 	if err != nil {
-		// Seccomp acquisition failed — likely a multi-process entrypoint (Java/shell
-		// that forks, e.g., Confluent cp-kafka, cp-zookeeper). Fall back to running
-		// without fault injection rather than failing the whole test.
+		// Seccomp acquisition failed. Fall back to no-seccomp mode.
 		log.Warn("seccomp listener failed — falling back to no-seccomp mode",
 			slog.String("name", cfg.Name),
 			slog.String("error", err.Error()),
-			slog.String("hint", "multi-process entrypoints (shell→fork) can't use seccomp; fault rules on this service will not apply"),
+			slog.String("hint", "fault rules on this service will not apply"),
 		)
 
-		// Stop the shim-based container and relaunch without the shim.
 		client.StopContainer(ctx, containerID, 5)
 		client.RemoveContainer(ctx, containerID)
 
 		return launchSimple(ctx, client, cfg, log)
 	}
 
+	// Get host PID for process exit detection (notification loop needs it).
+	// This is safe now — the shim has completed the fd handshake and exec'd
+	// the real entrypoint, so the PID is stable.
+	hostPID, _ := client.ContainerPID(ctx, containerID)
+
 	log.Info("seccomp listener acquired",
 		slog.String("name", cfg.Name),
 		slog.Int("listener_fd", listenerFd),
+		slog.Int("host_pid", hostPID),
 	)
-
-	// Signal the shim that we've acquired the fd — it can now exec the entrypoint.
-	os.WriteFile(ackPath, []byte("ok"), 0644)
 
 	// Resolve actual host ports.
 	hostPorts := make(map[int]int)
