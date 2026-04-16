@@ -22,7 +22,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 
 | RFC | Title | Status | Depends On |
 |-----|-------|--------|------------|
-| [RFC-001](0001-scenario-probes.md) | Scenarios as Probes & Fault Scenario Composition | Draft | — |
+| [RFC-001](0001-scenario-probes.md) | Scenarios as Probes & Fault Scenario Composition | Implemented | — |
 | RFC-002 | `domain()` Primitive & Multi-Service Grouping | — | — |
 | RFC-003 | Parallel Composition: `wait_all`, `wait_first`, `wait_n` | — | RFC-001 |
 
@@ -41,6 +41,12 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | RFC | Title | Status | Depends On |
 |-----|-------|--------|------------|
 | [RFC-013](0013-parameterized-scenarios.md) | Parameterized Scenarios & Value Generators | Draft | RFC-001 |
+
+### Infrastructure
+
+| RFC | Title | Status | Depends On |
+|-----|-------|--------|------------|
+| [RFC-014](0014-unix-socket-fd-passing.md) | Unix Socket FD Passing for Container Seccomp | Draft | — |
 
 ### Phase 3: Trace Equivalence & Specification Mining
 
