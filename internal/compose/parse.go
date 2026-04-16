@@ -121,8 +121,9 @@ func GenerateSpec(services []Service) string {
 	for _, svc := range services {
 		iface := interfaceName(svc.Protocol)
 		sb.WriteString(fmt.Sprintf("%s = service(\"%s\",\n", svc.Name, svc.Name))
-		sb.WriteString(fmt.Sprintf("    image=\"%s\",\n", svc.Image))
+		// Positional args (interface) must come before named args (image=).
 		sb.WriteString(fmt.Sprintf("    interface(\"%s\", \"%s\", %d),\n", iface, svc.Protocol, svc.Port))
+		sb.WriteString(fmt.Sprintf("    image=\"%s\",\n", svc.Image))
 
 		// Environment.
 		if len(svc.Env) > 0 {
