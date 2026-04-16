@@ -24,6 +24,7 @@ faultbox test [flags] <file.star>
 | `--virtual-time` | Use virtual time (delays advance clock instead of sleeping) |
 | `--log-format=console\|json` | Log output format |
 | `--debug` | Enable debug logging |
+| `--dry-run` | Validate spec and show test plan without running (no Docker needed) |
 
 **Examples:**
 
@@ -32,6 +33,7 @@ faultbox test faultbox.star                             # run all tests
 faultbox test faultbox.star --test happy_path           # run one test
 faultbox test faultbox.star --format json               # structured JSON to stdout
 faultbox test faultbox.star --output trace.json         # JSON trace to file
+faultbox test faultbox.star --dry-run                   # validate without Docker
 faultbox test faultbox.star --runs 100 --show fail      # counterexample discovery
 faultbox test faultbox.star --seed 42                   # deterministic replay
 faultbox test faultbox.star --normalize run.norm        # normalized trace
@@ -96,6 +98,32 @@ faultbox test faultbox.star --runs 1000 --show fail
 #   reason: assert_true: expected 200 or 503, got 0
 #   replay: faultbox test faultbox.star --test flaky_network --seed 7
 ```
+
+**Dry-run mode (`--dry-run`):**
+
+Validates the spec and shows the test plan without starting any services
+or Docker containers. Useful for CI lint steps, macOS without Lima, and
+fast feedback:
+
+```bash
+faultbox test faultbox.star --dry-run
+# Dry-run: loaded faultbox.star
+# Services: 3
+# Tests: test_order_flow, test_health_check, test_matrix_order_flow_db_down, ...
+# Fault matrix: 6 cells (2 scenarios × 3 faults)
+```
+
+**Container behavior:**
+
+- **Auto-cleanup:** At the start of each test suite, Faultbox removes all
+  stale containers and networks with the `faultbox-` prefix. No manual
+  `docker rm -f` needed between runs.
+- **Multi-process containers:** Containers with fork-based entrypoints
+  (Java/shell, e.g., Confluent Kafka, Zookeeper) automatically fall back
+  to no-seccomp mode. Fault injection is skipped for these services with a
+  warning — they still work for topology, healthchecks, and protocol steps.
+- **Image pull timeout:** Default 120 seconds. Large images (MySQL, Kafka)
+  should pull within this window on most connections.
 
 See [Spec Language Reference](spec-language.md) for `.star` file syntax.
 
@@ -737,3 +765,74 @@ Both modes are always combined — you never lose isolation when adding faults.
 - **Kernel 5.6+** required for fault injection (`pidfd_getfd`).
   Kernel 5.19+ recommended for Go targets (`SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV`
   avoids SIGURG spin loops).
+
+---
+
+## Troubleshooting
+
+### Container name conflicts
+
+```
+Error: Conflict. The container name "/faultbox-postgres" is already in use
+```
+
+Faultbox auto-cleans stale containers at suite start (v0.5.0+). If you
+see this after upgrading, run once manually:
+
+```bash
+docker rm -f $(docker ps -aq --filter name=faultbox) 2>/dev/null
+docker network rm faultbox-net 2>/dev/null
+```
+
+### Multi-process container warning
+
+```
+WARN: seccomp listener failed — falling back to no-seccomp mode
+WARN: fault rules will NOT apply — service running without seccomp
+```
+
+Containers with shell/Java entrypoints (Confluent Kafka, Zookeeper,
+Cassandra, Elasticsearch) can't use seccomp-notify because the
+entrypoint forks. The container runs normally but **fault injection is
+skipped** for this service.
+
+**What works:** healthchecks, protocol steps, event sources, topology.
+**What doesn't work:** `fault(service, write=deny(...))` — the fault
+rule is installed but never fires.
+
+**Workaround:** Use protocol-level faults instead (these use a proxy,
+not seccomp):
+
+```python
+# Instead of: fault(kafka, write=deny("EIO"), run=scenario)
+# Use:        fault(kafka.broker, drop(topic="orders"), run=scenario)
+```
+
+### Image pull timeout
+
+```
+Error: pull image postgres:16 (timeout 120s): context deadline exceeded
+```
+
+Large images may exceed the 120s default on slow connections. Pre-pull
+images before running tests:
+
+```bash
+docker pull postgres:16
+docker pull confluentinc/cp-kafka:7.6
+faultbox test faultbox.star  # images already cached
+```
+
+### Seccomp not available
+
+```
+Error: install seccomp filter: operation not permitted
+```
+
+Requires Linux kernel 5.6+ with `CONFIG_SECCOMP_FILTER=y`. Check:
+
+```bash
+grep SECCOMP /boot/config-$(uname -r)
+```
+
+On macOS, use the Lima VM — seccomp is not available natively.

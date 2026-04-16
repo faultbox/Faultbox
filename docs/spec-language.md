@@ -802,6 +802,29 @@ def test_imperative():
 
 Use `fault()` with `run=` when possible — it guarantees cleanup.
 
+### `fault_all([services], **syscall_faults, run=callback)`
+
+Apply the same fault to multiple services simultaneously. Useful for testing
+"all replicas down" or "entire dependency tier fails":
+
+```python
+# All three Kafka brokers down at once.
+fault_all([kafka1, kafka2, kafka3],
+    connect = deny("ECONNREFUSED"),
+    run = scenario,
+)
+
+# All databases slow.
+fault_all([pg_primary, pg_replica],
+    write = delay("500ms"),
+    run = scenario,
+)
+```
+
+Equivalent to nesting `fault()` calls but without the lambda pyramid.
+Faults are applied to all services before the callback runs, and removed
+from all services after.
+
 ### `trace(service, syscalls=[...], run=callback)`
 
 Observe syscalls without injecting faults. Installs seccomp filters that
