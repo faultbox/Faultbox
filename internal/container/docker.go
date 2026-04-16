@@ -153,6 +153,41 @@ func (c *Client) RemoveContainer(ctx context.Context, id string) error {
 	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
 }
 
+// CleanupStale removes all containers and networks with the "faultbox-" prefix.
+// Called at suite start to clean up from previous failed/interrupted runs.
+func (c *Client) CleanupStale(ctx context.Context) {
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		c.log.Debug("cleanup: list containers failed", slog.String("error", err.Error()))
+		return
+	}
+	for _, ctr := range containers {
+		for _, name := range ctr.Names {
+			if len(name) > 0 && name[0] == '/' {
+				name = name[1:]
+			}
+			if len(name) > 9 && name[:9] == "faultbox-" {
+				c.log.Debug("cleanup: removing stale container", slog.String("name", name))
+				c.cli.ContainerStop(ctx, ctr.ID, container.StopOptions{})
+				c.cli.ContainerRemove(ctx, ctr.ID, container.RemoveOptions{Force: true})
+				break
+			}
+		}
+	}
+
+	// Clean up stale networks.
+	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		return
+	}
+	for _, net := range networks {
+		if len(net.Name) > 9 && net.Name[:9] == "faultbox-" {
+			c.log.Debug("cleanup: removing stale network", slog.String("name", net.Name))
+			c.cli.NetworkRemove(ctx, net.ID)
+		}
+	}
+}
+
 // ContainerPID returns the host-namespace PID of the container's init process.
 func (c *Client) ContainerPID(ctx context.Context, id string) (int, error) {
 	inspect, err := c.cli.ContainerInspect(ctx, id)

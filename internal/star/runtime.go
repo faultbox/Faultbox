@@ -543,6 +543,11 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 	copy(order, rt.order)
 	rt.mu.Unlock()
 
+	// Clean up stale containers from previous tests or interrupted runs.
+	if rt.dockerClient != nil {
+		rt.dockerClient.CleanupStale(ctx)
+	}
+
 	for _, svcName := range order {
 		svc := rt.services[svcName]
 
@@ -930,6 +935,12 @@ func (rt *Runtime) stopServices() {
 			rt.dockerClient.RemoveContainer(ctx, cid)
 		}
 		rt.containerIDs = make(map[string]string)
+
+		// Remove the Docker network so the next test gets a clean one.
+		if rt.networkID != "" {
+			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
+			rt.networkID = ""
+		}
 	}
 
 	// Clean up socket directories.
