@@ -367,18 +367,45 @@ func (s *Server) toolGenerateFaults(id interface{}, args json.RawMessage) *jsonR
 		return s.toolError(id, "analyze: "+err.Error())
 	}
 
-	type genResult struct {
-		File      string      `json:"file"`
-		Scenarios int         `json:"scenarios"`
-		Services  int         `json:"services"`
-		Analysis  interface{} `json:"analysis"`
+	mutations := generate.BuildMatrix(analysis)
+	if len(mutations) == 0 {
+		type genResult struct {
+			File      string      `json:"file"`
+			Scenarios int         `json:"scenarios"`
+			Services  int         `json:"services"`
+			Mutations int         `json:"mutations"`
+			Message   string      `json:"message"`
+			Analysis  interface{} `json:"analysis"`
+		}
+		data, _ := json.MarshalIndent(genResult{
+			File:      p.File,
+			Scenarios: len(analysis.Scenarios),
+			Services:  len(analysis.Services),
+			Mutations: 0,
+			Message:   "No mutations generated. Register scenario() functions and add depends_on edges.",
+			Analysis:  analysis,
+		}, "", "  ")
+		return s.toolResult(id, string(data))
 	}
 
+	code := generate.Generate(mutations, analysis, generate.GenerateOpts{
+		Source:   p.File,
+		Scenario: p.Scenario,
+	})
+
+	type genResult struct {
+		File      string `json:"file"`
+		Scenarios int    `json:"scenarios"`
+		Services  int    `json:"services"`
+		Mutations int    `json:"mutations"`
+		Code      string `json:"code"`
+	}
 	data, _ := json.MarshalIndent(genResult{
 		File:      p.File,
 		Scenarios: len(analysis.Scenarios),
 		Services:  len(analysis.Services),
-		Analysis:  analysis,
+		Mutations: len(mutations),
+		Code:      code,
 	}, "", "  ")
 	return s.toolResult(id, string(data))
 }

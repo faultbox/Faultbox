@@ -426,28 +426,11 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 			}
 			bodyFn = cb
 		} else {
-			fd, ok := kv[1].(*FaultDef)
-			if !ok {
-				return nil, fmt.Errorf("fault() %s= must be a fault (delay/deny), got %s", key, kv[1].Type())
-			}
-			// Check if key is a named operation on this service.
-			if svc.Ops != nil {
-				if opDef, isOp := svc.Ops[key]; isOp {
-					// Expand operation: add fault for each syscall in the op.
-					for _, sc := range opDef.Syscalls {
-						opFd := *fd // copy
-						opFd.Op = key
-						if opDef.Path != "" {
-							opFd.PathGlob = opDef.Path
-						}
-						faults[sc] = &opFd
-					}
-					continue
-				}
-			}
-			// Validate that the key is a known syscall name.
-			if !isFaultableSyscall(key) {
-				// Build helpful error message.
+			// Validate that the key is a known syscall or named operation FIRST,
+			// before checking the value type. This gives better errors for
+			// unknown keywords like reject=True or latency=delay().
+			isOp := svc.Ops != nil && svc.Ops[key] != nil
+			if !isOp && !isFaultableSyscall(key) {
 				opNames := make([]string, 0)
 				if svc.Ops != nil {
 					for opName := range svc.Ops {
@@ -461,6 +444,26 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 					hint += fmt.Sprintf(". Named operations on %s: %s", svc.Name, strings.Join(opNames, ", "))
 				}
 				return nil, fmt.Errorf("%s", hint)
+			}
+
+			fd, ok := kv[1].(*FaultDef)
+			if !ok {
+				return nil, fmt.Errorf("fault() %s= must be a fault (delay/deny/allow), got %s. Example: %s=deny(\"ECONNREFUSED\")",
+					key, kv[1].Type(), key)
+			}
+			// Check if key is a named operation on this service.
+			if svc.Ops != nil {
+				if opDef, isOp := svc.Ops[key]; isOp {
+					for _, sc := range opDef.Syscalls {
+						opFd := *fd
+						opFd.Op = key
+						if opDef.Path != "" {
+							opFd.PathGlob = opDef.Path
+						}
+						faults[sc] = &opFd
+					}
+					continue
+				}
 			}
 			faults[key] = fd
 		}
