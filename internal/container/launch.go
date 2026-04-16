@@ -21,7 +21,8 @@ type LaunchConfig struct {
 	SyscallNrs []uint32          // syscalls to intercept
 	ShimPath   string            // host path to faultbox-shim binary
 	NetworkID  string            // Docker network ID
-	SkipPull   bool              // skip image pull (for locally built images)
+	SkipPull    bool              // skip image pull (for locally built images)
+	PullTimeout time.Duration     // timeout for image pull (default 120s)
 }
 
 // LaunchResult contains the result of launching a container.
@@ -40,8 +41,14 @@ type LaunchResult struct {
 func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Logger) (*LaunchResult, error) {
 	// Pull the image (skip for locally built images).
 	if !cfg.SkipPull {
-		if err := client.PullImage(ctx, cfg.Image); err != nil {
-			return nil, err
+		pullTimeout := cfg.PullTimeout
+		if pullTimeout == 0 {
+			pullTimeout = 120 * time.Second
+		}
+		pullCtx, pullCancel := context.WithTimeout(ctx, pullTimeout)
+		defer pullCancel()
+		if err := client.PullImage(pullCtx, cfg.Image); err != nil {
+			return nil, fmt.Errorf("pull image %s (timeout %s): %w", cfg.Image, pullTimeout, err)
 		}
 	}
 

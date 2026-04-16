@@ -280,6 +280,11 @@ func (rt *Runtime) Scenarios() []ScenarioRegistration {
 	return rt.scenarios
 }
 
+// FaultScenarios returns all registered fault scenarios (including fault_matrix-generated ones).
+func (rt *Runtime) FaultScenarios() map[string]*FaultScenarioDef {
+	return rt.faultScenarios
+}
+
 // RunConfig controls test execution parameters.
 type RunConfig struct {
 	Filter      string  // run only matching test (empty = all)

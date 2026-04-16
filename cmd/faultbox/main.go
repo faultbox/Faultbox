@@ -171,6 +171,7 @@ func testCmd(args []string) int {
 	var seed int64 = -1 // -1 = not set
 	showFilter := "all" // common output filter: "all", "fail"
 	virtualTime := false
+	dryRun := false
 	exploreMode := ""
 	formatFlag := "" // "json" for structured output to stdout
 
@@ -241,6 +242,8 @@ func testCmd(args []string) int {
 		case args[0] == "--show" && len(args) > 1:
 			showFilter = args[1]
 			args = args[1:]
+		case args[0] == "--dry-run":
+			dryRun = true
 		case strings.HasSuffix(args[0], ".star"):
 			starFile = args[0]
 		case strings.HasSuffix(args[0], ".yaml") || strings.HasSuffix(args[0], ".yml"):
@@ -274,14 +277,14 @@ func testCmd(args []string) int {
 			VirtualTime: virtualTime,
 			ExploreMode: exploreMode,
 		}
-		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, formatFlag, logFormat, logLevel)
+		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, formatFlag, logFormat, logLevel, dryRun)
 	}
 
 	return testYAMLCmd(configPath, specPath, outputPath, logFormat, logLevel)
 }
 
 // testStarCmd runs tests from a .star file.
-func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level) int {
+func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level, dryRun bool) int {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
 
@@ -293,6 +296,31 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	if err := rt.LoadFile(starFile); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
+	}
+
+	// Dry-run mode: validate, discover tests, print info, exit.
+	if dryRun {
+		tests := rt.DiscoverTests()
+		fmt.Printf("Dry-run: loaded %s\n", starFile)
+		fmt.Printf("Services: %d\n", len(rt.Services()))
+		for _, svc := range rt.Services() {
+			fmt.Printf("  - %s\n", svc.Name)
+		}
+		fmt.Printf("Tests: %d\n", len(tests))
+		for _, t := range tests {
+			fmt.Printf("  - %s\n", t)
+		}
+		// Print fault_matrix info if any fault_scenario has matrix info.
+		matrixCount := 0
+		for _, fs := range rt.FaultScenarios() {
+			if fs.Matrix != nil {
+				matrixCount++
+			}
+		}
+		if matrixCount > 0 {
+			fmt.Printf("Fault matrix cells: %d\n", matrixCount)
+		}
+		return 0
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)

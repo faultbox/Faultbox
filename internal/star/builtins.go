@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"deny":        starlark.NewBuiltin("deny", builtinDeny),
 		"allow":       starlark.NewBuiltin("allow", builtinAllow),
 		"fault":       starlark.NewBuiltin("fault", rt.builtinFault),
+		"fault_all":   starlark.NewBuiltin("fault_all", rt.builtinFaultAll),
 		"fault_start": starlark.NewBuiltin("fault_start", rt.builtinFaultStart),
 		"fault_stop":  starlark.NewBuiltin("fault_stop", rt.builtinFaultStop),
 		"assert_true":       starlark.NewBuiltin("assert_true", builtinAssertTrue),
@@ -443,6 +445,23 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 					continue
 				}
 			}
+			// Validate that the key is a known syscall name.
+			if !isFaultableSyscall(key) {
+				// Build helpful error message.
+				opNames := make([]string, 0)
+				if svc.Ops != nil {
+					for opName := range svc.Ops {
+						opNames = append(opNames, opName)
+					}
+				}
+				hint := fmt.Sprintf("fault() unknown keyword %q for service %q. Valid syscalls: %s",
+					key, svc.Name, strings.Join(faultableSyscalls, ", "))
+				if len(opNames) > 0 {
+					sort.Strings(opNames)
+					hint += fmt.Sprintf(". Named operations on %s: %s", svc.Name, strings.Join(opNames, ", "))
+				}
+				return nil, fmt.Errorf("%s", hint)
+			}
 			faults[key] = fd
 		}
 	}
@@ -514,6 +533,72 @@ func (rt *Runtime) builtinFaultFromAssumption(thread *starlark.Thread, assumptio
 			rt.UnregisterMonitor(id)
 		}
 	}()
+
+	result, err := starlark.Call(thread, bodyFn, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return starlark.None, nil
+	}
+	return result, nil
+}
+
+// fault_all([svc1, svc2, ...], connect=deny("ECONNREFUSED"), run=scenario)
+// Applies the same fault kwargs to all listed services simultaneously.
+func (rt *Runtime) builtinFaultAll(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("fault_all() requires a list of services as the first argument")
+	}
+	svcList, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("fault_all() first arg must be a list of services, got %s", args[0].Type())
+	}
+	if svcList.Len() == 0 {
+		return nil, fmt.Errorf("fault_all() requires at least one service in the list")
+	}
+
+	// Collect services from the list.
+	services := make([]*ServiceDef, 0, svcList.Len())
+	for i := 0; i < svcList.Len(); i++ {
+		svc, ok := svcList.Index(i).(*ServiceDef)
+		if !ok {
+			return nil, fmt.Errorf("fault_all() services[%d] must be a service, got %s", i, svcList.Index(i).Type())
+		}
+		services = append(services, svc)
+	}
+
+	// Extract run= callback and fault specs from kwargs.
+	var bodyFn starlark.Callable
+	faults := make(map[string]*FaultDef)
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		if key == "run" {
+			cb, ok := kv[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("fault_all() run= must be a callable")
+			}
+			bodyFn = cb
+		} else {
+			fd, ok := kv[1].(*FaultDef)
+			if !ok {
+				return nil, fmt.Errorf("fault_all() %s= must be a fault (delay/deny), got %s", key, kv[1].Type())
+			}
+			faults[key] = fd
+		}
+	}
+
+	if bodyFn == nil {
+		return nil, fmt.Errorf("fault_all() requires run= keyword with a callback function")
+	}
+
+	// Apply the same faults to all services.
+	for _, svc := range services {
+		if err := rt.applyFaults(svc.Name, faults); err != nil {
+			return nil, fmt.Errorf("fault_all(): %w", err)
+		}
+		defer rt.removeFaults(svc.Name)
+	}
 
 	result, err := starlark.Call(thread, bodyFn, nil, nil)
 	if err != nil {
@@ -2049,4 +2134,14 @@ func builtinRegexDecoder(thread *starlark.Thread, fn *starlark.Builtin, args sta
 		return nil, fmt.Errorf("regex_decoder() requires pattern= argument")
 	}
 	return &DecoderVal{Name: "regex", Params: params}, nil
+}
+
+// isFaultableSyscall returns true if the given name is a known faultable syscall.
+func isFaultableSyscall(name string) bool {
+	for _, sc := range faultableSyscalls {
+		if sc == name {
+			return true
+		}
+	}
+	return false
 }

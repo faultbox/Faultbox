@@ -90,26 +90,53 @@ func Analyze(rt *star.Runtime) (*Analysis, error) {
 
 		// Environment variable wiring — look for references to other services.
 		for _, val := range svc.Env {
+			lowerVal := strings.ToLower(val)
 			for _, other := range rt.Services() {
 				if other.Name == svc.Name {
 					continue
 				}
+				lowerName := strings.ToLower(other.Name)
+
 				// Check if env value references another service's address.
+				matched := false
+				protocol := ""
 				for _, iface := range other.Interfaces {
 					addr := strings.ToLower(fmt.Sprintf("%s:%d", other.Name, iface.Port))
-					lowerVal := strings.ToLower(val)
 					if strings.Contains(lowerVal, addr) ||
-						strings.Contains(lowerVal, strings.ToLower(other.Name)+".") {
-						// Avoid duplicate edges.
-						if !hasEdge(a.Edges, svc.Name, other.Name) {
-							a.Edges = append(a.Edges, DependencyEdge{
-								From:     svc.Name,
-								To:       other.Name,
-								Via:      "env",
-								Protocol: iface.Protocol,
-							})
+						strings.Contains(lowerVal, lowerName+".") {
+						matched = true
+						protocol = iface.Protocol
+						break
+					}
+				}
+
+				// Match service name alone in env value (e.g., DB_HOST=postgres).
+				if !matched && strings.Contains(lowerVal, lowerName) {
+					matched = true
+					if depSvc, ok := servicesByName[other.Name]; ok {
+						protocol = depSvc.Protocol
+					}
+				}
+
+				// Match service.interface.addr patterns (e.g., postgres.db.addr).
+				if !matched {
+					for _, iface := range other.Interfaces {
+						ifaceRef := strings.ToLower(fmt.Sprintf("%s.%s.", other.Name, iface.Name))
+						if strings.Contains(lowerVal, ifaceRef) {
+							matched = true
+							protocol = iface.Protocol
+							break
 						}
 					}
+				}
+
+				if matched && !hasEdge(a.Edges, svc.Name, other.Name) {
+					a.Edges = append(a.Edges, DependencyEdge{
+						From:     svc.Name,
+						To:       other.Name,
+						Via:      "env",
+						Protocol: protocol,
+					})
 				}
 			}
 		}
