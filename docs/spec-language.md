@@ -106,6 +106,21 @@ api = service("api",
 | `healthcheck` | healthcheck | no | Readiness check (`tcp()` or `http()`) |
 | `observe` | list | no | Event sources to attach (see [Event Sources](#event-sources)) |
 
+**Seed data for databases** — use `volumes` to mount init scripts:
+
+```python
+postgres = service("postgres",
+    interface("main", "postgres", 5432),
+    image = "postgres:16-alpine",
+    env = {"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "testdb"},
+    volumes = {"./init.sql": "/docker-entrypoint-initdb.d/init.sql"},
+    healthcheck = tcp("localhost:5432"),
+)
+```
+
+Most database images run scripts from `/docker-entrypoint-initdb.d/` on
+first start. This creates your schema and test data before tests run.
+
 Services must be declared in dependency order — define `db` before `api` if
 `api` depends on `db`.
 
