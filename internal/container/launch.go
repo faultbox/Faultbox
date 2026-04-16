@@ -156,9 +156,20 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 	// Wait for the shim to report the listener fd (platform-specific: uses pidfd on Linux).
 	listenerFd, err := waitForListenerFd(ctx, reportPath, hostPID)
 	if err != nil {
+		// Seccomp acquisition failed — likely a multi-process entrypoint (Java/shell
+		// that forks, e.g., Confluent cp-kafka, cp-zookeeper). Fall back to running
+		// without fault injection rather than failing the whole test.
+		log.Warn("seccomp listener failed — falling back to no-seccomp mode",
+			slog.String("name", cfg.Name),
+			slog.String("error", err.Error()),
+			slog.String("hint", "multi-process entrypoints (shell→fork) can't use seccomp; fault rules on this service will not apply"),
+		)
+
+		// Stop the shim-based container and relaunch without the shim.
 		client.StopContainer(ctx, containerID, 5)
 		client.RemoveContainer(ctx, containerID)
-		return nil, fmt.Errorf("wait for listener fd: %w", err)
+
+		return launchSimple(ctx, client, cfg, log)
 	}
 
 	log.Info("seccomp listener acquired",

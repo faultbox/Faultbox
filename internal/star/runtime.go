@@ -731,6 +731,15 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		}
 	}
 
+	// Warn if fault rules target this service but seccomp is not active.
+	if result.ListenerFd < 0 && len(svcRules) > 0 {
+		rt.log.Warn("fault rules will NOT apply — service running without seccomp",
+			slog.String("service", svcName),
+			slog.Int("fault_rules", len(svcRules)),
+			slog.String("hint", "multi-process entrypoint prevented seccomp; faults on this service are silently skipped"),
+		)
+	}
+
 	// If no seccomp filter (no fault rules), skip session — just wait for healthcheck.
 	if result.ListenerFd < 0 {
 		rt.log.Info("container running (no seccomp)", slog.String("service", svcName))
