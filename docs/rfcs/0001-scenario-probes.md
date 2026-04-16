@@ -1,6 +1,6 @@
 # RFC-001: Scenarios as Probes & Fault Scenario Composition
 
-- **Status:** Draft
+- **Status:** Implemented (v0.3.0)
 - **Author:** Boris Glebov, Claude Opus 4.6
 - **Created:** 2026-04-13
 - **Branch:** `rfc/001-scenario-probes`
@@ -996,36 +996,18 @@ Old scenarios that return `None` implicitly still work — `expect` receives
   instead of flat `test_gen_*` functions
 - **Test:** Verify formatting, generator output comparison
 
-## Open Questions
+## Open Questions — Resolved
 
-1. **Should `expect` receive the event log as a second argument?**
-   `expect = lambda result, events: ...` would allow temporal assertions
-   without global `assert_eventually()`. Tradeoff: simpler signature vs.
-   co-located trace checks.
-   Proposed: No. `assert_eventually()` / `assert_never()` already query
-   the global event log. Adding `events` to `expect` creates two ways to
-   do the same thing.
+1. **`expect` receives result only** — `assert_eventually()` / `assert_never()`
+   already query the global event log from inside `expect`. No second arg needed.
 
-2. **Should `fault_assumption()` support top-level `probability` modifier?**
-   E.g., `fault_assumption("flaky", target=inventory, connect=deny("ECONNREFUSED"), probability="20%")`.
-   Today probability is per-FaultDef (`deny(..., probability="20%")`).
-   A top-level modifier would override all contained FaultDefs.
-   Proposed: Defer. Per-FaultDef probability is sufficient.
+2. **Top-level `probability`** — Deferred. Per-FaultDef probability is sufficient.
 
-3. **Naming: `fault_assumption` vs `fault_preset` vs `fault_profile`?**
-   "Assumption" aligns with formal verification terminology (a precondition
-   on the environment). "Preset" is more intuitive for new users.
-   Proposed: `fault_assumption` — the formal alignment matters for the
-   Phase 3 trace-equivalence work (RFC-009+).
+3. **Naming** — `fault_assumption` shipped. Formal alignment confirmed correct.
 
-4. **Should `scenario()` still auto-register as `test_<name>`?**
-   Proposed: Yes, for backward compatibility. A bare `scenario()` without
-   a corresponding `fault_scenario` acts as a happy-path test.
+4. **`scenario()` auto-register** — Yes. Backward compatible.
 
-5. **Conflict resolution in composition: last-wins or error?**
-   When `faults=[a, b]` and both target the same `(service, syscall)`,
-   proposed behavior is last-wins (b overrides a). Alternative: raise
-   an error to force explicit resolution.
+5. **Composition conflict** — Last-wins (list order). Shipped in v0.3.0.
 
 ## References
 
