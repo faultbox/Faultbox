@@ -1148,7 +1148,7 @@ duplicate(topic="orders.events")                     # Kafka/NATS
 | `redis` | `command=`, `key=` | error, response, delay, drop |
 | `grpc` | `method=` | error, delay, drop |
 | `kafka` | `topic=` | drop, delay, error, duplicate |
-| `mongodb` | `method=` (cmd), `key=` (collection) | error, delay, drop |
+| `mongodb` | `op=` / `method=` (cmd), `collection=` / `key=` | error, delay, drop |
 | `amqp` | `topic=` (routing key) | drop, delay, error |
 | `nats` | `topic=` (subject) | drop, delay |
 | `memcached` | `command=`, `key=` | error, response, delay, drop |

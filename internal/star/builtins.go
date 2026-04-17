@@ -380,13 +380,13 @@ func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.T
 					return nil, fmt.Errorf("delay() bad duration %q: %w", s, err)
 				}
 				pf.Delay = d
-			case "method":
+			case "method", "op":
 				pf.Method, _ = starlark.AsString(kv[1])
 			case "path":
 				pf.Path, _ = starlark.AsString(kv[1])
 			case "query":
 				pf.Query, _ = starlark.AsString(kv[1])
-			case "key":
+			case "key", "collection":
 				pf.Key, _ = starlark.AsString(kv[1])
 			case "command":
 				pf.Command, _ = starlark.AsString(kv[1])
@@ -2057,19 +2057,20 @@ func builtinProxyResponse(thread *starlark.Thread, fn *starlark.Builtin, args st
 	return pf, nil
 }
 
-// error(method=, path=, query=, command=, key=, message=, status=) — return error.
+// error(method=, path=, query=, command=, key=, op=, collection=, message=, status=) — return error.
+// `op=` is an alias for `method=` and `collection=` for `key=` (natural for MongoDB/document stores).
 func builtinProxyError(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	pf := &ProxyFaultDef{Action: "error"}
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
 		switch key {
-		case "method":
+		case "method", "op":
 			pf.Method, _ = starlark.AsString(kv[1])
 		case "path":
 			pf.Path, _ = starlark.AsString(kv[1])
 		case "query":
 			pf.Query, _ = starlark.AsString(kv[1])
-		case "key":
+		case "key", "collection":
 			pf.Key, _ = starlark.AsString(kv[1])
 		case "command":
 			pf.Command, _ = starlark.AsString(kv[1])
@@ -2094,16 +2095,18 @@ func builtinProxyError(thread *starlark.Thread, fn *starlark.Builtin, args starl
 	return pf, nil
 }
 
-// drop(method=, path=, topic=, probability=) — close connection / drop message.
+// drop(method=, path=, topic=, op=, collection=, probability=) — close connection / drop message.
 func builtinProxyDrop(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	pf := &ProxyFaultDef{Action: "drop"}
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
 		switch key {
-		case "method":
+		case "method", "op":
 			pf.Method, _ = starlark.AsString(kv[1])
 		case "path":
 			pf.Path, _ = starlark.AsString(kv[1])
+		case "key", "collection":
+			pf.Key, _ = starlark.AsString(kv[1])
 		case "topic":
 			pf.Topic, _ = starlark.AsString(kv[1])
 		case "probability":
