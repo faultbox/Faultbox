@@ -571,6 +571,11 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			)
 			rt.events.Emit("service_started", svcName, nil)
 			rt.events.Emit("service_ready", svcName, nil)
+
+			// Run reset (or seed as fallback) to re-initialize state between tests.
+			if err := rt.runResetCallback(svcName, svc); err != nil {
+				return fmt.Errorf("reset service %q: %w", svcName, err)
+			}
 			continue
 		}
 
@@ -583,7 +588,64 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
+		// Run seed callback for newly started services.
+		if svc.Seed != nil {
+			if err := rt.runSeedCallback(svcName, svc); err != nil {
+				return fmt.Errorf("seed service %q: %w", svcName, err)
+			}
+		}
 	}
+	return nil
+}
+
+// runSeedCallback executes the seed() Starlark callable for a service.
+// Called once after first healthcheck to initialize service state.
+func (rt *Runtime) runSeedCallback(svcName string, svc *ServiceDef) error {
+	rt.log.Info("running seed", slog.String("service", svcName))
+	rt.events.Emit("service_seed", svcName, nil)
+
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("seed:%s", svcName),
+		Print: func(_ *starlark.Thread, msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+		},
+	}
+	_, err := starlark.Call(thread, svc.Seed, nil, nil)
+	if err != nil {
+		return fmt.Errorf("seed() failed: %w", err)
+	}
+	rt.log.Info("seed complete", slog.String("service", svcName))
+	return nil
+}
+
+// runResetCallback executes the reset() (or seed() as fallback) Starlark
+// callable for a reused service. Called before each test except the first.
+func (rt *Runtime) runResetCallback(svcName string, svc *ServiceDef) error {
+	cb := svc.Reset
+	label := "reset"
+	if cb == nil {
+		cb = svc.Seed
+		label = "seed (as reset)"
+	}
+	if cb == nil {
+		return nil // no lifecycle callback — nothing to do
+	}
+
+	rt.log.Info("running "+label, slog.String("service", svcName))
+	rt.events.Emit("service_reset", svcName, nil)
+
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("reset:%s", svcName),
+		Print: func(_ *starlark.Thread, msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+		},
+	}
+	_, err := starlark.Call(thread, cb, nil, nil)
+	if err != nil {
+		return fmt.Errorf("%s() failed: %w", label, err)
+	}
+	rt.log.Info(label+" complete", slog.String("service", svcName))
 	return nil
 }
 
