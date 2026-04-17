@@ -50,6 +50,7 @@ type ServiceDef struct {
 	Env        map[string]string
 	DependsOn  []string
 	Volumes    map[string]string // host:container volume mounts (container mode)
+	Ports      map[int]int       // container_port → host_port override (0 = Docker picks)
 	Healthcheck *HealthcheckDef
 	Observe    []ObserveConfig   // event sources to attach
 	Ops        map[string]*OpDef // named operations (e.g., "persist" → write+fsync+path)

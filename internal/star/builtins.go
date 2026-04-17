@@ -28,6 +28,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"interface":   starlark.NewBuiltin("interface", builtinInterface),
 		"tcp":         starlark.NewBuiltin("tcp", builtinTCP),
 		"http":        starlark.NewBuiltin("http", builtinHTTP),
+		"kafka_ready": starlark.NewBuiltin("kafka_ready", builtinKafkaReady),
 		"delay":       starlark.NewBuiltin("delay", builtinDelay),
 		"deny":        starlark.NewBuiltin("deny", builtinDeny),
 		"allow":       starlark.NewBuiltin("allow", builtinAllow),
@@ -169,6 +170,27 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				v, _ := starlark.AsString(item[1])
 				svc.Volumes[k] = v
 			}
+		case "ports":
+			// ports = {container_port: host_port} — explicit host port mapping.
+			// host_port=0 means Docker picks a random port (default behaviour).
+			dict, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("service() ports must be a dict {container_port: host_port}")
+			}
+			svc.Ports = make(map[int]int)
+			for _, item := range dict.Items() {
+				cp, ok := item[0].(starlark.Int)
+				if !ok {
+					return nil, fmt.Errorf("service() ports keys must be integers (container ports)")
+				}
+				hp, ok := item[1].(starlark.Int)
+				if !ok {
+					return nil, fmt.Errorf("service() ports values must be integers (host ports)")
+				}
+				cpInt, _ := cp.Int64()
+				hpInt, _ := hp.Int64()
+				svc.Ports[int(cpInt)] = int(hpInt)
+			}
 		case "observe":
 			list, ok := kv[1].(*starlark.List)
 			if !ok {
@@ -290,6 +312,29 @@ func builtinHTTP(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 		timeout = d
 	}
 	return &HealthcheckDef{Test: url, Timeout: timeout}, nil
+}
+
+// kafka_ready(addr, timeout=) — healthcheck that actually verifies Kafka protocol readiness.
+// Unlike tcp(), this check connects with the Kafka protocol, ensuring the broker
+// is fully initialised (not just the docker-proxy listening on the host port).
+func builtinKafkaReady(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var addr string
+	if err := starlark.UnpackPositionalArgs("kafka_ready", args, nil, 1, &addr); err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(addr, "kafka://") {
+		addr = "kafka://" + addr
+	}
+	timeout := 120 * time.Second
+	if ts, ok := starKwarg(kwargs, "timeout"); ok {
+		s, _ := starlark.AsString(ts)
+		d, err := parseStarDuration(s)
+		if err != nil {
+			return nil, fmt.Errorf("kafka_ready() bad timeout: %w", err)
+		}
+		timeout = d
+	}
+	return &HealthcheckDef{Test: addr, Timeout: timeout}, nil
 }
 
 // delay(duration, probability=, label=)

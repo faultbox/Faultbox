@@ -27,6 +27,13 @@ func waitForListenerFd(ctx context.Context, socketPath string) (int, error) {
 	}
 	defer listener.Close()
 
+	// Allow any user (including container users) to connect.
+	// Docker bind-mounts the socket into the container, but the socket is owned
+	// by the host user (root), and Unix connect() requires write permission.
+	// Without 0777, non-root container users (e.g., UID 1000 in apache/kafka)
+	// get EACCES when the shim tries to connect.
+	os.Chmod(socketPath, 0777)
+
 	// Accept with context cancellation.
 	type acceptResult struct {
 		conn net.Conn

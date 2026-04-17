@@ -440,8 +440,10 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
 
-	// Start services.
-	testCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Start services — use a generous timeout covering image pull + container
+	// startup + seccomp fd passing. Healthcheck waits are handled separately
+	// with the spec-defined timeout so this budget is for infrastructure only.
+	testCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
 	if err := rt.startServices(testCtx); err != nil {
@@ -690,10 +692,14 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		}
 	}
 
-	// Resolve ports from interfaces.
+	// Resolve ports from interfaces, honouring any explicit host port overrides.
 	ports := make(map[int]int)
 	for _, iface := range svc.Interfaces {
-		ports[iface.Port] = 0 // 0 = let Docker pick host port
+		if hp, ok := svc.Ports[iface.Port]; ok {
+			ports[iface.Port] = hp // explicit host port (may be 0 = Docker picks)
+		} else {
+			ports[iface.Port] = 0 // default: let Docker pick host port
+		}
 	}
 
 	// Resolve syscall numbers for seccomp filter (per-service).
@@ -756,7 +762,9 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 				timeout = 10 * time.Second
 			}
 			hcTest := rt.resolveHealthcheck(svc)
-			if err := waitReady(ctx, hcTest, timeout); err != nil {
+			hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
+			defer hcCancel()
+			if err := waitReady(hcCtx, hcTest, timeout); err != nil {
 				return fmt.Errorf("service %q not ready: %w", svcName, err)
 			}
 			rt.events.Emit("service_ready", svcName, nil)
@@ -836,7 +844,9 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 
 	rt.events.Emit("service_started", svcName, nil)
 
-	// Wait for healthcheck.
+	// Wait for healthcheck using a fresh context derived from the background —
+	// not from startServices' testCtx (which has a short 30s deadline).
+	// The healthcheck defines its own maximum wait time via the timeout parameter.
 	if svc.Healthcheck != nil {
 		timeout := svc.Healthcheck.Timeout
 		if timeout <= 0 {
@@ -844,7 +854,9 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 		}
 		// For containers with mapped ports, adjust the healthcheck URL.
 		hcTest := rt.resolveHealthcheck(svc)
-		if err := waitReady(ctx, hcTest, timeout); err != nil {
+		hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
+		defer hcCancel()
+		if err := waitReady(hcCtx, hcTest, timeout); err != nil {
 			return fmt.Errorf("service %q not ready: %w", svcName, err)
 		}
 		rt.events.Emit("service_ready", svcName, nil)
@@ -1571,6 +1583,12 @@ func waitReady(ctx context.Context, check string, timeout time.Duration) error {
 			return p.Healthcheck(ctx, addr, timeout)
 		}
 		return protocol.TCPHealthcheck(ctx, addr, timeout)
+	case strings.HasPrefix(check, "kafka://"):
+		addr := strings.TrimPrefix(check, "kafka://")
+		if p, ok := protocol.Get("kafka"); ok {
+			return p.Healthcheck(ctx, addr, timeout)
+		}
+		return fmt.Errorf("kafka protocol not registered")
 	case strings.HasPrefix(check, "http://"), strings.HasPrefix(check, "https://"):
 		if p, ok := protocol.Get("http"); ok {
 			return p.Healthcheck(ctx, check, timeout)
