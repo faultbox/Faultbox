@@ -103,8 +103,13 @@ api = service("api",
 | `env` | dict | no | Environment variables |
 | `volumes` | dict | no | Volume mounts `{host_path: container_path}` (container mode) |
 | `depends_on` | list | no | Services that must start first |
-| `healthcheck` | healthcheck | no | Readiness check (`tcp()` or `http()`) |
+| `healthcheck` | healthcheck | no | Readiness check (`tcp()`, `http()`, or `kafka_ready()`) |
 | `observe` | list | no | Event sources to attach (see [Event Sources](#event-sources)) |
+| `ports` | dict | no | Explicit host port mapping `{container_port: host_port}` (0 = Docker picks) |
+| `reuse` | bool | no | Keep container alive between tests (see [Container Lifecycle](#container-lifecycle)) |
+| `seed` | callable | no | Initialize service state after healthcheck — runs once (see [Container Lifecycle](#container-lifecycle)) |
+| `reset` | callable | no | Re-initialize state between tests — runs before each test except the first (see [Container Lifecycle](#container-lifecycle)) |
+| `ops` | dict | no | Named operations for fd-level fault targeting (see [Named Operations](#named-operations)) |
 
 **Seed data for databases** — use `volumes` to mount init scripts:
 
@@ -413,7 +418,19 @@ healthcheck = http("localhost:8080/ready", timeout="30s")
 
 Polls an HTTP endpoint until it returns 2xx/3xx.
 
-Default timeout for both: `10s`.
+#### `kafka_ready(addr, timeout=)`
+
+```python
+healthcheck = kafka_ready("localhost:9092")
+healthcheck = kafka_ready("localhost:9092", timeout="120s")
+```
+
+Verifies Kafka broker readiness at the protocol level: connects, creates a
+sentinel topic, and confirms a partition leader is elected. More reliable than
+`tcp()` for Kafka because Docker's port proxy accepts TCP before the broker is
+ready to handle produce/consume requests. Default timeout: `120s`.
+
+Default timeout for `tcp()` and `http()`: `10s`.
 
 ### Environment Variables
 
@@ -458,6 +475,73 @@ FAULTBOX_DB_MAIN_ADDR=localhost:5432
 FAULTBOX_DB_MAIN_HOST=localhost
 FAULTBOX_DB_MAIN_PORT=5432
 ```
+
+---
+
+## Container Lifecycle
+
+### Reuse, Seed, and Reset
+
+By default, containers are created and destroyed for each test. For real
+infrastructure (Postgres, Redis, Kafka), this can take 20+ seconds per test.
+
+With `reuse=True`, containers are created once, seeded once, and reset
+between tests — cutting multi-test execution time by 5-10x:
+
+```python
+postgres = service("postgres",
+    interface("main", "postgres", 5432),
+    image = "postgres:16-alpine",
+    reuse = True,
+    seed = seed_db,
+    reset = reset_db,
+    healthcheck = tcp("localhost:5432"),
+)
+
+def seed_db():
+    """Runs once after first healthcheck — expensive initialization."""
+    postgres.main.exec(sql="CREATE TABLE orders (id SERIAL, status TEXT)")
+    postgres.main.exec(sql="INSERT INTO orders (status) VALUES ('pending')")
+
+def reset_db():
+    """Runs before each test (except first) — lightweight cleanup."""
+    postgres.main.exec(sql="TRUNCATE orders RESTART IDENTITY CASCADE")
+```
+
+### Lifecycle
+
+```
+Suite start:  create → healthcheck → seed()
+Test 1:       run test
+              ↓ faults cleared, reset()
+Test 2:       run test
+              ↓ faults cleared, reset()
+Test N:       run test
+Suite end:    destroy container
+```
+
+- **seed()** runs once after the first healthcheck. Use it for schema creation,
+  fixture data, or other expensive initialization.
+- **reset()** runs before each subsequent test, after fault rules are cleared.
+  Use it for `TRUNCATE`, `FLUSHDB`, or other fast state cleanup.
+- If **reset** is not set, **seed** is called as a fallback between tests.
+- If neither is set, a warning is emitted (state may leak between tests).
+- Reset failure fails the entire test (prevents hidden state leak bugs).
+
+### Ports
+
+Use `ports=` to map container ports to specific host ports:
+
+```python
+kafka = service("kafka",
+    interface("main", "kafka", 9092),
+    image = "apache/kafka:3.7.0",
+    ports = {9092: 9092},          # container:host
+    healthcheck = kafka_ready("localhost:9092"),
+)
+```
+
+When `ports` is not set, Docker picks random host ports automatically.
 
 ---
 

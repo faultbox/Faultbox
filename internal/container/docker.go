@@ -44,7 +44,15 @@ func (c *Client) Close() error {
 }
 
 // PullImage pulls a container image from a registry.
+// If the image already exists locally, the pull is skipped to avoid
+// unnecessary network round-trips (useful in offline/CI environments).
 func (c *Client) PullImage(ctx context.Context, ref string) error {
+	// Check if image already exists locally.
+	if _, _, err := c.cli.ImageInspectWithRaw(ctx, ref); err == nil {
+		c.log.Info("image already present, skipping pull", slog.String("image", ref))
+		return nil
+	}
+
 	c.log.Info("pulling image", slog.String("image", ref))
 	out, err := c.cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
@@ -299,8 +307,9 @@ type ShimConfig struct {
 	SyscallNrs []uint32 `json:"syscall_nrs"`
 	Entrypoint []string `json:"entrypoint"`
 	Cmd        []string `json:"cmd"`
-	ReportPath string   `json:"report_path"`
-	AckPath    string   `json:"ack_path"`
+	SocketPath string   `json:"socket_path,omitempty"`  // Unix socket for fd passing (preferred)
+	ReportPath string   `json:"report_path,omitempty"`  // legacy file-based reporting
+	AckPath    string   `json:"ack_path,omitempty"`     // legacy ACK file
 }
 
 // ShimConfigJSON serializes a ShimConfig to JSON for the env var.

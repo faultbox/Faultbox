@@ -50,9 +50,16 @@ type ServiceDef struct {
 	Env        map[string]string
 	DependsOn  []string
 	Volumes    map[string]string // host:container volume mounts (container mode)
+	Ports      map[int]int       // container_port → host_port override (0 = Docker picks)
 	Healthcheck *HealthcheckDef
 	Observe    []ObserveConfig   // event sources to attach
 	Ops        map[string]*OpDef // named operations (e.g., "persist" → write+fsync+path)
+
+	// Container reuse lifecycle (RFC-015).
+	Reuse bool               // keep container alive between tests
+	Seed  starlark.Callable  // initialize service state (runs once after healthcheck)
+	Reset starlark.Callable  // re-initialize between tests (defaults to Seed if nil)
+
 	rt         *Runtime // set by runtime after registration
 }
 

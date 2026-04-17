@@ -402,7 +402,11 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 }
 
 // cleanup releases Docker resources (network, client) after all tests complete.
+// Tears down any reused containers that survived between tests.
 func (rt *Runtime) cleanup() {
+	// Tear down reused containers that were kept alive across tests.
+	rt.stopReusedServices()
+
 	if rt.dockerClient != nil {
 		ctx := context.Background()
 		if rt.networkID != "" {
@@ -440,8 +444,10 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
 
-	// Start services.
-	testCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Start services — use a generous timeout covering image pull + container
+	// startup + seccomp fd passing. Healthcheck waits are handled separately
+	// with the spec-defined timeout so this budget is for infrastructure only.
+	testCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
 	if err := rt.startServices(testCtx); err != nil {
@@ -542,6 +548,7 @@ func (rt *Runtime) dependencyOrder() []string {
 }
 
 // startServices starts all registered services in dependency order.
+// Services with reuse=True that already have a running session are skipped.
 func (rt *Runtime) startServices(ctx context.Context) error {
 	rt.mu.Lock()
 	order := make([]string, len(rt.order))
@@ -549,12 +556,28 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 	rt.mu.Unlock()
 
 	// Clean up stale containers from previous tests or interrupted runs.
-	if rt.dockerClient != nil {
+	// Only clean up if we don't have reused containers already running.
+	if rt.dockerClient != nil && len(rt.sessions) == 0 {
 		rt.dockerClient.CleanupStale(ctx)
 	}
 
 	for _, svcName := range order {
 		svc := rt.services[svcName]
+
+		// Skip services that are already running (reused from previous test).
+		if _, running := rt.sessions[svcName]; running {
+			rt.log.Info("reusing container from previous test",
+				slog.String("service", svcName),
+			)
+			rt.events.Emit("service_started", svcName, nil)
+			rt.events.Emit("service_ready", svcName, nil)
+
+			// Run reset (or seed as fallback) to re-initialize state between tests.
+			if err := rt.runResetCallback(svcName, svc); err != nil {
+				return fmt.Errorf("reset service %q: %w", svcName, err)
+			}
+			continue
+		}
 
 		var err error
 		if svc.IsContainer() {
@@ -565,7 +588,64 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
+		// Run seed callback for newly started services.
+		if svc.Seed != nil {
+			if err := rt.runSeedCallback(svcName, svc); err != nil {
+				return fmt.Errorf("seed service %q: %w", svcName, err)
+			}
+		}
 	}
+	return nil
+}
+
+// runSeedCallback executes the seed() Starlark callable for a service.
+// Called once after first healthcheck to initialize service state.
+func (rt *Runtime) runSeedCallback(svcName string, svc *ServiceDef) error {
+	rt.log.Info("running seed", slog.String("service", svcName))
+	rt.events.Emit("service_seed", svcName, nil)
+
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("seed:%s", svcName),
+		Print: func(_ *starlark.Thread, msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+		},
+	}
+	_, err := starlark.Call(thread, svc.Seed, nil, nil)
+	if err != nil {
+		return fmt.Errorf("seed() failed: %w", err)
+	}
+	rt.log.Info("seed complete", slog.String("service", svcName))
+	return nil
+}
+
+// runResetCallback executes the reset() (or seed() as fallback) Starlark
+// callable for a reused service. Called before each test except the first.
+func (rt *Runtime) runResetCallback(svcName string, svc *ServiceDef) error {
+	cb := svc.Reset
+	label := "reset"
+	if cb == nil {
+		cb = svc.Seed
+		label = "seed (as reset)"
+	}
+	if cb == nil {
+		return nil // no lifecycle callback — nothing to do
+	}
+
+	rt.log.Info("running "+label, slog.String("service", svcName))
+	rt.events.Emit("service_reset", svcName, nil)
+
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("reset:%s", svcName),
+		Print: func(_ *starlark.Thread, msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+		},
+	}
+	_, err := starlark.Call(thread, cb, nil, nil)
+	if err != nil {
+		return fmt.Errorf("%s() failed: %w", label, err)
+	}
+	rt.log.Info(label+" complete", slog.String("service", svcName))
 	return nil
 }
 
@@ -690,10 +770,14 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		}
 	}
 
-	// Resolve ports from interfaces.
+	// Resolve ports from interfaces, honouring any explicit host port overrides.
 	ports := make(map[int]int)
 	for _, iface := range svc.Interfaces {
-		ports[iface.Port] = 0 // 0 = let Docker pick host port
+		if hp, ok := svc.Ports[iface.Port]; ok {
+			ports[iface.Port] = hp // explicit host port (may be 0 = Docker picks)
+		} else {
+			ports[iface.Port] = 0 // default: let Docker pick host port
+		}
 	}
 
 	// Resolve syscall numbers for seccomp filter (per-service).
@@ -756,7 +840,9 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 				timeout = 10 * time.Second
 			}
 			hcTest := rt.resolveHealthcheck(svc)
-			if err := waitReady(ctx, hcTest, timeout); err != nil {
+			hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
+			defer hcCancel()
+			if err := waitReady(hcCtx, hcTest, timeout); err != nil {
 				return fmt.Errorf("service %q not ready: %w", svcName, err)
 			}
 			rt.events.Emit("service_ready", svcName, nil)
@@ -836,7 +922,9 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 
 	rt.events.Emit("service_started", svcName, nil)
 
-	// Wait for healthcheck.
+	// Wait for healthcheck using a fresh context derived from the background —
+	// not from startServices' testCtx (which has a short 30s deadline).
+	// The healthcheck defines its own maximum wait time via the timeout parameter.
 	if svc.Healthcheck != nil {
 		timeout := svc.Healthcheck.Timeout
 		if timeout <= 0 {
@@ -844,7 +932,9 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 		}
 		// For containers with mapped ports, adjust the healthcheck URL.
 		hcTest := rt.resolveHealthcheck(svc)
-		if err := waitReady(ctx, hcTest, timeout); err != nil {
+		hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
+		defer hcCancel()
+		if err := waitReady(hcCtx, hcTest, timeout); err != nil {
 			return fmt.Errorf("service %q not ready: %w", svcName, err)
 		}
 		rt.events.Emit("service_ready", svcName, nil)
@@ -928,8 +1018,79 @@ func (rt *Runtime) findShimPath() string {
 }
 
 // stopServices stops all running services and cleans up containers.
+// Services with Reuse=true are kept alive — only their dynamic fault rules
+// are cleared. They are torn down later by stopReusedServices().
 func (rt *Runtime) stopServices() {
-	for _, rs := range rt.sessions {
+	// Determine which services are reused.
+	reused := make(map[string]bool)
+	for name := range rt.sessions {
+		if svc, ok := rt.services[name]; ok && svc.Reuse {
+			reused[name] = true
+		}
+	}
+
+	// Cancel non-reused sessions.
+	for name, rs := range rt.sessions {
+		if reused[name] {
+			// Keep session alive; just clear dynamic fault rules.
+			rs.session.ClearDynamicFaultRules()
+			continue
+		}
+		rs.cancel()
+	}
+	// Wait for non-reused sessions to finish.
+	kept := make(map[string]*runningSession)
+	for name, rs := range rt.sessions {
+		if reused[name] {
+			kept[name] = rs
+			continue
+		}
+		select {
+		case <-rs.done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	rt.sessions = kept
+
+	// Stop and remove non-reused Docker containers.
+	if rt.dockerClient != nil {
+		ctx := context.Background()
+		keptContainers := make(map[string]string)
+		for name, cid := range rt.containerIDs {
+			if reused[name] {
+				keptContainers[name] = cid
+				continue
+			}
+			rt.log.Debug("stopping container", slog.String("name", name))
+			rt.dockerClient.StopContainer(ctx, cid, 5)
+			rt.dockerClient.RemoveContainer(ctx, cid)
+		}
+		rt.containerIDs = keptContainers
+
+		// Remove the Docker network only if no reused containers remain.
+		if len(keptContainers) == 0 && rt.networkID != "" {
+			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
+			rt.networkID = ""
+		}
+	}
+
+	// Clean up socket directories only for non-reused services.
+	if len(reused) == 0 {
+		socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
+		os.RemoveAll(socketBase)
+	}
+
+	// Clear active faults.
+	rt.faultsMu.Lock()
+	rt.faults = make(map[string]map[string]*FaultDef)
+	rt.faultsMu.Unlock()
+}
+
+// stopReusedServices tears down containers that were kept alive via reuse=True.
+// Called once at suite end by cleanup().
+func (rt *Runtime) stopReusedServices() {
+	for name, rs := range rt.sessions {
+		rt.log.Debug("stopping reused session", slog.String("service", name))
 		rs.cancel()
 	}
 	for _, rs := range rt.sessions {
@@ -940,31 +1101,18 @@ func (rt *Runtime) stopServices() {
 	}
 	rt.sessions = make(map[string]*runningSession)
 
-	// Stop and remove Docker containers.
 	if rt.dockerClient != nil {
 		ctx := context.Background()
 		for name, cid := range rt.containerIDs {
-			rt.log.Debug("stopping container", slog.String("name", name))
+			rt.log.Debug("removing reused container", slog.String("name", name))
 			rt.dockerClient.StopContainer(ctx, cid, 5)
 			rt.dockerClient.RemoveContainer(ctx, cid)
 		}
 		rt.containerIDs = make(map[string]string)
-
-		// Remove the Docker network so the next test gets a clean one.
-		if rt.networkID != "" {
-			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
-			rt.networkID = ""
-		}
 	}
 
-	// Clean up socket directories.
 	socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
 	os.RemoveAll(socketBase)
-
-	// Clear active faults.
-	rt.faultsMu.Lock()
-	rt.faults = make(map[string]map[string]*FaultDef)
-	rt.faultsMu.Unlock()
 }
 
 // buildEnv creates the environment for a service with auto-injection.
@@ -1571,6 +1719,12 @@ func waitReady(ctx context.Context, check string, timeout time.Duration) error {
 			return p.Healthcheck(ctx, addr, timeout)
 		}
 		return protocol.TCPHealthcheck(ctx, addr, timeout)
+	case strings.HasPrefix(check, "kafka://"):
+		addr := strings.TrimPrefix(check, "kafka://")
+		if p, ok := protocol.Get("kafka"); ok {
+			return p.Healthcheck(ctx, addr, timeout)
+		}
+		return fmt.Errorf("kafka protocol not registered")
 	case strings.HasPrefix(check, "http://"), strings.HasPrefix(check, "https://"):
 		if p, ok := protocol.Get("http"); ok {
 			return p.Healthcheck(ctx, check, timeout)
