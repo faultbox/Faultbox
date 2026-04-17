@@ -402,7 +402,11 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 }
 
 // cleanup releases Docker resources (network, client) after all tests complete.
+// Tears down any reused containers that survived between tests.
 func (rt *Runtime) cleanup() {
+	// Tear down reused containers that were kept alive across tests.
+	rt.stopReusedServices()
+
 	if rt.dockerClient != nil {
 		ctx := context.Background()
 		if rt.networkID != "" {
@@ -544,6 +548,7 @@ func (rt *Runtime) dependencyOrder() []string {
 }
 
 // startServices starts all registered services in dependency order.
+// Services with reuse=True that already have a running session are skipped.
 func (rt *Runtime) startServices(ctx context.Context) error {
 	rt.mu.Lock()
 	order := make([]string, len(rt.order))
@@ -551,12 +556,23 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 	rt.mu.Unlock()
 
 	// Clean up stale containers from previous tests or interrupted runs.
-	if rt.dockerClient != nil {
+	// Only clean up if we don't have reused containers already running.
+	if rt.dockerClient != nil && len(rt.sessions) == 0 {
 		rt.dockerClient.CleanupStale(ctx)
 	}
 
 	for _, svcName := range order {
 		svc := rt.services[svcName]
+
+		// Skip services that are already running (reused from previous test).
+		if _, running := rt.sessions[svcName]; running {
+			rt.log.Info("reusing container from previous test",
+				slog.String("service", svcName),
+			)
+			rt.events.Emit("service_started", svcName, nil)
+			rt.events.Emit("service_ready", svcName, nil)
+			continue
+		}
 
 		var err error
 		if svc.IsContainer() {
@@ -940,8 +956,79 @@ func (rt *Runtime) findShimPath() string {
 }
 
 // stopServices stops all running services and cleans up containers.
+// Services with Reuse=true are kept alive — only their dynamic fault rules
+// are cleared. They are torn down later by stopReusedServices().
 func (rt *Runtime) stopServices() {
-	for _, rs := range rt.sessions {
+	// Determine which services are reused.
+	reused := make(map[string]bool)
+	for name := range rt.sessions {
+		if svc, ok := rt.services[name]; ok && svc.Reuse {
+			reused[name] = true
+		}
+	}
+
+	// Cancel non-reused sessions.
+	for name, rs := range rt.sessions {
+		if reused[name] {
+			// Keep session alive; just clear dynamic fault rules.
+			rs.session.ClearDynamicFaultRules()
+			continue
+		}
+		rs.cancel()
+	}
+	// Wait for non-reused sessions to finish.
+	kept := make(map[string]*runningSession)
+	for name, rs := range rt.sessions {
+		if reused[name] {
+			kept[name] = rs
+			continue
+		}
+		select {
+		case <-rs.done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	rt.sessions = kept
+
+	// Stop and remove non-reused Docker containers.
+	if rt.dockerClient != nil {
+		ctx := context.Background()
+		keptContainers := make(map[string]string)
+		for name, cid := range rt.containerIDs {
+			if reused[name] {
+				keptContainers[name] = cid
+				continue
+			}
+			rt.log.Debug("stopping container", slog.String("name", name))
+			rt.dockerClient.StopContainer(ctx, cid, 5)
+			rt.dockerClient.RemoveContainer(ctx, cid)
+		}
+		rt.containerIDs = keptContainers
+
+		// Remove the Docker network only if no reused containers remain.
+		if len(keptContainers) == 0 && rt.networkID != "" {
+			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
+			rt.networkID = ""
+		}
+	}
+
+	// Clean up socket directories only for non-reused services.
+	if len(reused) == 0 {
+		socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
+		os.RemoveAll(socketBase)
+	}
+
+	// Clear active faults.
+	rt.faultsMu.Lock()
+	rt.faults = make(map[string]map[string]*FaultDef)
+	rt.faultsMu.Unlock()
+}
+
+// stopReusedServices tears down containers that were kept alive via reuse=True.
+// Called once at suite end by cleanup().
+func (rt *Runtime) stopReusedServices() {
+	for name, rs := range rt.sessions {
+		rt.log.Debug("stopping reused session", slog.String("service", name))
 		rs.cancel()
 	}
 	for _, rs := range rt.sessions {
@@ -952,31 +1039,18 @@ func (rt *Runtime) stopServices() {
 	}
 	rt.sessions = make(map[string]*runningSession)
 
-	// Stop and remove Docker containers.
 	if rt.dockerClient != nil {
 		ctx := context.Background()
 		for name, cid := range rt.containerIDs {
-			rt.log.Debug("stopping container", slog.String("name", name))
+			rt.log.Debug("removing reused container", slog.String("name", name))
 			rt.dockerClient.StopContainer(ctx, cid, 5)
 			rt.dockerClient.RemoveContainer(ctx, cid)
 		}
 		rt.containerIDs = make(map[string]string)
-
-		// Remove the Docker network so the next test gets a clean one.
-		if rt.networkID != "" {
-			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
-			rt.networkID = ""
-		}
 	}
 
-	// Clean up socket directories.
 	socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
 	os.RemoveAll(socketBase)
-
-	// Clear active faults.
-	rt.faultsMu.Lock()
-	rt.faults = make(map[string]map[string]*FaultDef)
-	rt.faultsMu.Unlock()
 }
 
 // buildEnv creates the environment for a service with auto-injection.
