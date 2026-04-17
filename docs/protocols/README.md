@@ -15,6 +15,7 @@ the fault rules for protocol-level injection, and seed/reset patterns.
 | [Kafka](kafka.md) | `"kafka"` | publish, consume | drop, delay, duplicate | topic |
 | [NATS](nats.md) | `"nats"` | publish, request, subscribe | drop, delay | — |
 | [gRPC](grpc.md) | `"grpc"` | call | error, delay, drop | — |
+| [ClickHouse](clickhouse.md) | `"clickhouse"` | query, exec | error, delay, drop | — |
 
 ## How to read protocol docs
 
