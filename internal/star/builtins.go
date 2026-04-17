@@ -3,6 +3,7 @@ package star
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -222,6 +223,24 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				opDef.Name = name
 				svc.Ops[name] = opDef
 			}
+		case "reuse":
+			b, ok := kv[1].(starlark.Bool)
+			if !ok {
+				return nil, fmt.Errorf("service() reuse must be a bool")
+			}
+			svc.Reuse = bool(b)
+		case "seed":
+			fn, ok := kv[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("service() seed must be a callable (function)")
+			}
+			svc.Seed = fn
+		case "reset":
+			fn, ok := kv[1].(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("service() reset must be a callable (function)")
+			}
+			svc.Reset = fn
 		}
 	}
 
@@ -241,6 +260,13 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 	}
 	if sources > 1 {
 		return nil, fmt.Errorf("service() accepts only one of: binary, image=, or build= (got %d)", sources)
+	}
+
+	// Warn about potential state leaks with reuse but no lifecycle handlers.
+	if svc.Reuse && svc.Seed == nil && svc.Reset == nil {
+		rt.log.Warn("service has reuse=True but no seed or reset — state may leak between tests",
+			slog.String("service", svc.Name),
+		)
 	}
 
 	rt.registerService(svc)
