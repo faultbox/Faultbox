@@ -30,11 +30,11 @@ Runtime (internal/star/) -- parses topology, discovers tests
     |
     +-- For each test:
         1. Start services (binary or Docker container)
-        2. Install seccomp filter (via shim for containers)
-        3. Wait for healthchecks
-        4. Run test function (HTTP/TCP steps, fault injection)
+        2. Install seccomp filter (via shim + Unix socket fd passing for containers)
+        3. Wait for healthchecks, run seed() if first start
+        4. Run reset() if reused container, then run test function
         5. Notification loop processes intercepted syscalls
-        6. Stop services, report trace
+        6. Stop services (or keep alive if reuse=True), report trace
 ```
 
 ### Core Concepts
@@ -68,7 +68,7 @@ faultbox/
 │   ├── engine/               # Session lifecycle, fault rules, hold queues, notification loop
 │   ├── seccomp/              # BPF filter generation, seccomp-notify API, arch tables
 │   ├── star/                 # Starlark runtime, builtins, event log, per-service filtering
-│   ├── container/            # Docker API wrapper, network, container launch, pidfd_getfd
+│   ├── container/            # Docker API wrapper, network, container launch, Unix socket fd passing
 │   ├── protocol/             # Protocol plugins (http, tcp, postgres, redis, kafka, mysql, nats, grpc)
 │   ├── proxy/                # Transparent proxy for protocol-level fault injection
 │   ├── eventsource/          # Event source plugins (stdout, wal_stream, topic, tail, poll) + decoders
@@ -100,8 +100,8 @@ faultbox/
 |---------|---------|-----------|
 | `internal/engine` | Session lifecycle, fault rule matching, notification loop | `session.go`, `launch_linux.go`, `fault.go` |
 | `internal/seccomp` | BPF filter building, seccomp syscall, arch tables | `filter_linux.go`, `arch_arm64.go`, `arch_amd64.go` |
-| `internal/star` | Starlark runtime, all builtins, event log, service lifecycle | `runtime.go`, `builtins.go`, `types.go` |
-| `internal/container` | Docker client, network, container launch with shim | `docker.go`, `launch.go`, `fd_linux.go` |
+| `internal/star` | Starlark runtime, all builtins, event log, service lifecycle, container reuse | `runtime.go`, `builtins.go`, `types.go` |
+| `internal/container` | Docker client, network, container launch, Unix socket fd passing (SCM_RIGHTS) | `docker.go`, `launch.go`, `fd_linux.go` |
 | `internal/protocol` | Protocol plugins (http, tcp, postgres, redis, kafka, etc.) | `protocol.go`, `http.go`, `postgres.go` |
 | `internal/proxy` | Transparent proxy for protocol-level fault injection | `proxy.go`, `http.go`, `redis.go`, `postgres.go` |
 | `internal/eventsource` | Event source plugins (stdout, wal_stream, topic, tail, poll) | `eventsource.go`, `stdout.go`, `walstream.go` |

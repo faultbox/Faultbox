@@ -1,6 +1,6 @@
 # RFC-015: Container Reuse with Seed/Reset Lifecycle
 
-- **Status:** Draft
+- **Status:** Implemented (v0.6.0)
 - **Author:** Boris Glebov, Claude Opus 4.6
 - **Created:** 2026-04-16
 - **Branch:** `rfc/015-container-reuse`

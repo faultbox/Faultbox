@@ -35,23 +35,26 @@ Host (faultbox)                          Docker Container
 +-----------------------+    +----------------------------------+
 | 1. Pull/build image   |    | faultbox-shim (bind-mounted)     |
 | 2. Override entrypoint |    |   +- Install seccomp filter      |
-|    with shim           |    |   +- Report listener fd          |
-| 3. Acquire fd via      |<---|   +- Wait for host ACK           |
-|    pidfd_getfd()       |    |   +- exec(original entrypoint)   |
-| 4. Run notification    |    |                                  |
-|    loop (same as       |    | Real service runs with           |
-|    binary mode)        |    | seccomp filter active            |
-+-----------------------+    +----------------------------------+
+|    with shim           |    |   +- Send listener fd via        |
+| 3. Receive fd via      |<---|      Unix socket (SCM_RIGHTS)    |
+|    Unix socket         |    |   +- Wait for host ACK           |
+| 4. Run notification    |    |   +- exec(original entrypoint)   |
+|    loop (same as       |    |                                  |
+|    binary mode)        |    | Real service runs with           |
++-----------------------+    | seccomp filter active            |
+                              +----------------------------------+
 ```
 
 A tiny shim binary is injected into the container. It installs the seccomp
-filter, then exec's the original entrypoint. From Postgres's perspective,
-nothing changed — except faultbox can now intercept its syscalls.
+filter, sends the listener fd to the host via a Unix domain socket
+(SCM_RIGHTS), then exec's the original entrypoint. This works with
+multi-process containers (Kafka, shell chains) because the fd is acquired
+before exec — no PID tracking or `CAP_SYS_PTRACE` needed.
 
 ## Prerequisites
 
-Container tests require Docker and `sudo` (seccomp on containers needs
-`pidfd_getfd` with `PTRACE_MODE_ATTACH`).
+Container tests require Docker. The Lima VM provides the Linux kernel
+(seccomp-notify requires kernel 5.6+).
 
 **macOS (Lima VM):** Docker is pre-installed in the Lima VM.
 
@@ -229,6 +232,34 @@ pg = service("postgres",
 )
 ```
 
+## Container reuse
+
+Starting Postgres, Redis, or Kafka takes 10-20 seconds each. With many tests
+this adds up fast. Use `reuse=True` to keep containers alive between tests:
+
+```python
+postgres = service("postgres",
+    interface("main", "postgres", 5432),
+    image = "postgres:16-alpine",
+    reuse = True,
+    seed = seed_db,
+    reset = reset_db,
+    healthcheck = tcp("localhost:5432"),
+)
+
+def seed_db():
+    postgres.main.exec(sql="CREATE TABLE orders (id SERIAL, status TEXT)")
+
+def reset_db():
+    postgres.main.exec(sql="TRUNCATE orders RESTART IDENTITY CASCADE")
+```
+
+- **seed()** runs once after the first healthcheck (schema creation, fixtures)
+- **reset()** runs before each subsequent test (fast cleanup like TRUNCATE)
+- If reset is not set, seed is called again as fallback
+
+Without reuse: 11 tests × 20s = 220s. With reuse: 20s + 11 × 0.5s = **25s**.
+
 ## What you learned
 
 - `image=` pulls Docker images, `build=` builds from Dockerfile
@@ -238,7 +269,8 @@ pg = service("postgres",
 - Fault injection works identically on containers and binaries
 - Syscall family expansion handles differences (pwrite64 vs write)
 - Per-service filtering: only faulted services get seccomp overhead
-- Requires Linux + Docker + sudo
+- `reuse=True` with `seed`/`reset` cuts multi-test execution time by 5-10x
+- Requires Linux + Docker
 
 **The key takeaway:** you can now test your actual production dependencies —
 not mocks. "What happens when Postgres runs out of disk?" is tested against
