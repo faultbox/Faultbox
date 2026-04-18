@@ -3,13 +3,14 @@ package proxy
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
 	"sync"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // MongoDB wire protocol opcodes.
@@ -265,30 +266,26 @@ func parseOPMSG(body []byte) (cmd string, collection string) {
 	return cmd, collection
 }
 
-// sendMongoError sends a MongoDB OP_MSG error response.
+// sendMongoError sends a MongoDB OP_MSG error response. The body is encoded
+// as real BSON so official drivers recognize it as a proper server error
+// (ok=0, errmsg=..., code=...). Sending JSON here would leave drivers in an
+// undefined state — they would either hang waiting for more bytes or abort
+// the connection, making fault outcomes indistinguishable from proxy bugs.
 func sendMongoError(conn net.Conn, requestID uint32, errMsg string) {
-	// Build error BSON document: {"ok": 0, "errmsg": "...", "code": 1}
-	errDoc := map[string]interface{}{
-		"ok":     0,
+	bsonData, err := bson.Marshal(bson.M{
+		"ok":     0.0,
 		"errmsg": errMsg,
 		"code":   1,
+	})
+	if err != nil {
+		return
 	}
-	bsonData, _ := json.Marshal(errDoc)
-	// Use a simplified response — real BSON encoding would be needed for production.
-	// For fault injection, this is sufficient to trigger error handling.
 
-	// OP_MSG response.
-	section := make([]byte, 0, 5+len(bsonData)+1)
-	section = append(section, 0) // section kind 0
-	// Simplified: use JSON as placeholder. Real impl needs BSON encoding.
-	bsonLen := make([]byte, 4)
-	binary.LittleEndian.PutUint32(bsonLen, uint32(len(bsonData)+5))
-	section = append(section, bsonLen...)
-	section = append(section, bsonData...)
-	section = append(section, 0) // BSON terminator
-
-	flagBits := make([]byte, 4)
-	msgBody := append(flagBits, section...)
+	// OP_MSG body: flagBits(4) + section kind 0 + BSON document.
+	msgBody := make([]byte, 0, 4+1+len(bsonData))
+	msgBody = append(msgBody, 0, 0, 0, 0) // flagBits = 0
+	msgBody = append(msgBody, 0)          // section kind 0 (single body document)
+	msgBody = append(msgBody, bsonData...)
 
 	// Header: length(4) + requestID(4) + responseTo(4) + opCode(4)
 	totalLen := 16 + len(msgBody)
