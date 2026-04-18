@@ -688,8 +688,49 @@ Print the version and exit.
 
 ```bash
 faultbox --version
-# faultbox 0.2.0
+# faultbox 0.7.0
 ```
+
+---
+
+### `faultbox recipes`
+
+Browse the embedded standard recipe library (see [RFC-019](rfcs/0019-recipe-distribution.md)).
+Recipes ship with the binary and are loaded via the `@faultbox/` prefix in specs.
+
+#### `faultbox recipes list`
+
+```
+faultbox recipes list
+```
+
+Prints every stdlib recipe available in the installed binary along with the
+canonical `load()` syntax.
+
+```
+Available stdlib recipes (load via @faultbox/recipes/<name>.star):
+  cassandra
+  clickhouse
+  http2
+  mongodb
+  udp
+
+Example:
+  load("@faultbox/recipes/cassandra.star", "cassandra")
+```
+
+#### `faultbox recipes show <name>`
+
+```
+faultbox recipes show mongodb
+```
+
+Prints the source of a recipe file. Useful for:
+- Understanding what a recipe injects before loading it
+- Copying a recipe into your project as a starting point for customization:
+  ```
+  faultbox recipes show mongodb > recipes/mongodb-custom.star
+  ```
 
 ---
 

@@ -69,7 +69,7 @@ faultbox/
 │   ├── seccomp/              # BPF filter generation, seccomp-notify API, arch tables
 │   ├── star/                 # Starlark runtime, builtins, event log, per-service filtering
 │   ├── container/            # Docker API wrapper, network, container launch, Unix socket fd passing
-│   ├── protocol/             # Protocol plugins (http, tcp, postgres, redis, kafka, mysql, nats, grpc)
+│   ├── protocol/             # Protocol plugins (http, http2, tcp, udp, postgres, mysql, redis, kafka, nats, grpc, mongodb, cassandra, clickhouse)
 │   ├── proxy/                # Transparent proxy for protocol-level fault injection
 │   ├── eventsource/          # Event source plugins (stdout, wal_stream, topic, tail, poll) + decoders
 │   ├── generate/             # Failure scenario generator (analyzer, matrix, codegen)
@@ -78,10 +78,13 @@ faultbox/
 ├── poc/
 │   ├── demo/                 # Binary demo: order-svc + inventory-svc
 │   ├── demo-container/       # Container demo: Go API + Postgres + Redis
+│   ├── kafka-rfc014/         # Kafka end-to-end test (validates RFC-014 Unix socket fd passing)
 │   ├── mock-api/             # Simple HTTP API wrapping mock-db
 │   ├── mock-db/              # Simple TCP key-value store
 │   ├── target/               # Minimal binary for fault injection testing
 │   └── example/              # Simple 2-service example spec
+├── recipes/                  # Stdlib recipes (embedded in binary via @faultbox/ prefix)
+├── stdlib.go                 # //go:embed recipes/*.star → faultbox.Recipes
 ├── docs/
 │   ├── tutorial/             # 12-chapter tutorial in 5 parts
 │   ├── design/               # Design documents
@@ -100,10 +103,11 @@ faultbox/
 |---------|---------|-----------|
 | `internal/engine` | Session lifecycle, fault rule matching, notification loop | `session.go`, `launch_linux.go`, `fault.go` |
 | `internal/seccomp` | BPF filter building, seccomp syscall, arch tables | `filter_linux.go`, `arch_arm64.go`, `arch_amd64.go` |
-| `internal/star` | Starlark runtime, all builtins, event log, service lifecycle, container reuse | `runtime.go`, `builtins.go`, `types.go` |
+| `internal/star` | Starlark runtime, all builtins, event log, service lifecycle, container reuse, `@faultbox/` stdlib resolver | `runtime.go`, `builtins.go`, `types.go` |
 | `internal/container` | Docker client, network, container launch, Unix socket fd passing (SCM_RIGHTS) | `docker.go`, `launch.go`, `fd_linux.go` |
-| `internal/protocol` | Protocol plugins (http, tcp, postgres, redis, kafka, etc.) | `protocol.go`, `http.go`, `postgres.go` |
-| `internal/proxy` | Transparent proxy for protocol-level fault injection | `proxy.go`, `http.go`, `redis.go`, `postgres.go` |
+| `internal/protocol` | Protocol plugins — 13 total: http, http2, tcp, udp, postgres, mysql, redis, kafka, nats, grpc, mongodb, cassandra, clickhouse | `protocol.go`, `http.go`, `http2.go`, `mongodb.go` |
+| `internal/proxy` | Transparent proxy for protocol-level fault injection | `proxy.go`, `http.go`, `http2.go`, `mongodb.go`, `cassandra.go`, `clickhouse.go`, `udp.go` |
+| `recipes/` | Embedded stdlib — curated failure wrappers per RFC-018/019. Loaded via `load("@faultbox/recipes/<name>.star", ...)`. Shipped recipes: mongodb, http2, udp, cassandra, clickhouse. | `mongodb.star`, `cassandra.star`, etc. |
 | `internal/eventsource` | Event source plugins (stdout, wal_stream, topic, tail, poll) | `eventsource.go`, `stdout.go`, `walstream.go` |
 | `internal/generate` | Failure scenario generator (topology analysis → mutations) | `analyzer.go`, `matrix.go`, `codegen.go` |
 

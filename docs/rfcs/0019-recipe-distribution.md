@@ -1,6 +1,6 @@
 # RFC-019: Recipe Distribution via `@faultbox/` Prefix
 
-- **Status:** Draft
+- **Status:** Implemented (v0.7.0)
 - **Author:** Boris Glebov, Claude Opus 4.7
 - **Created:** 2026-04-18
 - **Branch:** `rfc/019-recipe-distribution`

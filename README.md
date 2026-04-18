@@ -28,8 +28,14 @@ faultbox test faultbox.star
 **Syscall-level fault injection** -- deny, delay, or hold any syscall.
 Faultbox automatically expands families (`write` covers `write`, `writev`, `pwrite64`).
 
-**Protocol-level fault injection** -- inject faults at HTTP, gRPC, Postgres, MySQL,
-Redis, Kafka, NATS, MongoDB, AMQP, and Memcached protocol level via transparent proxy.
+**Protocol-level fault injection** -- inject faults at HTTP, HTTP/2, gRPC,
+Postgres, MySQL, Redis, Kafka, NATS, MongoDB, Cassandra, ClickHouse, AMQP,
+Memcached, UDP, and TCP protocol level via transparent proxy.
+
+**Recipe library** -- curated failure wrappers ship embedded in the binary.
+`load("@faultbox/recipes/mongodb.star", "mongodb")` gets you `mongodb.disk_full()`,
+`mongodb.replica_unavailable()`, and more — no filesystem setup needed.
+Discover with `faultbox recipes list`.
 
 **Deterministic exploration** -- `hold()` + `release()` control syscall ordering
 across services. `--explore` mode walks all interleavings automatically.

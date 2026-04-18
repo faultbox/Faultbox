@@ -48,10 +48,10 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 |-----|-------|--------|------------|
 | [RFC-014](0014-unix-socket-fd-passing.md) | Unix Socket FD Passing for Container Seccomp | Draft | — |
 | [RFC-015](0015-container-reuse.md) | Container Reuse with Seed/Reset Lifecycle | Draft | — |
-| [RFC-016](0016-new-protocols.md) | New Protocols: UDP, QUIC, HTTP/2, MongoDB, ClickHouse, Cassandra | Draft | — |
+| [RFC-016](0016-new-protocols.md) | New Protocols: UDP, QUIC, HTTP/2, MongoDB, ClickHouse, Cassandra | Partially Implemented (v0.7.0) | — |
 | [RFC-017](0017-mock-services.md) | Native Mock Services: Stub Protocols Without Containers | Draft | — |
-| [RFC-018](0018-recipes-library.md) | Recipes Library — Curated Failure Wrappers in Starlark | Draft | — |
-| [RFC-019](0019-recipe-distribution.md) | Recipe Distribution via `@faultbox/` Prefix | Draft | RFC-018 |
+| [RFC-018](0018-recipes-library.md) | Recipes Library — Curated Failure Wrappers in Starlark | Implemented (v0.7.0) | — |
+| [RFC-019](0019-recipe-distribution.md) | Recipe Distribution via `@faultbox/` Prefix | Implemented (v0.7.0) | RFC-018 |
 
 ### Phase 3: Trace Equivalence & Specification Mining
 

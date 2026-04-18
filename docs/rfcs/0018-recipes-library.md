@@ -1,6 +1,6 @@
 # RFC-018: Recipes Library — Curated Failure Wrappers in Starlark
 
-- **Status:** Draft
+- **Status:** Implemented (v0.7.0)
 - **Author:** Boris Glebov, Claude Opus 4.7
 - **Created:** 2026-04-17
 - **Amended:** 2026-04-18 — namespace struct pattern (was top-level functions)

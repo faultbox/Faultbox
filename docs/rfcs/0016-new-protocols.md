@@ -1,6 +1,6 @@
 # RFC-016: New Protocol Support — UDP, QUIC, HTTP/2, MongoDB, ClickHouse, Cassandra
 
-- **Status:** Draft
+- **Status:** Partially Implemented (v0.7.0) — MongoDB, HTTP/2, UDP, Cassandra, ClickHouse shipped. QUIC deferred to its own RFC (complex TLS + connection migration story).
 - **Author:** Boris Glebov, Claude Opus 4.6
 - **Created:** 2026-04-16
 - **Branch:** `rfc/016-new-protocols`

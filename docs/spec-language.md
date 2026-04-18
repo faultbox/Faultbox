@@ -343,13 +343,18 @@ To add a protocol, implement the `protocol.Protocol` interface in Go.
 | Protocol | Step Methods | Response `.data` | Healthcheck |
 |----------|-------------|-----------------|-------------|
 | `http` | `get`, `post`, `put`, `delete`, `patch` | raw body (auto-decoded if JSON) | HTTP GET 2xx-3xx |
+| `http2` | `get`, `post`, `put`, `delete`, `patch` | raw body | h2c GET 2xx-4xx |
 | `tcp` | `send` | response line as string | TCP connect |
+| `udp` | `send`, `send_no_reply` | `{raw: hex, size: N}` | UDP dial |
 | `postgres` | `query`, `exec` | `[{col: val, ...}]` / `{rows_affected: N}` | TCP + Postgres ping |
 | `redis` | `get`, `set`, `del`, `ping`, `keys`, `lpush`, `rpush`, `lrange`, `incr`, `command` | `{value: ...}` | TCP + PING/PONG |
 | `mysql` | `query`, `exec` | `[{col: val, ...}]` / `{rows_affected: N}` | TCP + MySQL ping |
 | `kafka` | `publish`, `consume` | `{published: true}` / `{topic, key, value, ...}` | TCP connect |
 | `nats` | `publish`, `request`, `subscribe` | `{subject, data}` | TCP connect |
 | `grpc` | `call` | `{method, raw}` | TCP connect |
+| `mongodb` | `find`, `insert`, `insert_many`, `update`, `delete`, `count`, `command` | BSON docs normalized to JSON | TCP + Mongo ping |
+| `cassandra` | `query`, `exec` | `[{col: val, ...}]` | TCP + CQL session |
+| `clickhouse` | `query`, `exec` | `[{col: val, ...}]` / `{ok: true}` | HTTP /ping |
 
 ### Protocol Step Method Reference
 
@@ -396,6 +401,41 @@ resp = svc.main.subscribe(subject="orders.*")
 **grpc** — `interface("main", "grpc", 9090)`
 ```python
 resp = svc.main.call(method="/package.Service/GetUser", body='{"id": 1}')
+```
+
+**http2** — `interface("public", "http2", 8080)`
+```python
+# Same API as HTTP/1.1; wire protocol is h2c (cleartext HTTP/2).
+resp = svc.public.get(path="/users/1")
+# resp.fields["proto"] = "HTTP/2.0"
+```
+
+**udp** — `interface("main", "udp", 8125)`
+```python
+svc.main.send_no_reply(data="api.requests:1|c")        # StatsD metric
+resp = svc.main.send(hex="...", timeout_ms=2000)       # DNS query
+# resp.data = {"raw": "<hex>", "size": 64}
+```
+
+**mongodb** — `interface("main", "mongodb", 27017)`
+```python
+db.main.insert(collection="users", document={"name": "alice", "role": "admin"})
+resp = db.main.find(collection="users", filter={"role": "admin"}, limit=10)
+# resp.data = [{"_id": "...", "name": "alice", "role": "admin"}]
+db.main.command(cmd={"dropDatabase": 1})
+```
+
+**cassandra** — `interface("main", "cassandra", 9042)`
+```python
+cass.main.exec(cql="CREATE KEYSPACE IF NOT EXISTS test WITH replication = {...}")
+resp = cass.main.query(cql="SELECT * FROM test.orders", consistency="QUORUM")
+```
+
+**clickhouse** — `interface("main", "clickhouse", 8123)` (HTTP interface)
+```python
+ch.main.exec(sql="INSERT INTO events (date, type) VALUES (today(), 'order')")
+resp = ch.main.query(sql="SELECT count() as n FROM events")
+# resp.data = [{"n": 1000000}]
 ```
 
 ### Healthchecks
@@ -1143,12 +1183,16 @@ duplicate(topic="orders.events")                     # Kafka/NATS
 | Protocol | Match by | Fault builtins |
 |----------|----------|---------------|
 | `http` | `method=`, `path=` | response, error, delay, drop |
+| `http2` | `method=`, `path=` | response, error, delay, drop |
 | `postgres` | `query=` | error, delay, drop |
 | `mysql` | `query=` | error, delay, drop |
 | `redis` | `command=`, `key=` | error, response, delay, drop |
 | `grpc` | `method=` | error, delay, drop |
 | `kafka` | `topic=` | drop, delay, error, duplicate |
 | `mongodb` | `op=` / `method=` (cmd), `collection=` / `key=` | error, delay, drop |
+| `cassandra` | `query=` (CQL) | error, delay, drop |
+| `clickhouse` | `query=` (SQL, matches body or `?query=`) | error, delay, drop |
+| `udp` | (datagram-level) | drop, delay |
 | `amqp` | `topic=` (routing key) | drop, delay, error |
 | `nats` | `topic=` (subject) | drop, delay |
 | `memcached` | `command=`, `key=` | error, response, delay, drop |
@@ -1160,6 +1204,54 @@ Protocol proxy actions emit `type="proxy"` events into the trace:
 ```python
 assert_eventually(where=lambda e: e.type == "proxy" and e.data.get("action") == "error")
 ```
+
+### Importing recipes (standard library)
+
+Faultbox ships a curated library of protocol-specific failure helpers
+embedded in the binary. Load them via the `@faultbox/` prefix:
+
+```python
+load("@faultbox/recipes/mongodb.star",    "mongodb")
+load("@faultbox/recipes/cassandra.star",  "cassandra")
+load("@faultbox/recipes/clickhouse.star", "clickhouse")
+
+broken = fault_assumption("broken",
+    target = db.main,
+    rules  = [
+        mongodb.disk_full(collection = "orders"),
+        cassandra.unavailable(),
+        clickhouse.too_many_parts(),
+    ],
+)
+```
+
+Each recipe file exports one namespace struct named after the protocol
+(see [RFC-018](rfcs/0018-recipes-library.md)). Zero name collisions
+when you load recipes for multiple protocols — `mongodb.disk_full` and
+`postgres.disk_full` coexist naturally.
+
+Discover what's available:
+
+```
+$ faultbox recipes list
+$ faultbox recipes show mongodb     # print a recipe's source
+```
+
+Recipes ship with the binary — no filesystem setup, no network fetch.
+See [RFC-019](rfcs/0019-recipe-distribution.md) for the distribution
+convention.
+
+**User-authored recipes** work identically via relative paths:
+
+```python
+load("@faultbox/recipes/mongodb.star", "mongodb")   # stdlib
+load("./recipes/checkout.star",        "checkout")  # your project
+
+rules = [mongodb.disk_full(), checkout.post_q2_race()]
+```
+
+The `@faultbox/` prefix is reserved for the stdlib; everything else hits
+the filesystem relative to the spec's directory.
 
 ---
 
