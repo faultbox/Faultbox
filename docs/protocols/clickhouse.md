@@ -117,7 +117,7 @@ See [recipes/clickhouse.star](../../recipes/clickhouse.star):
 - `replica_stale` — replica too far behind leader
 
 ```python
-load("./recipes/clickhouse.star", "clickhouse")
+load("@faultbox/recipes/clickhouse.star", "clickhouse")
 
 broken = fault_assumption("overloaded",
     target = ch.main,

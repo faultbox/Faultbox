@@ -1,9 +1,10 @@
 # Faultbox recipes: HTTP/2
 #
 # Per RFC-018: one namespace struct per recipe file.
+# Per RFC-019: stdlib is embedded in the faultbox binary (@faultbox/ prefix).
 #
 # Usage:
-#     load("./recipes/http2.star", "http2")
+#     load("@faultbox/recipes/http2.star", "http2")
 #
 #     faulty = fault_assumption("faulty_api",
 #         target = api.main,

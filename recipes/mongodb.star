@@ -1,11 +1,11 @@
 # Faultbox recipes: MongoDB
 #
-# Per RFC-018, each recipe file exports one namespace struct named after
-# the protocol. This prevents name collisions when users load recipes
-# for multiple protocols — e.g. mongodb.disk_full vs postgres.disk_full.
+# Per RFC-018: namespace struct (prevents name collisions across protocols).
+# Per RFC-019: stdlib ships embedded in the faultbox binary, loaded via
+# the @faultbox/ prefix — no local recipes/ directory needed.
 #
 # Usage:
-#     load("./recipes/mongodb.star", "mongodb")
+#     load("@faultbox/recipes/mongodb.star", "mongodb")
 #
 #     broken = fault_assumption("broken",
 #         target = db.main,

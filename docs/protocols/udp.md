@@ -114,7 +114,7 @@ See [recipes/udp.star](../../recipes/udp.star):
 - `blackhole` — total loss
 
 ```python
-load("./recipes/udp.star", "udp")
+load("@faultbox/recipes/udp.star", "udp")
 
 broken_dns = fault_assumption("broken_dns",
     target = dns.main,

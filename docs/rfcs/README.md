@@ -51,6 +51,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | [RFC-016](0016-new-protocols.md) | New Protocols: UDP, QUIC, HTTP/2, MongoDB, ClickHouse, Cassandra | Draft | — |
 | [RFC-017](0017-mock-services.md) | Native Mock Services: Stub Protocols Without Containers | Draft | — |
 | [RFC-018](0018-recipes-library.md) | Recipes Library — Curated Failure Wrappers in Starlark | Draft | — |
+| [RFC-019](0019-recipe-distribution.md) | Recipe Distribution via `@faultbox/` Prefix | Draft | RFC-018 |
 
 ### Phase 3: Trace Equivalence & Specification Mining
 
