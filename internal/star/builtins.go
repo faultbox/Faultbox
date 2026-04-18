@@ -68,6 +68,14 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// protocol-specific helpers don't collide on common names (e.g.
 		// mongodb.disk_full vs postgres.disk_full).
 		"struct": starlark.NewBuiltin("struct", starlarkstruct.Make),
+		// Mock services (RFC-017).
+		"mock_service":   starlark.NewBuiltin("mock_service", rt.builtinMockService),
+		"json_response":  starlark.NewBuiltin("json_response", builtinJSONResponse),
+		"text_response":  starlark.NewBuiltin("text_response", builtinTextResponse),
+		"bytes_response": starlark.NewBuiltin("bytes_response", builtinBytesResponse),
+		"status_only":    starlark.NewBuiltin("status_only", builtinStatusOnly),
+		"redirect":       starlark.NewBuiltin("redirect", builtinRedirect),
+		"dynamic":        starlark.NewBuiltin("dynamic", builtinDynamic),
 	}
 }
 
