@@ -178,26 +178,27 @@ disk_full = fault_assumption("disk_full",
 ## Recipes
 
 Curated failures live in [recipes/mongodb.star](../../recipes/mongodb.star).
-Each recipe is a one-liner wrapper over the primitives above with the
-canonical MongoDB error text baked in.
+The file exports a single `mongodb` namespace struct whose fields are
+one-line wrappers over the primitives above with the canonical MongoDB
+error text baked in.
 
 ```python
-load("./recipes/mongodb.star", "disk_full", "replica_unavailable", "duplicate_key_error", "write_conflict")
+load("./recipes/mongodb.star", "mongodb")
 
 broken = fault_assumption("broken_mongo",
     target = db.main,
-    rules  = [disk_full(collection="orders")],
+    rules  = [mongodb.disk_full(collection="orders")],
 )
 
 quorum_lost = fault_assumption("quorum_lost",
     target = db.main,
-    rules  = [replica_unavailable()],
+    rules  = [mongodb.replica_unavailable()],
 )
 ```
 
-Available recipes: `disk_full`, `auth_failed`, `replica_unavailable`,
-`slow_query`, `slow_writes`, `connection_drop`, `duplicate_key_error`,
-`write_conflict`.
+Available recipes on `mongodb`: `disk_full`, `auth_failed`,
+`replica_unavailable`, `slow_query`, `slow_writes`, `connection_drop`,
+`duplicate_key_error`, `write_conflict`.
 
 ## Seed / Reset Patterns
 
