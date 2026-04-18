@@ -130,11 +130,11 @@ See [recipes/http2.star](../../recipes/http2.star) for curated wrappers:
 - `unauthorized` / `forbidden` — 401 / 403
 
 ```python
-load("./recipes/http2.star", "rate_limited", "flaky")
+load("./recipes/http2.star", "http2")
 
 faulty = fault_assumption("faulty_api",
     target = api.public,
-    rules  = [rate_limited(path="/api/**"), flaky(probability="10%")],
+    rules  = [http2.rate_limited(path="/api/**"), http2.flaky(probability="10%")],
 )
 ```
 
