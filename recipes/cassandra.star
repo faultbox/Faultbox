@@ -1,67 +1,59 @@
 # Faultbox recipes: Cassandra
 #
-# Curated failures for Cassandra services. Each recipe wraps the core
-# proxy fault primitives with CQL pattern matching and canonical error
-# messages that match what real Cassandra nodes emit.
+# Per RFC-018: one namespace struct per recipe file.
 #
 # Usage:
-#     load("./recipes/cassandra.star", "write_timeout", "unavailable")
+#     load("./recipes/cassandra.star", "cassandra")
 #
-#     broken = fault_assumption("broken",
+#     broken = fault_assumption("quorum_lost",
 #         target = cass.main,
-#         rules  = [write_timeout(query = "INSERT*")],
+#         rules  = [cassandra.unavailable()],
 #     )
 
-# write_timeout simulates a coordinator-level write timeout. Drivers
-# typically retry per their write-timeout retry policy.
-def write_timeout(query = "INSERT*"):
-    return error(
+cassandra = struct(
+    # write_timeout — coordinator-level write timeout.
+    write_timeout = lambda query = "INSERT*": error(
         query = query,
         message = "Operation timed out - received only 0 responses",
-    )
+    ),
 
-# read_timeout simulates a read timeout. Triggers driver read-timeout
-# retries.
-def read_timeout(query = "SELECT*"):
-    return error(
+    # read_timeout — read timeout. Triggers driver read-timeout retries.
+    read_timeout = lambda query = "SELECT*": error(
         query = query,
         message = "Operation timed out - received only 1 responses",
-    )
+    ),
 
-# unavailable simulates insufficient replicas to satisfy consistency.
-# This is the error code Cassandra drivers map to UnavailableException.
-def unavailable(query = "*"):
-    return error(
+    # unavailable — insufficient replicas to satisfy consistency.
+    unavailable = lambda query = "*": error(
         query = query,
         message = "Cannot achieve consistency level QUORUM",
-    )
+    ),
 
-# overloaded simulates a node under high load returning OverloadedException.
-# Drivers typically retry on a different coordinator.
-def overloaded(query = "*"):
-    return error(
+    # overloaded — node under high load (OverloadedException).
+    overloaded = lambda query = "*": error(
         query = query,
         message = "Node is overloaded",
-    )
+    ),
 
-# slow_reads delays SELECT queries. Use to test client read-timeout
-# handling and speculative execution.
-def slow_reads(duration = "3s"):
-    return delay(query = "SELECT*", delay = duration)
+    # slow_reads delays SELECT queries. Tests client read-timeout and
+    # speculative execution.
+    slow_reads = lambda duration = "3s": delay(
+        query = "SELECT*",
+        delay = duration,
+    ),
 
-# slow_writes delays INSERT/UPDATE/DELETE statements.
-def slow_writes(duration = "3s"):
-    return delay(query = "INSERT*", delay = duration)
+    # slow_writes delays INSERT/UPDATE/DELETE.
+    slow_writes = lambda duration = "3s": delay(
+        query = "INSERT*",
+        delay = duration,
+    ),
 
-# connection_drop closes the connection mid-statement. Drivers surface
-# this as a connection-lost exception and reconnect.
-def connection_drop(query = "*"):
-    return drop(query = query)
+    # connection_drop closes the connection mid-statement.
+    connection_drop = lambda query = "*": drop(query = query),
 
-# schema_mismatch simulates a node reporting a different schema version.
-# Drivers typically refresh their schema cache on this error.
-def schema_mismatch(query = "*"):
-    return error(
+    # schema_mismatch — stale schema version. Drivers refresh their cache.
+    schema_mismatch = lambda query = "*": error(
         query = query,
         message = "Schema version mismatch detected",
-    )
+    ),
+)

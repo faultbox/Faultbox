@@ -118,11 +118,11 @@ See [recipes/cassandra.star](../../recipes/cassandra.star):
 - `schema_mismatch` — stale schema version
 
 ```python
-load("./recipes/cassandra.star", "write_timeout", "unavailable")
+load("./recipes/cassandra.star", "cassandra")
 
 broken = fault_assumption("quorum_lost",
     target = cass.main,
-    rules  = [unavailable()],
+    rules  = [cassandra.unavailable()],
 )
 ```
 

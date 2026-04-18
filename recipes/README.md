@@ -5,6 +5,24 @@ fault primitives (`response`, `error`, `delay`, `drop`).
 
 See [RFC-018](../docs/rfcs/0018-recipes-library.md) for the design.
 
+## The namespace struct pattern
+
+Each recipe file exports **one struct** named after the protocol:
+
+```python
+load("./recipes/cassandra.star", "cassandra")
+
+quorum_lost = fault_assumption("quorum_lost",
+    target = cass.main,
+    rules  = [cassandra.unavailable()],
+)
+```
+
+One import per protocol, zero name collisions across recipe files.
+
+> **Runtime requirement:** this pattern needs the `struct()` builtin,
+> wired in PR #37. Without it, recipe files fail to load at runtime.
+
 ## Protocols
 
 | Protocol | Recipes file | Status |
