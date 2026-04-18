@@ -3,7 +3,8 @@
 - **Status:** Draft
 - **Author:** Boris Glebov, Claude Opus 4.7
 - **Created:** 2026-04-17
-- **Branch:** `rfc/016-mongodb` (introduced alongside MongoDB)
+- **Amended:** 2026-04-18 — namespace struct pattern (was top-level functions)
+- **Branch:** `rfc/016-mongodb` (introduced alongside MongoDB); amended on `rfc/018-recipe-namespaces` (PR #37)
 
 ## Summary
 
@@ -78,39 +79,83 @@ faultbox/
 
 ### Recipe file structure
 
-Each file is a Starlark module exporting named functions. Each function:
-
-1. Takes **named parameters** (pattern glob, duration, probability).
-2. Returns a **`ProxyFaultDef`** — the same value `error()`/`delay()`/
-   `drop()` produce.
-3. Has a short docstring (first line of the def body as a comment).
-4. Uses sensible defaults so the zero-arg call is useful.
+Each recipe file exports **exactly one top-level binding**: a `struct`
+named after the protocol. Every recipe is a field on that struct,
+implemented as a lambda that returns a `ProxyFaultDef` (the same value
+`error()`/`delay()`/`drop()`/`response()` produce).
 
 ```python
 # recipes/mongodb.star
-
-# disk_full simulates a full data disk on insert.
-def disk_full(collection = "*"):
-    return error(
+mongodb = struct(
+    # disk_full simulates a full data disk on insert.
+    disk_full = lambda collection = "*": error(
         collection = collection,
         op = "insert",
         message = "assertion: 10334 disk full",
-    )
+    ),
+
+    # auth_failed rejects SASL handshakes.
+    auth_failed = lambda: error(
+        op = "saslStart",
+        message = "Authentication failed",
+    ),
+)
 ```
+
+The rules:
+
+1. **One struct per file, named after the protocol.** Not `mongo`, not
+   `MongoDBRecipes` — match the protocol name registered in `protocol.Get()`.
+2. **Fields are lambdas.** Not `def`s inside the struct (Starlark syntax
+   doesn't support that directly) and not top-level `def`s (defeats the
+   namespace).
+3. **One-line comment above each field** describing the real-world
+   failure it simulates.
+4. **Sensible defaults.** The zero-arg call should produce a useful fault.
+5. **No other top-level bindings.** No helper functions, no constants.
+   If you need shared logic, inline it.
+
+### Why a struct (not top-level functions)
+
+The earlier draft of this RFC had recipes as top-level `def`s. That
+broke the moment a user loaded two recipe files with overlapping names:
+
+```python
+# What we want to write:
+load("./recipes/mongodb.star",  "disk_full")
+load("./recipes/postgres.star", "disk_full")  # <-- collision
+```
+
+Starlark's `load()` rename syntax (`load(..., m_disk_full="disk_full")`)
+works but is clunky — every user reinvents naming conventions. The
+namespace struct solves it structurally:
+
+```python
+load("./recipes/mongodb.star",  "mongodb")
+load("./recipes/postgres.star", "postgres")
+
+rules = [mongodb.disk_full(collection = "orders"), postgres.disk_full()]
+```
+
+One import per protocol, collision-free, reads naturally.
 
 ### Usage
 
 ```python
-load("./recipes/mongodb.star", "disk_full", "replica_unavailable")
+load("./recipes/mongodb.star",  "mongodb")
+load("./recipes/postgres.star", "postgres")
 
-broken = fault_assumption("broken_mongo",
+broken_mongo = fault_assumption("broken_mongo",
     target = db.main,
-    rules  = [disk_full(collection = "orders")],
+    rules  = [
+        mongodb.disk_full(collection = "orders"),
+        mongodb.replica_unavailable(),
+    ],
 )
 
-quorum_lost = fault_assumption("quorum_lost",
-    target = db.main,
-    rules  = [replica_unavailable()],
+broken_pg = fault_assumption("broken_pg",
+    target = pg.main,
+    rules  = [postgres.disk_full(), postgres.deadlock()],
 )
 ```
 
@@ -157,7 +202,9 @@ Recipes are **semver-stable within a major version**:
 
 ### What recipes MUST NOT do
 
-- **No Starlark control flow beyond the function body.** Recipes are
+- **No top-level bindings other than the namespace struct.** The single
+  `<protocol> = struct(...)` binding is the entire module's public API.
+- **No Starlark control flow beyond the lambda body.** Recipes are
   "return a fault def." No `if target == ...`, no `for` loops, no I/O.
 - **No new builtins.** A recipe that needs something `error()` can't
   express is a sign we need a new primitive, not a bigger recipe.
@@ -167,20 +214,32 @@ Recipes are **semver-stable within a major version**:
 
 ### User-authored recipes
 
-Users can keep their own `recipes/my-team.star` alongside their spec:
+Users follow the same pattern with a namespace named after their domain
+(not a protocol):
 
 ```python
 # my-company/recipes/checkout.star
 
-# post_checkout_race simulates the specific race that took us down in Q2.
-def post_checkout_race():
-    return [
+checkout = struct(
+    # post_checkout_race simulates the specific race that took us down in Q2.
+    post_checkout_race = lambda: [
         delay(path = "/api/v1/checkout", delay = "800ms"),
         error(path = "/api/v1/inventory/reserve", status = 409),
-    ]
+    ],
+)
 ```
 
-The Faultbox convention works exactly the same for user-shipped recipes.
+Usage is symmetric:
+
+```python
+load("./recipes/checkout.star", "checkout")
+
+q2_regression = fault_assumption("q2_regression",
+    target = api.main,
+    rules  = checkout.post_checkout_race(),
+)
+```
+
 No plugin API, no registration — just Starlark.
 
 ## Open questions
