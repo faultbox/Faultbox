@@ -13,9 +13,15 @@ defined purely in Starlark — no container, no binary, no Dockerfile. The stub
 answers traffic on the declared interface, emits events into the Faultbox
 event log like any real service, and remains subject to `fault()` rules.
 
-First-class protocols at ship: **HTTP, TCP, UDP, gRPC, Redis, Kafka**.
-Follow-on protocols (Postgres, MySQL, NATS, MongoDB) layer on after the
-core lands.
+First-class protocols at ship: **HTTP, HTTP/2, TCP, UDP, gRPC, Redis,
+Kafka, MongoDB**. Follow-on protocols (Postgres, MySQL, NATS, Cassandra,
+ClickHouse) layer on after the core lands.
+
+Scope note: RFC-016 shipped MongoDB, HTTP/2, UDP, Cassandra, and
+ClickHouse as *fault-injected real-service* protocols. Those same
+protocols are candidates for mocking — wherever a real service can be
+faulted, a mock can usually stand in. The phasing below reflects the
+updated protocol surface.
 
 ## Motivation
 
@@ -97,13 +103,20 @@ mock_service(name, *interfaces,
 Protocol-agnostic factories that produce typed response values:
 
 ```python
-json_response(status, body, headers={})   # HTTP/gRPC JSON
-text_response(status, body, headers={})   # HTTP text/plain
+json_response(status, body, headers={})   # HTTP, HTTP/2, gRPC JSON
+text_response(status, body, headers={})   # HTTP, HTTP/2 text/plain
 bytes_response(status, data)              # Raw bytes (TCP, UDP)
 redirect(location, status=302)            # HTTP 301/302/307/308
 status_only(code)                         # HTTP status with empty body
 grpc_response(message, trailers={})       # gRPC unary
 grpc_error(code, message)                 # gRPC canonical error
+mongodb_document(doc)                     # MongoDB insert/findAndModify result
+mongodb_error(message, code=1)            # MongoDB BSON error (ok=0)
+cassandra_rows(rows)                      # Cassandra SELECT result
+cassandra_error(code, message)            # CQL ERROR frame
+clickhouse_rows(rows)                     # ClickHouse JSON format result
+clickhouse_ok()                           # ClickHouse successful exec
+clickhouse_error(code, message)           # HTTP 500 + DB::Exception body
 ```
 
 ### Protocol 1: HTTP
@@ -328,6 +341,21 @@ api   = service("api",
 In container mode, mocks bind inside the Faultbox docker network so the
 real service under test reaches them by hostname.
 
+### Reuse from RFC-016
+
+The MockHandler implementation for each protocol can reuse the real-service
+infrastructure shipped in RFC-016:
+
+- **MongoDB**: parseOPMSG + real BSON encoding (done in RFC-016)
+- **HTTP/2**: h2c server + httputil.ReverseProxy handler pattern (done)
+- **Cassandra**: CQL frame reader/writer + error frame emission (done)
+- **ClickHouse**: SQL body extraction + HTTP 500 error shape (done)
+- **UDP**: datagram relay (done, extend to match+respond vs match+swallow)
+
+For these five, mock service support is mostly a matter of implementing
+`MockHandler.Serve()` that generates responses rather than forwarding.
+The wire format work is already in-tree.
+
 ## Open questions
 
 1. **Dynamic handlers.** Should routes accept Starlark callables
@@ -355,14 +383,74 @@ real service under test reaches them by hostname.
 
 ## Phasing
 
+Updated after RFC-016 landed (MongoDB, HTTP/2, UDP, Cassandra,
+ClickHouse as real-service protocols). Each phase below is independently
+shippable.
+
 | Phase | Protocols | Rationale |
 |---|---|---|
-| **v1 (this RFC)** | HTTP, TCP, UDP | Covers auth stubs, metrics sinks, legacy TCP services — the immediate customer pain |
-| **v2** | gRPC, Redis, Kafka | Needs protocol-aware encoding; larger surface area |
-| **v3** | Postgres, MySQL, NATS, MongoDB | SQL pattern matching is its own design problem |
+| **v1** | HTTP, HTTP/2, TCP, UDP | Auth stubs, metrics sinks, legacy TCP services, service-mesh traffic. HTTP and HTTP/2 share a handler (HTTP/2 adds h2c; same route map). |
+| **v2** | gRPC, Redis, Kafka, ClickHouse | Needs protocol-aware encoding. ClickHouse mocks are cheap (HTTP interface + SQL body match); included in v2 alongside the other body-parsing mocks. |
+| **v3** | MongoDB, Cassandra, NATS | BSON / CQL encoding. MongoDB is the highest-demand of the v3 set (Node.js/Python ecosystems); Cassandra mocks need CQL frame emission with realistic error codes. |
+| **v4** | Postgres, MySQL | SQL parsing is its own design problem — a mock DB would need to answer `SELECT` with canned rows shaped like real result sets. Deferred until there's clear demand. |
 
-Each phase is shippable independently. v1 alone unblocks the JWKS use
-case that prompted this RFC.
+### Per-protocol mock surface (updated)
+
+| Protocol | `routes=` keyed by | State helpers | Notes |
+|---|---|---|---|
+| `http` / `http2` | `"METHOD /path"` | — | Same handler; HTTP/2 adds h2c |
+| `tcp` | `bytes` prefix | — | Line-framed or `matcher=` callable |
+| `udp` | `bytes` prefix | — | Swallow-and-record by default |
+| `grpc` | `"/pkg.Service/Method"` | — | Reflection on; `proto=` optional |
+| `redis` | `"CMD arg"` glob | `state={}` KV seed | Covers string cache + counters |
+| `kafka` | — (use `topics=`) | `topics={}` pre-seeded | Answers ApiVersions, Produce, Fetch |
+| `mongodb` | `"collection.op"` | `collections={}` seed | BSON-encoded responses; use real mongo driver to decode |
+| `cassandra` | `"CQL pattern"` | — | Emits real CQL v4 frames; error code 0x0000 by default |
+| `clickhouse` | SQL body pattern | — | HTTP interface; same matcher as RFC-016 proxy uses |
+
+### Examples for new protocols
+
+**MongoDB mock** (v3):
+
+```python
+users_db = mock_service("users-stub",
+    interface("main", "mongodb", 27017),
+    collections = {
+        "users": [
+            {"_id": "1", "name": "alice", "role": "admin"},
+            {"_id": "2", "name": "bob", "role": "user"},
+        ],
+    },
+    routes = {
+        "users.insert": mongodb_error("disk full"),  # auth stub rejects writes
+    },
+)
+```
+
+**HTTP/2 mock** (v1 — identical route format to HTTP):
+
+```python
+grpc_gateway = mock_service("gw",
+    interface("public", "http2", 8080),
+    routes = {
+        "GET /healthz":    status_only(200),
+        "POST /api/v1/**": json_response(200, {"ok": true}),
+    },
+)
+```
+
+**ClickHouse mock** (v2):
+
+```python
+analytics = mock_service("analytics-stub",
+    interface("main", "clickhouse", 8123),
+    routes = {
+        # Match SQL body prefix, return fixed JSON result
+        "SELECT count() FROM events*": clickhouse_rows([{"count": 42}]),
+        "INSERT*":                      clickhouse_ok(),
+    },
+)
+```
 
 ## Non-goals
 
