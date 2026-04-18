@@ -2,6 +2,7 @@ package star
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // TestMockServiceSpecLoad verifies mock_service() parses and registers a
@@ -185,6 +188,79 @@ s = mock_service("s", interface("http", "http", %d),
 		}
 		ln.Close()
 	}
+}
+
+// TestMockServiceHTTP2 verifies a mock_service declared with protocol http2
+// stands up an h2c listener and serves the same route table format.
+func TestMockServiceHTTP2(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+gw = mock_service("gw",
+    interface("public", "http2", %d),
+    routes = {
+        "GET /healthz":    status_only(200),
+        "POST /api/v1/**": json_response(status = 200, body = {"ok": True}),
+    },
+)
+
+def test_h2_stub():
+    pass
+`, port)
+	if err := rt.LoadString("h2_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	client := newTestH2CClient()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", "http://"+addr+"/healthz", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET healthz: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("healthz status = %d", resp.StatusCode)
+	}
+	if resp.Proto != "HTTP/2.0" {
+		t.Fatalf("healthz proto = %q, want HTTP/2.0", resp.Proto)
+	}
+
+	req, _ = http.NewRequestWithContext(ctx, "POST", "http://"+addr+"/api/v1/orders/42", strings.NewReader(`{"x":1}`))
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("POST api: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("api status = %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("api body = %q", string(body))
+	}
+}
+
+// newTestH2CClient returns an HTTP client that speaks h2c. Local to this
+// file to avoid reaching into the protocol package's unexported helpers.
+func newTestH2CClient() *http.Client {
+	transport := &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	}
+	return &http.Client{Transport: transport, Timeout: 2 * time.Second}
 }
 
 func freePort(t *testing.T) int {
