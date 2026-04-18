@@ -233,6 +233,8 @@ func newProxy(protocol string, onEvent OnProxyEvent, svcName string) (Proxy, err
 	switch protocol {
 	case "http":
 		return newHTTPProxy(onEvent, svcName), nil
+	case "http2":
+		return newHTTP2Proxy(onEvent, svcName), nil
 	case "redis":
 		return newRedisProxy(onEvent, svcName), nil
 	case "postgres":
@@ -251,6 +253,10 @@ func newProxy(protocol string, onEvent OnProxyEvent, svcName string) (Proxy, err
 		return newNATSProxy(onEvent, svcName), nil
 	case "memcached":
 		return newMemcachedProxy(onEvent, svcName), nil
+	case "udp":
+		return newUDPProxy(onEvent, svcName), nil
+	case "cassandra":
+		return newCassandraProxy(onEvent, svcName), nil
 	case "clickhouse":
 		return newClickhouseProxy(onEvent, svcName), nil
 	default:

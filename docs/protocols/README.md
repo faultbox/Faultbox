@@ -8,13 +8,17 @@ the fault rules for protocol-level injection, and seed/reset patterns.
 | Protocol | Interface | Methods | Fault Rules | Event Source |
 |----------|-----------|---------|-------------|-------------|
 | [HTTP](http.md) | `"http"` | get, post, put, delete, patch | response, error, delay, drop | — |
+| [HTTP/2](http2.md) | `"http2"` | get, post, put, delete, patch | response, error, delay, drop | — |
 | [TCP](tcp.md) | `"tcp"` | send | — (use syscall faults) | — |
+| [UDP](udp.md) | `"udp"` | send, send_no_reply | drop, delay | — |
 | [Postgres](postgres.md) | `"postgres"` | query, exec | error, delay, drop | wal_stream |
 | [MySQL](mysql.md) | `"mysql"` | query, exec | error, delay, drop | — |
 | [Redis](redis.md) | `"redis"` | get, set, del, keys, ping, incr, lpush, rpush, lrange, command | error, delay, drop | — |
 | [Kafka](kafka.md) | `"kafka"` | publish, consume | drop, delay, duplicate | topic |
 | [NATS](nats.md) | `"nats"` | publish, request, subscribe | drop, delay | — |
 | [gRPC](grpc.md) | `"grpc"` | call | error, delay, drop | — |
+| [MongoDB](mongodb.md) | `"mongodb"` | find, insert, insert_many, update, delete, count, command | error, delay, drop | — |
+| [Cassandra](cassandra.md) | `"cassandra"` | query, exec | error, delay, drop | — |
 | [ClickHouse](clickhouse.md) | `"clickhouse"` | query, exec | error, delay, drop | — |
 
 ## How to read protocol docs
