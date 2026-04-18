@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.starlark.net/starlark"
+	"go.starlark.net/starlarkstruct"
 
 	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/proxy"
@@ -63,6 +64,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoder),
 		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoder),
 		"regex_decoder":     starlark.NewBuiltin("regex_decoder", builtinRegexDecoder),
+		// struct(**kwargs) — namespace objects. Used by recipe modules so
+		// protocol-specific helpers don't collide on common names (e.g.
+		// mongodb.disk_full vs postgres.disk_full).
+		"struct": starlark.NewBuiltin("struct", starlarkstruct.Make),
 	}
 }
 
