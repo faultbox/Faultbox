@@ -88,6 +88,75 @@ func (p *udpProtocol) ExecuteStep(ctx context.Context, addr, method string, kwar
 	}
 }
 
+// ServeMock implements MockHandler for UDP. The default behavior is
+// swallow-and-record — every received datagram emits an event but nothing
+// is written back. This matches the common StatsD / metrics-sink pattern.
+//
+// If spec.Routes contains patterns, datagrams whose prefix matches receive
+// the configured response (sent back to the source address). If
+// spec.Default is set, unmatched datagrams get the default response.
+func (p *udpProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec, emit MockEmitter) error {
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return fmt.Errorf("mock listen %s: %w", addr, err)
+	}
+	defer pc.Close()
+
+	go func() {
+		<-ctx.Done()
+		_ = pc.Close()
+	}()
+
+	buf := make([]byte, 64*1024)
+	for {
+		_ = pc.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n, src, err := pc.ReadFrom(buf)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			return fmt.Errorf("read: %w", err)
+		}
+
+		datagram := make([]byte, n)
+		copy(datagram, buf[:n])
+		go handleUDPDatagram(pc, src, datagram, spec, emit)
+	}
+}
+
+func handleUDPDatagram(pc net.PacketConn, src net.Addr, datagram []byte, spec MockSpec, emit MockEmitter) {
+	route, matched := matchBytesRoute(spec.Routes, datagram)
+
+	var resp *MockResponse
+	switch {
+	case matched && route.Dynamic != nil:
+		dyn, err := route.Dynamic(MockRequest{Body: datagram})
+		if err != nil {
+			emitWith(emit, "dynamic_error", map[string]string{"error": err.Error()})
+			return
+		}
+		resp = dyn
+	case matched:
+		resp = route.Response
+	case spec.Default != nil:
+		resp = spec.Default
+	}
+
+	if resp != nil && len(resp.Body) > 0 {
+		_, _ = pc.WriteTo(resp.Body, src)
+	}
+
+	emitWith(emit, "recv", map[string]string{
+		"req_size":  fmt.Sprintf("%d", len(datagram)),
+		"resp_size": fmt.Sprintf("%d", bodyLen(resp)),
+		"matched":   fmt.Sprintf("%t", matched),
+		"src":       src.String(),
+	})
+}
+
 // extractUDPPayload reads the `data=` (utf-8 string) or `hex=` kwarg and
 // returns the bytes to send. At least one must be provided.
 func extractUDPPayload(kwargs map[string]any) ([]byte, error) {

@@ -250,6 +250,105 @@ def test_h2_stub():
 	}
 }
 
+// TestMockServiceTCP verifies a TCP mock_service stands up and responds to
+// line-framed input according to bytes_response() routes.
+func TestMockServiceTCP(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+legacy = mock_service("legacy",
+    interface("main", "tcp", %d),
+    routes = {
+        "PING\n":    bytes_response(data = "PONG\n"),
+        "VERSION\n": bytes_response(data = "2.0.0\n"),
+    },
+    default = bytes_response(data = "ERR\n"),
+)
+
+def test_tcp():
+    pass
+`, port)
+	if err := rt.LoadString("tcp_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	cases := []struct{ in, want string }{
+		{"PING\n", "PONG\n"},
+		{"VERSION\n", "2.0.0\n"},
+		{"HUH\n", "ERR\n"},
+	}
+	for _, tc := range cases {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		_, _ = conn.Write([]byte(tc.in))
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 64)
+		n, _ := conn.Read(buf)
+		conn.Close()
+		if string(buf[:n]) != tc.want {
+			t.Errorf("send %q: got %q, want %q", tc.in, buf[:n], tc.want)
+		}
+	}
+}
+
+// TestMockServiceUDP verifies a UDP mock_service swallows datagrams by
+// default and emits one event per datagram into the runtime event log.
+func TestMockServiceUDP(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+statsd = mock_service("statsd",
+    interface("main", "udp", %d),
+)
+`, port)
+	if err := rt.LoadString("udp_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.Dial("udp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		_, _ = conn.Write([]byte(fmt.Sprintf("gauge.%d:%d|g", i, i)))
+	}
+	conn.Close()
+
+	// Event log should have >=5 mock.recv entries after a brief wait.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		count := 0
+		for _, e := range rt.events.Events() {
+			if e.Type == "mock.recv" {
+				count++
+			}
+		}
+		if count >= 5 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("expected >=5 mock.recv events; final events: %+v", rt.events.Events())
+}
+
 // newTestH2CClient returns an HTTP client that speaks h2c. Local to this
 // file to avoid reaching into the protocol package's unexported helpers.
 func newTestH2CClient() *http.Client {
