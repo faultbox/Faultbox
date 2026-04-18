@@ -9,9 +9,6 @@
 #         target = dns.main,
 #         rules  = [udp.packet_loss(probability = "30%")],
 #     )
-#
-# corrupt() and reorder() from RFC-016 are not yet implemented — tracked
-# as open questions on that RFC.
 
 udp = struct(
     # packet_loss drops a fraction of datagrams. Default is 100% (blackout).

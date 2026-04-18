@@ -233,6 +233,8 @@ func newProxy(protocol string, onEvent OnProxyEvent, svcName string) (Proxy, err
 	switch protocol {
 	case "http":
 		return newHTTPProxy(onEvent, svcName), nil
+	case "http2":
+		return newHTTP2Proxy(onEvent, svcName), nil
 	case "redis":
 		return newRedisProxy(onEvent, svcName), nil
 	case "postgres":
