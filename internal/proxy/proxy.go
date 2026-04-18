@@ -257,6 +257,8 @@ func newProxy(protocol string, onEvent OnProxyEvent, svcName string) (Proxy, err
 		return newUDPProxy(onEvent, svcName), nil
 	case "cassandra":
 		return newCassandraProxy(onEvent, svcName), nil
+	case "clickhouse":
+		return newClickhouseProxy(onEvent, svcName), nil
 	default:
 		return nil, fmt.Errorf("protocol %q does not support proxy-level faults", protocol)
 	}

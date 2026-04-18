@@ -19,6 +19,7 @@ the fault rules for protocol-level injection, and seed/reset patterns.
 | [gRPC](grpc.md) | `"grpc"` | call | error, delay, drop | — |
 | [MongoDB](mongodb.md) | `"mongodb"` | find, insert, insert_many, update, delete, count, command | error, delay, drop | — |
 | [Cassandra](cassandra.md) | `"cassandra"` | query, exec | error, delay, drop | — |
+| [ClickHouse](clickhouse.md) | `"clickhouse"` | query, exec | error, delay, drop | — |
 
 ## How to read protocol docs
 
