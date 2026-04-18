@@ -253,6 +253,8 @@ func newProxy(protocol string, onEvent OnProxyEvent, svcName string) (Proxy, err
 		return newNATSProxy(onEvent, svcName), nil
 	case "memcached":
 		return newMemcachedProxy(onEvent, svcName), nil
+	case "udp":
+		return newUDPProxy(onEvent, svcName), nil
 	default:
 		return nil, fmt.Errorf("protocol %q does not support proxy-level faults", protocol)
 	}

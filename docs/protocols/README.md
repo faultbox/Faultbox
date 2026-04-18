@@ -10,6 +10,7 @@ the fault rules for protocol-level injection, and seed/reset patterns.
 | [HTTP](http.md) | `"http"` | get, post, put, delete, patch | response, error, delay, drop | — |
 | [HTTP/2](http2.md) | `"http2"` | get, post, put, delete, patch | response, error, delay, drop | — |
 | [TCP](tcp.md) | `"tcp"` | send | — (use syscall faults) | — |
+| [UDP](udp.md) | `"udp"` | send, send_no_reply | drop, delay | — |
 | [Postgres](postgres.md) | `"postgres"` | query, exec | error, delay, drop | wal_stream |
 | [MySQL](mysql.md) | `"mysql"` | query, exec | error, delay, drop | — |
 | [Redis](redis.md) | `"redis"` | get, set, del, keys, ping, incr, lpush, rpush, lrange, command | error, delay, drop | — |
