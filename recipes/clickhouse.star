@@ -1,68 +1,58 @@
 # Faultbox recipes: ClickHouse
 #
-# Curated failures for ClickHouse services over the HTTP interface.
-# Each recipe wraps the core primitives with ClickHouse-shaped exception
-# messages that drivers parse out of the response body.
+# Per RFC-018: one namespace struct per recipe file.
 #
 # Usage:
-#     load("./recipes/clickhouse.star", "too_many_parts", "memory_limit")
+#     load("./recipes/clickhouse.star", "clickhouse")
 #
 #     overloaded = fault_assumption("overloaded",
 #         target = ch.main,
-#         rules  = [too_many_parts(query = "INSERT*")],
+#         rules  = [clickhouse.too_many_parts(query = "INSERT*")],
 #     )
 
-# too_many_parts is the canonical "insert rate exceeds merge rate" error.
-# Drivers typically back off and retry; clients should slow their insert
-# rate.
-def too_many_parts(query = "INSERT*"):
-    return error(
+clickhouse = struct(
+    # too_many_parts — insert rate exceeds merge rate. Drivers back off.
+    too_many_parts = lambda query = "INSERT*": error(
         query = query,
         message = "Too many parts (300). Merges are processing significantly slower than inserts",
-    )
+    ),
 
-# memory_limit simulates queries that exceed the configured memory quota.
-# Drivers raise a DB::Exception code 241.
-def memory_limit(query = "SELECT*"):
-    return error(
+    # memory_limit — query exceeds configured memory quota (code 241).
+    memory_limit = lambda query = "SELECT*": error(
         query = query,
         message = "Memory limit (for query) exceeded",
-    )
+    ),
 
-# table_not_exists simulates a reference to a missing table. Drivers
-# typically surface this as code 60.
-def table_not_exists(query = "*"):
-    return error(
+    # table_not_exists — missing table (code 60).
+    table_not_exists = lambda query = "*": error(
         query = query,
         message = "Table doesn't exist",
-    )
+    ),
 
-# readonly_mode simulates the server refusing writes because it's in
-# readonly mode (common during maintenance).
-def readonly_mode(query = "INSERT*"):
-    return error(
+    # readonly_mode — server refuses writes (maintenance).
+    readonly_mode = lambda query = "INSERT*": error(
         query = query,
         message = "Cannot execute query in readonly mode",
-    )
+    ),
 
-# slow_analytics delays SELECT queries. Use to test dashboard and ETL
-# timeout handling.
-def slow_analytics(duration = "5s"):
-    return delay(query = "SELECT*", delay = duration)
+    # slow_analytics delays SELECT queries. Dashboard / ETL timeout tests.
+    slow_analytics = lambda duration = "5s": delay(
+        query = "SELECT*",
+        delay = duration,
+    ),
 
-# slow_ingest delays INSERT statements. Tests producer back-pressure.
-def slow_ingest(duration = "3s"):
-    return delay(query = "INSERT*", delay = duration)
+    # slow_ingest delays INSERT statements. Producer back-pressure tests.
+    slow_ingest = lambda duration = "3s": delay(
+        query = "INSERT*",
+        delay = duration,
+    ),
 
-# connection_drop closes the HTTP connection mid-query. Drivers
-# reconnect per their pool settings.
-def connection_drop(query = "*"):
-    return drop(query = query)
+    # connection_drop closes the HTTP connection mid-query.
+    connection_drop = lambda query = "*": drop(query = query),
 
-# replica_stale returns an error indicating the replica can't be used
-# because it's too far behind the leader.
-def replica_stale(query = "SELECT*"):
-    return error(
+    # replica_stale — replica too far behind leader for consistent read.
+    replica_stale = lambda query = "SELECT*": error(
         query = query,
         message = "Replica is too far behind",
-    )
+    ),
+)

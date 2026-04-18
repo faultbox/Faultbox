@@ -117,11 +117,11 @@ See [recipes/clickhouse.star](../../recipes/clickhouse.star):
 - `replica_stale` — replica too far behind leader
 
 ```python
-load("./recipes/clickhouse.star", "too_many_parts", "memory_limit")
+load("./recipes/clickhouse.star", "clickhouse")
 
 broken = fault_assumption("overloaded",
     target = ch.main,
-    rules  = [too_many_parts(), memory_limit(query="SELECT * FROM huge_table*")],
+    rules  = [clickhouse.too_many_parts(), clickhouse.memory_limit(query="SELECT * FROM huge_table*")],
 )
 ```
 
