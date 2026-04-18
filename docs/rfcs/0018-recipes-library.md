@@ -4,7 +4,7 @@
 - **Author:** Boris Glebov, Claude Opus 4.7
 - **Created:** 2026-04-17
 - **Amended:** 2026-04-18 — namespace struct pattern (was top-level functions)
-- **Branch:** `rfc/016-mongodb` (introduced alongside MongoDB); amended on `rfc/018-recipe-namespaces` (PR #37)
+- **Branch:** `rfc/016-mongodb` (introduced alongside MongoDB); amended on `rfc/018-recipe-namespaces`
 
 ## Summary
 
