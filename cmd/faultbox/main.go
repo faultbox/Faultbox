@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strings"
 
+	faultbox "github.com/faultbox/Faultbox"
 	"github.com/faultbox/Faultbox/internal/compose"
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/engine"
@@ -73,6 +75,8 @@ func run() int {
 		return selfUpdateCmd(args[1:])
 	case "mcp":
 		return mcpCmd()
+	case "recipes":
+		return recipesCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
@@ -1632,6 +1636,70 @@ class grpc:
     UNAUTHENTICATED: str
 `
 
+// recipesCmd handles: faultbox recipes [list|show <name>]
+// Provides read-only access to the embedded standard recipe library so
+// users can discover what's available without browsing the source tree.
+func recipesCmd(args []string) int {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		fmt.Fprintln(os.Stderr, `Usage:
+  faultbox recipes list              List all available stdlib recipes
+  faultbox recipes show <name>       Print the source of a recipe file
+
+Recipes are loaded in specs via:
+  load("@faultbox/recipes/<name>.star", "<namespace>")`)
+		return 0
+	}
+
+	switch args[0] {
+	case "list":
+		return recipesList()
+	case "show":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: faultbox recipes show <name>")
+			return 1
+		}
+		return recipesShow(args[1])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown recipes subcommand: %s\n", args[0])
+		return 1
+	}
+}
+
+func recipesList() int {
+	entries, err := fs.ReadDir(faultbox.Recipes, "recipes")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read embedded recipes: %v\n", err)
+		return 1
+	}
+	var names []string
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".star") {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(e.Name(), ".star"))
+	}
+	sort.Strings(names)
+
+	fmt.Println("Available stdlib recipes (load via @faultbox/recipes/<name>.star):")
+	for _, name := range names {
+		fmt.Printf("  %s\n", name)
+	}
+	fmt.Printf("\nExample:\n  load(\"@faultbox/recipes/%s.star\", \"%s\")\n", names[0], names[0])
+	return 0
+}
+
+func recipesShow(name string) int {
+	name = strings.TrimSuffix(name, ".star")
+	path := fmt.Sprintf("recipes/%s.star", name)
+	src, err := faultbox.Recipes.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "recipe %q not found in stdlib. Run 'faultbox recipes list' to see available recipes.\n", name)
+		return 1
+	}
+	fmt.Print(string(src))
+	return 0
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage:
   faultbox run [flags] <binary> [args...]    Run a single service
@@ -1641,6 +1709,8 @@ func printUsage() {
   faultbox diff <trace1> <trace2>            Compare normalized traces
   faultbox self-update                       Update to the latest version
   faultbox mcp                               Start MCP server (for LLM agents)
+  faultbox recipes list                      List embedded stdlib recipes
+  faultbox recipes show <name>               Print a stdlib recipe source
 
 Run flags:
   --log-format=console   Force colored console output

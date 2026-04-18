@@ -183,7 +183,7 @@ one-line wrappers over the primitives above with the canonical MongoDB
 error text baked in.
 
 ```python
-load("./recipes/mongodb.star", "mongodb")
+load("@faultbox/recipes/mongodb.star", "mongodb")
 
 broken = fault_assumption("broken_mongo",
     target = db.main,

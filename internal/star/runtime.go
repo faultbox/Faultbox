@@ -15,6 +15,7 @@ import (
 
 	"go.starlark.net/starlark"
 
+	faultbox "github.com/faultbox/Faultbox"
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/container"
 	"github.com/faultbox/Faultbox/internal/engine"
@@ -181,9 +182,18 @@ func (rt *Runtime) LoadString(name, src string) error {
 	return nil
 }
 
+// stdlibPrefix is the module prefix that resolves to the embedded standard
+// recipe library. See RFC-019 for the distribution convention.
+const stdlibPrefix = "@faultbox/"
+
 // makeLoadFunc creates a thread.Load handler for Starlark's load() statement.
 // Loaded modules share the same runtime (service registry, builtins).
 // Results are cached — each module is executed at most once.
+//
+// Resolution order:
+//  1. "@faultbox/<path>" → embedded recipes FS (baked into the binary)
+//  2. absolute path → read from filesystem
+//  3. relative path → read from rt.baseDir (typically the spec's directory)
 func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
 	cache := make(map[string]starlark.StringDict)
 
@@ -193,16 +203,30 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 			return globals, nil
 		}
 
-		// Resolve path relative to the base directory.
-		modPath := module
-		if rt.baseDir != "" && !filepath.IsAbs(module) {
-			modPath = filepath.Join(rt.baseDir, module)
-		}
+		var src []byte
+		var err error
+		var modPath string
 
-		// Read and execute the module with same builtins.
-		src, err := os.ReadFile(modPath)
-		if err != nil {
-			return nil, fmt.Errorf("load %q: %w", module, err)
+		if strings.HasPrefix(module, stdlibPrefix) {
+			// Embedded stdlib lookup. The embed.FS keys drop the leading
+			// "@faultbox/", so "@faultbox/recipes/mongodb.star" becomes
+			// "recipes/mongodb.star" in the FS.
+			embeddedPath := strings.TrimPrefix(module, stdlibPrefix)
+			src, err = faultbox.Recipes.ReadFile(embeddedPath)
+			if err != nil {
+				return nil, fmt.Errorf("load %q: not found in faultbox stdlib (run 'faultbox recipes list' to see available recipes): %w", module, err)
+			}
+			modPath = module // preserve the @faultbox/... display name
+		} else {
+			// Resolve path relative to the base directory.
+			modPath = module
+			if rt.baseDir != "" && !filepath.IsAbs(module) {
+				modPath = filepath.Join(rt.baseDir, module)
+			}
+			src, err = os.ReadFile(modPath)
+			if err != nil {
+				return nil, fmt.Errorf("load %q: %w", module, err)
+			}
 		}
 
 		// Append module source for syscall scanning.

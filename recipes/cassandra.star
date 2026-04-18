@@ -1,9 +1,10 @@
 # Faultbox recipes: Cassandra
 #
 # Per RFC-018: one namespace struct per recipe file.
+# Per RFC-019: stdlib is embedded in the faultbox binary (@faultbox/ prefix).
 #
 # Usage:
-#     load("./recipes/cassandra.star", "cassandra")
+#     load("@faultbox/recipes/cassandra.star", "cassandra")
 #
 #     broken = fault_assumption("quorum_lost",
 #         target = cass.main,

@@ -1049,6 +1049,150 @@ def test_ok():
 	}
 }
 
+// TestStdlibLoad_Embedded verifies specs can import recipes via the
+// @faultbox/ prefix without any local recipes/ directory on disk.
+// This is the distribution mechanism from RFC-019.
+func TestStdlibLoad_Embedded(t *testing.T) {
+	// Deliberately use a TempDir with NO recipes/ subdir — this must still
+	// work because the runtime resolves @faultbox/ from the embedded FS.
+	dir := t.TempDir()
+	spec := `
+load("@faultbox/recipes/mongodb.star", "mongodb")
+
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+_disk_full = mongodb.disk_full(collection = "orders")
+_auth_fail = mongodb.auth_failed()
+
+def test_ok():
+    pass
+`
+	if err := os.WriteFile(dir+"/faultbox.star", []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := New(testLogger())
+	if err := rt.LoadFile(dir + "/faultbox.star"); err != nil {
+		t.Fatalf("LoadFile with embedded stdlib: %v", err)
+	}
+
+	tests := rt.DiscoverTests()
+	if len(tests) != 1 || tests[0] != "test_ok" {
+		t.Errorf("expected test_ok, got %v", tests)
+	}
+}
+
+// TestStdlibLoad_AllProtocols exercises every recipe namespace shipped in
+// the embedded stdlib. Catches regressions where a recipe file stops
+// compiling after a refactor.
+func TestStdlibLoad_AllProtocols(t *testing.T) {
+	cases := []struct {
+		protocol string
+		method   string
+	}{
+		{"mongodb", "disk_full"},
+		{"http2", "rate_limited"},
+		{"udp", "packet_loss"},
+		{"cassandra", "write_timeout"},
+		{"clickhouse", "too_many_parts"},
+	}
+	for _, c := range cases {
+		t.Run(c.protocol, func(t *testing.T) {
+			dir := t.TempDir()
+			spec := `
+load("@faultbox/recipes/` + c.protocol + `.star", "` + c.protocol + `")
+
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+_rule = ` + c.protocol + `.` + c.method + `()
+
+def test_ok():
+    pass
+`
+			if err := os.WriteFile(dir+"/faultbox.star", []byte(spec), 0644); err != nil {
+				t.Fatal(err)
+			}
+			rt := New(testLogger())
+			if err := rt.LoadFile(dir + "/faultbox.star"); err != nil {
+				t.Errorf("load @faultbox/recipes/%s.star: %v", c.protocol, err)
+			}
+		})
+	}
+}
+
+// TestStdlibLoad_UnknownRecipe verifies the error message surfaces the
+// stdlib context when a user mistypes a recipe name.
+func TestStdlibLoad_UnknownRecipe(t *testing.T) {
+	dir := t.TempDir()
+	spec := `
+load("@faultbox/recipes/nonexistent.star", "nonexistent")
+
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+`
+	if err := os.WriteFile(dir+"/faultbox.star", []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := New(testLogger())
+	err := rt.LoadFile(dir + "/faultbox.star")
+	if err == nil {
+		t.Fatal("expected load error for unknown recipe")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "faultbox stdlib") {
+		t.Errorf("error should mention 'faultbox stdlib' to orient the user, got: %v", err)
+	}
+	if !strings.Contains(msg, "recipes list") {
+		t.Errorf("error should hint at 'recipes list' CLI command, got: %v", err)
+	}
+}
+
+// TestStdlibLoad_LocalStillWorks verifies that user-authored recipes at
+// relative filesystem paths still resolve, so the @faultbox/ convention
+// doesn't break specs that ship their own recipes alongside.
+func TestStdlibLoad_LocalStillWorks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/recipes", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	localRecipe := `
+mycompany = struct(
+    checkout_stall = lambda: delay(path = "/checkout", delay = "1s"),
+)
+`
+	if err := os.WriteFile(dir+"/recipes/mycompany.star", []byte(localRecipe), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := `
+load("recipes/mycompany.star", "mycompany")
+
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+_rule = mycompany.checkout_stall()
+
+def test_ok():
+    pass
+`
+	if err := os.WriteFile(dir+"/faultbox.star", []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := New(testLogger())
+	if err := rt.LoadFile(dir + "/faultbox.star"); err != nil {
+		t.Fatalf("local recipe load broke: %v", err)
+	}
+}
+
 // TestStructBuiltin is a sanity check that struct() is wired into the
 // runtime so recipe modules can use it.
 func TestStructBuiltin(t *testing.T) {

@@ -1,9 +1,10 @@
 # Faultbox recipes: ClickHouse
 #
 # Per RFC-018: one namespace struct per recipe file.
+# Per RFC-019: stdlib is embedded in the faultbox binary (@faultbox/ prefix).
 #
 # Usage:
-#     load("./recipes/clickhouse.star", "clickhouse")
+#     load("@faultbox/recipes/clickhouse.star", "clickhouse")
 #
 #     overloaded = fault_assumption("overloaded",
 #         target = ch.main,

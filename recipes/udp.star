@@ -1,9 +1,10 @@
 # Faultbox recipes: UDP
 #
 # Per RFC-018: one namespace struct per recipe file.
+# Per RFC-019: stdlib is embedded in the faultbox binary (@faultbox/ prefix).
 #
 # Usage:
-#     load("./recipes/udp.star", "udp")
+#     load("@faultbox/recipes/udp.star", "udp")
 #
 #     dns_broken = fault_assumption("dns_broken",
 #         target = dns.main,

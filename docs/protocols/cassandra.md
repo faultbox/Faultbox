@@ -118,7 +118,7 @@ See [recipes/cassandra.star](../../recipes/cassandra.star):
 - `schema_mismatch` — stale schema version
 
 ```python
-load("./recipes/cassandra.star", "cassandra")
+load("@faultbox/recipes/cassandra.star", "cassandra")
 
 broken = fault_assumption("quorum_lost",
     target = cass.main,
