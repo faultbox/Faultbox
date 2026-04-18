@@ -8,6 +8,7 @@ the fault rules for protocol-level injection, and seed/reset patterns.
 | Protocol | Interface | Methods | Fault Rules | Event Source |
 |----------|-----------|---------|-------------|-------------|
 | [HTTP](http.md) | `"http"` | get, post, put, delete, patch | response, error, delay, drop | — |
+| [HTTP/2](http2.md) | `"http2"` | get, post, put, delete, patch | response, error, delay, drop | — |
 | [TCP](tcp.md) | `"tcp"` | send | — (use syscall faults) | — |
 | [Postgres](postgres.md) | `"postgres"` | query, exec | error, delay, drop | wal_stream |
 | [MySQL](mysql.md) | `"mysql"` | query, exec | error, delay, drop | — |
