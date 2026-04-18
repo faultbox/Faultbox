@@ -11,7 +11,7 @@ require (
 require (
 	github.com/docker/docker v28.1.1+incompatible
 	github.com/docker/go-connections v0.6.0
-	go.starlark.net v0.0.0-20260324133313-ffb3f39dd27a
+	go.starlark.net v0.0.0-20260326113308-fadfc96def35
 )
 
 require (
