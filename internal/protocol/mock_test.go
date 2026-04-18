@@ -248,6 +248,127 @@ func TestMatchGlob(t *testing.T) {
 	}
 }
 
+// TestHTTP2MockStaticRoutes verifies the HTTP/2 MockHandler over h2c —
+// same route table as HTTP, served over cleartext HTTP/2. Clients connect
+// with an h2c-capable transport to confirm the response protocol is HTTP/2.
+func TestHTTP2MockStaticRoutes(t *testing.T) {
+	p := &http2Protocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Routes: []MockRoute{
+			{
+				Pattern: "GET /healthz",
+				Response: &MockResponse{Status: 200, Body: []byte(`ok`), ContentType: "text/plain"},
+			},
+			{
+				Pattern: "POST /api/v1/**",
+				Response: &MockResponse{
+					Status:      200,
+					Body:        []byte(`{"ok":true}`),
+					ContentType: "application/json",
+				},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- p.ServeMock(ctx, addr, spec, nil) }()
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("mock not listening: %v", err)
+	}
+
+	client := newH2CClient(2 * time.Second)
+
+	// Route 1 — verify protocol is HTTP/2.0.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/healthz", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET healthz: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("healthz status = %d, want 200", resp.StatusCode)
+	}
+	if resp.Proto != "HTTP/2.0" {
+		t.Fatalf("healthz proto = %q, want HTTP/2.0", resp.Proto)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("healthz body = %q", string(body))
+	}
+
+	// Route 2 — glob ** match.
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+addr+"/api/v1/orders/42", strings.NewReader(`{"x":1}`))
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("POST api: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("api status = %d, want 200", resp.StatusCode)
+	}
+	if resp.Proto != "HTTP/2.0" {
+		t.Fatalf("api proto = %q, want HTTP/2.0", resp.Proto)
+	}
+	if !strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("api body = %q", string(body))
+	}
+
+	cancel()
+	select {
+	case <-serveErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not shut down in time")
+	}
+}
+
+// TestHTTP2MockDynamicHandler verifies dynamic handlers work over h2c too.
+func TestHTTP2MockDynamicHandler(t *testing.T) {
+	p := &http2Protocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Routes: []MockRoute{{
+			Pattern: "POST /echo",
+			Dynamic: func(req MockRequest) (*MockResponse, error) {
+				payload, _ := json.Marshal(map[string]string{
+					"method": req.Method,
+					"path":   req.Path,
+					"body":   string(req.Body),
+				})
+				return &MockResponse{Status: 200, Body: payload, ContentType: "application/json"}, nil
+			},
+		}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.ServeMock(ctx, addr, spec, nil)
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("mock not listening: %v", err)
+	}
+
+	client := newH2CClient(2 * time.Second)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+addr+"/echo", strings.NewReader(`{"ping":"pong"}`))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST echo: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.Proto != "HTTP/2.0" {
+		t.Fatalf("echo proto = %q, want HTTP/2.0", resp.Proto)
+	}
+	if !strings.Contains(string(body), `"body":"{\"ping\":\"pong\"}"`) {
+		t.Fatalf("echo body = %q", string(body))
+	}
+}
+
 // --- test helpers ---
 
 type recordedEmits struct {
