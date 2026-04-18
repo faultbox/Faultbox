@@ -604,9 +604,12 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		}
 
 		var err error
-		if svc.IsContainer() {
+		switch {
+		case svc.IsMock():
+			err = rt.startMockService(ctx, svcName, svc)
+		case svc.IsContainer():
 			err = rt.startContainerService(ctx, svcName, svc)
-		} else {
+		default:
 			err = rt.startBinaryService(ctx, svcName, svc)
 		}
 		if err != nil {
