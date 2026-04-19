@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/segmentio/kafka-go"
 )
 
 // TestHTTPMockStaticRoutes verifies that the HTTP MockHandler matches
@@ -516,6 +518,80 @@ func TestUDPMockPrefixResponse(t *testing.T) {
 	if string(buf[:n]) != "PONG" {
 		t.Fatalf("response = %q, want PONG", buf[:n])
 	}
+}
+
+// TestKafkaMockBasic verifies the Kafka mock stands up an in-process broker
+// via kfake and a real kafka-go client can connect + list the seeded
+// topics. End-to-end produce/consume is covered by a spec-level test.
+func TestKafkaMockBasic(t *testing.T) {
+	p := &kafkaProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Config: map[string]any{
+			"topics": map[string]any{
+				"orders":   []any{},
+				"payments": []any{},
+			},
+			"partitions": 1,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- p.ServeMock(ctx, addr, spec, nil) }()
+
+	if err := waitKafkaMockReady(addr, 3*time.Second); err != nil {
+		t.Fatalf("kafka mock not ready: %v", err)
+	}
+
+	conn, err := kafka.DialContext(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("kafka dial: %v", err)
+	}
+	partitions, err := conn.ReadPartitions()
+	conn.Close()
+	if err != nil {
+		t.Fatalf("ReadPartitions: %v", err)
+	}
+
+	seen := make(map[string]bool)
+	for _, p := range partitions {
+		seen[p.Topic] = true
+	}
+	for _, want := range []string{"orders", "payments"} {
+		if !seen[want] {
+			t.Errorf("topic %q not found in metadata; got %+v", want, seen)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not shut down in time")
+	}
+}
+
+// waitKafkaMockReady polls the broker by opening a Kafka Metadata request
+// until it succeeds. kfake needs a moment after NewCluster returns before
+// it's fully answering on the port.
+func waitKafkaMockReady(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := kafka.DialContext(context.Background(), "tcp", addr)
+		if err == nil {
+			_, err = conn.ReadPartitions()
+			conn.Close()
+			if err == nil {
+				return nil
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("kafka mock not answering at %s", addr)
 }
 
 // --- test helpers ---

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	kafkago "github.com/segmentio/kafka-go"
 	"golang.org/x/net/http2"
 )
 
@@ -347,6 +348,63 @@ statsd = mock_service("statsd",
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("expected >=5 mock.recv events; final events: %+v", rt.events.Events())
+}
+
+// TestMockServiceKafkaStdlib verifies that @faultbox/mocks/kafka.star's
+// kafka.broker() stdlib constructor stands up a Kafka mock via kfake and a
+// real kafka-go client can connect + list the seeded topics. This is the
+// first end-to-end test of the @faultbox/mocks/ stdlib distribution path.
+func TestMockServiceKafkaStdlib(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/kafka.star", "kafka")
+
+bus = kafka.broker(
+    name      = "bus",
+    interface = interface("main", "kafka", %d),
+    topics    = {"orders": [], "payments": []},
+)
+`, port)
+	if err := rt.LoadString("kafka_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	// Wait for kfake's metadata endpoint to be responsive.
+	deadline := time.Now().Add(5 * time.Second)
+	var partitions []kafkago.Partition
+	for time.Now().Before(deadline) {
+		conn, err := kafkago.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		partitions, err = conn.ReadPartitions()
+		conn.Close()
+		if err == nil && len(partitions) >= 2 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	seen := make(map[string]bool)
+	for _, p := range partitions {
+		seen[p.Topic] = true
+	}
+	for _, want := range []string{"orders", "payments"} {
+		if !seen[want] {
+			t.Errorf("topic %q not found after stdlib kafka.broker(); seen=%+v", want, seen)
+		}
+	}
 }
 
 // newTestH2CClient returns an HTTP client that speaks h2c. Local to this

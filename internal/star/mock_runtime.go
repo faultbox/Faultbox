@@ -120,6 +120,10 @@ func (rt *Runtime) buildMockSpec(svcName, ifaceName string, svc *ServiceDef) (pr
 		out.Default = def.Static()
 	}
 
+	if cfg, ok := svc.Mock.Config[ifaceName]; ok {
+		out.Config = cfg
+	}
+
 	return out, nil
 }
 

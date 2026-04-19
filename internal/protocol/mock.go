@@ -17,9 +17,15 @@ type MockHandler interface {
 // MockSpec is the protocol-agnostic configuration for one mocked interface.
 // Routes are keyed by a protocol-specific pattern ("METHOD /path" for HTTP,
 // "/pkg.Service/Method" for gRPC, bytes prefix for TCP/UDP).
+//
+// Config carries protocol-specific structured data (Kafka topics, Redis
+// seed state, MongoDB collections) that doesn't fit the route-table shape.
+// Opaque to the generic mock_service() builtin; interpreted by protocol
+// plugins. Keys are documented per protocol in the @faultbox/mocks/ stdlib.
 type MockSpec struct {
 	Routes  []MockRoute
 	Default *MockResponse
+	Config  map[string]any
 }
 
 // MockRoute pairs a pattern with a handler. Pattern matching is

@@ -21,6 +21,12 @@ type MockConfig struct {
 
 	// TLS per interface (not yet implemented; field reserved).
 	TLS map[string]bool
+
+	// Config per interface — opaque protocol-specific data. Plumbs into
+	// protocol.MockSpec.Config for the plugin to interpret. Used by stdlib
+	// mocks (@faultbox/mocks/) to carry topics, seed state, collections,
+	// etc. through the generic mock_service() primitive.
+	Config map[string]map[string]any
 }
 
 // MockRouteEntry is one pattern → response binding.
