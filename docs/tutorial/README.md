@@ -71,6 +71,7 @@ make lima-create && make lima-build                 # macOS (one-time)
 | 11 | [Event Sources & Observability](05-advanced/11-event-sources.md) | 25 min |
 | 12 | [Named Operations](05-advanced/12-named-ops.md) | 15 min |
 | 13 | [LLM Agents & MCP](05-advanced/13-llm-mcp.md) | 15 min |
+| 17 | [Mock Services](05-advanced/17-mock-services.md) | 25 min |
 
 ---
 

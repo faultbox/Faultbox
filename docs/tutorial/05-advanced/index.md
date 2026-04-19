@@ -10,3 +10,4 @@ define high-level operations, and integrate with LLM agents.
 | [Event Sources](11-event-sources.md) | 25 min | observe=, stdout/WAL/Kafka events, decoders, .data |
 | [Named Operations](12-named-ops.md) | 15 min | ops=, op(), operation-level faults, trace output |
 | [LLM Agents & MCP](13-llm-mcp.md) | 15 min | Claude Code setup, MCP server, --format json, CI integration |
+| [Mock Services](17-mock-services.md) | 25 min | mock_service(), @faultbox/mocks/ stdlib, TLS, faulting mocks, when to use vs real services |

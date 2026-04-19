@@ -32,13 +32,15 @@ One import per protocol, clean call sites, zero collisions.
 | UDP | [udp.star](udp.star) | ✅ Shipped |
 | Cassandra | [cassandra.star](cassandra.star) | ✅ Shipped |
 | ClickHouse | [clickhouse.star](clickhouse.star) | ✅ Shipped |
+| MySQL | [mysql.star](mysql.star) | ✅ Shipped (v0.8.1) |
+| Kafka | [kafka.star](kafka.star) | ✅ Shipped (v0.8.1) |
+| Redis | [redis.star](redis.star) | ✅ Shipped (v0.8.1) |
 | Postgres | — | To be added |
-| Redis | — | To be added |
-| Kafka | — | To be added |
 | HTTP | — | To be added |
 | gRPC | — | To be added |
-| MySQL | — | To be added |
 | NATS | — | To be added |
+| Memcached | — | To be added |
+| AMQP | — | To be added |
 
 ## Coverage matrix
 
@@ -49,6 +51,9 @@ One import per protocol, clean call sites, zero collisions.
 | UDP | — | `metrics_slow`, `jitter` | — | — | — | `packet_loss`, `dns_flap`, `blackhole` |
 | Cassandra | `overloaded` | `write_timeout`, `read_timeout`, `slow_reads`, `slow_writes`, `connection_drop` | `unavailable`, `schema_mismatch` | — | — | — |
 | ClickHouse | `too_many_parts`, `memory_limit` | `slow_analytics`, `slow_ingest`, `connection_drop`, `replica_stale` | — | `table_not_exists` | — | `readonly_mode` |
+| MySQL | `too_many_connections`, `disk_full` | `lock_wait_timeout`, `gone_away`, `slow_query`, `slow_writes` | `read_only_replica` | `deadlock` | — | — |
+| Kafka | `broker_overloaded`, `message_too_large` | `rebalancing`, `slow_produce`, `connection_drop`, `coordinator_not_available` | `not_leader_for_partition`, `offset_out_of_range` | — | — | — |
+| Redis | `oom` | `loading`, `busy`, `slow_command`, `connection_drop` | `cluster_down`, `readonly_replica` | `wrongtype` | `noauth` | — |
 
 ## Contributing
 
