@@ -585,6 +585,85 @@ When `ports` is not set, Docker picks random host ports automatically.
 
 ---
 
+## Mock Services
+
+For dependencies that don't deserve a full container (auth/JWKS stubs,
+metrics sinks, feature-flag gateways) Faultbox can stand up
+in-process protocol stubs entirely from Starlark — no Dockerfile,
+no sidecar process. See the dedicated **[Mock Services reference](mock-services.md)**
+for the full API. Quick summary:
+
+```python
+# Generic primitive — request/response protocols (HTTP, HTTP/2, TCP, UDP, gRPC).
+auth = mock_service("auth",
+    interface("http", "http", 8090),
+    routes = {
+        "GET /.well-known/openid-configuration/jwks": json_response(200, {"keys": [...]}),
+        "POST /token": dynamic(lambda req: json_response(200, {"sub": req["query"]["user"]})),
+    },
+)
+
+# Stdlib mocks for stateful protocols.
+load("@faultbox/mocks/kafka.star",   "kafka")
+load("@faultbox/mocks/redis.star",   "redis")
+load("@faultbox/mocks/mongodb.star", "mongo")
+
+bus   = kafka.broker("bus",       interface = interface("main", "kafka", 9092),  topics = {"orders": []})
+cache = redis.server("cache",     interface = interface("main", "redis", 6379),  state  = {"flag:new": "true"})
+users = mongo.server("users-stub", interface = interface("main", "mongodb", 27017),
+                                  collections = {"users": [{"_id": "1", "name": "alice"}]})
+```
+
+### `mock_service(name, *interfaces, routes={}, default=None, tls=False, config={}, depends_on=[])`
+
+Generic primitive for request/response protocols. Returns a `ServiceDef`
+interchangeable with real services — `fault()`, `events()`, env-var
+references all work the same way.
+
+| Param | Notes |
+|---|---|
+| `routes` | Pattern → response dict. Pattern format depends on protocol (`"METHOD /path"` for HTTP, `"/pkg.Svc/Method"` for gRPC, byte-prefix string for TCP/UDP). |
+| `default` | Fallback when no route matches (default: protocol-appropriate error like HTTP 404). |
+| `tls` | When True, terminate TLS using a per-runtime mock CA. CA bundle path available via the runtime; SUTs trust it via `RootCAs`. |
+| `config` | Opaque dict consumed by the protocol plugin. Used by stdlib wrappers — you rarely set this directly. |
+| `depends_on` | Same start-ordering semantics as `service()`. |
+
+### Response constructors
+
+```python
+json_response(status=200, body={...}, headers={})    # JSON body, sets Content-Type
+text_response(status=200, body="...", headers={})    # text/plain
+bytes_response(status=0, data="raw bytes")           # TCP/UDP write-back
+status_only(code)                                     # HTTP status, empty body
+redirect(location, status=302)                        # HTTP redirect
+grpc_response(body={...})                             # google.protobuf.Struct
+grpc_error(code="UNAVAILABLE", message="...")         # gRPC canonical status
+dynamic(fn)                                           # per-request callable (req → response)
+```
+
+`dynamic(fn)` runs a Starlark callable per request. The callable
+receives a dict with `method`, `path`, `headers`, `query`, `body`
+and returns a response value. Use it for JWT signing, request-aware
+flag lookups, anything where the canned answer depends on the input.
+
+### Stdlib mocks (`@faultbox/mocks/*.star`)
+
+| Module | Constructor | Backed by |
+|---|---|---|
+| `@faultbox/mocks/kafka.star` | `kafka.broker(name, interface, topics, partitions, depends_on)` | `franz-go/pkg/kfake` — full broker |
+| `@faultbox/mocks/redis.star` | `redis.server(name, interface, state, depends_on)` | `miniredis` — full RESP2 |
+| `@faultbox/mocks/mongodb.star` | `mongo.server(name, interface, collections, depends_on)` | hand-written BSON OP_MSG/OP_QUERY responder |
+
+Stdlib constructors are thin Starlark wrappers around `mock_service()`
+that translate protocol-specific kwargs into the opaque `config=` map.
+Same Go runtime, same event log, same `fault()` integration — just a
+nicer call site for protocols where `routes={}` doesn't fit.
+
+See the [Mock Services reference](mock-services.md) for the per-protocol
+matrix, scope, and what mocks deliberately don't do.
+
+---
+
 ## Event Sources
 
 Event sources capture non-syscall events (stdout, WAL changes, message

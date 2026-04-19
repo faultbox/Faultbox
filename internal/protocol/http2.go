@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 func init() {
@@ -100,6 +101,52 @@ func (p *http2Protocol) ExecuteStep(ctx context.Context, addr, method string, kw
 		DurationMs: elapsed,
 		Fields:     map[string]string{"proto": resp.Proto},
 	}, nil
+}
+
+// ServeMock implements MockHandler for HTTP/2. It reuses the HTTP route
+// table and mux from the http protocol (same "METHOD /path" pattern with
+// * / ** globs) but serves them over h2c — cleartext HTTP/2 — the mode
+// real-world service meshes use between pods behind a TLS-terminating LB.
+func (p *http2Protocol) ServeMock(ctx context.Context, addr string, spec MockSpec, emit MockEmitter) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("mock listen %s: %w", addr, err)
+	}
+
+	mux := &mockHTTPMux{routes: spec.Routes, def: spec.Default, emit: emit}
+	h2s := &http2.Server{}
+	srv := &http.Server{
+		Handler:           h2c.NewHandler(mux, h2s),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	// With TLS, serve plain HTTP/2 with ALPN "h2" over the TLS listener.
+	// Without TLS, the h2c handler above negotiates HTTP/2 over cleartext.
+	if spec.TLSCert != nil {
+		srv.Handler = mux
+		srv.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{*spec.TLSCert},
+			NextProtos:   []string{"h2", "http/1.1"},
+		}
+		ln = tls.NewListener(ln, srv.TLSConfig)
+		_ = http2.ConfigureServer(srv, h2s)
+	}
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = srv.Shutdown(shutdownCtx)
+		cancel()
+		return nil
+	case err := <-serveErr:
+		if err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
+	}
 }
 
 // newH2CClient returns an HTTP client that speaks HTTP/2 over cleartext TCP

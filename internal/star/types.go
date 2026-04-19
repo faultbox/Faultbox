@@ -60,12 +60,22 @@ type ServiceDef struct {
 	Seed  starlark.Callable  // initialize service state (runs once after healthcheck)
 	Reset starlark.Callable  // re-initialize between tests (defaults to Seed if nil)
 
+	// Mock service support (RFC-017). When non-nil, this ServiceDef is a
+	// mock: the runtime starts an in-process protocol handler instead of
+	// launching a binary or container.
+	Mock *MockConfig
+
 	rt         *Runtime // set by runtime after registration
 }
 
 // IsContainer returns true if this service uses a container image.
 func (s *ServiceDef) IsContainer() bool {
 	return s.Image != "" || s.Build != ""
+}
+
+// IsMock returns true if this service is a mock (RFC-017).
+func (s *ServiceDef) IsMock() bool {
+	return s.Mock != nil
 }
 
 var _ starlark.Value = (*ServiceDef)(nil)

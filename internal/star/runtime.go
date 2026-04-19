@@ -116,6 +116,13 @@ type Runtime struct {
 	// currentFaultScenario is set by makeFaultScenarioRunner during execution
 	// so RunTest can copy MatrixInfo to the TestResult.
 	currentFaultScenario *FaultScenarioDef
+
+	// mockTLSImpl is lazy-initialized the first time a tls=True mock service
+	// starts. The whole runtime shares one CA so clients can trust every
+	// mock by trusting a single bundle.
+	mockTLSOnce sync.Once
+	mockTLSImpl *mockTLS
+	mockTLSErr  error
 }
 
 type runningSession struct {
@@ -604,9 +611,12 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		}
 
 		var err error
-		if svc.IsContainer() {
+		switch {
+		case svc.IsMock():
+			err = rt.startMockService(ctx, svcName, svc)
+		case svc.IsContainer():
 			err = rt.startContainerService(ctx, svcName, svc)
-		} else {
+		default:
 			err = rt.startBinaryService(ctx, svcName, svc)
 		}
 		if err != nil {

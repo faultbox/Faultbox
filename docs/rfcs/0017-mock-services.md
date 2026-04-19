@@ -1,9 +1,12 @@
 # RFC-017: Native Mock Services — Stub Protocols Without Containers
 
-- **Status:** Draft
+- **Status:** Implemented (v0.8.0)
 - **Author:** Boris Glebov, Claude Opus 4.7
 - **Created:** 2026-04-17
-- **Branch:** `rfc/017-mock-services`
+- **Amended:** 2026-04-19 — split generic `mock_service()` from protocol-specific stdlib mocks; promoted dynamic handlers + TLS into v1; spun SQL mocks off to RFC-020 (#39) and OpenAPI generation to RFC-021 (#40)
+- **Shipped:** 2026-04-19 (v0.8.0, PRs #41–#48)
+- **Branch:** `epic/v0.8-mock-services`
+- **Milestone:** v0.8.0
 - **Addresses:** FB-017
 
 ## Summary
@@ -76,16 +79,37 @@ A protocol-aware mock primitive gives all of these the same treatment.
 
 ## Design
 
-### The builtin
+### Two-tier API — generic primitive + protocol stdlib
+
+The mock surface splits cleanly along protocol semantics:
+
+1. **Request/response protocols** (HTTP, HTTP/2, TCP, UDP, gRPC) get the
+   generic `mock_service()` builtin with a `routes={}` map. These protocols
+   all reduce to "match incoming request, return response," so one primitive
+   covers them.
+2. **Stateful or message-broker protocols** (Kafka, Redis, MongoDB,
+   Cassandra) ship as **protocol-specific stdlib modules** under
+   `@faultbox/mocks/<protocol>.star`, reusing the embedded-stdlib
+   distribution pattern from RFC-019. Each module exports a struct with a
+   constructor tailored to that protocol's shape (topics for Kafka,
+   key-value state for Redis, collections for MongoDB).
+
+This split fixes a leak in the original RFC draft: shoving `topics=`,
+`state=`, `collections=` onto a single generic builtin would force
+`mock_service()` to grow a new protocol-specific kwarg per new protocol.
+The stdlib-module pattern keeps `mock_service()` truly generic and puts
+protocol invariants where they belong.
+
+### The generic builtin
 
 ```python
 mock_service(name, *interfaces,
-    routes:  dict = {},      # protocol-specific route/handler map
-    state:   dict = {},      # initial key/value state (Redis-like stubs)
-    topics:  dict = {},      # pre-seeded Kafka topics
-    depends_on: list = [],   # same semantics as service()
+    routes:   dict = {},      # "METHOD /path" (HTTP/HTTP2) | bytes prefix (TCP/UDP) | "/pkg.Service/Method" (gRPC)
+    default:  MockResponse = None,  # fallback for unmatched requests (default: 404)
+    tls:      bool = False,   # self-signed cert; CA bundle mounted into containers
+    depends_on: list = [],    # same semantics as service()
     # Fault/reuse/seed/reset are NOT supported — mocks are always reusable
-    # and stateless-by-default; use `state=` for seed data.
+    # and stateless-by-default.
 )
 ```
 
@@ -97,6 +121,37 @@ mock_service(name, *interfaces,
 - Every request is **logged as an event** — same schema as intercepted
   syscalls, so assertions like `assert_eventually(events().where(service =
   "auth-stub", op = "GET /jwks").count() > 0)` work uniformly.
+- Routes accept `dynamic(fn)` for per-request Starlark callbacks (JWT
+  signing, dynamic claims, etc.) — see "Dynamic handlers" below.
+
+### Protocol stdlib modules
+
+Shipped embedded in the `faultbox` binary and loaded via the `@faultbox/`
+prefix (RFC-019 distribution):
+
+```python
+load("@faultbox/mocks/kafka.star",   "kafka")
+load("@faultbox/mocks/redis.star",   "redis")
+load("@faultbox/mocks/mongodb.star", "mongo")
+
+bus   = kafka.broker(name = "bus",   interface = interface("main", "kafka", 9092),
+                     topics = {"orders": [...], "payments": []})
+
+cache = redis.server(name = "cache", interface = interface("main", "redis", 6379),
+                     state = {"config:max_retries": "3"})
+
+users = mongo.server(name = "users", interface = interface("main", "mongodb", 27017),
+                     collections = {"users": [...]})
+```
+
+Each module exports one struct named after the protocol (same pattern as
+RFC-018 recipes). Constructors encode protocol-specific invariants:
+`kafka.broker` requires `topics=`, `redis.server` accepts `state=`,
+`mongo.server` accepts `collections=`.
+
+Under the hood, each stdlib constructor is a thin wrapper that calls the
+same Go `MockHandler` machinery — the split is purely at the Starlark
+surface for clean semantics, not two separate runtime paths.
 
 ### Response constructors
 
@@ -201,18 +256,21 @@ flags = mock_service("flags",
   encoded in binary form.
 - gRPC reflection enabled by default so `grpcurl` works against the stub.
 
-### Protocol 5: Redis
+### Protocol 5: Redis (via `@faultbox/mocks/redis.star`)
 
 ```python
-cache = mock_service("redis-stub",
-    interface("main", "redis", 6379),
+load("@faultbox/mocks/redis.star", "redis")
+
+cache = redis.server(
+    name      = "redis-stub",
+    interface = interface("main", "redis", 6379),
     state = {
         "config:max_retries": "3",
         "config:timeout_ms":  "5000",
         "flag:new_ui":        "true",
     },
     # Optional: override specific commands
-    routes = {
+    overrides = {
         "INFO":      text_response(0, "redis_version:7.0.0\r\n"),
         "CLUSTER *": text_response(0, "cluster_enabled:0\r\n"),
     },
@@ -221,15 +279,18 @@ cache = mock_service("redis-stub",
 
 - `state=` seeds an in-memory key/value map; GET/SET/DEL/EXISTS/INCR/TTL
   operate on it naturally. No persistence — wiped at runtime shutdown.
-- `routes=` overrides specific commands (pattern match on verb + args).
+- `overrides=` replaces specific commands (pattern match on verb + args).
 - Covers the 80% of Redis usage that is string cache + counters. Streams,
   pub/sub, Lua scripting are out of scope for v1.
 
-### Protocol 6: Kafka
+### Protocol 6: Kafka (via `@faultbox/mocks/kafka.star`)
 
 ```python
-events_bus = mock_service("kafka-stub",
-    interface("main", "kafka", 9092),
+load("@faultbox/mocks/kafka.star", "kafka")
+
+events_bus = kafka.broker(
+    name      = "kafka-stub",
+    interface = interface("main", "kafka", 9092),
     topics = {
         "orders":   [{"id": 1, "item": "apple"}, {"id": 2, "item": "pear"}],
         "payments": [],  # empty topic, accept produces
@@ -245,6 +306,86 @@ events_bus = mock_service("kafka-stub",
   `Heartbeat` — the subset real clients need for simple produce/consume.
 - Topic creation is implicit (no `CreateTopics` required).
 - Produced messages are both stored and emitted as events for assertions.
+
+### Protocol 7: MongoDB (via `@faultbox/mocks/mongodb.star`)
+
+```python
+load("@faultbox/mocks/mongodb.star", "mongo")
+
+users_db = mongo.server(
+    name      = "users-stub",
+    interface = interface("main", "mongodb", 27017),
+    collections = {
+        "users": [
+            {"_id": "1", "name": "alice", "role": "admin"},
+            {"_id": "2", "name": "bob", "role": "user"},
+        ],
+    },
+    overrides = {
+        "users.insert": mongodb_error("disk full"),
+    },
+)
+```
+
+- `collections=` seeds documents per collection; `find` / `findOne` /
+  `count` answer from the in-memory store.
+- `overrides=` replaces specific `collection.op` pairs with canned
+  responses — identical semantics to the existing proxy recipe matcher.
+- Wire format: real BSON OP_MSG encoding (shared with RFC-016 MongoDB
+  proxy), so real drivers decode responses correctly.
+
+### Dynamic handlers
+
+Routes accept a `dynamic(fn)` wrapper for per-request logic. The callable
+receives a request dict and returns a response value:
+
+```python
+def sign_jwt(request):
+    claims = {
+        "sub":   request["query"].get("user", "anonymous"),
+        "exp":   now() + 3600,
+        "iat":   now(),
+        "iss":   "http://auth:8090",
+    }
+    return json_response(200, {"access_token": jwt.sign_ed25519(claims, ED25519_KEY)})
+
+auth = mock_service("auth",
+    interface("http", "http", 8090),
+    routes = {
+        "GET /.well-known/openid-configuration/jwks": json_response(200, jwks_keys),
+        "POST /token": dynamic(sign_jwt),
+    },
+)
+```
+
+- Dynamic handlers cover the 20% of cases static responses miss —
+  primarily JWT signing with dynamic claims, feature-flag lookups that
+  depend on request headers, metadata endpoints that echo query params.
+- Starlark-on-hot-path cost is acceptable for mock services: they target
+  low RPS (<1000 QPS) by design. Benchmarks belong in real services.
+- Available on HTTP, HTTP/2, TCP, UDP, gRPC routes in v1. Protocol
+  stdlib mocks (Kafka, Redis, MongoDB) can compose dynamic handlers via
+  `overrides=` in follow-up work.
+
+### TLS
+
+Real OIDC issuers serve HTTPS. Mock services accept a `tls=True` kwarg:
+
+```python
+auth = mock_service("auth",
+    interface("https", "http", 8443),
+    tls    = True,
+    routes = {...},
+)
+```
+
+- Runtime generates a self-signed cert per mock at startup, signed by a
+  per-run Faultbox CA.
+- In container mode, the CA bundle is mounted into each SUT container at
+  `/etc/ssl/certs/faultbox-ca.pem` and the container's `SSL_CERT_FILE`
+  env var points at it.
+- Avoids the `SSL_VERIFY=false` env-var smell that ships to production
+  otherwise.
 
 ### Protocol plugin contract
 
@@ -356,98 +497,114 @@ For these five, mock service support is mostly a matter of implementing
 `MockHandler.Serve()` that generates responses rather than forwarding.
 The wire format work is already in-tree.
 
-## Open questions
+## Open questions (resolved)
 
-1. **Dynamic handlers.** Should routes accept Starlark callables
-   `(request) -> response` for per-request logic (e.g. JWT signing with
-   dynamic claims)? Starlark on the hot path is expensive. Proposal:
-   static-only in v1, add `dynamic(fn)` wrapper in a follow-up RFC.
+1. **Dynamic handlers** — ✅ **Resolved:** ship in v1 for HTTP, HTTP/2,
+   TCP, UDP, gRPC via the `dynamic(fn)` wrapper. JWT signing is the
+   primary driver — static responses don't cover real OIDC stubs.
+   Starlark hot-path cost is acceptable for mock services (<1000 QPS
+   design target). Protocol stdlib mocks (Kafka/Redis/MongoDB) compose
+   `dynamic()` via their `overrides=` kwarg.
 
-2. **TLS.** Auth providers typically serve HTTPS. Proposal: generate a
-   self-signed cert per mock at startup, expose via `tls=True` kwarg.
-   Clients under test must trust the Faultbox CA (mounted into the
-   container via a known volume).
+2. **TLS** — ✅ **Resolved:** ship in v1. Self-signed cert per mock,
+   signed by a per-run Faultbox CA. CA bundle mounted into SUT
+   containers at `/etc/ssl/certs/faultbox-ca.pem` with `SSL_CERT_FILE`
+   env var pointing at it. Pulled forward because OIDC issuers are
+   `https://` and the alternative (disabling cert validation in SUT env)
+   is a worse outcome.
 
-3. **Persistence across reuse.** Mock services implicitly behave like
-   `reuse=True`. Should `state=` be reset between tests by default?
-   Proposal: yes — matches the "stateless stub" mental model. Opt into
-   persistence with `persist=True`.
+3. **Persistence across reuse** — ✅ **Resolved:** stateless by default.
+   Matches the "stub" mental model. Persistent state is a different
+   product (real service). No `persist=True` kwarg — if you need it,
+   run the real service.
 
-4. **Postgres/MySQL.** SQL mocks require parsing SQL or pattern-matching
-   queries. Complex enough to warrant its own RFC. Explicitly out of
-   scope here.
+4. **Postgres/MySQL (SQL mocks)** — ⏭️ **Spun off to
+   [RFC-020 (#39)](https://github.com/faultbox/Faultbox/issues/39).**
+   SQL mock semantics are their own design problem (query matching,
+   typed result set encoding, prepared statements, transaction state).
+   Not in v0.8.0 scope.
 
-5. **OpenAPI / proto import.** Long-term: `mock_service("api", openapi =
-   "./spec.yaml")` auto-generates routes from the OpenAPI document.
-   Deferred to a follow-up.
+5. **OpenAPI / proto import** — ⏭️ **Spun off to
+   [RFC-021 (#40)](https://github.com/faultbox/Faultbox/issues/40).**
+   Contract-driven mock generation is a separate design (schema parsing,
+   example selection, validation modes). Not in v0.8.0 scope.
 
 ## Phasing
 
-Updated after RFC-016 landed (MongoDB, HTTP/2, UDP, Cassandra,
-ClickHouse as real-service protocols). Each phase below is independently
-shippable.
+Updated 2026-04-19 after scope review. v0.8.0 ships the full request/response
+mock surface plus the three highest-demand stateful protocols as stdlib
+mocks. Each phase below is independently shippable.
 
-| Phase | Protocols | Rationale |
-|---|---|---|
-| **v1** | HTTP, HTTP/2, TCP, UDP | Auth stubs, metrics sinks, legacy TCP services, service-mesh traffic. HTTP and HTTP/2 share a handler (HTTP/2 adds h2c; same route map). |
-| **v2** | gRPC, Redis, Kafka, ClickHouse | Needs protocol-aware encoding. ClickHouse mocks are cheap (HTTP interface + SQL body match); included in v2 alongside the other body-parsing mocks. |
-| **v3** | MongoDB, Cassandra, NATS | BSON / CQL encoding. MongoDB is the highest-demand of the v3 set (Node.js/Python ecosystems); Cassandra mocks need CQL frame emission with realistic error codes. |
-| **v4** | Postgres, MySQL | SQL parsing is its own design problem — a mock DB would need to answer `SELECT` with canned rows shaped like real result sets. Deferred until there's clear demand. |
+| Phase | Protocols / Capabilities | Target release | Rationale |
+|---|---|---|---|
+| **v1** | HTTP, HTTP/2, TCP, UDP generic `mock_service()` + `dynamic()` handlers + TLS | **v0.8.0** | Auth stubs (JWKS/OIDC), metrics sinks, legacy TCP services, service-mesh traffic. JWT signing and HTTPS both required for the motivating use case. |
+| **v1 stretch** | gRPC `mock_service()` | **v0.8.0** if schedule permits; else **v0.9.0** | Feature-flag stubs, license validators. Same route-map shape as HTTP; `proto=` optional. |
+| **v1 stdlib** | `@faultbox/mocks/kafka.star`, `@faultbox/mocks/redis.star`, `@faultbox/mocks/mongodb.star` | **v0.8.0** | Highest-demand stateful stubs; reuse RFC-016 wire-format infrastructure (BSON, RESP, Kafka protocol) already in-tree. |
+| **v2** | `@faultbox/mocks/cassandra.star`, `@faultbox/mocks/clickhouse.star`, `@faultbox/mocks/nats.star` | **v0.9.0** | Lower-demand stateful stubs. CQL + NATS subject routing both require more wire work. |
+| **v3** | SQL mocks (Postgres, MySQL) | See [RFC-020 (#39)](https://github.com/faultbox/Faultbox/issues/39) | Separate RFC. |
+| **v4** | OpenAPI / proto generation | See [RFC-021 (#40)](https://github.com/faultbox/Faultbox/issues/40) | Separate RFC. |
 
 ### Per-protocol mock surface (updated)
 
-| Protocol | `routes=` keyed by | State helpers | Notes |
+| Protocol | Entry point | Shape | Notes |
 |---|---|---|---|
-| `http` / `http2` | `"METHOD /path"` | — | Same handler; HTTP/2 adds h2c |
-| `tcp` | `bytes` prefix | — | Line-framed or `matcher=` callable |
-| `udp` | `bytes` prefix | — | Swallow-and-record by default |
-| `grpc` | `"/pkg.Service/Method"` | — | Reflection on; `proto=` optional |
-| `redis` | `"CMD arg"` glob | `state={}` KV seed | Covers string cache + counters |
-| `kafka` | — (use `topics=`) | `topics={}` pre-seeded | Answers ApiVersions, Produce, Fetch |
-| `mongodb` | `"collection.op"` | `collections={}` seed | BSON-encoded responses; use real mongo driver to decode |
-| `cassandra` | `"CQL pattern"` | — | Emits real CQL v4 frames; error code 0x0000 by default |
-| `clickhouse` | SQL body pattern | — | HTTP interface; same matcher as RFC-016 proxy uses |
+| `http` / `http2` | `mock_service()` generic | `routes = {"METHOD /path": response}` | Same handler; HTTP/2 adds h2c |
+| `tcp` | `mock_service()` generic | `routes = {b"prefix\n": bytes_response(...)}` | Line-framed or `matcher=` callable |
+| `udp` | `mock_service()` generic | `routes = {b"prefix": bytes_response(...)}` | Swallow-and-record by default |
+| `grpc` | `mock_service()` generic | `routes = {"/pkg.Service/Method": response}` | Reflection on; `proto=` optional |
+| `redis` | `redis.server()` stdlib | `state = {...}`, `overrides = {...}` | Covers string cache + counters |
+| `kafka` | `kafka.broker()` stdlib | `topics = {...}` | Answers ApiVersions, Produce, Fetch |
+| `mongodb` | `mongo.server()` stdlib | `collections = {...}`, `overrides = {...}` | Real BSON OP_MSG (shared with RFC-016 proxy) |
+| `cassandra` | `cassandra.server()` stdlib (v2) | `rows = {...}`, `overrides = {...}` | Real CQL v4 frames |
+| `clickhouse` | `clickhouse.server()` stdlib (v2) | `rows = {...}`, `overrides = {...}` | HTTP interface + SQL body match |
 
-### Examples for new protocols
+### Examples for stdlib protocols
 
-**MongoDB mock** (v3):
+**MongoDB mock** (v0.8.0):
 
 ```python
-users_db = mock_service("users-stub",
-    interface("main", "mongodb", 27017),
+load("@faultbox/mocks/mongodb.star", "mongo")
+
+users_db = mongo.server(
+    name        = "users-stub",
+    interface   = interface("main", "mongodb", 27017),
     collections = {
         "users": [
             {"_id": "1", "name": "alice", "role": "admin"},
             {"_id": "2", "name": "bob", "role": "user"},
         ],
     },
-    routes = {
-        "users.insert": mongodb_error("disk full"),  # auth stub rejects writes
+    overrides = {
+        "users.insert": mongodb_error("disk full"),
     },
 )
 ```
 
-**HTTP/2 mock** (v1 — identical route format to HTTP):
+**HTTP/2 mock** (v0.8.0 — identical route format to HTTP):
 
 ```python
-grpc_gateway = mock_service("gw",
+gw = mock_service("gw",
     interface("public", "http2", 8080),
     routes = {
         "GET /healthz":    status_only(200),
-        "POST /api/v1/**": json_response(200, {"ok": true}),
+        "POST /api/v1/**": json_response(200, {"ok": True}),
     },
 )
 ```
 
-**ClickHouse mock** (v2):
+**ClickHouse mock** (v0.9.0):
 
 ```python
-analytics = mock_service("analytics-stub",
-    interface("main", "clickhouse", 8123),
-    routes = {
-        # Match SQL body prefix, return fixed JSON result
-        "SELECT count() FROM events*": clickhouse_rows([{"count": 42}]),
-        "INSERT*":                      clickhouse_ok(),
+load("@faultbox/mocks/clickhouse.star", "clickhouse")
+
+analytics = clickhouse.server(
+    name      = "analytics-stub",
+    interface = interface("main", "clickhouse", 8123),
+    rows = {
+        "SELECT count() FROM events*": [{"count": 42}],
+    },
+    overrides = {
+        "INSERT*": clickhouse_ok(),
     },
 )
 ```
