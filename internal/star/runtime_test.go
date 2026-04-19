@@ -1021,6 +1021,9 @@ func TestRecipesInRepo(t *testing.T) {
 		{"../../recipes/postgres.star", "postgres", "deadlock"},
 		{"../../recipes/http.star", "http", "rate_limited"},
 		{"../../recipes/grpc.star", "grpc", "unavailable"},
+		{"../../recipes/nats.star", "nats", "slow_consumer"},
+		{"../../recipes/memcached.star", "memcached", "server_error"},
+		{"../../recipes/amqp.star", "amqp", "channel_error"},
 	}
 	for _, rf := range recipeFiles {
 		t.Run(rf.namespace, func(t *testing.T) {
@@ -1109,6 +1112,9 @@ func TestStdlibLoad_AllProtocols(t *testing.T) {
 		{"postgres", "deadlock"},
 		{"http", "rate_limited"},
 		{"grpc", "unavailable"},
+		{"nats", "slow_consumer"},
+		{"memcached", "server_error"},
+		{"amqp", "channel_error"},
 	}
 	for _, c := range cases {
 		t.Run(c.protocol, func(t *testing.T) {
