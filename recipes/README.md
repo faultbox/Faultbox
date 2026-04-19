@@ -35,7 +35,7 @@ One import per protocol, clean call sites, zero collisions.
 | MySQL | [mysql.star](mysql.star) | ✅ Shipped (v0.8.1) |
 | Kafka | [kafka.star](kafka.star) | ✅ Shipped (v0.8.1) |
 | Redis | [redis.star](redis.star) | ✅ Shipped (v0.8.1) |
-| Postgres | [postgres.star](postgres.star) | ✅ Shipped (v0.9.0) |
+| Postgres | [postgres.star](postgres.star) | ✅ Shipped (v0.8.2) |
 | HTTP | — | To be added |
 | gRPC | — | To be added |
 | NATS | — | To be added |

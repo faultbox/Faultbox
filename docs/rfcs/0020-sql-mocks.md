@@ -1,10 +1,22 @@
 # RFC-020: SQL Mock Services — Postgres & MySQL Stubs
 
-- **Status:** Accepted (2026-04-19)
-- **Target:** v0.9.0
+- **Status:** Withdrawn (2026-04-19)
+- **Target:** ~~v0.9.0~~ (withdrawn)
 - **Created:** 2026-04-19
+- **Withdrawn:** 2026-04-19
 - **Spun off from:** #31 (RFC-017 OQ4)
-- **Branch:** `epic/v0.9.0`
+
+## Why withdrawn
+
+The mock-service approach drifts from Faultbox's core premise — verifying **real systems** under real failure. A hand-rolled MySQL/Postgres wire-protocol stub with canned tables isn't a real system; it's a different product category (testcontainers + sqlmock / pgmock) we'd be worse at. Customers testing a DB-backed service against a mock DB aren't verifying DB behavior, they're verifying their own fixture.
+
+The valuable core — query-pattern-matched faults on a real DB — already ships in v0.8.1. The parts worth keeping (SQL canonicalizer on the match path, Postgres recipe backfill) migrated to **v0.8.2** as incremental sharpening of the existing real-DB fault-injection story.
+
+What survived from Phase 0: `@faultbox/recipes/postgres.star` — 10 canonical Postgres fault recipes (deadlock 40P01, lock_not_available 55P03, etc.). Shipped in v0.8.2.
+
+The original RFC body below is preserved as design history.
+
+---
 
 ## Summary
 
