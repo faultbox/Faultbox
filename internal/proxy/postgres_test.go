@@ -7,6 +7,43 @@ import (
 	"time"
 )
 
+// TestPostgresProxy_CheckRules_Probability is the Postgres twin of the
+// MySQL probability test. Prob is plumbed from Starlark via the shared
+// ProxyFaultDef.Probability field, so both proxies must honor it the
+// same way.
+func TestPostgresProxy_CheckRules_Probability(t *testing.T) {
+	p := newPostgresProxy(nil, "test-svc")
+	p.AddRule(Rule{
+		Query:  "SELECT *",
+		Action: ActionError,
+		Error:  "maybe",
+		Prob:   0.3,
+	})
+
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		client.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _ = io.Copy(io.Discard, client)
+	}()
+
+	const trials = 2000
+	hits := 0
+	for i := 0; i < trials; i++ {
+		if p.checkRules(server, "SELECT 1") {
+			hits++
+		}
+	}
+
+	rate := float64(hits) / float64(trials)
+	if rate < 0.20 || rate > 0.40 {
+		t.Fatalf("Prob=0.3 produced hit rate %.3f over %d trials — expected 0.20..0.40",
+			rate, trials)
+	}
+}
+
 // TestPostgresProxy_CheckRules_SQLCanonicalization is the Postgres twin of
 // TestMySQLProxy_CheckRules_SQLCanonicalization: same canonicalizer hits
 // the shared sqlmatch package, so the observable contract must be the same

@@ -77,6 +77,47 @@ func TestMySQLProxy_CheckRules_SQLCanonicalization(t *testing.T) {
 	}
 }
 
+// TestMySQLProxy_CheckRules_Probability verifies that Prob on a matching
+// rule gates the action — over 2000 trials at Prob=0.3, the observed
+// hit rate should fall within a loose ±10% band of the target.
+//
+// The test uses a matching query every time, so any miss is purely the
+// probability gate (not a canonicalization miss). A failure here would
+// indicate Prob is dropped somewhere in the plumbing — today it arrives
+// from Starlark via the ProxyFaultDef.Probability field.
+func TestMySQLProxy_CheckRules_Probability(t *testing.T) {
+	p := newMySQLProxy(nil, "test-svc")
+	p.AddRule(Rule{
+		Query:  "SELECT *",
+		Action: ActionError,
+		Error:  "maybe",
+		Prob:   0.3,
+	})
+
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		client.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _ = io.Copy(io.Discard, client)
+	}()
+
+	const trials = 2000
+	hits := 0
+	for i := 0; i < trials; i++ {
+		if p.checkRules(server, 0, "SELECT 1") {
+			hits++
+		}
+	}
+
+	rate := float64(hits) / float64(trials)
+	if rate < 0.20 || rate > 0.40 {
+		t.Fatalf("Prob=0.3 produced hit rate %.3f over %d trials — expected 0.20..0.40",
+			rate, trials)
+	}
+}
+
 // TestMySQLProxy_CheckRules_EmptyPatternMatchesAll verifies that a rule
 // with an empty Query pattern fires on every query — preserves prior
 // "no-query-filter = match-all" behavior after the canonicalizer refactor.
