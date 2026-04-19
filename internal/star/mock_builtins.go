@@ -275,6 +275,66 @@ func builtinDynamic(thread *starlark.Thread, fn *starlark.Builtin, args starlark
 	return newDynamicResponse(callable), nil
 }
 
+// grpc_response(body) — returns a gRPC response message. Body is a dict
+// (or list) that gets encoded as google.protobuf.Struct — the common
+// wire format for typeless gRPC mocks. Typed clients using reflection or
+// loose decoding (most Go / Node clients) accept this shape.
+func builtinGRPCResponse(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var body starlark.Value = starlark.None
+	if err := starlark.UnpackArgs("grpc_response", args, kwargs, "body?", &body); err != nil {
+		return nil, err
+	}
+	jsonBytes, err := marshalJSONBody(body)
+	if err != nil {
+		return nil, fmt.Errorf("grpc_response body: %w", err)
+	}
+	structBytes, err := protocol.JSONToGRPCStruct(jsonBytes)
+	if err != nil {
+		return nil, fmt.Errorf("grpc_response encode: %w", err)
+	}
+	return newStaticResponse(&protocol.MockResponse{
+		Status: 0, // OK
+		Body:   structBytes,
+	}), nil
+}
+
+// grpc_error(code, message) — returns a gRPC error response. code is a
+// gRPC canonical status code name (UPPERCASE, e.g. "UNAVAILABLE") or
+// the numeric value. message is the human-readable error string.
+func builtinGRPCError(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var (
+		codeVal starlark.Value
+		message string
+	)
+	if err := starlark.UnpackArgs("grpc_error", args, kwargs, "code", &codeVal, "message?", &message); err != nil {
+		return nil, err
+	}
+	var code int
+	switch v := codeVal.(type) {
+	case starlark.Int:
+		n, ok := v.Int64()
+		if !ok {
+			return nil, fmt.Errorf("grpc_error code out of range")
+		}
+		code = int(n)
+	case starlark.String:
+		n, ok := protocol.GRPCCodeByName(string(v))
+		if !ok {
+			return nil, fmt.Errorf("grpc_error: unknown code name %q (use one of OK, CANCELLED, UNKNOWN, INVALID_ARGUMENT, DEADLINE_EXCEEDED, NOT_FOUND, ALREADY_EXISTS, PERMISSION_DENIED, RESOURCE_EXHAUSTED, FAILED_PRECONDITION, ABORTED, OUT_OF_RANGE, UNIMPLEMENTED, INTERNAL, UNAVAILABLE, DATA_LOSS, UNAUTHENTICATED)", v)
+		}
+		code = n
+	default:
+		return nil, fmt.Errorf("grpc_error code must be int or string (got %s)", codeVal.Type())
+	}
+	if code == 0 {
+		return nil, fmt.Errorf("grpc_error code must be non-zero (0 = OK is not an error)")
+	}
+	return newStaticResponse(&protocol.MockResponse{
+		Status: code,
+		Body:   []byte(message),
+	}), nil
+}
+
 // headerDictToMap is a small helper that converts a Starlark dict (or nil)
 // into a Go string->string map, skipping entries that aren't string-typed.
 func headerDictToMap(d *starlark.Dict) map[string]string {

@@ -16,6 +16,11 @@ import (
 	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
 	mongoopts "go.mongodb.org/mongo-driver/v2/mongo/options"
 	"golang.org/x/net/http2"
+	grpcdial "google.golang.org/grpc"
+	grpccodes "google.golang.org/grpc/codes"
+	insecurecreds "google.golang.org/grpc/credentials/insecure"
+	grpcstatus "google.golang.org/grpc/status"
+	grpcstructpb "google.golang.org/protobuf/types/known/structpb"
 )
 
 // TestMockServiceSpecLoad verifies mock_service() parses and registers a
@@ -507,6 +512,68 @@ users_db = mongo.server(
 		t.Fatalf("results = %d, want 2", len(results))
 	}
 }
+
+// TestMockServiceGRPC verifies a mock_service declared with protocol grpc
+// stands up a grpc-go server and routes unary calls via routes={} +
+// grpc_response()/grpc_error(). Exercises the full runtime path.
+func TestMockServiceGRPC(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+flags = mock_service("flags",
+    interface("main", "grpc", %d),
+    routes = {
+        "/flags.v1.Flags/Get":  grpc_response(body = {"enabled": True, "variant": "B"}),
+        "/flags.v1.Flags/Fail": grpc_error(code = "UNAVAILABLE", message = "backend down"),
+    },
+)
+`, port)
+	if err := rt.LoadString("grpc_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := grpcdial.NewClient(addr, grpcdial.WithTransportCredentials(insecurecreds.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	var got grpcstructpb.Struct
+	if err := conn.Invoke(context.Background(), "/flags.v1.Flags/Get", &emptyGRPC{}, &got); err != nil {
+		t.Fatalf("Invoke Get: %v", err)
+	}
+	if v := got.Fields["variant"].GetStringValue(); v != "B" {
+		t.Errorf("variant = %q, want B", v)
+	}
+
+	err = conn.Invoke(context.Background(), "/flags.v1.Flags/Fail", &emptyGRPC{}, &got)
+	st, ok := grpcstatus.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %v", err)
+	}
+	if st.Code() != grpccodes.Unavailable {
+		t.Errorf("code = %s, want Unavailable", st.Code())
+	}
+}
+
+// emptyGRPC is a zero-byte proto used as the request message for Invoke
+// in TestMockServiceGRPC. Local to this file — the grpc mock doesn't
+// inspect request bodies in this test.
+type emptyGRPC struct{}
+
+func (*emptyGRPC) Reset()                   {}
+func (*emptyGRPC) String() string           { return "empty" }
+func (*emptyGRPC) ProtoMessage()            {}
+func (*emptyGRPC) Marshal() ([]byte, error) { return nil, nil }
+func (*emptyGRPC) Unmarshal([]byte) error   { return nil }
 
 // newTestH2CClient returns an HTTP client that speaks h2c. Local to this
 // file to avoid reaching into the protocol package's unexported helpers.
