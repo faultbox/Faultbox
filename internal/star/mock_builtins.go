@@ -31,6 +31,7 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 			Routes:  make(map[string][]MockRouteEntry),
 			Default: make(map[string]*MockResponseValue),
 			TLS:     make(map[string]bool),
+			Config:  make(map[string]map[string]any),
 		},
 	}
 
@@ -97,6 +98,24 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
 			}
 			svc.Mock.TLS[ifaceName] = bool(b)
+		case "config":
+			dict, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("mock_service() config must be a dict (got %s)", kv[1].Type())
+			}
+			ifaceName, err := singleInterfaceName(svc)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
+			}
+			native, err := starlarkToGo(dict)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q config: %w", name, err)
+			}
+			cfg, ok := native.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("mock_service() %q config must be a string-keyed dict", name)
+			}
+			svc.Mock.Config[ifaceName] = cfg
 		}
 	}
 

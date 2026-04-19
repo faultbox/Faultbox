@@ -1,7 +1,8 @@
 // Package faultbox is the module root. It exists primarily to host the
-// embedded standard recipe library, which gets compiled into the faultbox
-// binary so users' specs can load("@faultbox/recipes/<name>.star", ...)
-// without needing the Faultbox source tree locally.
+// embedded standard library — recipes (RFC-018, RFC-019) and mock service
+// constructors (RFC-017) — compiled into the faultbox binary so users'
+// specs can load("@faultbox/<area>/<name>.star", ...) without needing
+// the Faultbox source tree locally.
 //
 // The actual runtime, CLI, and protocol code lives under cmd/ and internal/;
 // this file only exposes the embedded FS.
@@ -9,12 +10,21 @@ package faultbox
 
 import "embed"
 
-// Recipes is the embedded standard recipe library. Each file is a Starlark
-// module that exports a single namespace struct (see RFC-018 for the
-// pattern and RFC-019 for the distribution convention).
+// Stdlib is the embedded standard library. It contains:
+//
+//   - recipes/<protocol>.star — curated fault recipes (RFC-018)
+//   - mocks/<protocol>.star — mock service constructors (RFC-017)
 //
 // Access is mediated by the runtime's load() resolver: specs reference
-// recipes as "@faultbox/recipes/<protocol>.star", not by raw path.
+// stdlib modules as "@faultbox/<area>/<name>.star", not by raw path.
 //
-//go:embed recipes/*.star recipes/README.md
-var Recipes embed.FS
+// The variable is named Stdlib; the legacy Recipes alias is retained for
+// call sites that predate the mock library and will be removed once those
+// are updated.
+//
+//go:embed recipes/*.star recipes/README.md mocks/*.star
+var Stdlib embed.FS
+
+// Recipes is a backward-compatible alias for Stdlib. Same FS, same paths.
+// New code should use Stdlib.
+var Recipes = Stdlib
