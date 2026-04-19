@@ -58,7 +58,7 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 			}
 		}(ifaceName, addr)
 
-		if err := waitMockReady(ctx, addr, 3*time.Second); err != nil {
+		if err := waitMockReady(ctx, iface.Protocol, addr, 3*time.Second); err != nil {
 			svcCancel()
 			wg.Wait()
 			return fmt.Errorf("mock %q interface %q not ready: %w", svcName, ifaceName, err)
@@ -157,23 +157,45 @@ func (rt *Runtime) mockEmitter(svcName, ifaceName string) protocol.MockEmitter {
 	}
 }
 
-// waitMockReady TCP-probes addr until the listener accepts or the deadline
-// passes. Mirrors the healthcheck pattern used elsewhere in the runtime.
-func waitMockReady(ctx context.Context, addr string, timeout time.Duration) error {
+// waitMockReady probes addr until the listener is bound or the deadline
+// passes. TCP-based protocols (tcp, http, http2) use a dial probe; UDP is
+// probed by trying to re-bind the same port — if the bind fails with
+// EADDRINUSE, the mock has claimed it. Unknown protocols fall back to TCP
+// (safest default; fails fast if wrong).
+func waitMockReady(ctx context.Context, proto, addr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
-		if err == nil {
-			conn.Close()
+		if mockListenerUp(proto, addr) {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(25 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("listener on %s not ready after %s", addr, timeout)
+	return fmt.Errorf("listener on %s (proto=%s) not ready after %s", addr, proto, timeout)
+}
+
+func mockListenerUp(proto, addr string) bool {
+	switch proto {
+	case "udp":
+		// Attempt to bind the same port — success means nothing is listening,
+		// failure means the mock has the port.
+		pc, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return true
+		}
+		pc.Close()
+		return false
+	default:
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return true
+		}
+		return false
+	}
 }
 
 // mockDoneChan adapts a struct{} completion channel to the *engine.Result

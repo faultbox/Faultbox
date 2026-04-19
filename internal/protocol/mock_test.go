@@ -369,6 +369,155 @@ func TestHTTP2MockDynamicHandler(t *testing.T) {
 	}
 }
 
+// TestTCPMockLineFramed verifies byte-prefix matching on line-framed input.
+func TestTCPMockLineFramed(t *testing.T) {
+	p := &tcpProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Routes: []MockRoute{
+			{Pattern: "PING\n", Response: &MockResponse{Body: []byte("PONG\n")}},
+			{Pattern: "VERSION", Response: &MockResponse{Body: []byte("2.0.0\n")}},
+		},
+		Default: &MockResponse{Body: []byte("ERR unknown\n")},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- p.ServeMock(ctx, addr, spec, nil) }()
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("mock not listening: %v", err)
+	}
+
+	cases := []struct {
+		send, want string
+	}{
+		{"PING\n", "PONG\n"},
+		{"VERSION\n", "2.0.0\n"},
+		{"BOGUS\n", "ERR unknown\n"},
+	}
+	for _, tc := range cases {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err != nil {
+			t.Fatalf("dial %q: %v", tc.send, err)
+		}
+		_, _ = conn.Write([]byte(tc.send))
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 64)
+		n, _ := conn.Read(buf)
+		conn.Close()
+		if string(buf[:n]) != tc.want {
+			t.Errorf("send %q: got %q, want %q", tc.send, buf[:n], tc.want)
+		}
+	}
+
+	cancel()
+	select {
+	case <-serveErr:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not shut down in time")
+	}
+}
+
+// TestTCPMockDynamicHandler exercises the dynamic path for TCP.
+func TestTCPMockDynamicHandler(t *testing.T) {
+	p := &tcpProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Routes: []MockRoute{{
+			Pattern: "ECHO ",
+			Dynamic: func(req MockRequest) (*MockResponse, error) {
+				// Reflect the body back, prefixed with ACK.
+				return &MockResponse{Body: append([]byte("ACK "), req.Body...)}, nil
+			},
+		}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.ServeMock(ctx, addr, spec, nil)
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("mock not listening: %v", err)
+	}
+
+	conn, _ := net.DialTimeout("tcp", addr, time.Second)
+	_, _ = conn.Write([]byte("ECHO hello\n"))
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 64)
+	n, _ := conn.Read(buf)
+	conn.Close()
+	if string(buf[:n]) != "ACK ECHO hello\n" {
+		t.Fatalf("echo response = %q", buf[:n])
+	}
+}
+
+// TestUDPMockSwallowAndRecord verifies the StatsD pattern: no routes, no
+// response, every datagram emitted as an event.
+func TestUDPMockSwallowAndRecord(t *testing.T) {
+	p := &udpProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	emitted := &recordedEmits{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.ServeMock(ctx, addr, MockSpec{}, emitted.emit)
+
+	// Brief wait for listen.
+	time.Sleep(50 * time.Millisecond)
+
+	conn, err := net.Dial("udp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		_, _ = conn.Write([]byte(fmt.Sprintf("metric:%d|c", i)))
+	}
+	conn.Close()
+
+	// Let the goroutine catch up.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if emitted.count() >= 3 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if got := emitted.count(); got < 3 {
+		t.Fatalf("emitter called %d times, want >=3", got)
+	}
+}
+
+// TestUDPMockPrefixResponse verifies prefix matching + response write-back.
+func TestUDPMockPrefixResponse(t *testing.T) {
+	p := &udpProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Routes: []MockRoute{
+			{Pattern: "PING", Response: &MockResponse{Body: []byte("PONG")}},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.ServeMock(ctx, addr, spec, nil)
+	time.Sleep(50 * time.Millisecond)
+
+	conn, _ := net.Dial("udp", addr)
+	defer conn.Close()
+	_, _ = conn.Write([]byte("PING\n"))
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 64)
+	n, _ := conn.Read(buf)
+	if string(buf[:n]) != "PONG" {
+		t.Fatalf("response = %q, want PONG", buf[:n])
+	}
+}
+
 // --- test helpers ---
 
 type recordedEmits struct {
