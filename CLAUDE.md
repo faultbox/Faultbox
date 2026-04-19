@@ -106,7 +106,8 @@ faultbox/
 | `internal/star` | Starlark runtime, all builtins, event log, service lifecycle, container reuse, `@faultbox/` stdlib resolver | `runtime.go`, `builtins.go`, `types.go` |
 | `internal/container` | Docker client, network, container launch, Unix socket fd passing (SCM_RIGHTS) | `docker.go`, `launch.go`, `fd_linux.go` |
 | `internal/protocol` | Protocol plugins — 13 total: http, http2, tcp, udp, postgres, mysql, redis, kafka, nats, grpc, mongodb, cassandra, clickhouse | `protocol.go`, `http.go`, `http2.go`, `mongodb.go` |
-| `internal/proxy` | Transparent proxy for protocol-level fault injection | `proxy.go`, `http.go`, `http2.go`, `mongodb.go`, `cassandra.go`, `clickhouse.go`, `udp.go` |
+| `internal/proxy` | Transparent proxy for protocol-level fault injection | `proxy.go`, `http.go`, `http2.go`, `mongodb.go`, `cassandra.go`, `clickhouse.go`, `udp.go`, `mysql.go`, `postgres.go` |
+| `internal/proxy/sqlmatch` | SQL-aware rule canonicalizer (case, whitespace, `?`/`$N` placeholder normalization) shared by MySQL + Postgres proxies | `sqlmatch.go` |
 | `recipes/` | Embedded stdlib — curated failure wrappers per RFC-018/019. Loaded via `load("@faultbox/recipes/<name>.star", ...)`. Shipped recipes: mongodb, http2, udp, cassandra, clickhouse. | `mongodb.star`, `cassandra.star`, etc. |
 | `internal/eventsource` | Event source plugins (stdout, wal_stream, topic, tail, poll) | `eventsource.go`, `stdout.go`, `walstream.go` |
 | `internal/generate` | Failure scenario generator (topology analysis → mutations) | `analyzer.go`, `matrix.go`, `codegen.go` |

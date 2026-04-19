@@ -63,7 +63,7 @@ coexist naturally:
 
 ```python
 load("@faultbox/recipes/mongodb.star",  "mongodb")
-load("@faultbox/recipes/postgres.star", "postgres")  # when shipped
+load("@faultbox/recipes/postgres.star", "postgres")
 
 rules = [
     mongodb.disk_full(collection = "orders"),
@@ -86,6 +86,7 @@ Available stdlib recipes (load via @faultbox/recipes/<name>.star):
   kafka
   mongodb
   mysql
+  postgres
   redis
   udp
 
@@ -201,6 +202,21 @@ the recipe injects at the proxy level.
 | `redis.wrongtype(key="*")` | "WRONGTYPE Operation against a key holding the wrong kind of value" |
 | `redis.slow_command(duration="3s", key="*")` | Delays every command — tests pool timeout cascade |
 | `redis.connection_drop(key="*")` | Connection close mid-command — pool reconnect path |
+
+### `@faultbox/recipes/postgres.star`
+
+| Recipe | What it simulates |
+|---|---|
+| `postgres.deadlock(query="*")` | SQLSTATE 40P01 — deadlock detected; victim transaction aborted. Triggers retry or crash in no-retry paths. |
+| `postgres.lock_not_available(query="*")` | SQLSTATE 55P03 — `lock_timeout` / `statement_timeout` canceled statement |
+| `postgres.serialization_failure(query="*")` | SQLSTATE 40001 — concurrent update invalidated snapshot; SERIALIZABLE / REPEATABLE READ only |
+| `postgres.too_many_connections()` | SQLSTATE 53300 — `max_connections` saturated; surfaces pool-init error-swallowing bugs |
+| `postgres.read_only_transaction(query="INSERT*")` | SQLSTATE 25006 — writes routed to a hot-standby / read-replica |
+| `postgres.disk_full(query="INSERT*")` | SQLSTATE 53100 — "No space left on device" during file extension |
+| `postgres.admin_shutdown(query="*")` | SQLSTATE 57P01 — server shutting down; pools must evict rather than retry |
+| `postgres.connection_failure(query="*")` | Drop connection mid-query — drivers surface SQLSTATE 08006 |
+| `postgres.slow_query(duration="3s", query="*")` | Delays any statement — tests `statement_timeout` + context deadlines |
+| `postgres.slow_writes(duration="3s", query="INSERT*")` | Delays writes only |
 
 ## User-authored recipes
 

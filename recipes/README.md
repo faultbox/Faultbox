@@ -35,7 +35,7 @@ One import per protocol, clean call sites, zero collisions.
 | MySQL | [mysql.star](mysql.star) | ✅ Shipped (v0.8.1) |
 | Kafka | [kafka.star](kafka.star) | ✅ Shipped (v0.8.1) |
 | Redis | [redis.star](redis.star) | ✅ Shipped (v0.8.1) |
-| Postgres | — | To be added |
+| Postgres | [postgres.star](postgres.star) | ✅ Shipped (v0.8.2) |
 | HTTP | — | To be added |
 | gRPC | — | To be added |
 | NATS | — | To be added |
@@ -54,6 +54,7 @@ One import per protocol, clean call sites, zero collisions.
 | MySQL | `too_many_connections`, `disk_full` | `lock_wait_timeout`, `gone_away`, `slow_query`, `slow_writes` | `read_only_replica` | `deadlock` | — | — |
 | Kafka | `broker_overloaded`, `message_too_large` | `rebalancing`, `slow_produce`, `connection_drop`, `coordinator_not_available` | `not_leader_for_partition`, `offset_out_of_range` | — | — | — |
 | Redis | `oom` | `loading`, `busy`, `slow_command`, `connection_drop` | `cluster_down`, `readonly_replica` | `wrongtype` | `noauth` | — |
+| Postgres | `too_many_connections`, `disk_full` | `lock_not_available`, `admin_shutdown`, `connection_failure`, `slow_query`, `slow_writes` | `serialization_failure`, `read_only_transaction` | `deadlock` | — | — |
 
 ## Contributing
 

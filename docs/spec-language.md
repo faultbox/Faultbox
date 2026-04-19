@@ -1263,8 +1263,8 @@ duplicate(topic="orders.events")                     # Kafka/NATS
 |----------|----------|---------------|
 | `http` | `method=`, `path=` | response, error, delay, drop |
 | `http2` | `method=`, `path=` | response, error, delay, drop |
-| `postgres` | `query=` | error, delay, drop |
-| `mysql` | `query=` | error, delay, drop |
+| `postgres` | `query=` (SQL-aware canonicalized match) | error, delay, drop |
+| `mysql` | `query=` (SQL-aware canonicalized match) | error, delay, drop |
 | `redis` | `command=`, `key=` | error, response, delay, drop |
 | `grpc` | `method=` | error, delay, drop |
 | `kafka` | `topic=` | drop, delay, error, duplicate |
@@ -1275,6 +1275,36 @@ duplicate(topic="orders.events")                     # Kafka/NATS
 | `amqp` | `topic=` (routing key) | drop, delay, error |
 | `nats` | `topic=` (subject) | drop, delay |
 | `memcached` | `command=`, `key=` | error, response, delay, drop |
+
+### SQL query matching (v0.8.2+)
+
+For the `postgres` and `mysql` proxies, `query=` patterns match incoming
+SQL after both sides are run through a canonicalizer. This frees rule
+authors from guessing exactly how a driver or ORM will format the query
+on the wire:
+
+- Case is folded (keywords lowercased; string-literal contents preserved).
+- Whitespace runs collapse to single spaces; leading/trailing whitespace
+  and trailing `;` are stripped.
+- `?` and `$1`/`$2`/`$N` placeholders normalize to a shared `$?` marker,
+  so a rule written with MySQL-style `?` matches a Postgres-style `$1`
+  query and vice versa.
+- `=`, `<`, `>`, `!=`, `<>`, `<=`, `>=`, `,`, `(`, `)` get space-padded
+  so tight driver output (`"id=$1"`) matches user-written patterns
+  (`"id = ?"`).
+- Trailing `*` in the pattern remains a glob suffix (`INSERT*`).
+
+A single rule pattern therefore matches every reasonable shape a driver
+might emit:
+
+```python
+# This rule fires on every variant below:
+rules = [mysql.deadlock(query = "UPDATE users SET role = ? WHERE id = ?")]
+
+# ✓ "UPDATE users SET role = ? WHERE id = ?"
+# ✓ "update users set role=$1 where id=$2"
+# ✓ "UPDATE  users  SET role=$1 WHERE id=$2;"
+```
 
 ### Trace events
 
