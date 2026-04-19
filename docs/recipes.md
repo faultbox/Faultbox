@@ -63,7 +63,7 @@ coexist naturally:
 
 ```python
 load("@faultbox/recipes/mongodb.star",  "mongodb")
-load("@faultbox/recipes/postgres.star", "postgres")  # when shipped
+load("@faultbox/recipes/postgres.star", "postgres")
 
 rules = [
     mongodb.disk_full(collection = "orders"),
