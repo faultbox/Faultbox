@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	mongoopts "go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // TestHTTPMockStaticRoutes verifies that the HTTP MockHandler matches
@@ -592,6 +595,163 @@ func waitKafkaMockReady(addr string, timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("kafka mock not answering at %s", addr)
+}
+
+// TestRedisMockBasic verifies the Redis mock stands up via miniredis and a
+// real redis client (raw RESP over TCP for minimal deps) can GET + SET +
+// INCR + read seeded state.
+func TestRedisMockBasic(t *testing.T) {
+	p := &redisProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Config: map[string]any{
+			"state": map[string]any{
+				"config:timeout": "5000",
+				"flag:new_ui":    "true",
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.ServeMock(ctx, addr, spec, nil)
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("redis mock not listening: %v", err)
+	}
+
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	// Seeded GET
+	if got := redisRoundtrip(t, conn, "GET", "config:timeout"); got != "5000" {
+		t.Errorf("GET config:timeout = %q, want 5000", got)
+	}
+	// SET + GET
+	if got := redisRoundtrip(t, conn, "SET", "k", "v"); got != "OK" {
+		t.Errorf("SET = %q", got)
+	}
+	if got := redisRoundtrip(t, conn, "GET", "k"); got != "v" {
+		t.Errorf("GET k = %q, want v", got)
+	}
+	// INCR
+	if got := redisRoundtrip(t, conn, "INCR", "counter"); got != "1" {
+		t.Errorf("INCR counter = %q, want 1", got)
+	}
+	if got := redisRoundtrip(t, conn, "INCR", "counter"); got != "2" {
+		t.Errorf("INCR counter (2) = %q, want 2", got)
+	}
+}
+
+// redisRoundtrip sends an inline Redis command and reads one RESP reply.
+// Strips type markers (+, :, $) and returns the raw payload. Minimal
+// parser — sufficient for the string-cache test surface.
+func redisRoundtrip(t *testing.T, conn net.Conn, args ...string) string {
+	t.Helper()
+	// Build a RESP array of bulk strings.
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "*%d\r\n", len(args))
+	for _, a := range args {
+		fmt.Fprintf(&sb, "$%d\r\n%s\r\n", len(a), a)
+	}
+	if _, err := conn.Write([]byte(sb.String())); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	buf := make([]byte, 256)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	resp := string(buf[:n])
+	resp = strings.TrimRight(resp, "\r\n")
+	// Trim the RESP type byte and, for bulk strings, the length line.
+	switch {
+	case strings.HasPrefix(resp, "+"):
+		return resp[1:]
+	case strings.HasPrefix(resp, ":"):
+		return resp[1:]
+	case strings.HasPrefix(resp, "$"):
+		lines := strings.SplitN(resp, "\r\n", 2)
+		if len(lines) == 2 {
+			return lines[1]
+		}
+		return resp
+	case strings.HasPrefix(resp, "-"):
+		return "ERR:" + resp[1:]
+	default:
+		return resp
+	}
+}
+
+// TestMongoMockHandshakeAndFind verifies the MongoDB mock completes the
+// driver handshake and returns seeded documents via a raw OP_MSG round-trip.
+func TestMongoMockHandshakeAndFind(t *testing.T) {
+	p := &mongoProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Config: map[string]any{
+			"collections": map[string]any{
+				"users": []any{
+					map[string]any{"_id": "1", "name": "alice"},
+					map[string]any{"_id": "2", "name": "bob"},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.ServeMock(ctx, addr, spec, nil)
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("mongo mock not listening: %v", err)
+	}
+
+	// Use the real mongo driver to verify end-to-end wire compatibility.
+	clientOpts := mongoopts.Client().
+		ApplyURI("mongodb://" + addr).
+		SetServerSelectionTimeout(3 * time.Second).
+		SetConnectTimeout(3 * time.Second)
+	client, err := mongo.Connect(clientOpts)
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	defer client.Disconnect(context.Background())
+
+	cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ccancel()
+
+	// Ping exercises the handshake path.
+	if err := client.Ping(cctx, nil); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+
+	// Find on a seeded collection.
+	cur, err := client.Database("mock").Collection("users").Find(cctx, bson.M{})
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	var results []bson.M
+	if err := cur.All(cctx, &results); err != nil {
+		t.Fatalf("cursor.All: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2 (%+v)", len(results), results)
+	}
+	names := map[string]bool{}
+	for _, r := range results {
+		if n, ok := r["name"].(string); ok {
+			names[n] = true
+		}
+	}
+	if !names["alice"] || !names["bob"] {
+		t.Errorf("expected alice+bob, got %v", names)
+	}
 }
 
 // --- test helpers ---
