@@ -81,3 +81,20 @@ func TestLaunchConfigValidation(t *testing.T) {
 		t.Fatalf("expected 1 port, got %d", len(cfg.Ports))
 	}
 }
+
+// TestLaunchConfigNoSeccompField is a compile-time guarantee that the
+// NoSeccomp field exists on LaunchConfig. v0.8.5 added it as a
+// workaround for multi-process container entrypoints where the
+// seccomp shim handoff hangs out the 3-minute test deadline; the
+// runtime passes through `svc.NoSeccomp` sourced from `seccomp=False`
+// in the Starlark spec.
+func TestLaunchConfigNoSeccompField(t *testing.T) {
+	cfg := LaunchConfig{
+		Name:      "mysql",
+		Image:     "mysql:8",
+		NoSeccomp: true,
+	}
+	if !cfg.NoSeccomp {
+		t.Fatal("NoSeccomp should round-trip through struct literal")
+	}
+}

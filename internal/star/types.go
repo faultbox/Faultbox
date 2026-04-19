@@ -60,6 +60,14 @@ type ServiceDef struct {
 	Seed  starlark.Callable  // initialize service state (runs once after healthcheck)
 	Reset starlark.Callable  // re-initialize between tests (defaults to Seed if nil)
 
+	// NoSeccomp opts out of seccomp-notify / syscall interception for this
+	// service. Set via `seccomp = False` in the Starlark spec. Proxy-level
+	// faults (HTTP/SQL/Redis/etc. via the transparent proxy) still apply;
+	// syscall-level fault() rules on this service are silently skipped.
+	// Useful for multi-process container entrypoints (MySQL 8's mysqld_safe
+	// wrapper, certain JVM images) where seccomp acquisition can hang.
+	NoSeccomp bool
+
 	// Mock service support (RFC-017). When non-nil, this ServiceDef is a
 	// mock: the runtime starts an in-process protocol handler instead of
 	// launching a binary or container.

@@ -571,6 +571,75 @@ api = service("api",
 	}
 }
 
+// TestServiceSeccompKwarg verifies the seccomp=False opt-out introduced
+// in v0.8.5 as a workaround for multi-process container entrypoints
+// (MySQL 8's mysqld_safe wrapper, certain JVM images) where shim
+// handoff hangs out the test deadline.
+func TestServiceSeccompKwarg(t *testing.T) {
+	// Default: seccomp is ON (NoSeccomp defaults to false).
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db",
+    interface("main", "mysql", 3306),
+    image = "mysql:8",
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	db := rt.Services()[0]
+	if db.NoSeccomp {
+		t.Fatal("default: NoSeccomp should be false")
+	}
+
+	// seccomp=False: opt out.
+	rt2 := New(testLogger())
+	err = rt2.LoadString("test.star", `
+db = service("db",
+    interface("main", "mysql", 3306),
+    image = "mysql:8",
+    seccomp = False,
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString with seccomp=False: %v", err)
+	}
+	db2 := rt2.Services()[0]
+	if !db2.NoSeccomp {
+		t.Fatal("seccomp=False: NoSeccomp should be true")
+	}
+
+	// seccomp=True: explicitly on (same as default).
+	rt3 := New(testLogger())
+	err = rt3.LoadString("test.star", `
+db = service("db",
+    interface("main", "mysql", 3306),
+    image = "mysql:8",
+    seccomp = True,
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString with seccomp=True: %v", err)
+	}
+	db3 := rt3.Services()[0]
+	if db3.NoSeccomp {
+		t.Fatal("seccomp=True: NoSeccomp should be false")
+	}
+
+	// seccomp with non-bool value: error.
+	rt4 := New(testLogger())
+	err = rt4.LoadString("test.star", `
+db = service("db",
+    interface("main", "mysql", 3306),
+    image = "mysql:8",
+    seccomp = "no",
+)
+`)
+	if err == nil {
+		t.Fatal("expected error for seccomp with non-bool value")
+	}
+}
+
 func TestServiceValidationExactlyOneSource(t *testing.T) {
 	rt := New(testLogger())
 
