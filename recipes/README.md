@@ -38,9 +38,11 @@ One import per protocol, clean call sites, zero collisions.
 | Postgres | [postgres.star](postgres.star) | ✅ Shipped (v0.8.2) |
 | HTTP | [http.star](http.star) | ✅ Shipped (v0.8.3) |
 | gRPC | [grpc.star](grpc.star) | ✅ Shipped (v0.8.3) |
-| NATS | — | To be added |
-| Memcached | — | To be added |
-| AMQP | — | To be added |
+| NATS | [nats.star](nats.star) | ✅ Shipped (v0.8.4) |
+| Memcached | [memcached.star](memcached.star) | ✅ Shipped (v0.8.4) |
+| AMQP | [amqp.star](amqp.star) | ✅ Shipped (v0.8.4) |
+
+All 15 protocols now have stdlib recipe coverage.
 
 ## Coverage matrix
 
@@ -57,6 +59,9 @@ One import per protocol, clean call sites, zero collisions.
 | Postgres | `too_many_connections`, `disk_full` | `lock_not_available`, `admin_shutdown`, `connection_failure`, `slow_query`, `slow_writes` | `serialization_failure`, `read_only_transaction` | `deadlock` | — | — |
 | HTTP | `rate_limited`, `service_unavailable` | `slow_endpoint`, `gateway_timeout`, `connection_drop`, `maintenance_window` | — | — | `unauthorized`, `forbidden` | `flaky`, `server_error` |
 | gRPC | `resource_exhausted` | `unavailable`, `deadline_exceeded`, `slow_method`, `connection_drop` | `aborted`, `not_found` | — | `unauthenticated`, `permission_denied` | `internal` |
+| NATS | `max_payload` | `slow_consumer`, `no_responders`, `slow_delivery`, `connection_drop`, `stale_connection` | — | — | `authorization_violation`, `permissions_violation` | — |
+| Memcached | `server_error`, `item_too_large` | `busy`, `slow_command`, `connection_drop` | `exists`, `not_stored` | `client_error` | — | — |
+| AMQP | `broker_unavailable`, `publish_nack` | `slow_publish`, `connection_drop` | `resource_locked`, `precondition_failed` | `channel_error`, `connection_error` | `access_refused` | — |
 
 ## Contributing
 

@@ -80,14 +80,17 @@ Browse the catalog from the command line, no source checkout needed:
 ```
 $ faultbox recipes list
 Available stdlib recipes (load via @faultbox/recipes/<name>.star):
+  amqp
   cassandra
   clickhouse
   grpc
   http
   http2
   kafka
+  memcached
   mongodb
   mysql
+  nats
   postgres
   redis
   udp
@@ -251,6 +254,46 @@ HTTP/1.x twin of `@faultbox/recipes/http2.star` — same status-code semantics, 
 | `grpc.aborted(method="*")` | Code 10 (ABORTED) — transactional/optimistic-concurrency conflict |
 | `grpc.slow_method(method="*", duration="3s")` | Delays RPC response — tests client deadline propagation |
 | `grpc.connection_drop(method="*")` | TCP close mid-call — resolver + subchannel reconnect paths |
+
+### `@faultbox/recipes/nats.star`
+
+| Recipe | What it simulates |
+|---|---|
+| `nats.slow_consumer(subject=">")` | "Slow Consumer Detected" — server dropped messages the subscriber couldn't drain |
+| `nats.no_responders(subject=">")` | "503 No Responders" — request-reply sent to a subject with zero subscribers |
+| `nats.max_payload(subject=">")` | "Maximum Payload Exceeded" — publish larger than `max_payload` |
+| `nats.authorization_violation(subject=">")` | Authorization violation — credential/account-level denial |
+| `nats.permissions_violation(subject=">")` | Permissions violation — subject-level denial |
+| `nats.stale_connection(subject=">")` | "Stale Connection" — server-side keep-alive failure; forces reconnect |
+| `nats.slow_delivery(duration="3s", subject=">")` | Delays message delivery — consumer processing deadlines |
+| `nats.connection_drop(subject=">")` | TCP close mid-stream — server-list failover test |
+
+### `@faultbox/recipes/memcached.star`
+
+| Recipe | What it simulates |
+|---|---|
+| `memcached.server_error(command="*", key="*")` | `SERVER_ERROR out of memory` — classic under-provisioned cache |
+| `memcached.client_error(command="*", key="*")` | `CLIENT_ERROR` — protocol error (non-retryable) |
+| `memcached.not_stored(command="add", key="*")` | `NOT_STORED` — add-finds-existing or replace-finds-missing |
+| `memcached.exists(command="cas", key="*")` | `EXISTS` — stale CAS token; optimistic-concurrency retry path |
+| `memcached.item_too_large(command="set", key="*")` | `SERVER_ERROR object too large` — `-I`/`item_size_max` exceeded |
+| `memcached.busy(command="*", key="*")` | `SERVER_ERROR busy` — slab reassignment / LRU maintenance |
+| `memcached.slow_command(duration="3s", command="*", key="*")` | Delays every command — read-timeout tests |
+| `memcached.connection_drop(command="*", key="*")` | TCP close mid-command — pool evict + reconnect backoff |
+
+### `@faultbox/recipes/amqp.star`
+
+| Recipe | What it simulates |
+|---|---|
+| `amqp.channel_error(routing_key="#")` | Channel-level soft error — channel closed, connection alive |
+| `amqp.connection_error(routing_key="#")` | `CONNECTION_FORCED` — hard error, full reconnect + redeclare |
+| `amqp.resource_locked(routing_key="#")` | `RESOURCE_LOCKED` — exclusive-consumer contention |
+| `amqp.access_refused(routing_key="#")` | `ACCESS_REFUSED` — vhost or exchange-level permission denial |
+| `amqp.precondition_failed(routing_key="#")` | `PRECONDITION_FAILED` — queue redeclared with different args |
+| `amqp.publish_nack(routing_key="#")` | Publisher-confirm nack — broker refused the publish |
+| `amqp.broker_unavailable(routing_key="#")` | Broker unreachable — rolling restart / cluster failover |
+| `amqp.slow_publish(duration="3s", routing_key="#")` | Delays publishes — confirm-deadline + back-pressure tests |
+| `amqp.connection_drop(routing_key="#")` | TCP close mid-frame — reconnect + topology-redeclare path |
 
 ## User-authored recipes
 
