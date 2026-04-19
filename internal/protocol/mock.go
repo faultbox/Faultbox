@@ -1,6 +1,9 @@
 package protocol
 
-import "context"
+import (
+	"context"
+	"crypto/tls"
+)
 
 // MockHandler is an optional capability on a Protocol plugin. Protocols that
 // support mock_service() implement it; others do not and mock_service()
@@ -22,10 +25,16 @@ type MockHandler interface {
 // seed state, MongoDB collections) that doesn't fit the route-table shape.
 // Opaque to the generic mock_service() builtin; interpreted by protocol
 // plugins. Keys are documented per protocol in the @faultbox/mocks/ stdlib.
+//
+// TLSCert, when non-nil, instructs the handler to wrap its listener with
+// TLS using this certificate. Applies to HTTP, HTTP/2, and gRPC mocks.
+// Other protocols MAY ignore it (or return an error if the caller asked
+// for TLS on a non-TLS-capable protocol).
 type MockSpec struct {
 	Routes  []MockRoute
 	Default *MockResponse
 	Config  map[string]any
+	TLSCert *tls.Certificate
 }
 
 // MockRoute pairs a pattern with a handler. Pattern matching is

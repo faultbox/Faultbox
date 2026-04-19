@@ -44,6 +44,26 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 			return fmt.Errorf("mock %q interface %q: %w", svcName, ifaceName, err)
 		}
 
+		// If tls=True was requested on this interface, generate a leaf
+		// cert signed by the runtime's shared mock CA and attach it to
+		// the spec. The protocol handler wraps its listener with TLS.
+		if svc.Mock.TLS[ifaceName] {
+			mt, err := rt.getMockTLS()
+			if err != nil {
+				svcCancel()
+				return fmt.Errorf("mock %q interface %q: tls init: %w", svcName, ifaceName, err)
+			}
+			cert, err := mt.serverCert(
+				[]string{"localhost", svcName},
+				[]net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+			)
+			if err != nil {
+				svcCancel()
+				return fmt.Errorf("mock %q interface %q: tls cert: %w", svcName, ifaceName, err)
+			}
+			spec.TLSCert = cert
+		}
+
 		addr := fmt.Sprintf("127.0.0.1:%d", iface.Port)
 		emit := rt.mockEmitter(svcName, ifaceName)
 

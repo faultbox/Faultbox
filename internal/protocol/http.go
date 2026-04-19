@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -119,6 +120,9 @@ func (p *httpProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("mock listen %s: %w", addr, err)
+	}
+	if spec.TLSCert != nil {
+		ln = tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{*spec.TLSCert}})
 	}
 
 	mux := &mockHTTPMux{routes: spec.Routes, def: spec.Default, emit: emit}

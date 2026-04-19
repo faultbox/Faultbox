@@ -3,10 +3,12 @@ package star
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"golang.org/x/net/http2"
 	grpcdial "google.golang.org/grpc"
 	grpccodes "google.golang.org/grpc/codes"
+	grpccreds "google.golang.org/grpc/credentials"
 	insecurecreds "google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
 	grpcstructpb "google.golang.org/protobuf/types/known/structpb"
@@ -574,6 +577,124 @@ func (*emptyGRPC) String() string           { return "empty" }
 func (*emptyGRPC) ProtoMessage()            {}
 func (*emptyGRPC) Marshal() ([]byte, error) { return nil, nil }
 func (*emptyGRPC) Unmarshal([]byte) error   { return nil }
+
+// TestMockServiceHTTPWithTLS verifies that tls=True on an HTTP mock results
+// in a real TLS listener, and that a client configured to trust the
+// runtime's mock CA can reach it over HTTPS.
+func TestMockServiceHTTPWithTLS(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+auth = mock_service("auth",
+    interface("http", "http", %d),
+    tls = True,
+    routes = {
+        "GET /.well-known/jwks": json_response(status = 200, body = {"keys": [{"kid": "test-1"}]}),
+    },
+)
+`, port)
+	if err := rt.LoadString("tls_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	caPath := rt.MockCAPath()
+	if caPath == "" {
+		t.Fatal("MockCAPath() is empty after starting a tls=True mock")
+	}
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatalf("read ca: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		t.Fatal("AppendCertsFromPEM: parse failed")
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+		Timeout: 3 * time.Second,
+	}
+	resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/.well-known/jwks", port))
+	if err != nil {
+		t.Fatalf("GET https: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `"kid":"test-1"`) {
+		t.Fatalf("body = %q", string(body))
+	}
+
+	// A client that doesn't trust the CA should fail handshake.
+	strict := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{}},
+		Timeout:   3 * time.Second,
+	}
+	_, err = strict.Get(fmt.Sprintf("https://127.0.0.1:%d/.well-known/jwks", port))
+	if err == nil {
+		t.Fatal("expected strict client to fail TLS verification; got nil")
+	}
+}
+
+// TestMockServiceGRPCWithTLS verifies that tls=True on a gRPC mock
+// terminates TLS before the gRPC handshake and a CA-trusting client
+// completes the Invoke round-trip.
+func TestMockServiceGRPCWithTLS(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+flags = mock_service("flags",
+    interface("main", "grpc", %d),
+    tls = True,
+    routes = {
+        "/flags.v1.Flags/Get": grpc_response(body = {"enabled": True}),
+    },
+)
+`, port)
+	if err := rt.LoadString("grpc_tls.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	caPEM, err := os.ReadFile(rt.MockCAPath())
+	if err != nil {
+		t.Fatalf("read ca: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caPEM)
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := grpcdial.NewClient(addr, grpcdial.WithTransportCredentials(
+		grpccreds.NewTLS(&tls.Config{RootCAs: pool, ServerName: "localhost"}),
+	))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	var got grpcstructpb.Struct
+	if err := conn.Invoke(ctx, "/flags.v1.Flags/Get", &emptyGRPC{}, &got); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if !got.Fields["enabled"].GetBoolValue() {
+		t.Errorf("enabled field missing/false: %+v", got.Fields)
+	}
+}
 
 // newTestH2CClient returns an HTTP client that speaks h2c. Local to this
 // file to avoid reaching into the protocol package's unexported helpers.

@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -36,7 +38,13 @@ func (p *grpcProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 	}
 
 	handler := &grpcMockHandler{routes: spec.Routes, def: spec.Default, emit: emit}
-	srv := grpc.NewServer(grpc.UnknownServiceHandler(handler.serve))
+	opts := []grpc.ServerOption{grpc.UnknownServiceHandler(handler.serve)}
+	if spec.TLSCert != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(&tls.Config{
+			Certificates: []tls.Certificate{*spec.TLSCert},
+		})))
+	}
+	srv := grpc.NewServer(opts...)
 
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
