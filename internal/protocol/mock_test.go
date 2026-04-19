@@ -17,6 +17,11 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	mongoopts "go.mongodb.org/mongo-driver/v2/mongo/options"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // TestHTTPMockStaticRoutes verifies that the HTTP MockHandler matches
@@ -753,6 +758,90 @@ func TestMongoMockHandshakeAndFind(t *testing.T) {
 		t.Errorf("expected alice+bob, got %v", names)
 	}
 }
+
+// TestGRPCMockUnaryCall verifies that a gRPC mock routes /pkg.Svc/Method
+// correctly, returns a typeless struct response, and maps grpc_error() to
+// a status code the client sees.
+func TestGRPCMockUnaryCall(t *testing.T) {
+	p := &grpcProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	okBytes, err := JSONToGRPCStruct([]byte(`{"enabled":true,"variant":"B"}`))
+	if err != nil {
+		t.Fatalf("encode struct: %v", err)
+	}
+
+	spec := MockSpec{
+		Routes: []MockRoute{
+			{
+				Pattern:  "/flags.v1.Flags/Get",
+				Response: &MockResponse{Status: 0, Body: okBytes},
+			},
+			{
+				Pattern: "/flags.v1.Flags/Fail",
+				Response: &MockResponse{
+					Status: 14, // UNAVAILABLE
+					Body:   []byte("backend down"),
+				},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- p.ServeMock(ctx, addr, spec, nil) }()
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("grpc mock not listening: %v", err)
+	}
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Happy path: /flags.v1.Flags/Get — decode Struct.
+	var gotStruct structpb.Struct
+	err = conn.Invoke(context.Background(), "/flags.v1.Flags/Get", &emptyMsg{}, &gotStruct)
+	if err != nil {
+		t.Fatalf("Invoke Get: %v", err)
+	}
+	if got := gotStruct.Fields["variant"].GetStringValue(); got != "B" {
+		t.Errorf("variant = %q, want B; got struct=%+v", got, gotStruct.Fields)
+	}
+
+	// Error path: /flags.v1.Flags/Fail — expect status UNAVAILABLE.
+	err = conn.Invoke(context.Background(), "/flags.v1.Flags/Fail", &emptyMsg{}, &gotStruct)
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %T: %v", err, err)
+	}
+	if st.Code() != codes.Unavailable {
+		t.Errorf("error code = %s, want Unavailable", st.Code())
+	}
+	if st.Message() != "backend down" {
+		t.Errorf("error msg = %q", st.Message())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("grpc mock did not shut down in time")
+	}
+}
+
+// emptyMsg is a zero-byte proto message used to satisfy grpc-go's codec
+// when we don't care about the request body. Send as Invoke's req arg.
+type emptyMsg struct{}
+
+func (*emptyMsg) Reset()                   {}
+func (*emptyMsg) String() string           { return "empty" }
+func (*emptyMsg) ProtoMessage()            {}
+func (*emptyMsg) Marshal() ([]byte, error) { return nil, nil }
+func (*emptyMsg) Unmarshal([]byte) error   { return nil }
 
 // --- test helpers ---
 
