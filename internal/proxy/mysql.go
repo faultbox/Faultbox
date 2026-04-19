@@ -9,6 +9,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/faultbox/Faultbox/internal/proxy/sqlmatch"
 )
 
 type mysqlProxy struct {
@@ -133,7 +135,11 @@ func (p *mysqlProxy) checkRules(clientConn net.Conn, seqID byte, query string) b
 	p.mu.RUnlock()
 
 	for _, rule := range rules {
-		if !rule.MatchRequest("", "", query, "", "", "") {
+		// Query match uses SQL-aware canonicalization so rules keyed on
+		// "SELECT * FROM users WHERE id = ?" match drivers' tight output
+		// like "select * from users where id=$1;" regardless of case,
+		// whitespace, placeholder dialect, or trailing ';'.
+		if !sqlmatch.Match(query, rule.Query) {
 			continue
 		}
 		if rule.Prob > 0 && rand.Float64() > rule.Prob {
