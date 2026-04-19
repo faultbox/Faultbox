@@ -36,8 +36,8 @@ One import per protocol, clean call sites, zero collisions.
 | Kafka | [kafka.star](kafka.star) | ✅ Shipped (v0.8.1) |
 | Redis | [redis.star](redis.star) | ✅ Shipped (v0.8.1) |
 | Postgres | [postgres.star](postgres.star) | ✅ Shipped (v0.8.2) |
-| HTTP | — | To be added |
-| gRPC | — | To be added |
+| HTTP | [http.star](http.star) | ✅ Shipped (v0.8.3) |
+| gRPC | [grpc.star](grpc.star) | ✅ Shipped (v0.8.3) |
 | NATS | — | To be added |
 | Memcached | — | To be added |
 | AMQP | — | To be added |
@@ -55,6 +55,8 @@ One import per protocol, clean call sites, zero collisions.
 | Kafka | `broker_overloaded`, `message_too_large` | `rebalancing`, `slow_produce`, `connection_drop`, `coordinator_not_available` | `not_leader_for_partition`, `offset_out_of_range` | — | — | — |
 | Redis | `oom` | `loading`, `busy`, `slow_command`, `connection_drop` | `cluster_down`, `readonly_replica` | `wrongtype` | `noauth` | — |
 | Postgres | `too_many_connections`, `disk_full` | `lock_not_available`, `admin_shutdown`, `connection_failure`, `slow_query`, `slow_writes` | `serialization_failure`, `read_only_transaction` | `deadlock` | — | — |
+| HTTP | `rate_limited`, `service_unavailable` | `slow_endpoint`, `gateway_timeout`, `connection_drop`, `maintenance_window` | — | — | `unauthorized`, `forbidden` | `flaky`, `server_error` |
+| gRPC | `resource_exhausted` | `unavailable`, `deadline_exceeded`, `slow_method`, `connection_drop` | `aborted`, `not_found` | — | `unauthenticated`, `permission_denied` | `internal` |
 
 ## Contributing
 
