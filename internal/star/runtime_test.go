@@ -1015,6 +1015,9 @@ func TestRecipesInRepo(t *testing.T) {
 		{"../../recipes/udp.star", "udp", "packet_loss"},
 		{"../../recipes/cassandra.star", "cassandra", "write_timeout"},
 		{"../../recipes/clickhouse.star", "clickhouse", "too_many_parts"},
+		{"../../recipes/mysql.star", "mysql", "deadlock"},
+		{"../../recipes/kafka.star", "kafka", "rebalancing"},
+		{"../../recipes/redis.star", "redis", "oom"},
 	}
 	for _, rf := range recipeFiles {
 		t.Run(rf.namespace, func(t *testing.T) {
@@ -1097,6 +1100,9 @@ func TestStdlibLoad_AllProtocols(t *testing.T) {
 		{"udp", "packet_loss"},
 		{"cassandra", "write_timeout"},
 		{"clickhouse", "too_many_parts"},
+		{"mysql", "deadlock"},
+		{"kafka", "rebalancing"},
+		{"redis", "oom"},
 	}
 	for _, c := range cases {
 		t.Run(c.protocol, func(t *testing.T) {
