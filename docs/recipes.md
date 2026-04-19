@@ -82,6 +82,8 @@ $ faultbox recipes list
 Available stdlib recipes (load via @faultbox/recipes/<name>.star):
   cassandra
   clickhouse
+  grpc
+  http
   http2
   kafka
   mongodb
@@ -217,6 +219,38 @@ the recipe injects at the proxy level.
 | `postgres.connection_failure(query="*")` | Drop connection mid-query — drivers surface SQLSTATE 08006 |
 | `postgres.slow_query(duration="3s", query="*")` | Delays any statement — tests `statement_timeout` + context deadlines |
 | `postgres.slow_writes(duration="3s", query="INSERT*")` | Delays writes only |
+
+### `@faultbox/recipes/http.star`
+
+HTTP/1.x twin of `@faultbox/recipes/http2.star` — same status-code semantics, with `connection_drop` in place of HTTP/2's `stream_reset`.
+
+| Recipe | What it simulates |
+|---|---|
+| `http.rate_limited(path="/*")` | HTTP 429 with Retry-After body — client back-off + jitter tests |
+| `http.server_error(path="/*")` | HTTP 500 — generic internal error |
+| `http.service_unavailable(path="/*")` | HTTP 503 — retryable per HTTP semantics |
+| `http.gateway_timeout(path="/*")` | HTTP 504 — upstream timeout at an intermediary |
+| `http.slow_endpoint(path="/*", duration="3s")` | Fixed-latency injection — tests client read-timeout |
+| `http.maintenance_window(path="/*")` | 503 with long Retry-After — LB "we're deploying" response |
+| `http.connection_drop(path="/*")` | TCP close mid-request — keep-alive pool eviction tests |
+| `http.flaky(path="/*", probability="20%")` | Probabilistic 500s — retry-policy and exponential-backoff tests |
+| `http.unauthorized(path="/*")` | HTTP 401 — token-expiry + refresh-flow tests |
+| `http.forbidden(path="/*")` | HTTP 403 — authorization-failure paths |
+
+### `@faultbox/recipes/grpc.star`
+
+| Recipe | What it simulates |
+|---|---|
+| `grpc.unavailable(method="*")` | Code 14 (UNAVAILABLE) — most retried gRPC error; transient server outage |
+| `grpc.deadline_exceeded(method="*")` | Code 4 (DEADLINE_EXCEEDED) — per-call deadline missed |
+| `grpc.resource_exhausted(method="*")` | Code 8 (RESOURCE_EXHAUSTED) — quota / rate limit / inflight cap |
+| `grpc.unauthenticated(method="*")` | Code 16 (UNAUTHENTICATED) — missing/invalid/expired credentials |
+| `grpc.permission_denied(method="*")` | Code 7 (PERMISSION_DENIED) — identity known but unauthorized |
+| `grpc.internal(method="*")` | Code 13 (INTERNAL) — generic server-side failure; non-retryable |
+| `grpc.not_found(method="*")` | Code 5 (NOT_FOUND) — target resource doesn't exist |
+| `grpc.aborted(method="*")` | Code 10 (ABORTED) — transactional/optimistic-concurrency conflict |
+| `grpc.slow_method(method="*", duration="3s")` | Delays RPC response — tests client deadline propagation |
+| `grpc.connection_drop(method="*")` | TCP close mid-call — resolver + subchannel reconnect paths |
 
 ## User-authored recipes
 

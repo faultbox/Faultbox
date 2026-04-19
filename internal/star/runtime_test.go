@@ -1019,6 +1019,8 @@ func TestRecipesInRepo(t *testing.T) {
 		{"../../recipes/kafka.star", "kafka", "rebalancing"},
 		{"../../recipes/redis.star", "redis", "oom"},
 		{"../../recipes/postgres.star", "postgres", "deadlock"},
+		{"../../recipes/http.star", "http", "rate_limited"},
+		{"../../recipes/grpc.star", "grpc", "unavailable"},
 	}
 	for _, rf := range recipeFiles {
 		t.Run(rf.namespace, func(t *testing.T) {
@@ -1105,6 +1107,8 @@ func TestStdlibLoad_AllProtocols(t *testing.T) {
 		{"kafka", "rebalancing"},
 		{"redis", "oom"},
 		{"postgres", "deadlock"},
+		{"http", "rate_limited"},
+		{"grpc", "unavailable"},
 	}
 	for _, c := range cases {
 		t.Run(c.protocol, func(t *testing.T) {
