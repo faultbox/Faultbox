@@ -120,6 +120,18 @@ func (p *http2Protocol) ServeMock(ctx context.Context, addr string, spec MockSpe
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// With TLS, serve plain HTTP/2 with ALPN "h2" over the TLS listener.
+	// Without TLS, the h2c handler above negotiates HTTP/2 over cleartext.
+	if spec.TLSCert != nil {
+		srv.Handler = mux
+		srv.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{*spec.TLSCert},
+			NextProtos:   []string{"h2", "http/1.1"},
+		}
+		ln = tls.NewListener(ln, srv.TLSConfig)
+		_ = http2.ConfigureServer(srv, h2s)
+	}
+
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 
