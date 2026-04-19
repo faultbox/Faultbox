@@ -184,14 +184,14 @@ func waitMockReady(ctx context.Context, proto, addr string, timeout time.Duratio
 func mockListenerUp(proto, addr string) bool {
 	switch proto {
 	case "udp":
-		// Attempt to bind the same port — success means nothing is listening,
-		// failure means the mock has the port.
-		pc, err := net.ListenPacket("udp", addr)
-		if err != nil {
-			return true
-		}
-		pc.Close()
-		return false
+		// UDP is connectionless — there's no TCP handshake to probe. The
+		// bind-test trick (try to re-bind the same port) is unreliable on
+		// platforms that default to SO_REUSEADDR/SO_REUSEPORT. The mock's
+		// net.ListenPacket returns synchronously inside the goroutine's
+		// first line, so "yield and assume ready" is accurate in practice;
+		// a short sleep to give the goroutine time to run is sufficient.
+		time.Sleep(25 * time.Millisecond)
+		return true
 	default:
 		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {

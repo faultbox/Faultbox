@@ -12,6 +12,9 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	bsonpkg "go.mongodb.org/mongo-driver/v2/bson"
+	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
+	mongoopts "go.mongodb.org/mongo-driver/v2/mongo/options"
 	"golang.org/x/net/http2"
 )
 
@@ -404,6 +407,104 @@ bus = kafka.broker(
 		if !seen[want] {
 			t.Errorf("topic %q not found after stdlib kafka.broker(); seen=%+v", want, seen)
 		}
+	}
+}
+
+// TestMockServiceRedisStdlib verifies @faultbox/mocks/redis.star stands up
+// a Redis mock with seeded state and a raw RESP client reads it.
+func TestMockServiceRedisStdlib(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/redis.star", "redis")
+
+cache = redis.server(
+    name      = "cache",
+    interface = interface("main", "redis", %d),
+    state     = {"greeting": "hello", "counter": "42"},
+)
+`, port)
+	if err := rt.LoadString("redis_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	// Seeded values should be returned.
+	_, _ = conn.Write([]byte("*2\r\n$3\r\nGET\r\n$8\r\ngreeting\r\n"))
+	buf := make([]byte, 64)
+	n, _ := conn.Read(buf)
+	if !strings.Contains(string(buf[:n]), "hello") {
+		t.Errorf("GET greeting response = %q, want to contain 'hello'", buf[:n])
+	}
+}
+
+// TestMockServiceMongoStdlib verifies @faultbox/mocks/mongodb.star stands up
+// a MongoDB mock and the real mongo driver completes handshake + find.
+func TestMockServiceMongoStdlib(t *testing.T) {
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/mongodb.star", "mongo")
+
+users_db = mongo.server(
+    name      = "users-stub",
+    interface = interface("main", "mongodb", %d),
+    collections = {
+        "users": [
+            {"_id": "1", "name": "alice"},
+            {"_id": "2", "name": "bob"},
+        ],
+    },
+)
+`, port)
+	if err := rt.LoadString("mongo_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	clientOpts := mongoopts.Client().
+		ApplyURI("mongodb://" + addr).
+		SetServerSelectionTimeout(3 * time.Second).
+		SetConnectTimeout(3 * time.Second)
+	client, err := mongodriver.Connect(clientOpts)
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	defer client.Disconnect(context.Background())
+
+	cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ccancel()
+	cur, err := client.Database("mock").Collection("users").Find(cctx, bsonpkg.M{})
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	var results []bsonpkg.M
+	if err := cur.All(cctx, &results); err != nil {
+		t.Fatalf("cursor.All: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2", len(results))
 	}
 }
 
