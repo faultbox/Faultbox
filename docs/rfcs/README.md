@@ -52,6 +52,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | [RFC-017](0017-mock-services.md) | Native Mock Services: Stub Protocols Without Containers | Draft | — |
 | [RFC-018](0018-recipes-library.md) | Recipes Library — Curated Failure Wrappers in Starlark | Implemented (v0.7.0) | — |
 | [RFC-019](0019-recipe-distribution.md) | Recipe Distribution via `@faultbox/` Prefix | Implemented (v0.7.0) | RFC-018 |
+| [RFC-020](0020-sql-mocks.md) | SQL Mock Services — Postgres & MySQL Stubs | Accepted (v0.9.0) | RFC-017, RFC-018 |
 
 ### Phase 3: Trace Equivalence & Specification Mining
 

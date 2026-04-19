@@ -1018,6 +1018,7 @@ func TestRecipesInRepo(t *testing.T) {
 		{"../../recipes/mysql.star", "mysql", "deadlock"},
 		{"../../recipes/kafka.star", "kafka", "rebalancing"},
 		{"../../recipes/redis.star", "redis", "oom"},
+		{"../../recipes/postgres.star", "postgres", "deadlock"},
 	}
 	for _, rf := range recipeFiles {
 		t.Run(rf.namespace, func(t *testing.T) {
@@ -1103,6 +1104,7 @@ func TestStdlibLoad_AllProtocols(t *testing.T) {
 		{"mysql", "deadlock"},
 		{"kafka", "rebalancing"},
 		{"redis", "oom"},
+		{"postgres", "deadlock"},
 	}
 	for _, c := range cases {
 		t.Run(c.protocol, func(t *testing.T) {
