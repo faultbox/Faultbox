@@ -1,9 +1,10 @@
 # RFC-017: Native Mock Services — Stub Protocols Without Containers
 
-- **Status:** Accepted — implementation started
+- **Status:** Implemented (v0.8.0)
 - **Author:** Boris Glebov, Claude Opus 4.7
 - **Created:** 2026-04-17
 - **Amended:** 2026-04-19 — split generic `mock_service()` from protocol-specific stdlib mocks; promoted dynamic handlers + TLS into v1; spun SQL mocks off to RFC-020 (#39) and OpenAPI generation to RFC-021 (#40)
+- **Shipped:** 2026-04-19 (v0.8.0, PRs #41–#48)
 - **Branch:** `epic/v0.8-mock-services`
 - **Milestone:** v0.8.0
 - **Addresses:** FB-017
