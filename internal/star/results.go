@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"go.starlark.net/starlark"
@@ -465,10 +466,13 @@ func NormalizeTrace(result *SuiteResult) string {
 	for _, tr := range result.Tests {
 		fmt.Fprintf(&sb, "=== %s ===\n", tr.Name)
 
-		// Collect events per service (preserving order within each service).
+		// Collect events per service. Event order within a service is
+		// preserved (same code path on same input → same sequence), but
+		// the set of services is emitted in sorted order because the
+		// first-arrival order between services is a race (concurrent
+		// goroutines emitting service_started at startup).
 		perService := make(map[string][]string)
-		var serviceOrder []string
-		seen := make(map[string]bool)
+		seenSvc := make(map[string]bool)
 
 		for _, ev := range tr.Events {
 			var line string
@@ -507,15 +511,17 @@ func NormalizeTrace(result *SuiteResult) string {
 				continue
 			}
 
-			if !seen[svc] {
-				serviceOrder = append(serviceOrder, svc)
-				seen[svc] = true
-			}
+			seenSvc[svc] = true
 			perService[svc] = append(perService[svc], line)
 		}
 
-		// Output per-service traces in deterministic order.
-		for _, svc := range serviceOrder {
+		services := make([]string, 0, len(seenSvc))
+		for svc := range seenSvc {
+			services = append(services, svc)
+		}
+		sort.Strings(services)
+
+		for _, svc := range services {
 			fmt.Fprintf(&sb, "--- %s ---\n", svc)
 			for _, line := range perService[svc] {
 				sb.WriteString(line)
