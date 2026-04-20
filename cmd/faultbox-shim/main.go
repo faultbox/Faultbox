@@ -119,9 +119,15 @@ func run() error {
 		}
 		phaseDone("set_no_new_privs")
 
-		// Install seccomp filter. Pass -1 as whitelist fd (no file-based reporting).
-		phaseStart("install_filter", "syscall_count", len(cfg.SyscallNrs))
-		fd, err := seccomp.InstallFilter(cfg.SyscallNrs, -1)
+		// Install seccomp filter. Pass fd 2 (stderr) as the whitelist so
+		// subsequent phaseDone/phaseStart JSON logs during the critical
+		// section between filter install and SCM_RIGHTS send can still
+		// write to stderr without being intercepted by our own filter.
+		// Without this, our log writes hit the filter, the kernel
+		// suspends them waiting for a userspace listener (which hasn't
+		// been handed to the host yet) — classic self-deadlock.
+		phaseStart("install_filter", "syscall_count", len(cfg.SyscallNrs), "whitelist_fd", 2)
+		fd, err := seccomp.InstallFilter(cfg.SyscallNrs, 2)
 		if err != nil {
 			phaseError("install_filter", err)
 			return fmt.Errorf("install seccomp filter: %w", err)
