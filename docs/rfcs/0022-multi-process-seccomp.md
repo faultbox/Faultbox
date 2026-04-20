@@ -1,8 +1,9 @@
 # RFC-022: Multi-Process Container Seccomp Acquisition
 
-- **Status:** Draft
+- **Status:** Draft — revised after Phase 0 (see "Phase 0 findings" below)
 - **Target:** v0.9.0 or later
 - **Created:** 2026-04-19
+- **Updated:** 2026-04-21 (Phase 0 findings)
 - **Discussion:** [#53](https://github.com/faultbox/Faultbox/issues/53)
 - **Tracking issue:** [#51](https://github.com/faultbox/Faultbox/issues/51) (customer report + workaround usage)
 - **Depends on:** RFC-014 (Unix socket fd passing — v0.6.0)
@@ -21,6 +22,101 @@ This RFC proposes a real fix. A workaround — `service(seccomp = False)`
 sacrifices syscall-level fault injection on the opted-out service but
 preserves everything above it (proxy-level faults, healthchecks, event
 log, etc.).
+
+## Phase 0 findings (2026-04-21)
+
+Phase 0 (instrumentation-only, branch `rfc/022-multi-process-seccomp`)
+added structured JSON logging to every phase of the SCM_RIGHTS handoff
+on both shim and host sides. Running it against `mysql:8.0.32` in our
+Lima/Docker environment surfaced something the original RFC didn't
+anticipate:
+
+### The handoff does NOT hang on MySQL 8.0.32 in our env
+
+With the instrumentation in place, MySQL 8.0.32 seccomp acquisition
+completes in **111 ms** on our Lima/arm64 stack (Docker 28, kernel
+6.11, `seccomp=unconfined` Docker security opt already set). Full
+handoff sequence runs cleanly: `parse_config` → `resolve_binary` →
+`set_no_new_privs` → `install_filter` → `dial_socket` → `send_scm`
+→ `recv_ack` → `dup3_listener` → `exec`. Test passes, container
+healthcheck succeeds.
+
+We **cannot reproduce** the customer-reported 3-minute hang on MySQL
+8.0.32 with the diagnostics we have. The original RFC's hypothesis —
+`mysqld_safe` wrapper breaks the SCM_RIGHTS flow — does not hold up
+against the evidence we captured. The hang is either environmental
+(different kernel, Docker version, image tag, or overlay storage
+driver than our Lima setup) or it was a symptom of a different bug
+now masked by v0.8.5's `seccomp=False` workaround.
+
+### What we DID find: a self-deadlock in our own shim
+
+The first run of the instrumented shim appeared to hang at
+`install_filter step=start` with no `step=done`. The stall was not
+the `seccomp(2)` syscall; it was the **next log write** we added,
+intercepted by our own filter.
+
+Sequence:
+1. `seccomp(2)` installs the filter (returns successfully).
+2. Our `phaseDone("install_filter", ...)` emits a JSON line via slog
+   to stderr → calls `write(2, ...)`.
+3. `write` is in the filter (per `write=deny("EIO")` family
+   expansion: `write, writev, pwrite64`).
+4. Kernel suspends the `write` syscall on SECCOMP_RET_USER_NOTIF,
+   waiting for a userspace listener to respond.
+5. The listener fd is still sitting in the shim's local `fd` variable
+   — not yet handed to the host via SCM_RIGHTS.
+6. Host blocks on `listener.Accept()` waiting for the shim to connect.
+7. Shim can't connect because it can't emit the log line.
+
+**Classic ordering deadlock.** The pre-instrumentation code dodged
+this by accident: it had no `write()` calls between `seccomp.InstallFilter`
+and `sendmsg` (Unix socket `connect()`/`sendmsg()` are not in any
+default filter). My instrumentation introduced log writes in that
+critical section.
+
+### Fix: whitelist stderr in the shim's seccomp filter
+
+`InstallFilter(syscallNrs, allowFdForWrite int)` already had a
+whitelist parameter (designed for the old pipe mechanism). Passing
+`fd 2` (stderr) from the shim lets subsequent slog writes pass
+through the filter without triggering notifications. One-line change
+in `cmd/faultbox-shim/main.go`; verified in Phase 0 Run 2 where the
+instrumented shim now emits every phase cleanly AND the MySQL
+handoff completes in 111 ms.
+
+### Implication for the rest of this RFC
+
+The RFC was written around the assumption that Phase 1 would be
+"retry the SCM_RIGHTS handoff with backoff." With our inability to
+reproduce the customer hang in Lima, that Phase 1 design is now
+speculative — we're fixing something we can't see fail.
+
+**Revised plan:**
+
+1. **Phase 0 is complete and worth shipping on its own.** The
+   stderr-whitelist fix is a real bug (any future log addition in
+   the critical section would reintroduce the deadlock). Phase 0
+   instrumentation itself is valuable for diagnosing any future
+   handoff issue customers report.
+2. **Defer Phase 1 (retry-with-backoff) until we have a real
+   reproduction.** Without a failing case to target, retry logic
+   is guesswork.
+3. **Ask the customer (issue #51) for more data:**
+   - Exact image reference (`docker inspect faultbox-db | jq '.[].Image'`).
+   - Kernel version (`uname -r`).
+   - Docker version (`docker version`).
+   - Output of `docker inspect faultbox-db` on a hung container
+     (security options, seccomp profile, capabilities).
+   - The new shim's full JSON log output from `docker logs
+     faultbox-db` during a reproduction with v0.8.6+ + this Phase 0
+     branch deployed.
+4. **Once we have the repro in hand,** either Phase 1 retry or
+   Phase 2 pre-shim capture becomes concretely designable against
+   the actual failure mode.
+
+Until the repro lands, the `seccomp=False` workaround from v0.8.5
+remains the customer answer.
 
 ## Motivation
 
