@@ -3,6 +3,7 @@
 - **Status:** Draft
 - **Target:** v0.9.0
 - **Created:** 2026-04-19
+- **Discussion:** [#52](https://github.com/faultbox/Faultbox/issues/52)
 - **Depends on:** RFC-017 (Native Mock Services — v0.8.0)
 - **Workaround pattern documented in:** v0.8.6 (Go binary mock; see `docs/mock-services.md`)
 

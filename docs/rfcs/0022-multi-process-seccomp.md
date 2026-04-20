@@ -3,6 +3,8 @@
 - **Status:** Draft
 - **Target:** v0.9.0 or later
 - **Created:** 2026-04-19
+- **Discussion:** [#53](https://github.com/faultbox/Faultbox/issues/53)
+- **Tracking issue:** [#51](https://github.com/faultbox/Faultbox/issues/51) (customer report + workaround usage)
 - **Depends on:** RFC-014 (Unix socket fd passing — v0.6.0)
 - **Workaround shipped in:** v0.8.5 (`service(seccomp = False)`)
 
