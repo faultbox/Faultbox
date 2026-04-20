@@ -130,7 +130,7 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 	}
 	fdCh := make(chan fdResult, 1)
 	go func() {
-		fd, err := waitForListenerFd(ctx, socketPath)
+		fd, err := waitForListenerFd(ctx, socketPath, log)
 		fdCh <- fdResult{fd, err}
 	}()
 
