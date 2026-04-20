@@ -49,6 +49,7 @@ type Case struct {
 //  2. Run: go test ./testops/... -run <name> -update
 //  3. Commit goldens/<name>.norm alongside the registry change.
 var Cases = []Case{
+	// --- Runnable on any host (mock-only, no seccomp/binaries/containers). ---
 	{
 		Name:    "mock_demo",
 		Spec:    "poc/mock-demo/faultbox.star",
@@ -56,11 +57,45 @@ var Cases = []Case{
 		Timeout: 90 * time.Second,
 	},
 	{
-		Name:      "example",
+		Name:    "redis_basic",
+		Spec:    "testops/corpus/redis_basic.star",
+		Seed:    1,
+		Timeout: 30 * time.Second,
+	},
+
+	// --- LinuxOnly, currently skipped: needs build artifacts or Docker. ---
+	// These stay in the registry so their absence is visible; un-skip
+	// them once CI provisions the prerequisites.
+	{
+		Name:      "poc_example",
 		Spec:      "poc/example/faultbox.star",
 		Seed:      1,
 		Timeout:   60 * time.Second,
 		LinuxOnly: true,
 		Skip:      "requires /tmp/mock-db and /tmp/mock-api from make demo-build",
+	},
+	{
+		Name:      "poc_demo",
+		Spec:      "poc/demo/faultbox.star",
+		Seed:      1,
+		Timeout:   90 * time.Second,
+		LinuxOnly: true,
+		Skip:      "requires /tmp/inventory-svc and /tmp/order-svc from make demo-build",
+	},
+	{
+		Name:      "poc_demo_container",
+		Spec:      "poc/demo-container/faultbox.star",
+		Seed:      1,
+		Timeout:   180 * time.Second,
+		LinuxOnly: true,
+		Skip:      "requires Docker + postgres:16-alpine + redis:7-alpine",
+	},
+	{
+		Name:      "poc_kafka_rfc014",
+		Spec:      "poc/kafka-rfc014/faultbox.star",
+		Seed:      1,
+		Timeout:   180 * time.Second,
+		LinuxOnly: true,
+		Skip:      "requires Docker + apache/kafka:3.7.0",
 	},
 }
