@@ -170,9 +170,19 @@ flags = mock_service("flags",
 ```
 
 Without a `.proto` file, responses are encoded as
-`google.protobuf.Struct` — the wire shape that reflective gRPC clients
-(most Go and Node clients) decode loosely. Typed clients with
-compiled stubs for a specific message will need the real backend.
+`google.protobuf.Struct` — the wire shape that reflection-based and
+loose-decoding clients accept. **This works for clients that don't
+compile proto stubs** (typed Node clients, Python `grpc` with
+generic descriptors, hand-written Go that decodes into
+`structpb.Struct`).
+
+**It does not work for clients with compiled proto stubs** — i.e.,
+the standard Go pattern where you generate `*.pb.go` from a `.proto`
+file and call `pkg.NewServiceClient(conn).Method(ctx, &pkg.Request{...})`.
+Those clients reject the generic `Struct` payload at decode time
+because it's not the message type they expect. For that case, see
+[Typed gRPC mocks (Go binary pattern)](#typed-grpc-mocks-go-binary-pattern)
+below.
 
 `grpc_error()` accepts canonical status codes by name (`"OK"`,
 `"CANCELLED"`, `"UNKNOWN"`, `"INVALID_ARGUMENT"`, `"DEADLINE_EXCEEDED"`,
@@ -180,6 +190,199 @@ compiled stubs for a specific message will need the real backend.
 `"RESOURCE_EXHAUSTED"`, `"FAILED_PRECONDITION"`, `"ABORTED"`,
 `"OUT_OF_RANGE"`, `"UNIMPLEMENTED"`, `"INTERNAL"`, `"UNAVAILABLE"`,
 `"DATA_LOSS"`, `"UNAUTHENTICATED"`) or by numeric value.
+
+## Typed gRPC mocks (Go binary pattern)
+
+When your SUT uses compiled Go proto stubs, the recommended pattern
+today is a small Go binary that imports your real proto packages
+from your `go.mod` and implements the standard
+`Unimplemented*Server` interfaces. Faultbox runs the binary as a
+regular service with multiple `interface()` entries — one per gRPC
+service / port — and you keep all the Faultbox-side benefits
+(fault recipes, proxy faults, healthchecks, event log, container
+reuse, etc.).
+
+> The native `mock_service()` constructor above is the right tool
+> for clients that decode loosely. For typed Go clients, use the
+> binary pattern below until [RFC-023](rfcs/0023-typed-proto-grpc-mocks.md)
+> ships native typed-proto support in Starlark (target: v0.9.0).
+
+### Step 1 — Write the mock binary
+
+One file at `mocks/upstreams/main.go`. Imports your real proto
+packages and stubs the methods you need with happy-path canned
+responses:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net"
+
+    "google.golang.org/grpc"
+
+    geo_config "github.com/yourcorp/geo-config/proto"
+    geo_facade "github.com/yourcorp/geo-facade/proto"
+    user_svc   "github.com/yourcorp/user/proto"
+)
+
+// ---- one stub per service ----
+
+type geoConfigStub struct {
+    geo_config.UnimplementedGeoConfigServiceServer
+}
+
+func (s *geoConfigStub) GetCity(ctx context.Context, req *geo_config.GetCityRequest) (*geo_config.City, error) {
+    return &geo_config.City{
+        Id:       42,
+        Name:     "Almaty",
+        Country:  "KZ",
+        Currency: "KZT",
+    }, nil
+}
+
+type userServiceStub struct {
+    user_svc.UnimplementedUserServiceServer
+}
+
+func (s *userServiceStub) GetUser(ctx context.Context, req *user_svc.GetUserRequest) (*user_svc.User, error) {
+    return &user_svc.User{Id: req.Id, Name: "alice", Role: "rider"}, nil
+}
+
+// ---- multi-port wiring ----
+
+func serve(port int, register func(*grpc.Server)) {
+    ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+    if err != nil { log.Fatalf("listen :%d: %v", port, err) }
+    srv := grpc.NewServer()
+    register(srv)
+    log.Printf("listening :%d", port)
+    if err := srv.Serve(ln); err != nil { log.Fatalf("serve: %v", err) }
+}
+
+func main() {
+    go serve(9001, func(s *grpc.Server) { geo_config.RegisterGeoConfigServiceServer(s, &geoConfigStub{}) })
+    go serve(9003, func(s *grpc.Server) { user_svc.RegisterUserServiceServer(s, &userServiceStub{}) })
+    serve(9002, func(s *grpc.Server) { geo_facade.RegisterGeoFacadeServiceServer(s, &geoFacadeStub{}) })
+}
+```
+
+Build it: `go build -o ./bin/upstreams ./mocks/upstreams`.
+
+### Step 2 — Declare it as a Faultbox service
+
+One `service()` entry, one binary, multiple ports — one
+`interface()` per gRPC service. Each interface becomes a target
+for fault rules independently:
+
+```python
+upstreams = service("upstreams",
+    binary = "./bin/upstreams",
+    interface("geo_config",   "grpc", 9001),
+    interface("geo_facade",   "grpc", 9002),
+    interface("user_service", "grpc", 9003),
+    healthcheck = tcp("localhost:9001"),    # any one port works
+    seccomp    = False,                      # mock itself doesn't need syscall faults
+)
+
+api = service("api",
+    binary = "./bin/truck-api",
+    interface("public", "http", 8080),
+    env = {
+        "GRPC_GEO_CONFIG_ADDRESS":   upstreams.geo_config.internal_addr,
+        "GRPC_GEO_FACADE_ADDRESS":   upstreams.geo_facade.internal_addr,
+        "GRPC_USER_SERVICE_ADDRESS": upstreams.user_service.internal_addr,
+    },
+    depends_on = [upstreams],
+    healthcheck = http("localhost:8080/health"),
+)
+```
+
+### Step 3 — Apply fault rules per upstream
+
+Recipes from `@faultbox/recipes/grpc.star` work against each
+interface independently. The fault rule fires at the proxy layer
+in front of the mock — same wire-level behavior the real upstream
+would produce:
+
+```python
+load("@faultbox/recipes/grpc.star", "grpc")
+
+geo_unstable = fault_assumption("geo_unstable",
+    target = upstreams.geo_config,
+    rules  = [grpc.unavailable()],
+)
+
+balance_slow = fault_assumption("balance_slow",
+    target = upstreams.balance_api,
+    rules  = [grpc.slow_method(duration = "5s")],
+)
+
+deadline_exceeded = fault_scenario("deadline_exceeded",
+    scenario  = create_order,
+    faults    = [balance_slow],
+    expect    = lambda r: assert_eq(r.status, 504),
+)
+```
+
+### Why this pattern works well
+
+- **No proto drift.** The mock imports the same `*.pb.go` your app
+  imports. Schema changes propagate via `go build`, not via a
+  separate sync step.
+- **Single binary, one healthcheck, many targets.** N gRPC services
+  on N ports get N independent fault-injection points without N
+  Dockerfiles.
+- **Inline tweaks.** Need a different response for one scenario?
+  Edit the Go method, rebuild. Your spec authors don't have to
+  learn a separate mock-DSL.
+- **Faultbox composes naturally.** Recipes, proxies, event log,
+  trace assertions, container reuse — all work as if the mock were
+  the real upstream.
+
+### Trade-offs
+
+- **Initial code.** ~50–200 LOC depending on how many services and
+  methods you stub. Less than maintaining a separate Dockerfile +
+  gripmock setup.
+- **Build coupling.** The mock's `go.mod` needs replace directives
+  or version pins matching your SUT's proto packages. Customers
+  with a monorepo + private proto modules (the truck-api case) get
+  this for free.
+- **Per-method stubbing.** If your SUT calls 50 methods you don't
+  stub, they return `Unimplemented` — clean failure mode, but
+  you'll discover required methods iteratively.
+
+### Where this is going
+
+This pattern works today and will continue to work indefinitely.
+[RFC-023](rfcs/0023-typed-proto-grpc-mocks.md) proposes loading
+proto descriptors at spec time so the equivalent mock can be
+written entirely in `.star` — collapsing the Go binary above to:
+
+```python
+# Coming in v0.9.0 — sketch only, not yet implemented:
+load("@faultbox/mocks/grpc.star", "grpc")
+
+upstreams = grpc.cluster(
+    name = "upstreams",
+    descriptors = "./proto/all_upstreams.pb",
+    interfaces = {
+        "geo_config":   ("grpc", 9001),
+        "user_service": ("grpc", 9003),
+    },
+    services = {
+        "/inDriver.geo_config.GeoConfigService/GetCity":
+            { "response": { "id": 42, "name": "Almaty" } },
+    },
+)
+```
+
+Until v0.9.0 ships, the Go-binary pattern above is the right
+answer for typed Go gRPC clients.
 
 ## Kafka stdlib mock
 
