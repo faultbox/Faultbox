@@ -256,6 +256,15 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				return nil, fmt.Errorf("service() reset must be a callable (function)")
 			}
 			svc.Reset = fn
+		case "seccomp":
+			// seccomp=False opts this service out of syscall-level fault
+			// injection. Proxy-level faults (HTTP/SQL/Redis/etc.) still apply.
+			// Workaround for multi-process entrypoints where shim handoff hangs.
+			b, ok := kv[1].(starlark.Bool)
+			if !ok {
+				return nil, fmt.Errorf("service() seccomp must be a bool (True or False)")
+			}
+			svc.NoSeccomp = !bool(b)
 		}
 	}
 

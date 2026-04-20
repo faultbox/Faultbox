@@ -110,6 +110,7 @@ api = service("api",
 | `seed` | callable | no | Initialize service state after healthcheck — runs once (see [Container Lifecycle](#container-lifecycle)) |
 | `reset` | callable | no | Re-initialize state between tests — runs before each test except the first (see [Container Lifecycle](#container-lifecycle)) |
 | `ops` | dict | no | Named operations for fd-level fault targeting (see [Named Operations](#named-operations)) |
+| `seccomp` | bool | no | Default `True`. Set to `False` to skip shim + seccomp-notify acquisition for this service. Proxy-level faults (HTTP/SQL/Redis/etc.) still apply; syscall-level `fault()` rules on this service are silently skipped. Workaround for multi-process container entrypoints (MySQL 8's `mysqld_safe` wrapper, certain JVM images) where the shim handoff hangs. |
 
 **Seed data for databases** — use `volumes` to mount init scripts:
 

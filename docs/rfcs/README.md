@@ -53,6 +53,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | [RFC-018](0018-recipes-library.md) | Recipes Library — Curated Failure Wrappers in Starlark | Implemented (v0.7.0) | — |
 | [RFC-019](0019-recipe-distribution.md) | Recipe Distribution via `@faultbox/` Prefix | Implemented (v0.7.0) | RFC-018 |
 | [RFC-020](0020-sql-mocks.md) | SQL Mock Services — Postgres & MySQL Stubs | Withdrawn — pivoted to v0.8.2 SQL fault sharpening | RFC-017, RFC-018 |
+| [RFC-022](0022-multi-process-seccomp.md) | Multi-Process Container Seccomp Acquisition | Draft (v0.9.0+) — workaround `seccomp=False` shipped in v0.8.5 | RFC-014 |
 
 ### Phase 3: Trace Equivalence & Specification Mining
 

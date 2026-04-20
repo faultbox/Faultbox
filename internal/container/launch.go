@@ -23,6 +23,12 @@ type LaunchConfig struct {
 	NetworkID  string            // Docker network ID
 	SkipPull    bool              // skip image pull (for locally built images)
 	PullTimeout time.Duration     // timeout for image pull (default 120s)
+
+	// NoSeccomp skips the shim + seccomp-notify acquisition and goes
+	// straight to launchSimple regardless of SyscallNrs. Set from
+	// `seccomp = False` in the Starlark spec — workaround for
+	// multi-process container entrypoints where shim handoff hangs.
+	NoSeccomp bool
 }
 
 // LaunchResult contains the result of launching a container.
@@ -53,7 +59,14 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 	}
 
 	// No syscalls to intercept — launch without shim for best performance.
-	if len(cfg.SyscallNrs) == 0 {
+	// Same path when the user explicitly opts out via `seccomp = False`.
+	if len(cfg.SyscallNrs) == 0 || cfg.NoSeccomp {
+		if cfg.NoSeccomp && len(cfg.SyscallNrs) > 0 {
+			log.Info("seccomp disabled by spec (seccomp=False) — syscall-level faults skipped, proxy faults still apply",
+				slog.String("name", cfg.Name),
+				slog.Int("skipped_syscalls", len(cfg.SyscallNrs)),
+			)
+		}
 		return launchSimple(ctx, client, cfg, log)
 	}
 
@@ -207,8 +220,21 @@ func launchSimple(ctx context.Context, client *Client, cfg LaunchConfig, log *sl
 	var env []string
 	env = append(env, cfg.Env...)
 
+	// Force-remove any stale container with this name before creating a
+	// fresh one. Covers the seccomp-fallback retry race: if seccomp
+	// acquisition failed mid-way, the first-attempt container may still
+	// hold the "faultbox-<name>" slot when we get here. Without this,
+	// CreateContainer fails with "name already in use."
+	containerName := "faultbox-" + cfg.Name
+	if err := client.RemoveContainerByName(ctx, containerName); err != nil {
+		log.Debug("pre-create cleanup of stale container failed (continuing anyway)",
+			slog.String("name", containerName),
+			slog.String("error", err.Error()),
+		)
+	}
+
 	containerID, err := client.CreateContainer(ctx, CreateOpts{
-		Name:      "faultbox-" + cfg.Name,
+		Name:      containerName,
 		Image:     cfg.Image,
 		Env:       env,
 		Binds:     binds,

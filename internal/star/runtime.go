@@ -841,6 +841,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		ShimPath:   shimPath,
 		NetworkID:  rt.networkID,
 		SkipPull:   svc.Build != "", // locally built images don't need pull
+		NoSeccomp:  svc.NoSeccomp,   // honor `seccomp = False` opt-out
 	}, rt.log)
 	if err != nil {
 		return fmt.Errorf("launch container %q: %w", svcName, err)

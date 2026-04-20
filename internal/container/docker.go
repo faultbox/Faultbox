@@ -161,6 +161,28 @@ func (c *Client) RemoveContainer(ctx context.Context, id string) error {
 	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
 }
 
+// RemoveContainerByName force-removes any container with the given name.
+// Returns nil if no such container exists — idempotent, safe to call
+// before CreateContainer to guarantee the name slot is free. Used by the
+// seccomp-fallback retry path where a stale container from the failed
+// attempt could still hold the name.
+func (c *Client) RemoveContainerByName(ctx context.Context, name string) error {
+	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return fmt.Errorf("list containers: %w", err)
+	}
+	target := "/" + name
+	for _, ctr := range containers {
+		for _, n := range ctr.Names {
+			if n == target {
+				c.cli.ContainerStop(ctx, ctr.ID, container.StopOptions{})
+				return c.cli.ContainerRemove(ctx, ctr.ID, container.RemoveOptions{Force: true})
+			}
+		}
+	}
+	return nil
+}
+
 // CleanupStale removes all containers and networks with the "faultbox-" prefix.
 // Called at suite start to clean up from previous failed/interrupted runs.
 func (c *Client) CleanupStale(ctx context.Context) {
