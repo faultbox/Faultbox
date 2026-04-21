@@ -7,12 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/reflection"
+	v1reflectiongrpc "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -51,6 +55,21 @@ func (p *grpcProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 		})))
 	}
 	srv := grpc.NewServer(opts...)
+
+	// When a descriptor set is provided (RFC-023 typed mode), register the
+	// standard gRPC reflection service so tooling like grpcurl can list
+	// services and describe methods against the mock out of the box.
+	// v1 only — modern (grpcurl >= 1.8), and we can add v1alpha if a
+	// customer asks. Sourced from the per-mock descriptor set since we
+	// use UnknownServiceHandler rather than registering services on the
+	// grpc.Server directly.
+	if spec.Descriptors != nil {
+		refSvr := reflection.NewServerV1(reflection.ServerOptions{
+			Services:           &descriptorServiceInfoProvider{files: spec.Descriptors},
+			DescriptorResolver: spec.Descriptors,
+		})
+		v1reflectiongrpc.RegisterServerReflectionServer(srv, refSvr)
+	}
 
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
@@ -259,4 +278,46 @@ func GRPCCodeByName(name string) (int, bool) {
 	}
 	c, ok := codes[name]
 	return c, ok
+}
+
+// descriptorServiceInfoProvider adapts a *protoregistry.Files to the
+// reflection.ServiceInfoProvider interface used by gRPC reflection.
+// Walks every non-well-known-type file in the registry and emits one
+// grpc.ServiceInfo entry per service found, so `grpcurl list` reports
+// customer services (skipping google.protobuf.* WKTs we auto-registered
+// in LoadDescriptorSet).
+//
+// The reflection server only uses Metadata (file path) — Methods are
+// populated for defensive completeness; downstream reflection code
+// loads methods from the descriptor resolver directly.
+type descriptorServiceInfoProvider struct {
+	files *protoregistry.Files
+}
+
+func (p *descriptorServiceInfoProvider) GetServiceInfo() map[string]grpc.ServiceInfo {
+	out := map[string]grpc.ServiceInfo{}
+	p.files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		// Hide well-known-type services from reflection listings.
+		// Customers care about their own services; WKT support is
+		// transparent.
+		if strings.HasPrefix(string(fd.Path()), "google/protobuf/") {
+			return true
+		}
+		svcs := fd.Services()
+		for i := 0; i < svcs.Len(); i++ {
+			svc := svcs.Get(i)
+			info := grpc.ServiceInfo{Metadata: string(fd.Path())}
+			methods := svc.Methods()
+			for j := 0; j < methods.Len(); j++ {
+				info.Methods = append(info.Methods, grpc.MethodInfo{
+					Name:           string(methods.Get(j).Name()),
+					IsClientStream: methods.Get(j).IsStreamingClient(),
+					IsServerStream: methods.Get(j).IsStreamingServer(),
+				})
+			}
+			out[string(svc.FullName())] = info
+		}
+		return true
+	})
+	return out
 }
