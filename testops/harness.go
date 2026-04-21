@@ -81,16 +81,22 @@ var Cases = []Case{
 		Timeout: 30 * time.Second,
 	},
 
-	// --- LinuxOnly, currently skipped: needs build artifacts or Docker. ---
+	// --- LinuxOnly, currently skipped. ---
+	//
 	// These stay in the registry so their absence is visible; un-skip
-	// them once CI provisions the prerequisites.
+	// by (1) ensuring prerequisites are satisfied, (2) seeding the
+	// golden on a Linux host with:
+	//     go test ./testops/... -run <name> -update
+	// and (3) removing the Skip: field. Binary prerequisites are now
+	// built in CI via `make testops-prep`; the only remaining gate is
+	// a seeded golden, which requires a working Linux env (CI or Lima).
 	{
 		Name:      "poc_example",
 		Spec:      "poc/example/faultbox.star",
 		Seed:      1,
 		Timeout:   60 * time.Second,
 		LinuxOnly: true,
-		Skip:      "requires /tmp/mock-db and /tmp/mock-api from make demo-build",
+		Skip:      "infra ready (make testops-prep); un-skip needs a seeded golden from a Linux run",
 	},
 	{
 		Name:      "poc_demo",
@@ -98,7 +104,7 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   90 * time.Second,
 		LinuxOnly: true,
-		Skip:      "requires /tmp/inventory-svc and /tmp/order-svc from make demo-build",
+		Skip:      "infra ready (make testops-prep); un-skip needs a seeded golden from a Linux run",
 	},
 	{
 		Name:      "poc_demo_container",
@@ -106,7 +112,7 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   180 * time.Second,
 		LinuxOnly: true,
-		Skip:      "requires Docker + postgres:16-alpine + redis:7-alpine",
+		Skip:      "requires Docker + postgres:16-alpine + redis:7-alpine — CI provisioning not yet added",
 	},
 	{
 		Name:      "poc_kafka_rfc014",
@@ -114,6 +120,6 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   180 * time.Second,
 		LinuxOnly: true,
-		Skip:      "requires Docker + apache/kafka:3.7.0",
+		Skip:      "requires Docker + apache/kafka:3.7.0 — CI provisioning not yet added",
 	},
 }

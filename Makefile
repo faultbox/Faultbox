@@ -1,5 +1,6 @@
 .PHONY: build test clean lint fmt vet run \
        demo demo-build demo-container \
+       testops-prep \
        env-create env-start env-stop env-destroy env-shell env-exec env-status env-verify
 
 APP_NAME := faultbox
@@ -51,6 +52,20 @@ demo: demo-build
 
 demo-container: demo-build
 	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- bash poc/demo-container/run-demo.sh
+
+# ─── testops: prep binaries for poc_* corpus cases ─────────────────
+#
+# Builds the service binaries the poc_example / poc_demo Starlark specs
+# reference at hardcoded /tmp paths, native to the host arch. Intended
+# for CI and for Lima runs of `go test ./testops/...`. Cross-compilation
+# (GOOS/GOARCH) is intentionally absent — whoever runs the testops
+# harness is the target OS, and binaries must match.
+testops-prep:
+	@echo "Building native binaries into /tmp/ for testops poc cases..."
+	CGO_ENABLED=0 go build -o /tmp/mock-db        ./poc/mock-db/
+	CGO_ENABLED=0 go build -o /tmp/mock-api       ./poc/mock-api/
+	CGO_ENABLED=0 go build -o /tmp/inventory-svc  ./poc/demo/inventory-svc/
+	CGO_ENABLED=0 go build -o /tmp/order-svc      ./poc/demo/order-svc/
 
 # ─── Linux Dev Environment (Lima) ──────────────────────────────────
 

@@ -47,6 +47,17 @@ make env-exec CMD="go test ./testops/... -v"
    [FINDINGS.md](FINDINGS.md) and set `Skip:` on the case until fixed.
 4. Commit the registry change and the golden in one PR.
 
+## Un-skipping a LinuxOnly case
+
+1. Confirm the prerequisite is provisioned in CI (`make testops-prep`
+   runs as a CI step; add Docker service definitions for container
+   cases).
+2. From a Linux host (Lima VM or a GitHub-hosted runner branch), run:
+   `go test ./testops/... -run <name> -update`
+3. Verify stability across 5 consecutive runs with the same seed.
+4. Remove the `Skip:` field from the Case literal.
+5. Commit the golden + registry change together.
+
 ## Non-determinism policy
 
 A golden is only committed if the same `(spec, seed)` produces the same
