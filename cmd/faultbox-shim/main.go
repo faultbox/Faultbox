@@ -110,6 +110,38 @@ func run() error {
 
 	listenerFd := 0
 
+	// Dial the host's Unix socket BEFORE installing the seccomp filter.
+	// The `connect(2)` syscall can be in the user's fault-rule set (e.g.
+	// `service = service(..., fault = {connect = deny(...)})` for
+	// DB-unreachable scenarios). If we dialed AFTER filter install,
+	// our own connect would hit the filter — kernel suspends it on
+	// SECCOMP_RET_USER_NOTIF waiting for a host listener that hasn't
+	// been handed its fd yet. Classic ordering deadlock (RFC-022 #53).
+	//
+	// Pre-dialing avoids the problem entirely: connect happens before
+	// the filter exists, returns immediately, and we reuse the open
+	// UnixConn for the SCM_RIGHTS send after filter install.
+	var preConn *net.UnixConn
+	willInstallFilter := len(cfg.SyscallNrs) > 0 && cfg.SocketPath != ""
+	if willInstallFilter {
+		phaseStart("dial_socket", "path", cfg.SocketPath, "order", "pre-filter")
+		c, err := net.Dial("unix", cfg.SocketPath)
+		if err != nil {
+			phaseError("dial_socket", err, "path", cfg.SocketPath)
+			return fmt.Errorf("connect to %s: %w", cfg.SocketPath, err)
+		}
+		uc, ok := c.(*net.UnixConn)
+		if !ok {
+			c.Close()
+			err := fmt.Errorf("not a unix connection")
+			phaseError("dial_socket", err)
+			return err
+		}
+		preConn = uc
+		defer preConn.Close()
+		phaseDone("dial_socket")
+	}
+
 	if len(cfg.SyscallNrs) > 0 {
 		// Required for unprivileged seccomp.
 		phaseStart("set_no_new_privs")
@@ -136,9 +168,11 @@ func run() error {
 		phaseDone("install_filter", "listener_fd", fd)
 	}
 
-	// Send the listener fd to the host via Unix domain socket (SCM_RIGHTS).
-	if cfg.SocketPath != "" {
-		if err := sendFdViaSocket(cfg.SocketPath, listenerFd); err != nil {
+	// Send the listener fd to the host over the pre-connected socket.
+	// sendmsg(2) may still be in the filter if the user rule targets it
+	// explicitly — uncommon, separate Phase 1 follow-up if reported.
+	if preConn != nil {
+		if err := sendFdOnConn(preConn, listenerFd); err != nil {
 			return fmt.Errorf("send fd via socket: %w", err)
 		}
 	} else if cfg.ReportPath != "" {
@@ -174,30 +208,19 @@ func run() error {
 	return unix.Exec(binary, execArgs, cleanEnv)
 }
 
-// sendFdViaSocket connects to the host's Unix socket and sends the listener
-// fd using SCM_RIGHTS. Waits for a single ACK byte before returning.
-// This replaces the pidfd_getfd approach — no PID tracking needed.
-func sendFdViaSocket(socketPath string, fd int) error {
-	phaseStart("dial_socket", "path", socketPath)
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		phaseError("dial_socket", err, "path", socketPath)
-		return fmt.Errorf("connect to %s: %w", socketPath, err)
-	}
-	defer conn.Close()
-	phaseDone("dial_socket")
-
-	uc, ok := conn.(*net.UnixConn)
-	if !ok {
-		err := fmt.Errorf("not a unix connection")
-		phaseError("dial_socket", err)
-		return err
-	}
-
+// sendFdOnConn sends the seccomp listener fd over a pre-connected
+// UnixConn using SCM_RIGHTS, then waits for a single ACK byte.
+//
+// The connection must be dialed BEFORE the seccomp filter is installed,
+// because a user fault rule on `connect` would trap the shim's own
+// dial post-install (see run() for the deadlock description).
+// sendmsg(2) / read(2) after filter install pass through unless the
+// user explicitly targets those syscalls — uncommon in practice.
+func sendFdOnConn(uc *net.UnixConn, fd int) error {
 	// Send the fd via SCM_RIGHTS ancillary data.
 	phaseStart("send_scm", "fd", fd)
 	rights := unix.UnixRights(fd)
-	_, _, err = uc.WriteMsgUnix([]byte("fd"), rights, nil)
+	_, _, err := uc.WriteMsgUnix([]byte("fd"), rights, nil)
 	if err != nil {
 		phaseError("send_scm", err)
 		return fmt.Errorf("send fd: %w", err)
