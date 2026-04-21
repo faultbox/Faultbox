@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"go.starlark.net/starlark"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/faultbox/Faultbox/internal/protocol"
 )
@@ -27,6 +28,14 @@ type MockConfig struct {
 	// mocks (@faultbox/mocks/) to carry topics, seed state, collections,
 	// etc. through the generic mock_service() primitive.
 	Config map[string]map[string]any
+
+	// Descriptors per interface — pre-parsed FileDescriptorSet registry
+	// populated from the `descriptors="./path/to/x.pb"` kwarg on
+	// mock_service(). Only meaningful for gRPC mocks; flipping the gRPC
+	// handler from google.protobuf.Struct to typed-proto encoding (RFC-023).
+	// Loaded at spec-parse time via protocol.LoadDescriptorSet so .pb
+	// parse errors surface before any test runs.
+	Descriptors map[string]*protoregistry.Files
 }
 
 // MockRouteEntry is one pattern → response binding.

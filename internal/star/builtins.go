@@ -76,8 +76,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"status_only":    starlark.NewBuiltin("status_only", builtinStatusOnly),
 		"redirect":       starlark.NewBuiltin("redirect", builtinRedirect),
 		"dynamic":        starlark.NewBuiltin("dynamic", builtinDynamic),
-		"grpc_response":  starlark.NewBuiltin("grpc_response", builtinGRPCResponse),
-		"grpc_error":     starlark.NewBuiltin("grpc_error", builtinGRPCError),
+		"grpc_response":       starlark.NewBuiltin("grpc_response", builtinGRPCResponse),
+		"grpc_typed_response": starlark.NewBuiltin("grpc_typed_response", builtinGRPCTypedResponse),
+		"grpc_raw_response":   starlark.NewBuiltin("grpc_raw_response", builtinGRPCRawResponse),
+		"grpc_error":          starlark.NewBuiltin("grpc_error", builtinGRPCError),
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,13 @@ import (
 	grpccreds "google.golang.org/grpc/credentials"
 	insecurecreds "google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 	grpcstructpb "google.golang.org/protobuf/types/known/structpb"
+
+	"github.com/faultbox/Faultbox/internal/protocol"
 )
 
 // TestMockServiceSpecLoad verifies mock_service() parses and registers a
@@ -459,6 +466,208 @@ cache = redis.server(
 		t.Errorf("GET greeting response = %q, want to contain 'hello'", buf[:n])
 	}
 }
+
+// TestMockServiceGRPCStdlib verifies @faultbox/mocks/grpc.star stands up
+// a typed gRPC mock backed by a FileDescriptorSet, and a compiled-stub-
+// style client decodes responses as the customer's real message type
+// (not google.protobuf.Struct). Regression guard for RFC-023 Phase 2.
+func TestMockServiceGRPCStdlib(t *testing.T) {
+	// Materialize a synthetic FileDescriptorSet matching the City / GeoService
+	// shape used in grpc_typed_encoder_test.go. The spec will load this .pb
+	// via descriptors= and encode responses against it.
+	pbPath := writeTestDescriptorSet(t)
+
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/grpc.star", "grpc")
+
+geo = grpc.server(
+    name        = "geo",
+    interface   = interface("main", "grpc", %d),
+    descriptors = %q,
+    services    = {
+        "/test.geo.GeoService/GetCity": {
+            "response": {"id": 42, "name": "Almaty", "country": "KZ", "currency": "KZT"},
+        },
+    },
+)
+`, port, pbPath)
+	if err := rt.LoadString("grpc_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	// Use grpc.NewClient + an anyProto-style receiver so we can decode
+	// against the real descriptor without generated stubs — simulates what
+	// a compiled *.pb.go client does internally.
+	conn, err := grpcdial.NewClient(addr, grpcdial.WithTransportCredentials(insecurecreds.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
+
+	// Load the same .pb on the client side to get the City descriptor.
+	files, err := protocol.LoadDescriptorSet(pbPath)
+	if err != nil {
+		t.Fatalf("LoadDescriptorSet on client side: %v", err)
+	}
+	cityDesc, _ := files.FindDescriptorByName("test.geo.City")
+	cityMd := cityDesc.(protoreflect.MessageDescriptor)
+	got := dynamicpb.NewMessage(cityMd)
+
+	if err := conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity",
+		&grpcEmptyMsg{}, &grpcTypedRecv{msg: got}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+
+	if v := got.Get(cityMd.Fields().ByName("id")).Int(); v != 42 {
+		t.Errorf("City.id = %d, want 42", v)
+	}
+	if v := got.Get(cityMd.Fields().ByName("name")).String(); v != "Almaty" {
+		t.Errorf("City.name = %q, want Almaty", v)
+	}
+}
+
+// TestMockServiceGRPCStdlib_ErrorRoute verifies grpc.server() with an
+// "error" service spec maps through grpc.error() to the wire-level
+// gRPC status code.
+func TestMockServiceGRPCStdlib_ErrorRoute(t *testing.T) {
+	pbPath := writeTestDescriptorSet(t)
+
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/grpc.star", "grpc")
+
+geo = grpc.server(
+    name        = "geo",
+    interface   = interface("main", "grpc", %d),
+    descriptors = %q,
+    services    = {
+        "/test.geo.GeoService/GetCity": {
+            "error": {"code": "PERMISSION_DENIED", "message": "admin only"},
+        },
+    },
+)
+`, port, pbPath)
+	if err := rt.LoadString("grpc_err.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, _ := grpcdial.NewClient(addr, grpcdial.WithTransportCredentials(insecurecreds.NewCredentials()))
+	defer conn.Close()
+
+	var resp anyRecv
+	err := conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity",
+		&grpcEmptyMsg{}, &resp)
+	st, ok := grpcstatus.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error, got %T: %v", err, err)
+	}
+	if st.Code() != grpccodes.PermissionDenied {
+		t.Errorf("status code = %s, want PermissionDenied", st.Code())
+	}
+	if st.Message() != "admin only" {
+		t.Errorf("status message = %q, want \"admin only\"", st.Message())
+	}
+}
+
+// writeTestDescriptorSet materializes a synthetic FileDescriptorSet
+// (test.geo.City / GeoService.GetCity) to a temp .pb file and returns
+// the path. Same shape as buildCityDescriptorSet() in the protocol
+// package; duplicated here to keep the star package test-only dependency
+// surface small.
+func writeTestDescriptorSet(t *testing.T) string {
+	t.Helper()
+	syntax := "proto3"
+	pkg := "test.geo"
+	mkField := func(name string, num int32, typ descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {
+		label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+		return &descriptorpb.FieldDescriptorProto{
+			Name: proto.String(name), Number: proto.Int32(num),
+			Type: &typ, Label: &label,
+		}
+	}
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name: proto.String("test/geo.proto"), Package: &pkg, Syntax: &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("City"), Field: []*descriptorpb.FieldDescriptorProto{
+				mkField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+				mkField("name", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				mkField("country", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				mkField("currency", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+			}},
+			{Name: proto.String("GetCityRequest"), Field: []*descriptorpb.FieldDescriptorProto{
+				mkField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+			}},
+		},
+		Service: []*descriptorpb.ServiceDescriptorProto{{
+			Name: proto.String("GeoService"),
+			Method: []*descriptorpb.MethodDescriptorProto{{
+				Name:       proto.String("GetCity"),
+				InputType:  proto.String(".test.geo.GetCityRequest"),
+				OutputType: proto.String(".test.geo.City"),
+			}},
+		}},
+	}
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{fdp}}
+	raw, err := proto.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshal set: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "test.pb")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write pb: %v", err)
+	}
+	return path
+}
+
+// grpcEmptyMsg is a zero-byte request for tests that don't care about input.
+type grpcEmptyMsg struct{}
+
+func (*grpcEmptyMsg) Reset()                   {}
+func (*grpcEmptyMsg) String() string           { return "empty" }
+func (*grpcEmptyMsg) ProtoMessage()            {}
+func (*grpcEmptyMsg) Marshal() ([]byte, error) { return nil, nil }
+func (*grpcEmptyMsg) Unmarshal([]byte) error   { return nil }
+
+// grpcTypedRecv decodes response bytes into an injected dynamicpb.Message,
+// simulating what a compiled *.pb.go client does internally.
+type grpcTypedRecv struct {
+	msg proto.Message
+}
+
+func (r *grpcTypedRecv) Reset()                   {}
+func (r *grpcTypedRecv) String() string           { return "grpcTypedRecv" }
+func (r *grpcTypedRecv) ProtoMessage()            {}
+func (r *grpcTypedRecv) Marshal() ([]byte, error) { return nil, nil }
+func (r *grpcTypedRecv) Unmarshal(b []byte) error { return proto.Unmarshal(b, r.msg) }
+
+// anyRecv accepts any response bytes without decoding; used when we expect
+// an error response (no body to decode).
+type anyRecv struct{}
+
+func (*anyRecv) Reset()                   {}
+func (*anyRecv) String() string           { return "anyRecv" }
+func (*anyRecv) ProtoMessage()            {}
+func (*anyRecv) Marshal() ([]byte, error) { return nil, nil }
+func (*anyRecv) Unmarshal([]byte) error   { return nil }
 
 // TestMockServiceMongoStdlib verifies @faultbox/mocks/mongodb.star stands up
 // a MongoDB mock and the real mongo driver completes handshake + find.

@@ -144,6 +144,10 @@ func (rt *Runtime) buildMockSpec(svcName, ifaceName string, svc *ServiceDef) (pr
 		out.Config = cfg
 	}
 
+	if files, ok := svc.Mock.Descriptors[ifaceName]; ok {
+		out.Descriptors = files
+	}
+
 	return out, nil
 }
 

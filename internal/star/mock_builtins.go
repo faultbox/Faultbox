@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"go.starlark.net/starlark"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/faultbox/Faultbox/internal/protocol"
 )
@@ -28,10 +29,11 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 		Interfaces: make(map[string]*InterfaceDef),
 		Env:        make(map[string]string),
 		Mock: &MockConfig{
-			Routes:  make(map[string][]MockRouteEntry),
-			Default: make(map[string]*MockResponseValue),
-			TLS:     make(map[string]bool),
-			Config:  make(map[string]map[string]any),
+			Routes:      make(map[string][]MockRouteEntry),
+			Default:     make(map[string]*MockResponseValue),
+			TLS:         make(map[string]bool),
+			Config:      make(map[string]map[string]any),
+			Descriptors: make(map[string]*protoregistry.Files),
 		},
 	}
 
@@ -116,6 +118,23 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 				return nil, fmt.Errorf("mock_service() %q config must be a string-keyed dict", name)
 			}
 			svc.Mock.Config[ifaceName] = cfg
+		case "descriptors":
+			// descriptors="/path/to/file.pb" — load a FileDescriptorSet
+			// (protoc output) for typed gRPC responses. RFC-023 Phase 2.
+			// Loaded eagerly so .pb parse errors surface at spec-load time.
+			path, ok := starlark.AsString(kv[1])
+			if !ok {
+				return nil, fmt.Errorf("mock_service() descriptors must be a path string (got %s)", kv[1].Type())
+			}
+			ifaceName, err := singleInterfaceName(svc)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
+			}
+			files, err := protocol.LoadDescriptorSet(path)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q descriptors: %w", name, err)
+			}
+			svc.Mock.Descriptors[ifaceName] = files
 		}
 	}
 
@@ -295,6 +314,44 @@ func builtinGRPCResponse(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	return newStaticResponse(&protocol.MockResponse{
 		Status: 0, // OK
 		Body:   structBytes,
+	}), nil
+}
+
+// grpc_typed_response(body) — returns a gRPC response whose body is the
+// raw JSON representation of a typed proto message. Only usable with
+// mock_service(..., descriptors="x.pb"); the gRPC handler resolves the
+// per-method output descriptor at request-time and encodes the JSON
+// against it. Use via @faultbox/mocks/grpc.star's grpc.server() wrapper.
+// RFC-023 Phase 2.
+func builtinGRPCTypedResponse(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var body starlark.Value = starlark.None
+	if err := starlark.UnpackArgs("grpc_typed_response", args, kwargs, "body?", &body); err != nil {
+		return nil, err
+	}
+	jsonBytes, err := marshalJSONBody(body)
+	if err != nil {
+		return nil, fmt.Errorf("grpc_typed_response body: %w", err)
+	}
+	return newStaticResponse(&protocol.MockResponse{
+		Status: 0,
+		Body:   jsonBytes, // encoded at request time against the method's output descriptor
+	}), nil
+}
+
+// grpc_raw_response(bytes) — returns a gRPC response whose body is
+// pre-encoded wire bytes, bypassing the typed encoder entirely. Escape
+// hatch for cases where the typed encoder can't express what the
+// customer needs (oneof tricks, deprecated fields, extensions).
+// Power-user path. RFC-023 Phase 2.
+func builtinGRPCRawResponse(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var raw starlark.String
+	if err := starlark.UnpackArgs("grpc_raw_response", args, kwargs, "body", &raw); err != nil {
+		return nil, err
+	}
+	return newStaticResponse(&protocol.MockResponse{
+		Status:      0,
+		Body:        []byte(string(raw)),
+		ContentType: protocol.GRPCRawBodyContentType,
 	}), nil
 }
 
