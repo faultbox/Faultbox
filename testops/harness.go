@@ -62,6 +62,24 @@ var Cases = []Case{
 		Seed:    1,
 		Timeout: 30 * time.Second,
 	},
+	{
+		Name:    "http_basic",
+		Spec:    "testops/corpus/http_basic.star",
+		Seed:    1,
+		Timeout: 30 * time.Second,
+	},
+	{
+		Name:    "kafka_basic",
+		Spec:    "testops/corpus/kafka_basic.star",
+		Seed:    1,
+		Timeout: 30 * time.Second,
+	},
+	{
+		Name:    "mongo_basic",
+		Spec:    "testops/corpus/mongo_basic.star",
+		Seed:    1,
+		Timeout: 30 * time.Second,
+	},
 
 	// --- LinuxOnly, currently skipped: needs build artifacts or Docker. ---
 	// These stay in the registry so their absence is visible; un-skip

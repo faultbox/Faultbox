@@ -1,0 +1,21 @@
+=== test_dynamic_handler_echoes_query ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_json_response_has_seeded_body ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_status_only_returns_configured_code ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api

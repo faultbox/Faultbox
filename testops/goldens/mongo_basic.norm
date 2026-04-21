@@ -1,0 +1,14 @@
+=== test_find_on_second_collection ===
+--- test ---
+step_send users
+step_recv users
+--- users ---
+service_started
+service_ready
+=== test_find_returns_seeded_users ===
+--- test ---
+step_send users
+step_recv users
+--- users ---
+service_started
+service_ready
