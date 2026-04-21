@@ -1,13 +1,13 @@
 # RFC-022: Multi-Process Container Seccomp Acquisition
 
-- **Status:** Draft — revised after Phase 0 (see "Phase 0 findings" below)
-- **Target:** v0.9.0 or later
+- **Status:** Partially Implemented — Phase 0 in v0.8.7, Phase 1 in v0.8.8
+- **Target:** v0.9.0 or later (Phase 2 deferred pending new evidence)
 - **Created:** 2026-04-19
-- **Updated:** 2026-04-21 (Phase 0 findings)
+- **Updated:** 2026-04-21 (Phase 1 findings; customer bug fixed)
 - **Discussion:** [#53](https://github.com/faultbox/Faultbox/issues/53)
-- **Tracking issue:** [#51](https://github.com/faultbox/Faultbox/issues/51) (customer report + workaround usage)
+- **Tracking issue:** [#51](https://github.com/faultbox/Faultbox/issues/51) (customer report — **resolved in v0.8.8**)
 - **Depends on:** RFC-014 (Unix socket fd passing — v0.6.0)
-- **Workaround shipped in:** v0.8.5 (`service(seccomp = False)`)
+- **Workaround:** v0.8.5 (`service(seccomp = False)`) — still supported, no longer required for `connect`-targeting rules
 
 ## Summary
 
@@ -22,6 +22,88 @@ This RFC proposes a real fix. A workaround — `service(seccomp = False)`
 sacrifices syscall-level fault injection on the opted-out service but
 preserves everything above it (proxy-level faults, healthchecks, event
 log, etc.).
+
+## Phase 1 findings (2026-04-21) — customer bug fixed
+
+The customer (issue #51) returned a thorough diagnostic package against
+the v0.8.7 instrumented shim. The Phase 0 logs + their `/proc/<pid>/stack`
+output made the root cause unambiguous — and it was **not** what this
+RFC originally hypothesized.
+
+### Ground truth
+
+Customer spec uses a `connect=deny("ECONNREFUSED")` fault rule on the
+MySQL service. This expands to a 1-entry filter containing `__NR_connect`.
+Phase 0 logs showed the shim reaching `dial_socket step=start` and
+never emitting `step=done`. `/proc/<pid>/stack` on the hung shim:
+
+```
+seccomp_do_user_notification.isra.0+0x300/0x3e0
+__seccomp_filter+0x2bc/0x448
+__secure_computing+0xbc/0x158
+syscall_trace_enter+0x1bc/0x200
+```
+
+`strace -p <shim-pid>` confirmed: `connect(AF_UNIX, "/var/run/faultbox/fd.sock")`
+was suspended on `SECCOMP_RET_USER_NOTIF`, waiting for the supervisor
+to respond — which the supervisor could not do because it was waiting
+for the shim to send it the listener fd over the socket the shim was
+trying to open.
+
+**Classic ordering deadlock, at `connect` instead of `write`.** Same
+structural bug as the stderr-write deadlock fixed in v0.8.7, but on
+a different syscall in the critical section between filter install and
+SCM_RIGHTS send. There is nothing MySQL-specific about the failure —
+it triggers for any service where the user's fault list includes
+`connect`, which is extremely common (simulated DB unreachability,
+network partitions, etc.).
+
+### Fix: dial the host socket BEFORE installing the filter
+
+`cmd/faultbox-shim/main.go`:
+
+- `net.Dial("unix", SocketPath)` now runs BEFORE `seccomp.InstallFilter`.
+  The resulting `*net.UnixConn` is held in shim-local memory.
+- `connect(2)` therefore happens before any filter exists and returns
+  immediately, regardless of whether the user's fault list includes
+  connect.
+- `seccomp.InstallFilter` runs next; the `seccomp(2)` syscall itself
+  is never in the filter (we don't allow faulting it).
+- `sendmsg(2)` + `read(2)` for SCM_RIGHTS + ACK run on the already-open
+  connection after filter install. `sendmsg` is not a write-family
+  syscall so it passes through `write/writev/pwrite64` filters; `read`
+  passes through unless explicitly filtered (less common).
+
+Split `sendFdViaSocket` → `sendFdOnConn(conn, fd)` since the shim now
+owns the connection across two critical sections.
+
+### Validation
+
+`poc/mysql-rfc022-repro/connect_fault.star` reproduces the customer's
+pattern exactly: `fault(db, connect=deny("ECONNREFUSED"), ...)` on a
+`mysql:8.0.32` container.
+
+- **Pre-Phase-1 (v0.8.7):** 180 s hang at `dial_socket`, test fails on
+  test-context deadline.
+- **Post-Phase-1 (v0.8.8):** accept completes in `waited_ms=149`, full
+  handoff succeeds, test passes in 15.6 s.
+
+### What's still deferred to Phase 2
+
+The same structural pattern could bite on other syscalls in the
+critical section — notably:
+
+- `sendmsg` — if a user faults sendmsg (uncommon), SCM_RIGHTS send hangs.
+- `read` — if a user faults read, the ACK read hangs.
+
+Neither has been reported. When one is, the fix is the same shape:
+move the affected syscall out of the critical section OR extend
+`InstallFilter`'s whitelist to cover per-fd exceptions for sendmsg /
+read / sendto / recvfrom on the pre-opened socket fd.
+
+Phase 2 (pre-shim capture binary) is no longer the obvious next step;
+it's retained in this RFC as a contingency if customer data suggests
+a failure mode that syscall-reordering can't cover.
 
 ## Phase 0 findings (2026-04-21)
 
