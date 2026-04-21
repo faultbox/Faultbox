@@ -51,18 +51,26 @@ type SockFprog struct {
 // InstallFilter builds and installs a BPF filter that sends notifications
 // for the specified syscall numbers. Returns the listener fd.
 //
-// allowFdForWrite is a file descriptor that write() calls should be ALLOWED
-// to (not intercepted). This is needed for the shim pipe — the child must
-// write the listener fd number to the parent before exec. Set to -1 to disable.
+// allowFdForWrite is a file descriptor that write()/writev()/pwrite64()
+// calls should be ALLOWED to (not intercepted). Used by the shim to let
+// stderr JSON logs pass through the filter during the handoff critical
+// section. Set to -1 to disable.
+//
+// allowFdForSocket is a file descriptor that read()/readv()/pread64() and
+// sendmsg()/sendto()/recvmsg()/recvfrom() calls should be ALLOWED to.
+// Used by the shim for its SCM_RIGHTS send + ACK read on the pre-opened
+// host Unix socket, so user fault rules that target read or sendto (with
+// their sendmsg/readv family expansions) don't deadlock the shim against
+// its own filter. Set to -1 to disable. RFC-022 v0.9.1.
 //
 // Must be called from the process that should be filtered (the child).
 // The filter survives exec().
-func InstallFilter(syscallNrs []uint32, allowFdForWrite int) (int, error) {
+func InstallFilter(syscallNrs []uint32, allowFdForWrite, allowFdForSocket int) (int, error) {
 	if len(syscallNrs) == 0 {
 		return -1, fmt.Errorf("no syscalls to filter")
 	}
 
-	prog := buildFilter(syscallNrs, allowFdForWrite)
+	prog := buildFilter(syscallNrs, allowFdForWrite, allowFdForSocket)
 
 	fprog := SockFprog{
 		Len:    uint16(len(prog)),
@@ -107,13 +115,20 @@ const (
 // buildFilter creates a BPF program:
 //
 //	load arch → check arch → skip if wrong
-//	load syscall nr → for each target: if match → check exceptions → RET USER_NOTIF
+//	load syscall nr → for each target: if match → check fd exceptions → RET USER_NOTIF
 //	default → RET ALLOW
 //
-// If allowFdForWrite >= 0 and "write" (or equivalent) is in syscallNrs,
-// the filter allows write() calls where arg0 == allowFdForWrite. This
-// prevents deadlock when the shim child needs to write to the parent pipe.
-func buildFilter(syscallNrs []uint32, allowFdForWrite int) []unix.SockFilter {
+// Two fd-exception whitelists applied per-syscall-family:
+//
+//   - allowFdForWrite (>= 0): allows write/writev/pwrite64 when arg0 matches.
+//     Used by shim for stderr log writes during the handoff critical section.
+//   - allowFdForSocket (>= 0): allows read/readv/pread64/sendmsg/sendto/
+//     recvmsg/recvfrom when arg0 matches. Used by shim for SCM_RIGHTS send +
+//     ACK read on the pre-opened host socket (RFC-022 v0.9.1).
+//
+// Each syscall is classified into at most one whitelist family; write-family
+// and socket-family are disjoint.
+func buildFilter(syscallNrs []uint32, allowFdForWrite, allowFdForSocket int) []unix.SockFilter {
 	arch := nativeArch()
 	insns := make([]unix.SockFilter, 0, 32)
 
@@ -138,61 +153,66 @@ func buildFilter(syscallNrs []uint32, allowFdForWrite int) []unix.SockFilter {
 		K:    offsetNr,
 	})
 
-	// Determine which syscall nrs are "write-like" (need the fd exception).
+	// Classify each filtered syscall into one of three buckets:
+	//  - write-family → arg0 check against allowFdForWrite (stderr)
+	//  - socket-family → arg0 check against allowFdForSocket (pre-opened socket)
+	//  - everything else → unconditional NOTIFY
 	writeLike := make(map[uint32]bool)
-	if allowFdForWrite >= 0 {
-		// write, writev, pwrite64 — any syscall where arg0 is the fd and
-		// we don't want to intercept writes to the pipe.
-		for _, nr := range syscallNrs {
-			name := SyscallName(int32(nr))
-			if name == "write" || name == "writev" || name == "pwrite64" {
+	socketLike := make(map[uint32]bool)
+	for _, nr := range syscallNrs {
+		name := SyscallName(int32(nr))
+		switch name {
+		case "write", "writev", "pwrite64":
+			if allowFdForWrite >= 0 {
 				writeLike[nr] = true
+			}
+		case "read", "readv", "pread64",
+			"sendmsg", "sendto", "recvmsg", "recvfrom":
+			if allowFdForSocket >= 0 {
+				socketLike[nr] = true
 			}
 		}
 	}
 
+	// emitFdWhitelist appends the 6-instruction block that checks arg0 against
+	// `allowFd` and either ALLOWs (match) or NOTIFies (no match) the syscall
+	// identified by `nr`. Instruction layout:
+	//   JEQ nr    Jt=0 Jf=5   (no match → skip 5 insns)
+	//   LD arg0
+	//   JEQ allowFd Jt=1 Jf=0 (match fd → skip NOTIF, hit ALLOW)
+	//   RET NOTIF
+	//   RET ALLOW
+	//   LD nr  (restore A for the next syscall check)
+	emitFdWhitelist := func(nr uint32, allowFd int) {
+		insns = append(insns,
+			unix.SockFilter{
+				Code: bpfJMP | bpfJEQ | bpfK,
+				Jt:   0, Jf: 5,
+				K: nr,
+			},
+			unix.SockFilter{
+				Code: bpfLD | bpfW | bpfABS,
+				K:    offsetArgs0,
+			},
+			unix.SockFilter{
+				Code: bpfJMP | bpfJEQ | bpfK,
+				Jt:   1, Jf: 0,
+				K: uint32(allowFd),
+			},
+			unix.SockFilter{Code: bpfRET, K: SECCOMP_RET_USER_NOTIF},
+			unix.SockFilter{Code: bpfRET, K: SECCOMP_RET_ALLOW},
+			unix.SockFilter{Code: bpfLD | bpfW | bpfABS, K: offsetNr},
+		)
+	}
+
 	// For each target syscall
 	for _, nr := range syscallNrs {
-		if writeLike[nr] {
-			// For write-like syscalls: check if arg0 == allowFd → ALLOW, else NOTIFY.
-			// JEQ nr → check arg0, else skip 5 instructions
-			// (load arg0 + jeq fd + ret notif + ret allow + reload nr = 5)
-			insns = append(insns,
-				unix.SockFilter{
-					Code: bpfJMP | bpfJEQ | bpfK,
-					Jt:   0, // match: fall through
-					Jf:   5, // no match: skip this block
-					K:    nr,
-				},
-				// Load arg0 (fd)
-				unix.SockFilter{
-					Code: bpfLD | bpfW | bpfABS,
-					K:    offsetArgs0,
-				},
-				// If arg0 == allowFd → ALLOW (skip 1 to RET ALLOW)
-				unix.SockFilter{
-					Code: bpfJMP | bpfJEQ | bpfK,
-					Jt:   1, // match: skip NOTIF, go to ALLOW
-					Jf:   0, // no match: fall through to NOTIF
-					K:    uint32(allowFdForWrite),
-				},
-				// RET USER_NOTIF
-				unix.SockFilter{
-					Code: bpfRET,
-					K:    SECCOMP_RET_USER_NOTIF,
-				},
-				// RET ALLOW (for the exception fd)
-				unix.SockFilter{
-					Code: bpfRET,
-					K:    SECCOMP_RET_ALLOW,
-				},
-			)
-			// Reload syscall nr for next check (we clobbered A with arg0)
-			insns = append(insns, unix.SockFilter{
-				Code: bpfLD | bpfW | bpfABS,
-				K:    offsetNr,
-			})
-		} else {
+		switch {
+		case writeLike[nr]:
+			emitFdWhitelist(nr, allowFdForWrite)
+		case socketLike[nr]:
+			emitFdWhitelist(nr, allowFdForSocket)
+		default:
 			// Simple case: JEQ nr → NOTIF, else skip
 			insns = append(insns,
 				unix.SockFilter{
