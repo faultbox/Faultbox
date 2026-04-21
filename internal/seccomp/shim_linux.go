@@ -63,7 +63,9 @@ func RunShimChild() error {
 
 		// Install the seccomp filter — this process gets filtered.
 		// Pass the pipe fd so write() to it is allowed (avoids deadlock).
-		fd, err := InstallFilter(cfg.SyscallNrs, cfg.PipeFd)
+		// No socket-fd whitelist needed in legacy binary-mode path
+		// (-1 disables the socket-family exceptions added in RFC-022 v0.9.1).
+		fd, err := InstallFilter(cfg.SyscallNrs, cfg.PipeFd, -1)
 		if err != nil {
 			return fmt.Errorf("install seccomp filter: %w", err)
 		}

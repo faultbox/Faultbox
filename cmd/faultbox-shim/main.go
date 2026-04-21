@@ -142,6 +142,19 @@ func run() error {
 		phaseDone("dial_socket")
 	}
 
+	// Resolve the pre-connected socket's raw fd so we can whitelist it in
+	// the seccomp filter below. Covers user fault rules on sendto/recvfrom
+	// (expands to sendmsg/recvmsg — our SCM_RIGHTS send) and read (our ACK
+	// read) that would otherwise deadlock the shim against its own filter.
+	// RFC-022 v0.9.1.
+	socketFd := -1
+	if preConn != nil {
+		sc, err := preConn.SyscallConn()
+		if err == nil {
+			_ = sc.Control(func(f uintptr) { socketFd = int(f) })
+		}
+	}
+
 	if len(cfg.SyscallNrs) > 0 {
 		// Required for unprivileged seccomp.
 		phaseStart("set_no_new_privs")
@@ -151,15 +164,21 @@ func run() error {
 		}
 		phaseDone("set_no_new_privs")
 
-		// Install seccomp filter. Pass fd 2 (stderr) as the whitelist so
-		// subsequent phaseDone/phaseStart JSON logs during the critical
-		// section between filter install and SCM_RIGHTS send can still
-		// write to stderr without being intercepted by our own filter.
-		// Without this, our log writes hit the filter, the kernel
-		// suspends them waiting for a userspace listener (which hasn't
-		// been handed to the host yet) — classic self-deadlock.
-		phaseStart("install_filter", "syscall_count", len(cfg.SyscallNrs), "whitelist_fd", 2)
-		fd, err := seccomp.InstallFilter(cfg.SyscallNrs, 2)
+		// Install seccomp filter with two fd whitelists:
+		//   - stderr (fd 2): write-family exception for our own JSON logs
+		//     emitted between filter install and SCM_RIGHTS send. Fixed
+		//     in v0.8.7.
+		//   - socket fd (pre-connected UnixConn): read-family + send/recv-
+		//     family exception for SCM_RIGHTS WriteMsgUnix + ACK Read.
+		//     Prevents self-deadlock if the user's fault list includes
+		//     read= or sendto= (family-expands to sendmsg/recvmsg).
+		//     New in v0.9.1.
+		phaseStart("install_filter",
+			"syscall_count", len(cfg.SyscallNrs),
+			"whitelist_stderr_fd", 2,
+			"whitelist_socket_fd", socketFd,
+		)
+		fd, err := seccomp.InstallFilter(cfg.SyscallNrs, 2, socketFd)
 		if err != nil {
 			phaseError("install_filter", err)
 			return fmt.Errorf("install seccomp filter: %w", err)

@@ -1,13 +1,12 @@
 # RFC-022: Multi-Process Container Seccomp Acquisition
 
-- **Status:** Partially Implemented — Phase 0 in v0.8.7, Phase 1 in v0.8.8
-- **Target:** v0.9.0 or later (Phase 2 deferred pending new evidence)
+- **Status:** Implemented — Phase 0 in v0.8.7, Phase 1 in v0.8.8, Phase 2 (preemptive sendmsg/read hardening) in v0.9.1
 - **Created:** 2026-04-19
-- **Updated:** 2026-04-21 (Phase 1 findings; customer bug fixed)
+- **Updated:** 2026-04-22 (Phase 2 shipped; closes all three self-deadlock variants)
 - **Discussion:** [#53](https://github.com/faultbox/Faultbox/issues/53)
-- **Tracking issue:** [#51](https://github.com/faultbox/Faultbox/issues/51) (customer report — **resolved in v0.8.8**)
+- **Tracking issue:** [#51](https://github.com/faultbox/Faultbox/issues/51) (customer report — resolved in v0.8.8)
 - **Depends on:** RFC-014 (Unix socket fd passing — v0.6.0)
-- **Workaround:** v0.8.5 (`service(seccomp = False)`) — still supported, no longer required for `connect`-targeting rules
+- **Workaround:** v0.8.5 (`service(seccomp = False)`) — still supported but no longer required for any of the three self-deadlock variants
 
 ## Summary
 
@@ -22,6 +21,65 @@ This RFC proposes a real fix. A workaround — `service(seccomp = False)`
 sacrifices syscall-level fault injection on the opted-out service but
 preserves everything above it (proxy-level faults, healthchecks, event
 log, etc.).
+
+## Phase 2 findings (2026-04-22) — preemptive sendmsg/read hardening, RFC complete
+
+Phase 1 (v0.8.8) shipped the `connect` self-deadlock fix and explicitly
+flagged two sibling deadlocks that could bite on future user rules:
+
+- `sendmsg` — if a user faults `sendto` (family-expanded by
+  `expandSyscallFamily` to `{sendto, sendmsg}`), the shim's
+  `WriteMsgUnix` for SCM_RIGHTS would trap on its own filter.
+- `read` — if a user faults `read` directly (family-expanded to
+  `{read, readv, pread64}`), the shim's ACK read after SCM_RIGHTS
+  would trap.
+
+Rather than wait for a customer to hit either, v0.9.1 closes them
+preemptively using the same fd-whitelist mechanism the v0.8.7
+stderr fix already exercised.
+
+### Fix: extend `InstallFilter` with a second fd whitelist
+
+```go
+InstallFilter(syscallNrs, allowFdForWrite int, allowFdForSocket int)
+```
+
+`allowFdForSocket` covers seven socket-I/O syscalls on the pre-
+opened host socket fd:
+
+  read, readv, pread64, sendmsg, sendto, recvmsg, recvfrom
+
+The shim resolves its `*net.UnixConn`'s raw fd via `SyscallConn.Control`
+immediately after dial and passes it through to `InstallFilter`. The
+BPF program emits the same 6-instruction arg0-check block for each
+socket-family syscall that's in the user's filter, matching exactly
+the stderr path's shape.
+
+Write-family and socket-family are disjoint — no syscall is classified
+into both. Passing `-1` for either parameter disables that whitelist
+(preserves the legacy binary-mode `shim_linux.go` path unchanged).
+
+### Verification
+
+Three Lima repros now pass cleanly against v0.9.1 on `mysql:8.0.32`
+where v0.8.x would have hung 180s:
+
+| Spec | Fault rule | v0.8.x | v0.9.1 |
+|---|---|---|---|
+| `connect_fault.star` | `connect=deny(ECONNREFUSED)` | 180s hang (fixed v0.8.8) | 149 ms handoff |
+| `read_fault.star` | `read=deny(EIO)` | would hang on ACK read | 147 ms handoff |
+| `sendto_fault.star` | `sendto=deny(ECONNREFUSED)` | would hang on SCM send (sendmsg expansion) | 109 ms handoff |
+
+11 unit tests in `internal/seccomp/filter_linux_test.go` cover BPF
+classification for each of the seven socket-family syscalls plus the
+disabled-whitelist and unrelated-syscall cases.
+
+### RFC status
+
+All three known self-deadlock variants are fixed. No further shim
+changes planned under RFC-022. `seccomp=False` from v0.8.5 remains
+available as a defensive escape hatch but is no longer required for
+any documented user rule pattern.
 
 ## Phase 1 findings (2026-04-21) — customer bug fixed
 
