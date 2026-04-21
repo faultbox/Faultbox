@@ -1,13 +1,14 @@
 # RFC-023: Typed-Proto gRPC Mocks in Starlark
 
-- **Status:** Accepted (2026-04-21)
+- **Status:** Implemented (v0.9.0, 2026-04-22)
 - **Target:** v0.9.0
 - **Created:** 2026-04-19
-- **Accepted:** 2026-04-21 — open questions resolved, implementation underway on `epic/v0.9.0`
+- **Accepted:** 2026-04-21 — open questions resolved
+- **Implemented:** 2026-04-22 — 4 phases shipped on `epic/v0.9.0`
 - **Discussion:** [#52](https://github.com/faultbox/Faultbox/issues/52)
-- **Customer waiting:** truck-api Phase 1 shipped on v0.8.8 using the Go-binary fallback; RFC-023 targets collapsing that binary to ~10 lines of Starlark.
+- **Customer motivation:** truck-api Phase 1 shipped on v0.8.8 using the Go-binary fallback; v0.9.0 collapses that binary to ~10 lines of Starlark.
 - **Depends on:** RFC-017 (Native Mock Services — v0.8.0)
-- **Workaround pattern documented in:** v0.8.6 (Go binary mock; see `docs/mock-services.md`)
+- **Go-binary fallback:** retained in `docs/mock-services.md` as a power-user escape hatch for streaming / complex dynamic logic.
 
 ## Summary
 
