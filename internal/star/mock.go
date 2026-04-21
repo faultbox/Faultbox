@@ -36,6 +36,31 @@ type MockConfig struct {
 	// Loaded at spec-parse time via protocol.LoadDescriptorSet so .pb
 	// parse errors surface before any test runs.
 	Descriptors map[string]*protoregistry.Files
+
+	// OpenAPI per interface — pre-parsed and validated OpenAPI 3.0
+	// document populated from the `openapi="./path/to/spec.yaml"` kwarg
+	// on mock_service(). Only meaningful for HTTP mocks; the HTTP handler
+	// auto-generates routes from the spec at startMockService time (RFC-021).
+	// Loaded at spec-parse time via protocol.LoadOpenAPI so malformed
+	// specs fail before any test runs.
+	OpenAPI map[string]*protocol.OpenAPISpec
+
+	// ExampleSelection per interface — name of the example-selection
+	// strategy: "first" (default, deterministic), "random", "synthesize",
+	// or any named-example key declared in the OpenAPI document. RFC-021.
+	ExampleSelection map[string]string
+
+	// Overrides per interface — route table that REPLACES generated routes
+	// with the same pattern (listed before generated routes in the match
+	// order). Patterns accept OpenAPI-style path parameters (`{id}`) and
+	// are normalized to globs (`*`) at build time. RFC-021 OQ4.
+	Overrides map[string][]MockRouteEntry
+
+	// Validate per interface — request validation mode. One of "off"
+	// (default, no validation), "warn" (log malformed requests, serve
+	// generated response anyway), "strict" (reject with HTTP 400).
+	// Only honoured when OpenAPI is set. RFC-021 OQ6.
+	Validate map[string]string
 }
 
 // MockRouteEntry is one pattern → response binding.

@@ -3,6 +3,7 @@ package star
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"go.starlark.net/starlark"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -29,11 +30,15 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 		Interfaces: make(map[string]*InterfaceDef),
 		Env:        make(map[string]string),
 		Mock: &MockConfig{
-			Routes:      make(map[string][]MockRouteEntry),
-			Default:     make(map[string]*MockResponseValue),
-			TLS:         make(map[string]bool),
-			Config:      make(map[string]map[string]any),
-			Descriptors: make(map[string]*protoregistry.Files),
+			Routes:           make(map[string][]MockRouteEntry),
+			Default:          make(map[string]*MockResponseValue),
+			TLS:              make(map[string]bool),
+			Config:           make(map[string]map[string]any),
+			Descriptors:      make(map[string]*protoregistry.Files),
+			OpenAPI:          make(map[string]*protocol.OpenAPISpec),
+			ExampleSelection: make(map[string]string),
+			Overrides:        make(map[string][]MockRouteEntry),
+			Validate:         make(map[string]string),
 		},
 	}
 
@@ -118,6 +123,80 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 				return nil, fmt.Errorf("mock_service() %q config must be a string-keyed dict", name)
 			}
 			svc.Mock.Config[ifaceName] = cfg
+		case "openapi":
+			// openapi="/path/to/spec.yaml" — load an OpenAPI 3.0 document
+			// (YAML or JSON) whose paths × operations become auto-generated
+			// mock routes. RFC-021 Phase 1. Loaded eagerly so parse/validation
+			// errors surface at spec-load time.
+			path, ok := starlark.AsString(kv[1])
+			if !ok {
+				return nil, fmt.Errorf("mock_service() openapi must be a path string (got %s)", kv[1].Type())
+			}
+			ifaceName, err := singleInterfaceName(svc)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
+			}
+			spec, err := protocol.LoadOpenAPI(path)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q openapi: %w", name, err)
+			}
+			svc.Mock.OpenAPI[ifaceName] = spec
+		case "examples":
+			// examples= selects the response-picking strategy for OpenAPI
+			// route generation. Accepted values:
+			//   - ""       — same as "first"
+			//   - "first"  — deterministic, first declared example
+			//   - "random" — seeded random per operation (reproducible)
+			//   - "synthesize" — first example if present, else minimal
+			//                    type-correct values from the schema
+			//   - any other string — treated as a named key in the
+			//                        operations' `examples:` maps
+			// Validation is deferred to routes-build time where the
+			// selector resolves.
+			sel, ok := starlark.AsString(kv[1])
+			if !ok {
+				return nil, fmt.Errorf("mock_service() examples must be a string (got %s)", kv[1].Type())
+			}
+			ifaceName, err := singleInterfaceName(svc)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
+			}
+			svc.Mock.ExampleSelection[ifaceName] = sel
+		case "overrides":
+			// overrides={METHOD /path: mock_response()} — routes that
+			// REPLACE OpenAPI-generated entries with the same pattern.
+			// Paths accept OpenAPI-style parameters (`{id}`) which are
+			// normalised to glob segments (`*`) so override keys can be
+			// copied directly from the OpenAPI document. RFC-021 OQ4.
+			dict, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("mock_service() overrides must be a dict (got %s)", kv[1].Type())
+			}
+			ifaceName, err := singleInterfaceName(svc)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
+			}
+			overrides, err := parseRoutesDict(dict)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q overrides: %w", name, err)
+			}
+			svc.Mock.Overrides[ifaceName] = overrides
+		case "validate":
+			// validate= controls request validation when openapi= is set.
+			// off (default): no validation. warn: log mismatches but
+			// serve anyway. strict: reject with HTTP 400. RFC-021 OQ6.
+			mode, ok := starlark.AsString(kv[1])
+			if !ok {
+				return nil, fmt.Errorf("mock_service() validate must be a string (got %s)", kv[1].Type())
+			}
+			if mode != "" && mode != "off" && mode != "warn" && mode != "strict" {
+				return nil, fmt.Errorf("mock_service() %q validate=%q: expected one of off/warn/strict", name, mode)
+			}
+			ifaceName, err := singleInterfaceName(svc)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
+			}
+			svc.Mock.Validate[ifaceName] = mode
 		case "descriptors":
 			// descriptors="/path/to/file.pb" — load a FileDescriptorSet
 			// (protoc output) for typed gRPC responses. RFC-023 Phase 2.
@@ -178,9 +257,25 @@ func parseRoutesDict(d *starlark.Dict) ([]MockRouteEntry, error) {
 		if !ok {
 			return nil, fmt.Errorf("route %q: value must be a mock_response (got %s)", pattern, pair[1].Type())
 		}
-		out = append(out, MockRouteEntry{Pattern: pattern, Response: resp})
+		out = append(out, MockRouteEntry{
+			Pattern:  normaliseRoutePattern(pattern),
+			Response: resp,
+		})
 	}
 	return out, nil
+}
+
+// normaliseRoutePattern converts OpenAPI-style path parameters (`{name}`) in
+// the path portion of a route pattern into glob segments (`*`) understood by
+// the HTTP mock matcher. Patterns without `{` are returned unchanged so
+// existing `METHOD /foo/*` usage stays byte-identical. The method portion
+// (before the first space) is left alone.
+func normaliseRoutePattern(pattern string) string {
+	sp := strings.IndexByte(pattern, ' ')
+	if sp < 0 || !strings.Contains(pattern[sp+1:], "{") {
+		return pattern
+	}
+	return pattern[:sp+1] + protocol.OpenAPIPathToGlob(pattern[sp+1:])
 }
 
 // json_response(status, body, headers={}) — encodes body as JSON.

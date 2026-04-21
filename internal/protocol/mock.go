@@ -45,6 +45,18 @@ type MockSpec struct {
 	// LoadDescriptorSet. Used only by the gRPC handler; other protocols
 	// ignore it. See RFC-023.
 	Descriptors *protoregistry.Files
+
+	// OpenAPI, when non-nil, carries the loaded OpenAPI document that
+	// generated this spec's routes. The HTTP handler consults it at
+	// request time when ValidateMode is "warn" or "strict" to validate
+	// request bodies against the operation's declared schema. RFC-021.
+	OpenAPI *OpenAPISpec
+
+	// ValidateMode governs request validation. One of "" / "off" (no
+	// validation), "warn" (emit an event for non-matching requests,
+	// serve generated response anyway), "strict" (reject with HTTP 400).
+	// Only consulted when OpenAPI is non-nil. RFC-021 OQ6.
+	ValidateMode string
 }
 
 // MockRoute pairs a pattern with a handler. Pattern matching is

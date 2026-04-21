@@ -125,7 +125,13 @@ func (p *httpProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 		ln = tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{*spec.TLSCert}})
 	}
 
-	mux := &mockHTTPMux{routes: spec.Routes, def: spec.Default, emit: emit}
+	mux := &mockHTTPMux{
+		routes:       spec.Routes,
+		def:          spec.Default,
+		emit:         emit,
+		openapi:      spec.OpenAPI,
+		validateMode: spec.ValidateMode,
+	}
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	serveErr := make(chan error, 1)
@@ -147,15 +153,32 @@ func (p *httpProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 
 // mockHTTPMux dispatches incoming requests against a MockSpec route table.
 type mockHTTPMux struct {
-	routes []MockRoute
-	def    *MockResponse
-	emit   MockEmitter
+	routes       []MockRoute
+	def          *MockResponse
+	emit         MockEmitter
+	openapi      *OpenAPISpec
+	validateMode string
 }
 
 func (m *mockHTTPMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	op := r.Method + " " + r.URL.Path
 	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
 	_ = r.Body.Close()
+
+	// RFC-021: request validation before route dispatch. Strict mode
+	// short-circuits the response; warn mode emits an event and proceeds.
+	if m.openapi != nil && (m.validateMode == "warn" || m.validateMode == "strict") {
+		if verr := m.openapi.ValidateRequest(r.Method, r.URL.Path, bodyBytes, r.Header.Get("Content-Type")); verr != nil {
+			emitWith(m.emit, op, map[string]string{
+				"validate":       m.validateMode,
+				"validate_error": verr.Error(),
+			})
+			if m.validateMode == "strict" {
+				http.Error(w, fmt.Sprintf("request validation failed: %v", verr), http.StatusBadRequest)
+				return
+			}
+		}
+	}
 
 	route, matched := matchHTTPRoute(m.routes, r.Method, r.URL.Path)
 
