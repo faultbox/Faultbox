@@ -27,6 +27,7 @@ require (
 )
 
 require (
+	connectrpc.com/connect v1.19.2 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/Microsoft/go-winio v0.4.21 // indirect
 	github.com/alicebob/miniredis/v2 v2.37.0 // indirect

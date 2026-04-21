@@ -1,11 +1,14 @@
 # RFC-023: Typed-Proto gRPC Mocks in Starlark
 
-- **Status:** Draft
+- **Status:** Implemented (v0.9.0, 2026-04-22)
 - **Target:** v0.9.0
 - **Created:** 2026-04-19
+- **Accepted:** 2026-04-21 — open questions resolved
+- **Implemented:** 2026-04-22 — 4 phases shipped on `epic/v0.9.0`
 - **Discussion:** [#52](https://github.com/faultbox/Faultbox/issues/52)
+- **Customer motivation:** truck-api Phase 1 shipped on v0.8.8 using the Go-binary fallback; v0.9.0 collapses that binary to ~10 lines of Starlark.
 - **Depends on:** RFC-017 (Native Mock Services — v0.8.0)
-- **Workaround pattern documented in:** v0.8.6 (Go binary mock; see `docs/mock-services.md`)
+- **Go-binary fallback:** retained in `docs/mock-services.md` as a power-user escape hatch for streaming / complex dynamic logic.
 
 ## Summary
 
@@ -250,13 +253,20 @@ do not expose `dynamicpb.Message` as a Starlark value — that would
 require a much larger surface and ties Starlark behavior to protobuf
 semantics no spec author wants to reason about.
 
-### D4 — Spec-load validation
+### D4 — Request-time validation in v1 (load-time deferred to v2)
 
-At `LoadFile` time, the runtime walks every route's response dict and
-verifies it shape-matches the expected response descriptor. Type
-mismatches surface as load-time errors, not runtime test failures —
-"unknown field `cityid` (did you mean `city_id`?)" beats "DataLoss
-on wire" three minutes into a test.
+Response-dict shape validation happens at request-time, not at
+`LoadFile`. A malformed response ("unknown field `cityid`") will
+surface when the SUT hits that route, not when the spec loads.
+
+Rationale: strict load-time validation was tempting for DX, but it
+requires walking every route's response dict against its descriptor
+at spec-parse time, which doubles the descriptor-resolution cost
+and adds a new failure mode (spec fails to load because a route's
+response is wrong) before any test runs. Deferring to runtime keeps
+v1 simple and matches how the untyped `mock_service` already behaves.
+
+Re-evaluate for v2 if customers hit response-shape bugs in practice.
 
 ### D5 — Bytes escape hatch
 
@@ -270,33 +280,45 @@ escape valve, not the default path.
 Existing `mock_service(tls=True)` machinery applies to typed gRPC
 mocks unchanged.
 
-## Open Questions
+## Resolved Questions (2026-04-21)
 
-1. **Streaming RPCs.** v1 covers unary only (matches RFC-017 scope).
-   Server-streaming, client-streaming, and bidi need a separate design
-   pass — Starlark generators? Iterators? TBD.
+1. **Streaming RPCs → SKIP for v1.** Only revisit if a paying customer
+   asks. Truck-api's entire Phase 1 surface is unary; we have no
+   evidence the added complexity (Starlark generators / iterator
+   semantics / backpressure model) is worth carrying until someone
+   shows us a concrete gap.
 
-2. **Custom error details.** gRPC supports rich error responses via
-   `google.rpc.Status` with typed `details`. Worth supporting in v1
-   or defer? Truck-api's recipes use plain status-code errors; might
-   be a v2 ask.
+2. **Custom error details (`google.rpc.Status` + typed details)
+   → DEFERRED to v2.** Plain status-code errors via `grpc.error(code)`
+   cover the truck-api use case and likely 90% of early adopters.
+   Add when the first customer hits a real need.
 
-3. **Descriptor set authoring tooling.** Should Faultbox ship a
-   `faultbox proto build <package>` command that wraps `protoc` for
-   common cases? Or trust customers to handle that in their own
-   build? Lean toward trust.
+3. **Descriptor-set authoring tooling (`faultbox proto build`)
+   → NO, never.** We will not ship a `protoc` wrapper and we will
+   not take `protoc` as a dependency (build-time or otherwise).
+   Customers maintain their own `.pb` files via their existing build
+   pipeline — the inDrive monorepo pattern (a dedicated proto
+   repository that publishes `.proto` + pre-generated `.pb.go`) is
+   the canonical shape. The RFC + docs will describe exactly what
+   Faultbox needs as input (a `FileDescriptorSet` `.pb` file, built
+   with `--include_imports`), and customers deliver it.
 
-4. **Load-time vs request-time validation.** D4 says load-time. Is
-   there a case for relaxing to request-time (e.g., schema evolves
-   between spec author and runtime)? Probably not for v1.
+4. **Load-time vs request-time response validation
+   → request-time in v1; load-time deferred to v2.** See D4 above.
 
-5. **What about Connect / connect-go protocol?** Compatible with the
-   gRPC server today via the standard server, but worth verifying.
+5. **Connect / connect-go protocol compatibility → VERIFY during
+   implementation.** Expected to work since gRPC-Go's server accepts
+   Connect clients on the unary path, but explicitly exercised with
+   a connect-go client in the Phase 1 integration tests. If it
+   doesn't work, document the gap; no code workaround in v1.
 
-6. **Reflection support.** Should the typed mock register its
-   descriptor set with the gRPC reflection service so customers can
-   `grpcurl -plaintext localhost:9001 list` it? Useful for debugging;
-   not strictly needed.
+6. **Reflection support → YES, ship it.** When a `descriptors=`
+   argument is provided, the mock server automatically registers
+   the descriptor set with `grpc.reflection.v1.ServerReflection`
+   so `grpcurl -plaintext localhost:9001 list` / `describe` /
+   `list <service>` all work without the customer pointing grpcurl
+   at a `.proto` file. Ergonomic win for debugging; ~50 LOC using
+   the stdlib reflection package.
 
 ## Implementation Plan
 
@@ -318,22 +340,36 @@ mocks unchanged.
 6. Wire `descriptors=` kwarg through `mock_service()` to the
    protocol plugin.
 
-### Phase 3 — Validation + DX
+### Phase 3 — Reflection + protocol compatibility
 
-7. Spec-load validation per D4.
-8. Helpful error messages for missing methods, type mismatches,
-   unknown fields.
-9. Tutorial chapter: "Typed gRPC mocks" — mirrors the existing
-   "Mock Services" chapter pattern.
-10. Replace the Go-binary pattern in `docs/mock-services.md` with a
-    pointer to the typed-Starlark approach (keep the Go-binary
-    section as a power-user fallback).
+7. Register the provided `FileDescriptorSet` with
+   `grpc.reflection.v1.ServerReflection` on every typed mock so
+   `grpcurl -plaintext <addr> list` / `describe <method>` work
+   out-of-the-box (resolved question 6).
+8. Verify Connect / connect-go clients interoperate with the typed
+   mock on the unary path; capture pass/fail as part of integration
+   tests (resolved question 5). If incompatible, document the gap.
 
-### Phase 4 — Bigger jumps (separate releases)
+### Phase 4 — DX + release
 
-11. Streaming RPCs (open-question 1).
-12. Raw `.proto` ingestion (D1 → ".proto in v2").
-13. Reflection service registration (open-question 6).
+9. Request-time validation error messages for missing methods and
+   shape mismatches (must point at the right route key with the
+   offending field — "unknown field `cityid` in response for
+   `/pkg.S/M` (did you mean `city_id`?)").
+10. Tutorial chapter: "Typed gRPC mocks" — mirrors the existing
+    "Mock Services" chapter pattern.
+11. Replace the Go-binary pattern in `docs/mock-services.md` with
+    a pointer to the typed-Starlark approach (keep the Go-binary
+    section as a permanent power-user fallback).
+12. Release v0.9.0.
+
+### Deferred to later releases (not in v0.9.0 scope)
+
+- **Streaming RPCs** (resolved question 1 — wait for paying customer ask).
+- **Custom error details / `google.rpc.Status`** (resolved question 2 — v2).
+- **Load-time response-shape validation** (resolved D4 — v2).
+- **Raw `.proto` ingestion** (D1 — v2).
+- **`faultbox proto build` tooling** (resolved question 3 — never).
 
 ## Impact
 

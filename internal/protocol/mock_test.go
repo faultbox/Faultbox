@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,14 +14,21 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/segmentio/kafka-go"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	mongoopts "go.mongodb.org/mongo-driver/v2/mongo/options"
+	"golang.org/x/net/http2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	v1reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -832,6 +840,409 @@ func TestGRPCMockUnaryCall(t *testing.T) {
 		t.Fatal("grpc mock did not shut down in time")
 	}
 }
+
+// TestGRPCMockTypedResponse verifies the RFC-023 typed path: with a
+// FileDescriptorSet provided on MockSpec.Descriptors, route response
+// bodies are treated as JSON and encoded at request-time against each
+// method's output message descriptor. A compiled-stub-style client
+// decodes the wire bytes cleanly into the expected message type —
+// which the Struct-based path can't satisfy because the wire bytes
+// would carry a google.protobuf.Struct instead.
+func TestGRPCMockTypedResponse(t *testing.T) {
+	// Synthetic descriptor set matching buildCityDescriptorSet in
+	// grpc_typed_encoder_test.go: service test.geo.GeoService with a
+	// GetCity method returning test.geo.City{id, name, country, currency}.
+	fdsPath := writeFds(t, buildCityDescriptorSet())
+	files, err := LoadDescriptorSet(fdsPath)
+	if err != nil {
+		t.Fatalf("LoadDescriptorSet: %v", err)
+	}
+
+	p := &grpcProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Descriptors: files,
+		Routes: []MockRoute{
+			{
+				// In typed mode the Body is raw JSON — the handler encodes
+				// it against the method's output descriptor at request time.
+				Pattern: "/test.geo.GeoService/GetCity",
+				Response: &MockResponse{
+					Body: []byte(`{"id":42,"name":"Almaty","country":"KZ","currency":"KZT"}`),
+				},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- p.ServeMock(ctx, addr, spec, nil) }()
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("grpc mock not listening: %v", err)
+	}
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Simulate the customer's compiled-stub client side by decoding the
+	// response via dynamicpb against the expected City descriptor — this
+	// is the exact decode path a generated *.pb.go client uses under the
+	// hood. If we were still emitting Struct, this Unmarshal would
+	// produce zero values.
+	cityDesc, _ := files.FindDescriptorByName("test.geo.City")
+	cityMd := cityDesc.(protoreflect.MessageDescriptor)
+	got := dynamicpb.NewMessage(cityMd)
+
+	err = conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity", &emptyMsg{}, &rawRecvMsg{msg: got})
+	if err != nil {
+		t.Fatalf("Invoke GetCity: %v", err)
+	}
+
+	if v := got.Get(cityMd.Fields().ByName("id")).Int(); v != 42 {
+		t.Errorf("City.id = %d, want 42", v)
+	}
+	if v := got.Get(cityMd.Fields().ByName("name")).String(); v != "Almaty" {
+		t.Errorf("City.name = %q, want Almaty", v)
+	}
+	if v := got.Get(cityMd.Fields().ByName("country")).String(); v != "KZ" {
+		t.Errorf("City.country = %q, want KZ", v)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("grpc mock did not shut down in time")
+	}
+}
+
+// TestGRPCMockTypedResponse_RawEscapeHatch verifies grpc.raw_response():
+// with ContentType set to GRPCRawBodyContentType, the handler skips the
+// typed encoder and ships Body as-is even when Descriptors is non-nil.
+// Power-user escape for oneof tricks / extensions / fields the typed
+// encoder can't express.
+func TestGRPCMockTypedResponse_RawEscapeHatch(t *testing.T) {
+	fdsPath := writeFds(t, buildCityDescriptorSet())
+	files, _ := LoadDescriptorSet(fdsPath)
+
+	// Pre-encode a valid City message as raw wire bytes, then ship it
+	// through the raw path. If the handler ignored ContentType and
+	// tried to JSON-parse these wire bytes, it would fail.
+	cityDesc, _ := files.FindDescriptorByName("test.geo.City")
+	cityMd := cityDesc.(protoreflect.MessageDescriptor)
+	rawWire, err := JSONToTypedMessage(files, cityMd, []byte(`{"id":7,"name":"raw"}`))
+	if err != nil {
+		t.Fatalf("pre-encode: %v", err)
+	}
+
+	p := &grpcProtocol{}
+	addr := freeLoopbackAddr(t)
+	spec := MockSpec{
+		Descriptors: files,
+		Routes: []MockRoute{{
+			Pattern: "/test.geo.GeoService/GetCity",
+			Response: &MockResponse{
+				Body:        rawWire,
+				ContentType: GRPCRawBodyContentType,
+			},
+		}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- p.ServeMock(ctx, addr, spec, nil) }()
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("grpc mock not listening: %v", err)
+	}
+
+	conn, _ := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	defer conn.Close()
+
+	got := dynamicpb.NewMessage(cityMd)
+	if err := conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity", &emptyMsg{}, &rawRecvMsg{msg: got}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if v := got.Get(cityMd.Fields().ByName("id")).Int(); v != 7 {
+		t.Errorf("City.id = %d, want 7 (raw path)", v)
+	}
+
+	cancel()
+	<-done
+}
+
+// TestGRPCMockReflection verifies that when a typed mock has a descriptor
+// set, it serves the gRPC reflection v1 service — grpcurl-style tooling
+// can list services and get their methods without a .proto file. RFC-023
+// resolved question 6 (reflection = YES, ship it).
+//
+// Exercises the ListServices request (what services does this server
+// expose?). A full round-trip through grpcurl is not feasible from a
+// Go test, but the reflection protocol itself is standard gRPC — hitting
+// it with the generated ServerReflection client proves the same wire
+// exchange grpcurl would.
+func TestGRPCMockReflection(t *testing.T) {
+	fdsPath := writeFds(t, buildCityDescriptorSet())
+	files, err := LoadDescriptorSet(fdsPath)
+	if err != nil {
+		t.Fatalf("LoadDescriptorSet: %v", err)
+	}
+
+	p := &grpcProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Descriptors: files,
+		Routes: []MockRoute{{
+			Pattern: "/test.geo.GeoService/GetCity",
+			Response: &MockResponse{
+				Body: []byte(`{"id":1,"name":"x"}`),
+			},
+		}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- p.ServeMock(ctx, addr, spec, nil) }()
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("grpc mock not listening: %v", err)
+	}
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	refClient := v1reflectionpb.NewServerReflectionClient(conn)
+	stream, err := refClient.ServerReflectionInfo(context.Background())
+	if err != nil {
+		t.Fatalf("ServerReflectionInfo: %v", err)
+	}
+
+	// Request: list all services.
+	req := &v1reflectionpb.ServerReflectionRequest{
+		MessageRequest: &v1reflectionpb.ServerReflectionRequest_ListServices{},
+	}
+	if err := stream.Send(req); err != nil {
+		t.Fatalf("send ListServices: %v", err)
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv ListServices: %v", err)
+	}
+	listResp := resp.GetListServicesResponse()
+	if listResp == nil {
+		t.Fatalf("expected ListServicesResponse, got %T", resp.MessageResponse)
+	}
+
+	// Expect our customer service in the list. Reflection service itself
+	// also appears (grpc.reflection.v1.ServerReflection); we just look
+	// for our service explicitly.
+	var found bool
+	var names []string
+	for _, svc := range listResp.Service {
+		names = append(names, svc.Name)
+		if svc.Name == "test.geo.GeoService" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("test.geo.GeoService not in reflection list, got: %v", names)
+	}
+
+	_ = stream.CloseSend()
+
+	// Also exercise FileContainingSymbol — the query grpcurl uses to
+	// materialize a .proto-like view when describing a method. Confirms
+	// the DescriptorResolver is actually wired to our per-mock registry.
+	stream2, err := refClient.ServerReflectionInfo(context.Background())
+	if err != nil {
+		t.Fatalf("ServerReflectionInfo (symbol): %v", err)
+	}
+	if err := stream2.Send(&v1reflectionpb.ServerReflectionRequest{
+		MessageRequest: &v1reflectionpb.ServerReflectionRequest_FileContainingSymbol{
+			FileContainingSymbol: "test.geo.GeoService",
+		},
+	}); err != nil {
+		t.Fatalf("send FileContainingSymbol: %v", err)
+	}
+	resp2, err := stream2.Recv()
+	if err != nil {
+		t.Fatalf("recv FileContainingSymbol: %v", err)
+	}
+	fdResp := resp2.GetFileDescriptorResponse()
+	if fdResp == nil {
+		t.Fatalf("expected FileDescriptorResponse, got %T", resp2.MessageResponse)
+	}
+	if len(fdResp.FileDescriptorProto) == 0 {
+		t.Errorf("no file descriptors returned for test.geo.GeoService")
+	}
+
+	_ = stream2.CloseSend()
+	cancel()
+	<-done
+}
+
+// TestGRPCMockReflection_DisabledForUntypedMocks verifies the reflection
+// service is NOT registered when a mock has no descriptor set — keeps
+// the existing behavior for untyped gRPC mocks (no surprise auto-
+// registration for specs that don't opt in to RFC-023).
+func TestGRPCMockReflection_DisabledForUntypedMocks(t *testing.T) {
+	p := &grpcProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	okBytes, _ := JSONToGRPCStruct([]byte(`{}`))
+	spec := MockSpec{
+		// No Descriptors field — untyped Struct path.
+		Routes: []MockRoute{{
+			Pattern:  "/pkg.Svc/Method",
+			Response: &MockResponse{Body: okBytes},
+		}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- p.ServeMock(ctx, addr, spec, nil) }()
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("grpc mock not listening: %v", err)
+	}
+
+	conn, _ := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	defer conn.Close()
+
+	refClient := v1reflectionpb.NewServerReflectionClient(conn)
+	stream, err := refClient.ServerReflectionInfo(context.Background())
+	if err != nil {
+		t.Fatalf("open reflection stream: %v", err)
+	}
+	if err := stream.Send(&v1reflectionpb.ServerReflectionRequest{
+		MessageRequest: &v1reflectionpb.ServerReflectionRequest_ListServices{},
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	// Expect the request to hit our UnknownServiceHandler (no reflection
+	// service is registered) — response is a gRPC Unimplemented status.
+	_, err = stream.Recv()
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status error for reflection on untyped mock, got %v", err)
+	}
+	if st.Code() != codes.Unimplemented {
+		t.Errorf("reflection on untyped mock: code = %s, want Unimplemented", st.Code())
+	}
+
+	_ = stream.CloseSend()
+	cancel()
+	<-done
+}
+
+// TestGRPCMockConnectInterop verifies that a connectrpc.com/connect
+// client configured with connect.WithGRPC() successfully invokes a
+// typed mock. RFC-023 resolved question 5 — we expected this to work
+// because connect-go in gRPC mode speaks the standard gRPC wire
+// protocol on unary calls, but the spec-authoring path is different
+// enough that we exercise it explicitly.
+//
+// Two protocols exist in connect-go:
+//   - WithGRPC():    standard gRPC wire (what this test covers)
+//   - WithGRPCWeb(): browser-friendly HTTP/1.1 framing — not supported
+//                    by the stdlib grpc.Server; would need a separate
+//                    handler if a customer asks.
+//
+// The pure Connect protocol (JSON-over-HTTP) is also not supported by
+// the stdlib grpc.Server. If a customer hits either case, RFC-023
+// Phase 5 spins up the connect-go handler alongside grpc-go's.
+func TestGRPCMockConnectInterop(t *testing.T) {
+	fdsPath := writeFds(t, buildCityDescriptorSet())
+	files, err := LoadDescriptorSet(fdsPath)
+	if err != nil {
+		t.Fatalf("LoadDescriptorSet: %v", err)
+	}
+
+	p := &grpcProtocol{}
+	addr := freeLoopbackAddr(t)
+
+	spec := MockSpec{
+		Descriptors: files,
+		Routes: []MockRoute{{
+			Pattern: "/test.geo.GeoService/GetCity",
+			Response: &MockResponse{
+				Body: []byte(`{"id":99,"name":"connect-was-here","country":"CN","currency":"CNY"}`),
+			},
+		}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- p.ServeMock(ctx, addr, spec, nil) }()
+	if err := waitListening(addr, 3*time.Second); err != nil {
+		t.Fatalf("grpc mock not listening: %v", err)
+	}
+
+	// connect-go's generic client requires concrete message types that
+	// can be zero-constructed (it does `new(Res)`). dynamicpb.Message
+	// zero-value has no descriptor → proto.Unmarshal panics. For this
+	// wire-level interop check, use emptypb.Empty on both sides:
+	// proto3 discards unknown fields on unmarshal, so the test.geo.City
+	// wire bytes the server returns decode into Empty without error.
+	// That's enough to verify "connect-go in gRPC mode successfully
+	// completes an RPC against our mock" — which is OQ5's actual
+	// question. Customers use generated stubs in real code, where the
+	// response type is concrete and decodes normally.
+	h2cClient := &http.Client{
+		Transport: &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(_ context.Context, network, a string, _ *tls.Config) (net.Conn, error) {
+				return net.Dial(network, a)
+			},
+		},
+	}
+
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
+		h2cClient,
+		"http://"+addr+"/test.geo.GeoService/GetCity",
+		connect.WithGRPC(),
+	)
+
+	req := connect.NewRequest(&emptypb.Empty{})
+	resp, err := client.CallUnary(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CallUnary via connect-go (gRPC mode): %v", err)
+	}
+	if resp.Msg == nil {
+		t.Fatal("connect-go returned nil message")
+	}
+	// The wire bytes the server emits encode a test.geo.City. proto3
+	// unknown-field semantics let us decode those into Empty cleanly —
+	// the verification is "no error, got a proto message back."
+
+	cancel()
+	<-done
+}
+
+// rawRecvMsg satisfies grpc-go's proto codec by exposing Marshal/Unmarshal
+// on raw bytes — delegates the actual decode to an injected proto.Message
+// so the test can assert field values post-decode.
+type rawRecvMsg struct {
+	msg proto.Message
+}
+
+func (r *rawRecvMsg) Reset()                   {}
+func (r *rawRecvMsg) String() string           { return "rawRecvMsg" }
+func (r *rawRecvMsg) ProtoMessage()            {}
+func (r *rawRecvMsg) Marshal() ([]byte, error) { return nil, nil }
+func (r *rawRecvMsg) Unmarshal(b []byte) error { return proto.Unmarshal(b, r.msg) }
 
 // emptyMsg is a zero-byte proto message used to satisfy grpc-go's codec
 // when we don't care about the request body. Send as Invoke's req arg.

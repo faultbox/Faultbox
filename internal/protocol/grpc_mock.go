@@ -7,12 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/reflection"
+	v1reflectiongrpc "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -37,7 +42,12 @@ func (p *grpcProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 		return fmt.Errorf("mock grpc listen %s: %w", addr, err)
 	}
 
-	handler := &grpcMockHandler{routes: spec.Routes, def: spec.Default, emit: emit}
+	handler := &grpcMockHandler{
+		routes:      spec.Routes,
+		def:         spec.Default,
+		emit:        emit,
+		descriptors: spec.Descriptors,
+	}
 	opts := []grpc.ServerOption{grpc.UnknownServiceHandler(handler.serve)}
 	if spec.TLSCert != nil {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(&tls.Config{
@@ -45,6 +55,21 @@ func (p *grpcProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 		})))
 	}
 	srv := grpc.NewServer(opts...)
+
+	// When a descriptor set is provided (RFC-023 typed mode), register the
+	// standard gRPC reflection service so tooling like grpcurl can list
+	// services and describe methods against the mock out of the box.
+	// v1 only — modern (grpcurl >= 1.8), and we can add v1alpha if a
+	// customer asks. Sourced from the per-mock descriptor set since we
+	// use UnknownServiceHandler rather than registering services on the
+	// grpc.Server directly.
+	if spec.Descriptors != nil {
+		refSvr := reflection.NewServerV1(reflection.ServerOptions{
+			Services:           &descriptorServiceInfoProvider{files: spec.Descriptors},
+			DescriptorResolver: spec.Descriptors,
+		})
+		v1reflectiongrpc.RegisterServerReflectionServer(srv, refSvr)
+	}
 
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
@@ -62,11 +87,26 @@ func (p *grpcProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 }
 
 // grpcMockHandler dispatches unary-style RPCs against the route table.
+//
+// When descriptors != nil, responses are encoded at request-time by
+// looking up each method's output message type in the registry and
+// running the route's JSON body through JSONToTypedMessage. When nil,
+// responses are shipped as-is (the pre-RFC-023 google.protobuf.Struct
+// path). See RFC-023 for design.
 type grpcMockHandler struct {
-	routes []MockRoute
-	def    *MockResponse
-	emit   MockEmitter
+	routes      []MockRoute
+	def         *MockResponse
+	emit        MockEmitter
+	descriptors *protoregistry.Files // non-nil in typed-proto mode (RFC-023)
 }
+
+// GRPCRawBodyContentType marks a MockResponse body as pre-encoded wire
+// bytes that bypass the typed-proto encoder even when descriptors != nil.
+// Produced by the `grpc.raw_response(bytes)` escape hatch in
+// @faultbox/mocks/grpc.star for cases where the typed encoder can't
+// express what the customer needs (oneof tricks, deprecated fields,
+// extensions).
+const GRPCRawBodyContentType = "application/grpc+raw"
 
 // serve matches grpc.StreamHandler signature. Receives one request
 // message, dispatches, sends one response (or an error).
@@ -110,14 +150,36 @@ func (h *grpcMockHandler) serve(srv any, stream grpc.ServerStream) error {
 		return status.Error(codes.Code(resp.Status), string(resp.Body))
 	}
 
-	out := anyProto{data: resp.Body}
+	// Determine the wire-bytes payload. Three paths:
+	//  1. Typed mode with a descriptor set: encode resp.Body (treated as
+	//     JSON) against the method's output message type. RFC-023 Phase 2.
+	//  2. Raw escape hatch: ContentType marker says the body is already
+	//     wire bytes even in typed mode.
+	//  3. Pre-RFC-023 path: body is already google.protobuf.Struct bytes.
+	body := resp.Body
+	if h.descriptors != nil && resp.ContentType != GRPCRawBodyContentType {
+		_, outDesc, err := ResolveMethod(h.descriptors, method)
+		if err != nil {
+			emitWith(h.emit, "resolve_error", map[string]string{"method": method, "error": err.Error()})
+			return status.Error(codes.Internal, fmt.Sprintf("mock: %s", err.Error()))
+		}
+		encoded, err := JSONToTypedMessage(h.descriptors, outDesc, resp.Body)
+		if err != nil {
+			emitWith(h.emit, "encode_error", map[string]string{"method": method, "error": err.Error()})
+			return status.Error(codes.Internal,
+				fmt.Sprintf("mock: encode response for %s: %s", method, err.Error()))
+		}
+		body = encoded
+	}
+
+	out := anyProto{data: body}
 	if err := stream.SendMsg(&out); err != nil {
 		return err
 	}
 
 	emitWith(h.emit, "ok", map[string]string{
 		"method":    method,
-		"resp_size": fmt.Sprintf("%d", len(resp.Body)),
+		"resp_size": fmt.Sprintf("%d", len(body)),
 	})
 	return nil
 }
@@ -216,4 +278,46 @@ func GRPCCodeByName(name string) (int, bool) {
 	}
 	c, ok := codes[name]
 	return c, ok
+}
+
+// descriptorServiceInfoProvider adapts a *protoregistry.Files to the
+// reflection.ServiceInfoProvider interface used by gRPC reflection.
+// Walks every non-well-known-type file in the registry and emits one
+// grpc.ServiceInfo entry per service found, so `grpcurl list` reports
+// customer services (skipping google.protobuf.* WKTs we auto-registered
+// in LoadDescriptorSet).
+//
+// The reflection server only uses Metadata (file path) — Methods are
+// populated for defensive completeness; downstream reflection code
+// loads methods from the descriptor resolver directly.
+type descriptorServiceInfoProvider struct {
+	files *protoregistry.Files
+}
+
+func (p *descriptorServiceInfoProvider) GetServiceInfo() map[string]grpc.ServiceInfo {
+	out := map[string]grpc.ServiceInfo{}
+	p.files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		// Hide well-known-type services from reflection listings.
+		// Customers care about their own services; WKT support is
+		// transparent.
+		if strings.HasPrefix(string(fd.Path()), "google/protobuf/") {
+			return true
+		}
+		svcs := fd.Services()
+		for i := 0; i < svcs.Len(); i++ {
+			svc := svcs.Get(i)
+			info := grpc.ServiceInfo{Metadata: string(fd.Path())}
+			methods := svc.Methods()
+			for j := 0; j < methods.Len(); j++ {
+				info.Methods = append(info.Methods, grpc.MethodInfo{
+					Name:           string(methods.Get(j).Name()),
+					IsClientStream: methods.Get(j).IsStreamingClient(),
+					IsServerStream: methods.Get(j).IsStreamingServer(),
+				})
+			}
+			out[string(svc.FullName())] = info
+		}
+		return true
+	})
+	return out
 }

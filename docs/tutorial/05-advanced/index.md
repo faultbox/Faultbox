@@ -11,3 +11,4 @@ define high-level operations, and integrate with LLM agents.
 | [Named Operations](12-named-ops.md) | 15 min | ops=, op(), operation-level faults, trace output |
 | [LLM Agents & MCP](13-llm-mcp.md) | 15 min | Claude Code setup, MCP server, --format json, CI integration |
 | [Mock Services](17-mock-services.md) | 25 min | mock_service(), @faultbox/mocks/ stdlib, TLS, faulting mocks, when to use vs real services |
+| [Typed gRPC Mocks](18-typed-grpc-mocks.md) | 20 min | grpc.server(descriptors=...), FileDescriptorSet ingestion, typed responses for compiled-stub clients, reflection + grpcurl |
