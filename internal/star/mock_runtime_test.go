@@ -918,6 +918,349 @@ func newTestH2CClient() *http.Client {
 	return &http.Client{Transport: transport, Timeout: 2 * time.Second}
 }
 
+// TestMockServiceOpenAPIStdlib verifies @faultbox/mocks/http.star's
+// http.server() constructor loads an OpenAPI 3.0 document, auto-generates
+// routes from paths × operations, and serves the declared examples —
+// the end-to-end happy path for RFC-021 Phase 1.
+func TestMockServiceOpenAPIStdlib(t *testing.T) {
+	// Minimal Petstore-style spec. Kept inline so the test is
+	// hermetic and doesn't depend on the demo fixture layout.
+	specBody := `openapi: 3.0.3
+info:
+  title: Petstore
+  version: "1.0"
+paths:
+  /pets:
+    get:
+      responses:
+        "200":
+          description: list
+          content:
+            application/json:
+              example:
+                - id: 1
+                  name: fluffy
+  /pets/{id}:
+    get:
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: single
+          content:
+            application/json:
+              example:
+                id: 1
+                name: fluffy
+  /healthz:
+    get:
+      responses:
+        "204":
+          description: ok
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "petstore.yaml")
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/http.star", "http")
+
+petstore = http.server(
+    name      = "petstore",
+    interface = interface("main", "http", %d),
+    openapi   = %q,
+)
+`, port, specPath)
+	if err := rt.LoadString("openapi_e2e.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	// GET /pets → 200, first example (array).
+	resp, err := client.Get(base + "/pets")
+	if err != nil {
+		t.Fatalf("GET /pets: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("GET /pets status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "fluffy") {
+		t.Errorf("GET /pets body = %q, want fluffy", body)
+	}
+
+	// GET /pets/42 → 200 (path param becomes glob).
+	resp, err = client.Get(base + "/pets/42")
+	if err != nil {
+		t.Fatalf("GET /pets/42: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("GET /pets/42 status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// GET /healthz → 204, empty body (status-only response).
+	resp, err = client.Get(base + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	if resp.StatusCode != 204 {
+		t.Errorf("GET /healthz status = %d, want 204", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// POST /pets → 404 (method not declared for this path).
+	resp, err = client.Post(base+"/pets", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST /pets: %v", err)
+	}
+	if resp.StatusCode != 404 {
+		t.Errorf("POST /pets status = %d, want 404 (method not in spec)", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// TestMockServiceOpenAPIOverrides verifies that overrides={} replaces
+// OpenAPI-generated routes by pattern. Users who copy the OpenAPI path
+// (with `{id}` placeholders) directly into overrides should see the
+// override applied to the auto-generated glob pattern (`*`). RFC-021.
+func TestMockServiceOpenAPIOverrides(t *testing.T) {
+	specBody := `openapi: 3.0.3
+info: {title: Petstore, version: "1.0"}
+paths:
+  /pets/{id}:
+    get:
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: single
+          content:
+            application/json:
+              example: {id: 1, name: "default"}
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/http.star", "http")
+
+petstore = http.server(
+    name      = "petstore",
+    interface = interface("main", "http", %d),
+    openapi   = %q,
+    overrides = {
+        # OpenAPI-style path — normalised to /pets/* internally.
+        "GET /pets/{id}": json_response(status = 503, body = {"overridden": True}),
+    },
+)
+`, port, specPath)
+	if err := rt.LoadString("overrides.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(fmt.Sprintf("http://127.0.0.1:%d/pets/42", port))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != 503 {
+		t.Errorf("status = %d, want 503 (override)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "overridden") {
+		t.Errorf("body = %q, want overridden marker", body)
+	}
+}
+
+// TestMockServiceOpenAPIValidateStrict verifies that validate="strict"
+// rejects requests that don't match the operation's requestBody schema
+// with HTTP 400, while valid requests still receive the generated response.
+func TestMockServiceOpenAPIValidateStrict(t *testing.T) {
+	specBody := `openapi: 3.0.3
+info: {title: t, version: "1.0"}
+paths:
+  /pets:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1}
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              example: {id: 42, name: "new-pet"}
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/http.star", "http")
+
+petstore = http.server(
+    name      = "petstore",
+    interface = interface("main", "http", %d),
+    openapi   = %q,
+    validate  = "strict",
+)
+`, port, specPath)
+	if err := rt.LoadString("validate.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	// Valid: should get 201.
+	resp, err := client.Post(base+"/pets", "application/json", strings.NewReader(`{"name":"fluffy"}`))
+	if err != nil {
+		t.Fatalf("valid POST: %v", err)
+	}
+	if resp.StatusCode != 201 {
+		t.Errorf("valid POST status = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Missing required field → 400.
+	resp, err = client.Post(base+"/pets", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("invalid POST: %v", err)
+	}
+	if resp.StatusCode != 400 {
+		t.Errorf("invalid POST status = %d, want 400 (strict validation)", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// TestMockServiceOpenAPISynthesize verifies that examples="synthesize"
+// serves schema-generated placeholder values when no example is declared,
+// instead of hard-erroring at route-build time. RFC-021 Phase 3.
+func TestMockServiceOpenAPISynthesize(t *testing.T) {
+	specBody := `openapi: 3.0.3
+info: {title: t, version: "1.0"}
+paths:
+  /unknown:
+    get:
+      responses:
+        "200":
+          description: no example
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:   {type: integer}
+                  name: {type: string}
+`
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	if err := os.WriteFile(specPath, []byte(specBody), 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	port := freePort(t)
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+load("@faultbox/mocks/http.star", "http")
+
+svc = http.server(
+    name      = "svc",
+    interface = interface("main", "http", %d),
+    openapi   = %q,
+    examples  = "synthesize",
+)
+`, port, specPath)
+	if err := rt.LoadString("synth.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(fmt.Sprintf("http://127.0.0.1:%d/unknown", port))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `"id":0`) || !strings.Contains(string(body), `"name":""`) {
+		t.Errorf("synthesized body = %q, want minimal id=0 name=\"\"", body)
+	}
+}
+
+// TestMockServiceOpenAPIMalformedFailsAtLoad verifies that a broken
+// OpenAPI document surfaces at LoadString time — not at startServices
+// time and not at request time. Fail-fast on malformed specs is OQ6's
+// resolution for RFC-021.
+func TestMockServiceOpenAPIMalformedFailsAtLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(path, []byte("this: is: not: openapi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+mock_service("x", interface("main", "http", 18091), openapi = %q)
+`, path)
+	err := rt.LoadString("malformed_openapi.star", src)
+	if err == nil {
+		t.Fatal("expected LoadString to error on malformed openapi, got nil")
+	}
+	if !strings.Contains(err.Error(), "openapi") {
+		t.Errorf("error should mention openapi, got: %v", err)
+	}
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

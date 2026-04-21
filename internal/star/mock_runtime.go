@@ -115,22 +115,36 @@ func (rt *Runtime) buildMockSpec(svcName, ifaceName string, svc *ServiceDef) (pr
 		Routes: make([]protocol.MockRoute, 0, len(routes)),
 	}
 
-	for _, entry := range routes {
-		if entry.Response == nil {
-			return out, fmt.Errorf("route %q: empty response", entry.Pattern)
+	// RFC-021: when openapi= is set, compose the route table as
+	//   [ overrides (highest priority)
+	//   , generated (from OpenAPI paths × operations)
+	//   , routes= (user-added routes outside the spec, lowest priority)
+	//   ]
+	// First-match-wins in matchHTTPRoute means overrides eclipse generated
+	// entries with the same (normalised) pattern. routes= entries that
+	// duplicate a generated pattern never fire — intentional: users who
+	// want to override a generated entry should use overrides= for clarity.
+	if spec, ok := svc.Mock.OpenAPI[ifaceName]; ok && spec != nil {
+		if overrides := svc.Mock.Overrides[ifaceName]; len(overrides) > 0 {
+			if err := appendEntries(rt, &out, svcName, ifaceName, overrides); err != nil {
+				return out, err
+			}
 		}
-		if entry.Response.IsDynamic() {
-			callable := entry.Response.Dynamic()
-			out.Routes = append(out.Routes, protocol.MockRoute{
-				Pattern: entry.Pattern,
-				Dynamic: rt.dynamicHandlerBridge(svcName, ifaceName, entry.Pattern, callable),
-			})
-		} else {
-			out.Routes = append(out.Routes, protocol.MockRoute{
-				Pattern:  entry.Pattern,
-				Response: entry.Response.Static(),
-			})
+		sel := resolveExampleSelector(svc.Mock.ExampleSelection[ifaceName])
+		generated, err := spec.GenerateRoutes(sel)
+		if err != nil {
+			return out, fmt.Errorf("openapi generate: %w", err)
 		}
+		out.Routes = append(out.Routes, generated...)
+
+		// Plumb spec + validate mode through so the HTTP handler can
+		// enforce request validation at serve time.
+		out.OpenAPI = spec
+		out.ValidateMode = svc.Mock.Validate[ifaceName]
+	}
+
+	if err := appendEntries(rt, &out, svcName, ifaceName, routes); err != nil {
+		return out, err
 	}
 
 	if def, ok := svc.Mock.Default[ifaceName]; ok && def != nil {
@@ -149,6 +163,58 @@ func (rt *Runtime) buildMockSpec(svcName, ifaceName string, svc *ServiceDef) (pr
 	}
 
 	return out, nil
+}
+
+// appendEntries converts Starlark mock route entries into protocol mock
+// routes and appends them to spec.Routes. Dynamic responses are bridged
+// through a Starlark callable closure. Shared between overrides and
+// user-supplied routes=. RFC-021.
+func appendEntries(rt *Runtime, spec *protocol.MockSpec, svcName, ifaceName string, entries []MockRouteEntry) error {
+	for _, entry := range entries {
+		if entry.Response == nil {
+			return fmt.Errorf("route %q: empty response", entry.Pattern)
+		}
+		if entry.Response.IsDynamic() {
+			callable := entry.Response.Dynamic()
+			spec.Routes = append(spec.Routes, protocol.MockRoute{
+				Pattern: entry.Pattern,
+				Dynamic: rt.dynamicHandlerBridge(svcName, ifaceName, entry.Pattern, callable),
+			})
+		} else {
+			spec.Routes = append(spec.Routes, protocol.MockRoute{
+				Pattern:  entry.Pattern,
+				Response: entry.Response.Static(),
+			})
+		}
+	}
+	return nil
+}
+
+// resolveExampleSelector maps the user-facing `examples=` kwarg value to a
+// protocol.ExampleSelector.
+//
+//   - ""          → first (deterministic default)
+//   - "first"     → first declared example
+//   - "random"    → seeded random per operation
+//   - "synthesize" → first example, else schema-synthesised minimal values
+//   - any other   → treated as a named-example key (with synth fallback off)
+//
+// All selectors enable SynthesizeMissing when the user picks "synthesize"
+// to make the happy path work without hard-erroring on undocumented ops.
+func resolveExampleSelector(name string) protocol.ExampleSelector {
+	switch name {
+	case "", "first":
+		return protocol.FirstExampleSelector{}
+	case "synthesize":
+		return protocol.FirstExampleSelector{SynthesizeMissing: true}
+	case "random":
+		// Seed 1 for reproducibility across test runs; users who want
+		// non-deterministic fuzzing can pass a different seed via the
+		// future `seed=` kwarg (not wired for v0.9.3).
+		return protocol.NewRandomExampleSelector(1)
+	default:
+		return protocol.NamedExampleSelector{Name: name}
+	}
 }
 
 // dynamicHandlerBridge wraps a Starlark callable so it satisfies

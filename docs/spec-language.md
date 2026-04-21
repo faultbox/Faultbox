@@ -615,7 +615,7 @@ users = mongo.server("users-stub", interface = interface("main", "mongodb", 2701
                                   collections = {"users": [{"_id": "1", "name": "alice"}]})
 ```
 
-### `mock_service(name, *interfaces, routes={}, default=None, tls=False, config={}, depends_on=[])`
+### `mock_service(name, *interfaces, routes={}, default=None, tls=False, config={}, descriptors=None, openapi=None, examples="first", validate="off", overrides={}, depends_on=[])`
 
 Generic primitive for request/response protocols. Returns a `ServiceDef`
 interchangeable with real services — `fault()`, `events()`, env-var
@@ -623,10 +623,15 @@ references all work the same way.
 
 | Param | Notes |
 |---|---|
-| `routes` | Pattern → response dict. Pattern format depends on protocol (`"METHOD /path"` for HTTP, `"/pkg.Svc/Method"` for gRPC, byte-prefix string for TCP/UDP). |
+| `routes` | Pattern → response dict. Pattern format depends on protocol (`"METHOD /path"` for HTTP, `"/pkg.Svc/Method"` for gRPC, byte-prefix string for TCP/UDP). OpenAPI-style `{id}` segments in HTTP patterns normalise to `*`. |
 | `default` | Fallback when no route matches (default: protocol-appropriate error like HTTP 404). |
 | `tls` | When True, terminate TLS using a per-runtime mock CA. CA bundle path available via the runtime; SUTs trust it via `RootCAs`. |
 | `config` | Opaque dict consumed by the protocol plugin. Used by stdlib wrappers — you rarely set this directly. |
+| `descriptors` | (gRPC only, RFC-023) Path to a `FileDescriptorSet` (protoc `--descriptor_set_out`). Enables typed-proto responses. |
+| `openapi` | (HTTP only, RFC-021) Path to an OpenAPI 3.0 document. Faultbox generates one route per path × method, using the declared `example` as the response body. Loaded and validated at spec-load time. |
+| `examples` | (HTTP only) Response-selection strategy: `"first"` (default, deterministic), `"<name>"` (pick named variant across ops), `"random"` (seeded random per op), `"synthesize"` (minimal type-correct values when no example is declared). |
+| `validate` | (HTTP only) Request validation: `"off"` (default), `"warn"` (log mismatches), `"strict"` (reject with HTTP 400). Only JSON bodies are validated. |
+| `overrides` | (HTTP only) Route dict that REPLACES OpenAPI-generated entries by pattern. Accepts OpenAPI-style paths (`{id}`). |
 | `depends_on` | Same start-ordering semantics as `service()`. |
 
 ### Response constructors
@@ -654,6 +659,8 @@ flag lookups, anything where the canned answer depends on the input.
 | `@faultbox/mocks/kafka.star` | `kafka.broker(name, interface, topics, partitions, depends_on)` | `franz-go/pkg/kfake` — full broker |
 | `@faultbox/mocks/redis.star` | `redis.server(name, interface, state, depends_on)` | `miniredis` — full RESP2 |
 | `@faultbox/mocks/mongodb.star` | `mongo.server(name, interface, collections, depends_on)` | hand-written BSON OP_MSG/OP_QUERY responder |
+| `@faultbox/mocks/grpc.star` | `grpc.server(name, interface, descriptors, services, depends_on, tls)` | protoreflect + FileDescriptorSet (RFC-023) |
+| `@faultbox/mocks/http.star` | `http.server(name, interface, openapi, examples, validate, overrides, routes, default, depends_on, tls)` | kin-openapi + OpenAPI 3.0 (RFC-021) |
 
 Stdlib constructors are thin Starlark wrappers around `mock_service()`
 that translate protocol-specific kwargs into the opaque `config=` map.
