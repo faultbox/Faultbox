@@ -3,6 +3,8 @@ package protocol
 import (
 	"context"
 	"crypto/tls"
+
+	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
 // MockHandler is an optional capability on a Protocol plugin. Protocols that
@@ -35,6 +37,14 @@ type MockSpec struct {
 	Default *MockResponse
 	Config  map[string]any
 	TLSCert *tls.Certificate
+
+	// Descriptors, when non-nil, signals that responses on this mock should
+	// be wire-encoded using the types in this registry rather than as
+	// google.protobuf.Struct (the fallback for descriptor-less gRPC mocks).
+	// Populated by @faultbox/mocks/grpc.star's `descriptors=` kwarg via
+	// LoadDescriptorSet. Used only by the gRPC handler; other protocols
+	// ignore it. See RFC-023.
+	Descriptors *protoregistry.Files
 }
 
 // MockRoute pairs a pattern with a handler. Pattern matching is
