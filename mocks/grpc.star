@@ -98,4 +98,15 @@ grpc = struct(
     # grpc.dynamic(fn) — per-request handler; fn receives a request dict
     # and must return one of grpc.response / grpc.error / grpc.raw_response.
     dynamic = lambda fn: dynamic(fn = fn),
+
+    # Shorthands for the gRPC status codes people reach for most often.
+    # Saves a line of boilerplate vs. grpc.error("UNAVAILABLE", "...") at
+    # every call site. v0.9.8 per customer ask B6.
+    unavailable        = lambda message = "upstream unavailable":       grpc_error(code = "UNAVAILABLE", message = message),
+    deadline_exceeded  = lambda message = "deadline exceeded":          grpc_error(code = "DEADLINE_EXCEEDED", message = message),
+    permission_denied  = lambda message = "permission denied":          grpc_error(code = "PERMISSION_DENIED", message = message),
+    unauthenticated    = lambda message = "unauthenticated":            grpc_error(code = "UNAUTHENTICATED", message = message),
+    not_found          = lambda message = "not found":                  grpc_error(code = "NOT_FOUND", message = message),
+    resource_exhausted = lambda message = "resource exhausted":         grpc_error(code = "RESOURCE_EXHAUSTED", message = message),
+    internal           = lambda message = "internal error":             grpc_error(code = "INTERNAL", message = message),
 )
