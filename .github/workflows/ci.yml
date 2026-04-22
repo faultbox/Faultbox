@@ -34,6 +34,29 @@ jobs:
       - name: Testops goldens
         run: go test ./testops/... -race -count=1 -v
 
+      # Diagnostic run for #57 — captures full amd64 trace from a
+      # real faultbox invocation so we can compare against the
+      # known-good Lima (arm64) output. Runs always=true so we see
+      # the diagnostic even when the test step above also fails.
+      - name: Diagnostic — poc_example on amd64 with --debug (for #57)
+        if: always()
+        run: |
+          set +e
+          go build -o bin/faultbox ./cmd/faultbox/
+          echo "=== kernel ==="
+          uname -a
+          echo "=== AppArmor userns sysctl ==="
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo "not present"
+          echo "=== unprivileged_userns_clone ==="
+          cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo "not present"
+          echo "=== lsb_release ==="
+          lsb_release -a 2>/dev/null
+          echo "=== run test_happy_path with --debug ==="
+          rm -f /tmp/inventory.wal
+          timeout 30 ./bin/faultbox test poc/example/faultbox.star \
+            --test happy_path --seed 1 --debug \
+            --log-format=console 2>&1 | head -400
+
       - name: Cross-compile (linux/arm64)
         run: |
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null ./cmd/faultbox/
