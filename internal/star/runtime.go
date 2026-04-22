@@ -74,6 +74,8 @@ type Runtime struct {
 	containerIDs   map[string]string      // service name → container ID (for cleanup)
 	baseDir        string                 // directory of the loaded .star file (for build= paths)
 	sourceText     string                 // raw .star source for syscall scanning
+	loadedSpecs    map[string][]byte      // absolute path → bytes of every local .star loaded (RFC-025 Phase 4)
+	rootSpec       string                 // absolute path of the root spec (LoadFile argument)
 
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
@@ -156,6 +158,7 @@ func (rt *Runtime) LoadFile(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err == nil {
 		rt.baseDir = filepath.Dir(absPath)
+		rt.rootSpec = absPath
 	}
 
 	// Read source for syscall scanning.
@@ -164,6 +167,14 @@ func (rt *Runtime) LoadFile(path string) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 	rt.sourceText = string(src)
+	// Record the root spec so bundles can capture it under spec/.
+	// Transitive load()s get captured inside makeLoadFunc. RFC-025 Phase 4.
+	if rt.loadedSpecs == nil {
+		rt.loadedSpecs = make(map[string][]byte)
+	}
+	if absPath != "" {
+		rt.loadedSpecs[absPath] = append([]byte(nil), src...)
+	}
 
 	thread := &starlark.Thread{Name: "load"}
 	thread.Load = rt.makeLoadFunc()
@@ -234,6 +245,15 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 			src, err = os.ReadFile(modPath)
 			if err != nil {
 				return nil, fmt.Errorf("load %q: %w", module, err)
+			}
+			// Capture the loaded file so bundles can include it under
+			// spec/. Absolute path keys; bundle builder normalises to
+			// baseDir-relative at emit time. RFC-025 Phase 4.
+			if abs, absErr := filepath.Abs(modPath); absErr == nil {
+				if rt.loadedSpecs == nil {
+					rt.loadedSpecs = make(map[string][]byte)
+				}
+				rt.loadedSpecs[abs] = append([]byte(nil), src...)
 			}
 		}
 
@@ -315,6 +335,46 @@ func (rt *Runtime) Scenarios() []ScenarioRegistration {
 // FaultScenarios returns all registered fault scenarios (including fault_matrix-generated ones).
 func (rt *Runtime) FaultScenarios() map[string]*FaultScenarioDef {
 	return rt.faultScenarios
+}
+
+// LoadedSpecs returns every local .star file that LoadFile or a
+// transitive `load()` brought in, keyed by the file's bundle-friendly
+// relative path (e.g. "faultbox.star" or "helpers/jwt.star"). The
+// returned map is safe to inspect but callers should not mutate the
+// byte slices.
+//
+// `@faultbox/...` stdlib loads are excluded — they're baked into the
+// binary and don't need to travel with the bundle. Loads that resolve
+// outside the root spec's directory (absolute paths, `../`) are
+// preserved under a `_external/<basename>` prefix so they don't
+// clobber tree entries. RFC-025 Phase 4.
+func (rt *Runtime) LoadedSpecs() map[string][]byte {
+	if len(rt.loadedSpecs) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(rt.loadedSpecs))
+	for abs, data := range rt.loadedSpecs {
+		key := rt.bundleSpecKey(abs)
+		out[key] = data
+	}
+	return out
+}
+
+// bundleSpecKey normalises an absolute path into the relative name a
+// bundle should store it under. Files within rt.baseDir keep their
+// tree layout; files outside it land under `_external/<basename>`
+// with a collision-safe suffix. Returns paths with forward slashes
+// regardless of host OS — tar bundles are portable.
+func (rt *Runtime) bundleSpecKey(absPath string) string {
+	if rt.baseDir == "" {
+		return filepath.Base(absPath)
+	}
+	rel, err := filepath.Rel(rt.baseDir, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		// Escape hatch for files outside the spec tree.
+		return "_external/" + filepath.Base(absPath)
+	}
+	return filepath.ToSlash(rel)
 }
 
 // RunConfig controls test execution parameters.

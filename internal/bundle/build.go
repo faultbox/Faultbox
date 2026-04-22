@@ -39,6 +39,14 @@ type BuildInput struct {
 	// representation. Passed in pre-marshalled so Build doesn't need
 	// to import the star package.
 	Trace []byte
+
+	// Specs maps bundle-relative path → file contents for every
+	// .star file the Starlark runtime touched (root + transitive
+	// local load()s). `@faultbox/...` stdlib modules are excluded —
+	// the consuming binary already ships them. Stored under `spec/`
+	// in the archive so `faultbox replay` can rehydrate the exact
+	// source tree. RFC-025 Phase 4.
+	Specs map[string][]byte
 }
 
 // Build assembles a Writer populated with manifest.json, env.json,
@@ -76,6 +84,13 @@ func Build(in BuildInput) (*Writer, string, error) {
 		w.AddFile("trace.json", ensureJSONTrailingNewline(in.Trace))
 	}
 	w.AddFile("replay.sh", GenerateReplayScript(filename, in.FaultboxVersion, in.CreatedAt))
+
+	// RFC-025 Phase 4: archive every local .star file under spec/.
+	// Empty map is a no-op — bundles from callers that skip this
+	// field (tests, legacy code paths) still write a valid archive.
+	for rel, data := range in.Specs {
+		w.AddFile("spec/"+rel, data)
+	}
 
 	return w, filename, nil
 }

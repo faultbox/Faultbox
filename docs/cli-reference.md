@@ -18,6 +18,8 @@ faultbox test [flags] <file.star>
 | `--show all\|fail` | Filter output: `all` (default) or `fail` (only failures) |
 | `--format json` | Output structured JSON to stdout (human output on stderr) |
 | `--output <file>` | Write JSON trace results to file |
+| `--bundle <path>` | Override `.fb` bundle filename (default: `run-<ts>-<seed>.fb` in cwd; see [bundles.md](bundles.md)) |
+| `--no-bundle` | Skip `.fb` bundle emission entirely |
 | `--shiviz <file>` | Write ShiViz-compatible visualization trace |
 | `--normalize <file>` | Write normalized trace for determinism comparison |
 | `--explore all\|sample` | Explore all interleavings or sample randomly |
@@ -179,6 +181,44 @@ test with `scenario()` registration.
 **Claude integration:** Creates three slash commands (`/fault-test`,
 `/fault-generate`, `/fault-diagnose`) and `.mcp.json` for automatic MCP
 server connection.
+
+---
+
+### `faultbox inspect`
+
+Examine a `.fb` bundle produced by `faultbox test`. Read-only — never
+modifies the bundle, never refuses based on producer version (warns
+instead). See [bundles.md](bundles.md) for the archive layout.
+
+```
+faultbox inspect <bundle.fb>                    # summary + file list
+faultbox inspect <bundle.fb> <path-in-archive>  # dump one file to stdout
+faultbox inspect <bundle.fb> --extract <dir>    # extract all to dir
+```
+
+**Summary mode** prints a scannable header (producer version, run
+ID, seed, host OS/arch, Go toolchain), a pass/fail test list, and
+the archive file list.
+
+**Dump mode** writes one internal file to stdout — pipe to `jq`,
+`less`, or a diff tool.
+
+**Extract mode** writes every file to a directory, preserving the
+`spec/`, `services/` substructure and setting `replay.sh` executable.
+
+**Examples:**
+
+```bash
+faultbox inspect run-2026-04-22-42.fb
+faultbox inspect run-*.fb manifest.json | jq '.summary'
+faultbox inspect run-*.fb trace.json | jq '.tests[0].diagnostics'
+faultbox inspect run-*.fb --extract ./unpacked/
+```
+
+**Version banner:** if the bundle was produced by a different
+Faultbox version, `inspect` prints a one-line warning to stderr
+before the summary. Major-version mismatch (`0.x` ↔ `1.x`) says
+`replay will refuse`; minor/patch drift is informational only.
 
 ---
 

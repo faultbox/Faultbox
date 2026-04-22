@@ -408,7 +408,7 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		if rcfg.Seed != nil {
 			seedVal = int64(*rcfg.Seed)
 		}
-		if err := emitBundle(logger, starFile, seedVal, result, bundlePath); err != nil {
+		if err := emitBundle(logger, starFile, seedVal, result, bundlePath, rt.LoadedSpecs()); err != nil {
 			logger.Error("bundle emit failed", slog.String("error", err.Error()))
 			// Non-fatal: we still want pass/fail status to flow out.
 		}
@@ -2016,7 +2016,7 @@ func replaceFile(src, dst string) error {
 // (one-liner reproduction script). Default path is
 // `run-<ts>-<seed>.fb` in cwd; override via --bundle or the
 // $FAULTBOX_BUNDLE_DIR env var. RFC-025.
-func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.SuiteResult, explicitPath string) error {
+func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.SuiteResult, explicitPath string, specs map[string][]byte) error {
 	if result == nil {
 		return nil
 	}
@@ -2040,6 +2040,7 @@ func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.S
 		SpecRoot:        starFile,
 		Tests:           testRowsFromResult(result),
 		Trace:           traceBytes,
+		Specs:           specs,
 	}
 	w, filename, err := bundle.Build(in)
 	if err != nil {

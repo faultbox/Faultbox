@@ -268,6 +268,68 @@ func TestBuildPopulatesAllCoreFiles(t *testing.T) {
 	}
 }
 
+func TestBuildCapturesSpecFiles(t *testing.T) {
+	// Phase 4: every local .star file the runtime loaded should land
+	// under spec/<relative-path> in the archive so a bundle is enough
+	// to reproduce the run source-code-wise.
+	in := BuildInput{
+		FaultboxVersion: "0.9.7-test",
+		Seed:            1,
+		CreatedAt:       time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC),
+		Trace:           []byte(`{}`),
+		Specs: map[string][]byte{
+			"faultbox.star":       []byte("load('helpers/jwt.star', 'sign')\n"),
+			"helpers/jwt.star":    []byte("def sign(): return 'ok'\n"),
+			"_external/weird.star": []byte("# outside baseDir, captured defensively\n"),
+		},
+	}
+	w, _, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buf, err := w.encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	files := readBundleBytes(t, buf.Bytes())
+	wants := []string{
+		"spec/faultbox.star",
+		"spec/helpers/jwt.star",
+		"spec/_external/weird.star",
+	}
+	for _, p := range wants {
+		if _, ok := files[p]; !ok {
+			t.Errorf("bundle missing %q", p)
+		}
+	}
+	// Content should round-trip verbatim — no normalisation.
+	if !bytes.Contains(files["spec/helpers/jwt.star"], []byte("def sign()")) {
+		t.Errorf("spec/helpers/jwt.star body not preserved: %q", files["spec/helpers/jwt.star"])
+	}
+}
+
+func TestBuildOmitsSpecSectionWhenEmpty(t *testing.T) {
+	// Callers that pass no specs (older test fixtures, stripped-down
+	// invocations) should still produce a valid archive — just without
+	// a spec/ section.
+	in := BuildInput{
+		FaultboxVersion: "0.9.7-test",
+		CreatedAt:       time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC),
+		Trace:           []byte(`{}`),
+	}
+	w, _, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buf, _ := w.encode()
+	files := readBundleBytes(t, buf.Bytes())
+	for name := range files {
+		if strings.HasPrefix(name, "spec/") {
+			t.Errorf("unexpected spec entry %q when Specs was nil", name)
+		}
+	}
+}
+
 func TestResolvePath(t *testing.T) {
 	cases := []struct {
 		name     string

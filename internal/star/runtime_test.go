@@ -2802,3 +2802,74 @@ func searchString(s, sub string) bool {
 	}
 	return false
 }
+
+// TestLoadedSpecsCapturesRootAndTransitive verifies RFC-025 Phase 4:
+// after a spec tree loads (root file plus a local `load()`), the
+// Runtime can enumerate every local .star it touched under
+// bundle-friendly relative keys so the bundle builder can archive
+// them into spec/.
+func TestLoadedSpecsCapturesRootAndTransitive(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "faultbox.star")
+	helpers := filepath.Join(dir, "helpers", "math.star")
+	if err := os.MkdirAll(filepath.Dir(helpers), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(helpers, []byte("def add(a, b): return a + b\n"), 0o644); err != nil {
+		t.Fatalf("write helpers: %v", err)
+	}
+	if err := os.WriteFile(root, []byte(`load("helpers/math.star", "add")
+
+def test_sum():
+    assert_true(add(2, 3) == 5)
+`), 0o644); err != nil {
+		t.Fatalf("write root: %v", err)
+	}
+
+	rt := New(testLogger())
+	if err := rt.LoadFile(root); err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	got := rt.LoadedSpecs()
+
+	for _, want := range []string{"faultbox.star", "helpers/math.star"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("LoadedSpecs missing %q; got keys %v", want, keys(got))
+		}
+	}
+	if !strings.Contains(string(got["helpers/math.star"]), "def add") {
+		t.Errorf("helpers/math.star content truncated: %q", got["helpers/math.star"])
+	}
+}
+
+// TestLoadedSpecsSkipsStdlibRecipes verifies that `@faultbox/...`
+// stdlib loads don't end up in LoadedSpecs — they're embedded in
+// the binary and don't need to travel in a bundle.
+func TestLoadedSpecsSkipsStdlibRecipes(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "spec.star")
+	if err := os.WriteFile(root, []byte(`load("@faultbox/recipes/mongodb.star", "mongodb")
+`), 0o644); err != nil {
+		t.Fatalf("write root: %v", err)
+	}
+	rt := New(testLogger())
+	if err := rt.LoadFile(root); err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	for k := range rt.LoadedSpecs() {
+		if strings.HasPrefix(k, "@faultbox/") {
+			t.Errorf("stdlib recipe leaked into LoadedSpecs: %q", k)
+		}
+		if strings.Contains(k, "mongodb") {
+			t.Errorf("stdlib recipe leaked (path form): %q", k)
+		}
+	}
+}
+
+func keys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
