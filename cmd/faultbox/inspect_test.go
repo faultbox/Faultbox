@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/faultbox/Faultbox/internal/bundle"
+	"github.com/faultbox/Faultbox/internal/star"
 )
 
 // writeTestBundle produces a real .fb archive on disk so the inspect
@@ -108,6 +109,67 @@ func TestInspectVersionBannerOnMinorPatchDrift(t *testing.T) {
 	}
 	if strings.Contains(out, "MAJOR") {
 		t.Errorf("minor/patch drift should not mention MAJOR, got: %q", out)
+	}
+}
+
+func TestZeroTrafficSummarySilentWhenAllRulesFired(t *testing.T) {
+	// No fault_zero_traffic events → no output. Healthy runs must stay
+	// quiet so the terminal signal-to-noise ratio stays high.
+	result := &star.SuiteResult{
+		Tests: []star.TestResult{
+			{Name: "test_ok", Result: "pass", Events: []star.Event{
+				{EventType: "fault_applied", Service: "db"},
+				{EventType: "fault_removed", Service: "db"},
+			}},
+		},
+	}
+	var buf bytes.Buffer
+	printZeroTrafficSummary(&buf, result)
+	if got := buf.String(); got != "" {
+		t.Errorf("expected silent output, got: %q", got)
+	}
+}
+
+func TestZeroTrafficSummaryListsEveryEvent(t *testing.T) {
+	// Aggregate across tests: one line per event, test name prefix,
+	// action and op metadata in parentheses. The hint at the end
+	// should appear exactly once.
+	result := &star.SuiteResult{
+		Tests: []star.TestResult{
+			{Name: "test_a", Result: "pass", Events: []star.Event{
+				{
+					EventType: "fault_zero_traffic",
+					Service:   "geo",
+					Fields:    map[string]string{"syscall": "connect", "action": "deny"},
+				},
+			}},
+			{Name: "test_b", Result: "pass", Events: []star.Event{
+				{
+					EventType: "fault_zero_traffic",
+					Service:   "users",
+					Fields:    map[string]string{"syscall": "sendto", "action": "deny", "op": "net_write"},
+				},
+			}},
+		},
+	}
+	var buf bytes.Buffer
+	printZeroTrafficSummary(&buf, result)
+	out := buf.String()
+
+	wants := []string{
+		"Zero-traffic faults (2)",
+		"test_a — geo.connect (deny)",
+		"test_b — users.sendto (deny, op=net_write)",
+		"scenario may not be exercising",
+	}
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			t.Errorf("output missing %q\n--- output ---\n%s", w, out)
+		}
+	}
+	// The hint should appear exactly once even with multiple events.
+	if n := strings.Count(out, "scenario may not be exercising"); n != 1 {
+		t.Errorf("hint printed %d times, want 1", n)
 	}
 }
 

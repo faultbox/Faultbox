@@ -425,6 +425,14 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		printReplayHints(os.Stderr, result)
 	}
 
+	// Surface fault_zero_traffic events to the terminal (RFC-025 C11).
+	// These were emitted into the event log in v0.9.4 but only visible
+	// via trace.json; users writing fault_matrix tests that silently
+	// matched zero syscalls saw "test passed" with no signal that the
+	// injection was cosmetic. Always print when present; stay silent
+	// when every rule fired.
+	printZeroTrafficSummary(os.Stderr, result)
+
 	// JSON output to stdout.
 	if formatFlag == "json" {
 		out := star.BuildTraceOutput(starFile, result)
@@ -2095,6 +2103,58 @@ func printReplayHints(w io.Writer, result *star.SuiteResult) {
 		fmt.Fprintf(w, "Replay: faultbox replay <bundle.fb> --test %s --seed %d\n",
 			tr.Name, tr.Seed)
 	}
+}
+
+// printZeroTrafficSummary walks every test's event log and emits one
+// line per `fault_zero_traffic` event to the terminal. These events
+// are the runtime's "this rule was installed but matched zero
+// syscalls during the test window" signal, added in v0.9.4. Silent
+// when every rule fired — no news is good news. RFC-025 C11.
+func printZeroTrafficSummary(w io.Writer, result *star.SuiteResult) {
+	if result == nil {
+		return
+	}
+	type entry struct{ test, svc, sys, action, op, label string }
+	var entries []entry
+	for _, tr := range result.Tests {
+		for _, ev := range tr.Events {
+			if ev.EventType != "fault_zero_traffic" {
+				continue
+			}
+			entries = append(entries, entry{
+				test:   tr.Name,
+				svc:    ev.Service,
+				sys:    ev.Fields["syscall"],
+				action: ev.Fields["action"],
+				op:     ev.Fields["op"],
+				label:  ev.Fields["label"],
+			})
+		}
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Zero-traffic faults (%d): rule installed, matched no syscalls\n", len(entries))
+	for _, e := range entries {
+		extras := []string{}
+		if e.action != "" {
+			extras = append(extras, e.action)
+		}
+		if e.op != "" {
+			extras = append(extras, "op="+e.op)
+		}
+		if e.label != "" {
+			extras = append(extras, "label="+e.label)
+		}
+		suffix := ""
+		if len(extras) > 0 {
+			suffix = " (" + strings.Join(extras, ", ") + ")"
+		}
+		fmt.Fprintf(w, "  %s — %s.%s%s\n", e.test, e.svc, e.sys, suffix)
+	}
+	fmt.Fprintln(w, "  Hint: the scenario may not be exercising the upstream during the fault window.")
 }
 
 // faultboxVersion returns the compiled-in version string. The actual
