@@ -67,3 +67,45 @@ func TestSyscallEventCallbackNil(t *testing.T) {
 	}
 	s.emitSyscallEvent("write", 1, "allow", "", 0)
 }
+
+// TestDynamicRuleActivityReportsMatchCounts verifies that
+// DynamicRuleActivity() surfaces per-rule counters, separating rules
+// that matched traffic from those that did not. This is the backbone of
+// the fault_zero_traffic event the Starlark runtime emits at fault-window
+// close (v0.9.4 — customer feedback on silently-ineffective injections).
+func TestDynamicRuleActivityReportsMatchCounts(t *testing.T) {
+	s := &Session{
+		ID:  "test-session",
+		cfg: SessionConfig{Binary: "/bin/true"},
+	}
+
+	// Populate dynamicRules directly (bypassing SetDynamicFaultRules which
+	// resolves syscall names via seccomp and returns -1 on non-Linux).
+	fired := &FaultRule{Syscall: "connect", Action: ActionDeny, Label: "fired"}
+	silent := &FaultRule{Syscall: "sendto", Action: ActionDeny, Label: "silent"}
+	_ = fired.ShouldFire()
+	_ = fired.ShouldFire()
+	s.dynamicRules = map[int32][]*FaultRule{
+		1: {fired},
+		2: {silent},
+	}
+
+	reports := s.DynamicRuleActivity()
+	if len(reports) != 2 {
+		t.Fatalf("got %d reports, want 2: %+v", len(reports), reports)
+	}
+
+	byLabel := map[string]DynamicRuleReport{}
+	for _, r := range reports {
+		byLabel[r.Label] = r
+	}
+	if byLabel["fired"].MatchCount != 2 {
+		t.Errorf("fired.MatchCount = %d, want 2", byLabel["fired"].MatchCount)
+	}
+	if byLabel["silent"].MatchCount != 0 {
+		t.Errorf("silent.MatchCount = %d, want 0", byLabel["silent"].MatchCount)
+	}
+	if byLabel["silent"].Action != "deny" {
+		t.Errorf("silent.Action = %q, want deny", byLabel["silent"].Action)
+	}
+}

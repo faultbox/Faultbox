@@ -89,6 +89,34 @@ type FaultRule struct {
 	counter *atomic.Int64
 }
 
+// MatchCount returns the number of times this rule's trigger has been
+// evaluated since it was installed. Non-zero means at least one syscall
+// matched the rule's filter predicates (path/dest/etc.) — whether or not
+// the trigger decided to fire. Used by the runtime to surface
+// "no injections fired" fault windows to the user (v0.9.4).
+func (r *FaultRule) MatchCount() int64 {
+	if r.counter == nil {
+		return 0
+	}
+	return r.counter.Load()
+}
+
+// actionName returns a short, stable identifier for a FaultAction suitable
+// for event-log fields. Kept package-local — it is not a full Stringer.
+func actionName(a FaultAction) string {
+	switch a {
+	case ActionDeny:
+		return "deny"
+	case ActionDelay:
+		return "delay"
+	case ActionHold:
+		return "hold"
+	case ActionTrace:
+		return "trace"
+	}
+	return "unknown"
+}
+
 // ShouldFire checks stateful triggers and returns true if the fault should
 // fire on this call. Must be called once per matching call (increments counter).
 func (r *FaultRule) ShouldFire() bool {

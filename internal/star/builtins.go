@@ -620,8 +620,46 @@ func (rt *Runtime) builtinFaultFromAssumption(thread *starlark.Thread, assumptio
 		defer rt.removeFaults(svcName)
 	}
 
-	// Apply protocol-level faults.
-	// TODO: wire protocol proxy rules when fault_scenario uses this path.
+	// Apply protocol-level faults via the same proxy manager that
+	// builtinFaultProtocol uses for the direct fault(iface_ref, rule, run=)
+	// path. Without this, fault_assumption(rules=[...]) inside
+	// fault_scenario/fault_matrix is silently cosmetic — the composable API
+	// surface exists but no rule ever reaches the proxy. Customer-reported
+	// on v0.8.8; fix shipped in v0.9.4.
+	type proxyKey struct{ svc, iface string }
+	appliedProxies := make(map[proxyKey]struct{})
+	for _, pr := range assumption.ProxyRules {
+		if pr.Target == nil || pr.Target.Service == nil || pr.ProxyFault == nil {
+			continue
+		}
+		svcName := pr.Target.Service.Name
+		ifaceName := pr.Target.Interface.Name
+		proto := pr.Target.Interface.Protocol
+		port := pr.Target.Interface.Port
+		if pr.Target.Interface.HostPort > 0 {
+			port = pr.Target.Interface.HostPort
+		}
+		targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+		if _, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr); err != nil {
+			return nil, fmt.Errorf("fault() proxy start for %s.%s: %w", svcName, ifaceName, err)
+		}
+		rt.proxyMgr.AddRule(svcName, ifaceName, proxyFaultToRule(pr.ProxyFault))
+		appliedProxies[proxyKey{svcName, ifaceName}] = struct{}{}
+		rt.events.Emit("proxy_fault_applied", svcName, map[string]string{
+			"interface":  ifaceName,
+			"protocol":   proto,
+			"assumption": assumption.Name,
+		})
+	}
+	defer func() {
+		for k := range appliedProxies {
+			rt.proxyMgr.ClearRules(k.svc, k.iface)
+			rt.events.Emit("proxy_fault_removed", k.svc, map[string]string{
+				"interface":  k.iface,
+				"assumption": assumption.Name,
+			})
+		}
+	}()
 
 	// Register monitors for the duration of the callback.
 	var monitorIDs []int
