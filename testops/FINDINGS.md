@@ -49,3 +49,33 @@ Event ordering *within* a block is already stable.
 registry so the gap stays visible.
 
 ---
+
+## #2 — poc/demo/faultbox.star: `assert_eventually(openat on /tmp/inventory.wal)` never fires
+
+**Discovered:** 2026-04-22 while attempting to seed poc_demo golden.
+
+**Symptom:** `test_happy_path` fails deterministically with:
+
+```
+reason: assert_eventually: no matching event found
+        (filters: service="inventory", syscall="openat", path="/tmp/inventory.wal")
+per-service syscall summary:
+  inventory    7 total, 0 faulted  [fsync:1 write:6]
+```
+
+Reproducible across 5 consecutive runs with the same seed, even after
+removing `/tmp/inventory.wal` before each run. No `openat` events
+appear in the trace for the `inventory` service at all.
+
+**Suspected cause:** inventory-svc likely opens the WAL with something
+other than `openat` (perhaps `open`, or inherits an already-open fd
+from a different path), or the assertion path string doesn't match the
+actual syscall path form. Syscall-family expansion already covers
+write/writev/pwrite64; openat-family expansion (open, openat, openat2,
+creat) may need similar breadth — or the spec needs a different path
+matcher.
+
+**Harness workaround:** `poc_demo` stays `Skip:` pointing at this
+finding. Un-skip once the assertion reliably fires.
+
+---

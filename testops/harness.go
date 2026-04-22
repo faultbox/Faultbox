@@ -96,7 +96,6 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   60 * time.Second,
 		LinuxOnly: true,
-		Skip:      "infra ready (make testops-prep); un-skip needs a seeded golden from a Linux run",
 	},
 	{
 		Name:      "poc_demo",
@@ -104,7 +103,7 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   90 * time.Second,
 		LinuxOnly: true,
-		Skip:      "infra ready (make testops-prep); un-skip needs a seeded golden from a Linux run",
+		Skip:      "test_happy_path assert_eventually on /tmp/inventory.wal openat fails deterministically in Lima — see FINDINGS #2",
 	},
 	{
 		Name:      "poc_demo_container",

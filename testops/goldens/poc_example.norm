@@ -1,0 +1,49 @@
+=== test_api_cannot_reach_db ===
+--- api ---
+service_started
+service_ready
+fault_applied
+connect deny(connection refused)
+fault_removed
+--- db ---
+service_started
+write allow pipe
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_db_slow ===
+--- api ---
+service_started
+service_ready
+--- db ---
+service_started
+write allow pipe
+service_ready
+fault_applied
+write delay(500ms) socket
+write delay(500ms) socket
+fault_removed
+--- test ---
+step_send api
+step_recv api
+step_send api
+step_recv api
+=== test_happy_path ===
+--- api ---
+service_started
+service_ready
+--- db ---
+service_started
+write allow pipe
+service_ready
+write allow socket
+write allow socket
+write allow socket
+--- test ---
+step_send db
+step_recv db
+step_send api
+step_recv api
+step_send api
+step_recv api
