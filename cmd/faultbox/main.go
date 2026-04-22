@@ -279,11 +279,19 @@ func testCmd(args []string) int {
 	}
 
 	if starFile != "" {
-		var seedPtr *uint64
-		if seed >= 0 {
-			u := uint64(seed)
-			seedPtr = &u
+		// RFC-025 C3: resolve and persist the run seed. Explicit --seed
+		// always wins; otherwise we reuse the cached value from
+		// .faultbox/last-seed next to the spec, or generate a fresh one
+		// and persist it. This makes "reran the same spec with no flag"
+		// reproduce the previous run — customers stop losing failures.
+		specDir := filepath.Dir(starFile)
+		resolvedSeed, seedSource, serr := bundle.ResolveSeed(specDir, seed)
+		if serr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", serr)
+			return 1
 		}
+		fmt.Fprintf(os.Stderr, "Seed: %d (%s)\n", resolvedSeed, seedSource)
+		seedPtr := &resolvedSeed
 		// Default runs for explore=sample when not specified.
 		if exploreMode == "sample" && runs == 0 {
 			runs = 100
