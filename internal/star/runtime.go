@@ -1053,28 +1053,62 @@ func (rt *Runtime) resolveHealthcheck(svc *ServiceDef) string {
 // Uses container hostnames for inter-service references.
 func (rt *Runtime) buildContainerEnv(svc *ServiceDef) []string {
 	var env []string
-	// Auto-inject FAULTBOX_* for all registered services.
+	// Auto-inject FAULTBOX_* for all registered services. For container
+	// consumers, a running proxy on the host is reachable at
+	// `host.docker.internal:<proxy_port>` (added via ExtraHosts on
+	// container create) rather than the binary-mode `127.0.0.1:<port>`.
+	// Host-mode fallback when no proxy is running: keep the previous
+	// behaviour (service name DNS for container targets, localhost for
+	// binary targets).
 	for _, otherName := range rt.order {
 		other := rt.services[otherName]
-		for _, iface := range other.Interfaces {
-			prefix := fmt.Sprintf("FAULTBOX_%s_%s", strings.ToUpper(otherName), strings.ToUpper(iface.Name))
-			// For container env: use container hostname (service name).
-			host := otherName
-			if !other.IsContainer() {
-				host = "localhost"
+		for _, ifName := range sortedInterfaceNames(other) {
+			iface := other.Interfaces[ifName]
+			prefix := fmt.Sprintf("FAULTBOX_%s_%s", strings.ToUpper(otherName), strings.ToUpper(ifName))
+
+			host, port := "", iface.Port
+			if proxyAddr := rt.proxyMgr.GetProxyAddr(otherName, ifName); proxyAddr != "" {
+				if _, pp, err := splitHostPort(proxyAddr); err == nil {
+					host, port = "host.docker.internal", pp
+				}
+			}
+			if host == "" {
+				if other.IsContainer() {
+					host = otherName
+				} else {
+					host = "localhost"
+				}
 			}
 			env = append(env,
 				fmt.Sprintf("%s_HOST=%s", prefix, host),
-				fmt.Sprintf("%s_PORT=%d", prefix, iface.Port),
-				fmt.Sprintf("%s_ADDR=%s:%d", prefix, host, iface.Port),
+				fmt.Sprintf("%s_PORT=%d", prefix, port),
+				fmt.Sprintf("%s_ADDR=%s:%d", prefix, host, port),
 			)
 		}
 	}
-	// User-defined env.
+	// User-defined env, with proxy-aware substring substitution so values
+	// that contain real upstream addrs (e.g. "postgres://u:p@db:5432/…")
+	// get redirected to the proxy via host.docker.internal. Mirrors the
+	// binary-mode behaviour in buildEnv; shipped in v0.9.6 as RFC-024
+	// container follow-up.
+	subs := rt.proxyAddrSubstitutionsFor(containerConsumer)
 	for k, v := range svc.Env {
-		env = append(env, k+"="+v)
+		env = append(env, k+"="+applyAddrSubstitutions(v, subs))
 	}
 	return env
+}
+
+// sortedInterfaceNames returns a service's interface keys in deterministic
+// order. Without this, FAULTBOX_* env ordering changes between processes,
+// which makes tests that assert env contents flaky. Cheap on any realistic
+// interface count.
+func sortedInterfaceNames(svc *ServiceDef) []string {
+	out := make([]string, 0, len(svc.Interfaces))
+	for n := range svc.Interfaces {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // findShimPath locates the faultbox-shim binary.
@@ -1249,12 +1283,31 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 	return result
 }
 
+// consumerMode identifies whether the SUT receiving a substituted address
+// runs on the host (binary) or inside a Docker container. Container
+// consumers can't dial the host-side proxy via 127.0.0.1, so the
+// substitution target becomes host.docker.internal — which Faultbox wires
+// up at container create time via ExtraHosts.
+type consumerMode int
+
+const (
+	binaryConsumer consumerMode = iota
+	containerConsumer
+)
+
 // proxyAddrSubstitutions builds a map of "upstream real addr" → "proxy
-// addr" for every interface that has a running proxy. Both binary-mode
-// (localhost:port) and container-mode (service_name:port) spellings are
-// included so string substitution in user env values catches either form.
-// Returned map is empty when no proxies are running (zero-cost fallback).
+// addr" for every interface that has a running proxy. Retained for the
+// default (binary) caller; see proxyAddrSubstitutionsFor for the
+// mode-aware variant that container env building needs.
 func (rt *Runtime) proxyAddrSubstitutions() map[string]string {
+	return rt.proxyAddrSubstitutionsFor(binaryConsumer)
+}
+
+// proxyAddrSubstitutionsFor builds the rewrite table targeting either
+// binary or container consumers. For container consumers, proxy addrs
+// are re-spelled with host.docker.internal so the SUT, isolated in its
+// network namespace, can still reach the host-side listener.
+func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]string {
 	out := make(map[string]string)
 	for name, s := range rt.services {
 		for ifName, iface := range s.Interfaces {
@@ -1262,11 +1315,15 @@ func (rt *Runtime) proxyAddrSubstitutions() map[string]string {
 			if proxyAddr == "" {
 				continue
 			}
-			// Binary-mode spelling.
-			out[fmt.Sprintf("localhost:%d", iface.Port)] = proxyAddr
-			out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = proxyAddr
-			// Container-mode spelling.
-			out[fmt.Sprintf("%s:%d", name, iface.Port)] = proxyAddr
+			target := proxyAddr
+			if mode == containerConsumer {
+				if _, pp, err := splitHostPort(proxyAddr); err == nil {
+					target = fmt.Sprintf("host.docker.internal:%d", pp)
+				}
+			}
+			out[fmt.Sprintf("localhost:%d", iface.Port)] = target
+			out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = target
+			out[fmt.Sprintf("%s:%d", name, iface.Port)] = target
 		}
 	}
 	return out

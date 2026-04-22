@@ -250,12 +250,11 @@ func (m *Manager) StopAll() {
 // SupportsProxy reports whether a protocol has a proxy implementation that
 // can be started in pass-through mode (no rules installed). Callers that
 // want to pre-start proxies for every interface (RFC-024 data-path mode)
-// use this to decide which interfaces to skip — tcp has no proxy today,
-// so attempting to pre-start one would error at launch. Keep this list in
-// sync with newProxy() below.
+// use this to decide which interfaces to skip. Keep this list in sync
+// with newProxy() below.
 func SupportsProxy(protocol string) bool {
 	switch protocol {
-	case "http", "http2", "redis", "postgres", "mysql", "grpc",
+	case "tcp", "http", "http2", "redis", "postgres", "mysql", "grpc",
 		"kafka", "mongodb", "amqp", "nats", "memcached", "udp",
 		"cassandra", "clickhouse":
 		return true
@@ -266,6 +265,8 @@ func SupportsProxy(protocol string) bool {
 // newProxy creates a protocol-specific proxy instance.
 func newProxy(protocol string, onEvent OnProxyEvent, svcName string) (Proxy, error) {
 	switch protocol {
+	case "tcp":
+		return newTCPProxy(onEvent, svcName), nil
 	case "http":
 		return newHTTPProxy(onEvent, svcName), nil
 	case "http2":

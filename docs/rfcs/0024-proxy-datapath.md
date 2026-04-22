@@ -1,7 +1,7 @@
 # RFC-024: Proxy on the SUT Data Path
 
-- **Status:** Implemented (v0.9.5, 2026-04-22)
-- **Target:** v0.9.5
+- **Status:** Implemented (core v0.9.5, follow-ups v0.9.6 — 2026-04-22)
+- **Target:** v0.9.5 + v0.9.6
 - **Created:** 2026-04-22
 - **Accepted:** 2026-04-22 — all open questions resolved before implementation
 - **Implemented:** 2026-04-22 — 3 phases shipped on `rfc/024-proxy-datapath`
@@ -135,16 +135,70 @@ today. Option B / C would address them; no customer has asked yet.
 
 `go test ./...` clean · `go vet` clean · `linux/arm64` cross-compile OK.
 
-## Follow-ups
+## Follow-ups — shipped in v0.9.6 (2026-04-22)
 
-- Container-mode pre-start: the current implementation targets
-  `127.0.0.1:<port>` which assumes port-forward bindings to the host
-  for HostPort>0. Container-internal traffic (service A dialing
-  service B on Docker network) will need an extra hop via the host
-  bridge — verify on truck-api before adding Docker `ExtraHosts`
-  plumbing (potential Option B patch).
-- **TCP proxy.** Not blocking v0.9.5; tcp services just bypass the
-  proxy today. Ship if any customer hits the case.
-- **Benchmark suite.** Quantify the pass-through overhead across all
-  14 proxy protocols so the v0.9.5 claim "indistinguishable" has a
-  number attached.
+All three v0.9.5 follow-ups closed in a single patch release:
+
+### Container-mode data path (fixed)
+
+v0.9.5 pre-started proxies on the host but only rewrote env vars in
+`buildEnv` (binary mode). Container consumers (`buildContainerEnv`) were
+untouched — they received raw service-name DNS (`db:5432`) and had no
+route to the host-side proxy anyway. v0.9.6:
+
+1. Adds `ExtraHosts: ["host.docker.internal:host-gateway"]` on every
+   container in `internal/container/docker.go`. Docker resolves
+   `host-gateway` to the bridge gateway on Linux 20.10+ and to the host
+   itself on Desktop runtimes, so `host.docker.internal` now routes to
+   the host from inside the container netns.
+2. `buildContainerEnv` now consults `proxyMgr.GetProxyAddr` per
+   interface — when a proxy is running, both `FAULTBOX_*_{HOST,PORT,ADDR}`
+   and user env values get rewritten to `host.docker.internal:<proxy_port>`.
+3. A new `consumerMode` parameter on the internal substitution table
+   switches between `127.0.0.1` (binary) and `host.docker.internal`
+   (container) spellings.
+
+### TCP proxy (shipped)
+
+Plain `tcp` interfaces are no longer skipped at pre-start. The new
+`internal/proxy/tcp.go` is a protocol-agnostic byte-splicer with three
+rule actions — `ActionDrop` (close connection), `ActionRespond` (write
+fixed bytes, close), `ActionDelay` (sleep then continue splicing). A
+byte-prefix predicate on the first client chunk (`Rule.Method = "HELO"`)
+enables per-connection targeting without pulling in a parser.
+
+`SupportsProxy("tcp")` now returns true; `TestPreStartProxiesStartsTCPProxy`
+pins the new behaviour.
+
+### Benchmark suite (first numbers)
+
+`internal/proxy/bench_test.go` measures one request/response cycle per
+iteration, persistent-connection where the protocol uses one. Run on
+Apple M4 Pro, `-benchtime=2s`:
+
+| Protocol | Direct | Through proxy | Overhead |
+|---|---|---|---|
+| HTTP/1.1 | 32 µs | 74 µs | **+42 µs** (2.3×) |
+| TCP (splice) | 16 µs | 31 µs | **+15 µs** (2.0×) |
+| Redis (RESP) | 16 µs | 32 µs | **+16 µs** (2.0×) |
+
+Reading: the fixed per-request cost is ~15–40 µs — one extra loopback
+hop plus protocol-specific parsing. Two takeaways:
+
+- For workloads under a few thousand requests per test the overhead is
+  invisible (< 100ms total). This covers the overwhelming majority of
+  integration tests.
+- Benchmarks cover three representative protocols; HTTP is the ceiling
+  because of its allocation-heavy reverse-proxy path. Other parsed
+  protocols (Postgres / Kafka / gRPC) should land in the TCP–HTTP range.
+  Not benchmarked yet because stub upstreams for those are enough work
+  to warrant their own commit.
+
+### Still open
+
+- **Broader benchmark coverage** — Postgres, gRPC, Kafka, MongoDB. The
+  existing three cover the shape of the cost; the rest would round it
+  out to a full matrix.
+- **Linux Docker < 20.10 fallback.** `host-gateway` sentinel requires
+  20.10+. Daemons older than that will fail container create with an
+  unknown-host-key error. No customer reported yet; fix when one does.
