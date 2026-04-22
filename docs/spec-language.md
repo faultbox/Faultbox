@@ -517,6 +517,16 @@ FAULTBOX_DB_MAIN_HOST=localhost
 FAULTBOX_DB_MAIN_PORT=5432
 ```
 
+Since v0.9.5 (RFC-024), these values **point at a pass-through proxy**
+that Faultbox pre-starts for every proxy-capable interface, not at the
+real upstream. The proxy is transparent when no rules are installed —
+behaviour is byte-identical to dialing the upstream directly. When
+`fault(interface_ref, response(...)|error(...)|drop(...))` installs a
+rule, the proxy applies it to the SUT's app-initiated traffic, not just
+traffic from `step()` calls. User env values that contain a literal
+upstream address (e.g. `DATABASE_URL="postgres://u:p@localhost:5432/db"`
+via `pg.main.addr` concatenation) are substring-rewritten the same way.
+
 ---
 
 ## Container Lifecycle

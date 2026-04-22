@@ -203,6 +203,23 @@ func (m *Manager) ClearRules(svcName, ifaceName string) {
 	}
 }
 
+// RegisterListenAddr is a test-only helper that records a proxy listen
+// address without starting a real protocol proxy. Production code must go
+// through EnsureProxy so the full lifecycle (Start, rule dispatch, Stop)
+// is exercised; this shortcut exists for unit tests that want to verify
+// buildEnv / GetProxyAddr plumbing without standing up a backend.
+func (m *Manager) RegisterListenAddr(svcName, ifaceName, listenAddr string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := svcName + ":" + ifaceName
+	m.proxies[key] = &runningProxy{
+		proxy:      nil,
+		listenAddr: listenAddr,
+		target:     "",
+		cancel:     func() {},
+	}
+}
+
 // GetProxyAddr returns the proxy listen address for a service interface,
 // or empty string if no proxy is running.
 func (m *Manager) GetProxyAddr(svcName, ifaceName string) string {
@@ -223,9 +240,27 @@ func (m *Manager) StopAll() {
 
 	for key, rp := range m.proxies {
 		rp.cancel()
-		rp.proxy.Stop()
+		if rp.proxy != nil {
+			rp.proxy.Stop()
+		}
 		delete(m.proxies, key)
 	}
+}
+
+// SupportsProxy reports whether a protocol has a proxy implementation that
+// can be started in pass-through mode (no rules installed). Callers that
+// want to pre-start proxies for every interface (RFC-024 data-path mode)
+// use this to decide which interfaces to skip — tcp has no proxy today,
+// so attempting to pre-start one would error at launch. Keep this list in
+// sync with newProxy() below.
+func SupportsProxy(protocol string) bool {
+	switch protocol {
+	case "http", "http2", "redis", "postgres", "mysql", "grpc",
+		"kafka", "mongodb", "amqp", "nats", "memcached", "udp",
+		"cassandra", "clickhouse":
+		return true
+	}
+	return false
 }
 
 // newProxy creates a protocol-specific proxy instance.
