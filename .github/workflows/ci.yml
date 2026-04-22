@@ -31,15 +31,6 @@ jobs:
       - name: Build poc binaries for testops
         run: make testops-prep
 
-      # Experiment for issue #57 — Ubuntu 24.04's AppArmor default
-      # restricts processes inside unprivileged user namespaces, which
-      # breaks faultbox's service sandbox on GitHub-hosted runners.
-      # If this makes poc_example pass, the hypothesis is confirmed
-      # and this becomes a documented CI prerequisite (pending a
-      # proper per-service `namespaces=` kwarg).
-      - name: Relax AppArmor userns restriction (experiment for #57)
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
       - name: Testops goldens
         run: go test ./testops/... -race -count=1 -v
 
