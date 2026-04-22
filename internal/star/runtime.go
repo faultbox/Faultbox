@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -629,6 +630,56 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 				return fmt.Errorf("seed service %q: %w", svcName, err)
 			}
 		}
+
+		// RFC-024: pre-start a pass-through proxy for every proxy-capable
+		// interface. With no rules installed the proxy just forwards bytes,
+		// so the SUT sees identical behaviour to today. The upside is that
+		// any later fault(iface_ref, rule) call dispatches rules against
+		// the proxy the SUT is already talking to — closing the gap where
+		// protocol-level faults were cosmetic because the app bypassed the
+		// proxy. Mock services have no upstream and are skipped.
+		if !svc.IsMock() {
+			if err := rt.preStartProxies(ctx, svcName, svc); err != nil {
+				rt.log.Warn("pre-start proxy failed (faults may bypass app traffic)",
+					slog.String("service", svcName),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
+	}
+	return nil
+}
+
+// preStartProxies spins up a pass-through proxy per supported interface on a
+// just-started service. Subsequent services' env vars (built in buildEnv) will
+// then resolve upstream-interface references to the proxy listen address so
+// the SUT's own traffic reaches the proxy. Best-effort: a proxy failure is
+// logged but does not block startup — tests that don't use protocol-level
+// fault injection still work against the real upstream.
+func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *ServiceDef) error {
+	for ifaceName, iface := range svc.Interfaces {
+		if !proxy.SupportsProxy(iface.Protocol) {
+			continue
+		}
+		if rt.proxyMgr.GetProxyAddr(svcName, ifaceName) != "" {
+			continue // already running (container reuse across tests)
+		}
+		port := iface.Port
+		if iface.HostPort > 0 {
+			port = iface.HostPort
+		}
+		targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+		proxyAddr, err := rt.proxyMgr.EnsureProxy(ctx, svcName, ifaceName, iface.Protocol, targetAddr)
+		if err != nil {
+			return fmt.Errorf("proxy %s.%s: %w", svcName, ifaceName, err)
+		}
+		rt.events.Emit("proxy_started", svcName, map[string]string{
+			"interface": ifaceName,
+			"protocol":  iface.Protocol,
+			"listen":    proxyAddr,
+			"target":    targetAddr,
+			"mode":      "passthrough",
+		})
 	}
 	return nil
 }
@@ -1151,6 +1202,13 @@ func (rt *Runtime) stopReusedServices() {
 }
 
 // buildEnv creates the environment for a service with auto-injection.
+//
+// RFC-024: if a proxy has been pre-started for an interface, the injected
+// FAULTBOX_<SVC>_<IFACE>_{HOST,PORT,ADDR} vars point at the proxy rather
+// than the real upstream. This puts the proxy in the SUT's data path so
+// protocol-level fault rules (response/error/drop) actually fire against
+// app-initiated traffic. When no proxy exists (e.g., tcp, mock services),
+// the vars fall back to the real upstream addr — same as v0.9.4 behaviour.
 func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 	env := make(map[string]string)
 
@@ -1160,15 +1218,28 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 		for ifName, iface := range s.Interfaces {
 			ifUpper := strings.ToUpper(ifName)
 			prefix := fmt.Sprintf("FAULTBOX_%s_%s", upper, ifUpper)
-			env[prefix+"_HOST"] = "localhost"
-			env[prefix+"_PORT"] = fmt.Sprintf("%d", iface.Port)
-			env[prefix+"_ADDR"] = fmt.Sprintf("localhost:%d", iface.Port)
+
+			host, port := "localhost", iface.Port
+			if proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName); proxyAddr != "" {
+				if ph, pp, err := splitHostPort(proxyAddr); err == nil {
+					host, port = ph, pp
+				}
+			}
+			env[prefix+"_HOST"] = host
+			env[prefix+"_PORT"] = fmt.Sprintf("%d", port)
+			env[prefix+"_ADDR"] = fmt.Sprintf("%s:%d", host, port)
 		}
 	}
 
-	// User-defined env (templates already resolved in Starlark via .addr).
+	// User-defined env. At spec-load time, .addr / .internal_addr returned
+	// the real upstream address (no proxy existed yet), so values look like
+	// "localhost:5432/mydb". Now that proxies are pre-started (RFC-024),
+	// rewrite those substrings so app-initiated traffic goes via the proxy.
+	// Substitution table: one entry per (upstream real addr → proxy addr)
+	// pair across every interface that has a running proxy.
+	substitutions := rt.proxyAddrSubstitutions()
 	for k, v := range svc.Env {
-		env[k] = v
+		env[k] = applyAddrSubstitutions(v, substitutions)
 	}
 
 	result := make([]string, 0, len(env))
@@ -1176,6 +1247,56 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 		result = append(result, k+"="+v)
 	}
 	return result
+}
+
+// proxyAddrSubstitutions builds a map of "upstream real addr" → "proxy
+// addr" for every interface that has a running proxy. Both binary-mode
+// (localhost:port) and container-mode (service_name:port) spellings are
+// included so string substitution in user env values catches either form.
+// Returned map is empty when no proxies are running (zero-cost fallback).
+func (rt *Runtime) proxyAddrSubstitutions() map[string]string {
+	out := make(map[string]string)
+	for name, s := range rt.services {
+		for ifName, iface := range s.Interfaces {
+			proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName)
+			if proxyAddr == "" {
+				continue
+			}
+			// Binary-mode spelling.
+			out[fmt.Sprintf("localhost:%d", iface.Port)] = proxyAddr
+			out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = proxyAddr
+			// Container-mode spelling.
+			out[fmt.Sprintf("%s:%d", name, iface.Port)] = proxyAddr
+		}
+	}
+	return out
+}
+
+// applyAddrSubstitutions rewrites any real-upstream-addr substring in v to
+// the corresponding proxy addr. No-op when subs is empty.
+func applyAddrSubstitutions(v string, subs map[string]string) string {
+	if len(subs) == 0 {
+		return v
+	}
+	for real, proxy := range subs {
+		v = strings.ReplaceAll(v, real, proxy)
+	}
+	return v
+}
+
+// splitHostPort parses "host:port" into its parts with port as int. Wraps
+// net.SplitHostPort so buildEnv has a single integer port to inject into
+// FAULTBOX_*_PORT env vars.
+func splitHostPort(addr string) (string, int, error) {
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", 0, err
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil {
+		return "", 0, fmt.Errorf("parse port %q: %w", p, err)
+	}
+	return h, port, nil
 }
 
 // makeFaultScenarioRunner creates a Starlark callable that, when invoked by

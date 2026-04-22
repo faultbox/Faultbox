@@ -1,7 +1,12 @@
 package star
 
 import (
+	"context"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +15,7 @@ import (
 	"go.starlark.net/starlark"
 
 	"github.com/faultbox/Faultbox/internal/engine"
+	"github.com/faultbox/Faultbox/internal/proxy"
 )
 
 func testLogger() *slog.Logger {
@@ -2500,6 +2506,192 @@ err_503 = fault_assumption("err_503",
 	}
 	if a.ProxyRules[0].ProxyFault.Action != "error" {
 		t.Errorf("proxy rule action = %q, want error", a.ProxyRules[0].ProxyFault.Action)
+	}
+}
+
+// TestBuildEnvRewritesToProxyAddr verifies RFC-024 data-path plumbing:
+// once a proxy has been pre-started for a service interface, buildEnv()
+// injects FAULTBOX_<SVC>_<IFACE>_{HOST,PORT,ADDR} pointing at the proxy
+// listen address — NOT the real upstream. Without this rewrite the SUT
+// reads the env var and dials the real upstream directly, bypassing the
+// proxy entirely (the v0.8.8 customer bug).
+func TestBuildEnvRewritesToProxyAddr(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+upstream = service("upstream", "/tmp/mock",
+    interface("main", "http", 9999),
+)
+consumer = service("consumer", "/tmp/mock",
+    interface("public", "http", 8080),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Stand up a throwaway listener and register it as the upstream proxy.
+	// We don't need a working protocol plugin to test the rewrite — the
+	// proxy manager just needs to report a listen address.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	proxyAddr := ln.Addr().String()
+	rt.proxyMgr.RegisterListenAddr("upstream", "main", proxyAddr)
+
+	env := rt.buildEnv(rt.services["consumer"])
+	envMap := map[string]string{}
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		envMap[k] = v
+	}
+
+	if got := envMap["FAULTBOX_UPSTREAM_MAIN_ADDR"]; got != proxyAddr {
+		t.Errorf("FAULTBOX_UPSTREAM_MAIN_ADDR = %q, want proxy %q", got, proxyAddr)
+	}
+	if got := envMap["FAULTBOX_CONSUMER_PUBLIC_ADDR"]; got != "localhost:8080" {
+		t.Errorf("FAULTBOX_CONSUMER_PUBLIC_ADDR = %q, want localhost:8080 (no proxy)", got)
+	}
+}
+
+// TestBuildEnvRewritesUserEnvAddrs verifies that user-supplied env values
+// which embed an upstream addr at spec-load time (e.g., "localhost:5432/db"
+// via postgres.main.addr string concatenation) get substring-rewritten to
+// point at the proxy once the proxy is running. Without this, user
+// DATABASE_URL / KAFKA_BROKERS / etc. would bypass the proxy.
+func TestBuildEnvRewritesUserEnvAddrs(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock",
+    interface("main", "postgres", 5432),
+)
+app = service("app", "/tmp/mock",
+    interface("public", "http", 8080),
+    env = {
+        "DATABASE_URL":  "postgres://user:pass@localhost:5432/mydb",
+        "LEGACY_STRING": "no address here",
+    },
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer ln.Close()
+	proxyAddr := ln.Addr().String()
+	rt.proxyMgr.RegisterListenAddr("db", "main", proxyAddr)
+
+	env := rt.buildEnv(rt.services["app"])
+	envMap := map[string]string{}
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		envMap[k] = v
+	}
+
+	wantDB := "postgres://user:pass@" + proxyAddr + "/mydb"
+	if got := envMap["DATABASE_URL"]; got != wantDB {
+		t.Errorf("DATABASE_URL = %q, want %q", got, wantDB)
+	}
+	if got := envMap["LEGACY_STRING"]; got != "no address here" {
+		t.Errorf("LEGACY_STRING = %q, want untouched", got)
+	}
+}
+
+// TestProxyDataPathEndToEnd is the full RFC-024 loop:
+//   - Stand up a real HTTP upstream.
+//   - Pre-start a proxy pointing at that upstream.
+//   - Install a rule that errors out every request at the proxy.
+//   - Dial the proxy address directly (simulating SUT behaviour after
+//     buildEnv rewrote FAULTBOX_*_ADDR) and verify the faulted response
+//     comes back, not the real upstream's 200.
+//
+// This was the behaviour RFC-024 was filed to deliver — before v0.9.5, a
+// client dialing the real upstream never reached the proxy so rules never
+// fired against app-initiated traffic. The test exercises the proxy manager
+// + rule dispatch without needing seccomp, so it runs on darwin.
+func TestProxyDataPathEndToEnd(t *testing.T) {
+	// Real HTTP upstream.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"from":"real-upstream"}`))
+	}))
+	defer upstream.Close()
+
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `
+api = service("api", "/tmp/mock",
+    interface("main", "http", 8099),
+)
+`); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Point the pre-started proxy at the real upstream instead of the
+	// placeholder port declared in Starlark. Using EnsureProxy to exercise
+	// the full lifecycle and rule dispatch.
+	upstreamAddr := strings.TrimPrefix(upstream.URL, "http://")
+	proxyAddr, err := rt.proxyMgr.EnsureProxy(context.Background(), "api", "main", "http", upstreamAddr)
+	if err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	defer rt.proxyMgr.StopAll()
+
+	// Without rules: pass-through should return the real upstream body.
+	resp, err := http.Get("http://" + proxyAddr + "/ping")
+	if err != nil {
+		t.Fatalf("GET through proxy (passthrough): %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "real-upstream") {
+		t.Errorf("passthrough body = %q, want to contain real-upstream", body)
+	}
+
+	// Install a rule that returns a custom 503 response for every request.
+	if err := rt.proxyMgr.AddRule("api", "main", proxy.Rule{
+		Action: proxy.ActionRespond,
+		Status: 503,
+		Body:   `{"from":"fault-injected"}`,
+	}); err != nil {
+		t.Fatalf("AddRule: %v", err)
+	}
+
+	// Same GET should now receive the faulted response.
+	resp2, err := http.Get("http://" + proxyAddr + "/ping")
+	if err != nil {
+		t.Fatalf("GET through proxy (fault): %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != 503 {
+		t.Errorf("faulted status = %d, want 503", resp2.StatusCode)
+	}
+	if !strings.Contains(string(body2), "fault-injected") {
+		t.Errorf("faulted body = %q, want fault-injected", body2)
+	}
+}
+
+// TestPreStartProxiesSkipsUnsupportedProtocols verifies Phase 1's graceful
+// degradation: interfaces whose protocol has no proxy (e.g., raw tcp) are
+// skipped silently rather than failing service startup. Customer POCs that
+// use TCP keep working unchanged on v0.9.5.
+func TestPreStartProxiesSkipsUnsupportedProtocols(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+legacy = service("legacy", "/tmp/mock",
+    interface("raw", "tcp", 7777),
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	if err := rt.preStartProxies(context.Background(), "legacy", rt.services["legacy"]); err != nil {
+		t.Errorf("preStartProxies returned error for tcp-only service: %v", err)
+	}
+	if rt.proxyMgr.GetProxyAddr("legacy", "raw") != "" {
+		t.Error("expected no proxy for tcp interface, got one registered")
 	}
 }
 

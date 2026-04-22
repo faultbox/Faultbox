@@ -56,6 +56,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | [RFC-021](0021-openapi-mocks.md) | OpenAPI-Driven HTTP Mock Generation | Implemented (v0.9.3) | RFC-017 |
 | [RFC-022](0022-multi-process-seccomp.md) | Multi-Process Container Seccomp Acquisition | Implemented (Phase 0 v0.8.7, Phase 1 v0.8.8, Phase 2 v0.9.1) | RFC-014 |
 | [RFC-023](0023-typed-proto-grpc-mocks.md) | Typed-Proto gRPC Mocks in Starlark | Implemented (v0.9.0) | RFC-017 |
+| [RFC-024](0024-proxy-datapath.md) | Proxy on the SUT Data Path | Implemented (v0.9.5) | — |
 
 ### Phase 3: Trace Equivalence & Specification Mining
 
