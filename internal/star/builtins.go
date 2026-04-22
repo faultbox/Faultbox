@@ -86,6 +86,12 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"load_file": starlark.NewBuiltin("load_file", rt.builtinLoadFile),
 		"load_yaml": starlark.NewBuiltin("load_yaml", rt.builtinLoadYAML),
 		"load_json": starlark.NewBuiltin("load_json", rt.builtinLoadJSON),
+		// Fault-matrix outcome predicates (RFC-027 / v0.9.8). Drop into
+		// default_expect=/overrides= as replacements for the hand-rolled
+		// assertion lambdas every mature spec grows.
+		"expect_success":      starlark.NewBuiltin("expect_success", builtinExpectSuccess),
+		"expect_error_within": starlark.NewBuiltin("expect_error_within", builtinExpectErrorWithin),
+		"expect_hang":         starlark.NewBuiltin("expect_hang", builtinExpectHang),
 	}
 }
 
