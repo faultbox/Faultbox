@@ -79,3 +79,51 @@ matcher.
 finding. Un-skip once the assertion reliably fires.
 
 ---
+
+## #3 — poc_example fails on GitHub-hosted ubuntu-latest, passes in Lima
+
+**Discovered:** 2026-04-22 on PR #55 first CI run.
+
+**Symptom:** On `ubuntu-latest` (kernel 6.x), running the harness's
+`poc_example` case:
+
+```
+--- FAIL: test_db_slow (209ms, seed=1) ---
+  reason: assert_eq failed: 0 != 200
+
+--- FAIL: test_happy_path (10208ms, seed=1) ---
+  reason: tcp send failed: read: read tcp 127.0.0.1:34466->127.0.0.1:33125: i/o timeout
+```
+
+The same seed + spec + binaries passes cleanly in Lima (Ubuntu 24.04,
+kernel 6.8.0, aarch64). Faultbox's setup logs look identical up to the
+service-started stage — PID/MNT/USER namespaces install, seccomp
+filter loads, target execs. Failures appear only when the real client
+inside `mock-api` tries to reach `mock-db`.
+
+**Impact:** Blocks `poc_example` as a green CI case. The infrastructure
+around it (Makefile `testops-prep`, CI step, harness LinuxOnly branch)
+is still exercised — the case just shows up as `SKIP` on ubuntu-latest.
+
+**Suspected causes, in order of likelihood:**
+
+1. GitHub-hosted runner's AppArmor / container profile restricts the
+   network namespace or user-namespace sandbox that faultbox sets up,
+   making in-sandbox services unable to accept localhost TCP from the
+   outer harness.
+2. The runner's `proc/sys/kernel/unprivileged_userns_clone` or a
+   related sysctl differs, causing the USER namespace setup to produce
+   a subtly different mapping that breaks loopback reachability.
+3. Timing: CI runners are I/O-noisier than Lima; a 500ms-delay fault
+   plus healthcheck window may not leave enough budget for the real
+   HTTP round-trip on the first `test_db_slow`.
+
+**Repro:** push any branch with poc_example un-skipped; the default CI
+workflow will reproduce within 15s.
+
+**Harness workaround:** `poc_example` stays `Skip:`. Un-skip when the
+env difference is understood — probably requires running faultbox under
+`sudo` on CI, or loosening the namespace config for shared-runner
+environments.
+
+---
