@@ -1,0 +1,14 @@
+=== test_publish_to_orders_topic ===
+--- bus ---
+service_started
+service_ready
+--- test ---
+step_send bus
+step_recv bus
+=== test_publish_to_payments_topic ===
+--- bus ---
+service_started
+service_ready
+--- test ---
+step_send bus
+step_recv bus

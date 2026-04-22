@@ -22,8 +22,17 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test ./... -race -count=1
+      - name: Test (unit + integration, excluding testops)
+        run: go test $(go list ./... | grep -v '/testops$') -race -count=1
+
+      # Builds poc service binaries to /tmp for the Linux-only poc_*
+      # corpus cases. Safe to run even while those cases are still
+      # Skip:'d — the build is cheap and keeps the infra warm.
+      - name: Build poc binaries for testops
+        run: make testops-prep
+
+      - name: Testops goldens
+        run: go test ./testops/... -race -count=1 -v
 
       - name: Cross-compile (linux/arm64)
         run: |

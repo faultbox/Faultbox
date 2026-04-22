@@ -1,0 +1,114 @@
+=== test_health_status_only ===
+--- auth ---
+service_started
+service_ready
+--- bus ---
+service_started
+service_ready
+--- cache ---
+service_started
+service_ready
+--- flags ---
+service_started
+service_ready
+--- test ---
+step_send auth
+step_recv auth
+--- users-stub ---
+service_started
+service_ready
+=== test_jwks_endpoint ===
+--- auth ---
+service_started
+service_ready
+--- bus ---
+service_started
+service_ready
+--- cache ---
+service_started
+service_ready
+--- flags ---
+service_started
+service_ready
+--- test ---
+step_send auth
+step_recv auth
+--- users-stub ---
+service_started
+service_ready
+=== test_kafka_broker_responds ===
+--- auth ---
+service_started
+service_ready
+--- bus ---
+service_started
+service_ready
+--- cache ---
+service_started
+service_ready
+--- flags ---
+service_started
+service_ready
+--- test ---
+step_send bus
+step_recv bus
+--- users-stub ---
+service_started
+service_ready
+=== test_mongo_handshake_and_find ===
+--- auth ---
+service_started
+service_ready
+--- bus ---
+service_started
+service_ready
+--- cache ---
+service_started
+service_ready
+--- flags ---
+service_started
+service_ready
+--- test ---
+step_send users-stub
+step_recv users-stub
+--- users-stub ---
+service_started
+service_ready
+=== test_redis_seeded_state ===
+--- auth ---
+service_started
+service_ready
+--- bus ---
+service_started
+service_ready
+--- cache ---
+service_started
+service_ready
+--- flags ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_recv cache
+--- users-stub ---
+service_started
+service_ready
+=== test_token_endpoint_dynamic ===
+--- auth ---
+service_started
+service_ready
+--- bus ---
+service_started
+service_ready
+--- cache ---
+service_started
+service_ready
+--- flags ---
+service_started
+service_ready
+--- test ---
+step_send auth
+step_recv auth
+--- users-stub ---
+service_started
+service_ready

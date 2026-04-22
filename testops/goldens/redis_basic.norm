@@ -1,0 +1,21 @@
+=== test_get_second_seeded_string ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_recv cache
+=== test_get_seeded_counter ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_recv cache
+=== test_get_seeded_string ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_recv cache
