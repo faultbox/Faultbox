@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	faultbox "github.com/faultbox/Faultbox"
+	"github.com/faultbox/Faultbox/internal/bundle"
 	"github.com/faultbox/Faultbox/internal/compose"
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/engine"
@@ -178,6 +179,11 @@ func testCmd(args []string) int {
 	dryRun := false
 	exploreMode := ""
 	formatFlag := "" // "json" for structured output to stdout
+	// RFC-025: every run emits a `.fb` archive bundle by default.
+	// bundlePath overrides the default filename; noBundle disables
+	// emission entirely (CI opt-out).
+	var bundlePath string
+	var noBundle bool
 
 	for len(args) > 0 {
 		switch {
@@ -248,6 +254,13 @@ func testCmd(args []string) int {
 			args = args[1:]
 		case args[0] == "--dry-run":
 			dryRun = true
+		case strings.HasPrefix(args[0], "--bundle="):
+			bundlePath = strings.TrimPrefix(args[0], "--bundle=")
+		case args[0] == "--bundle" && len(args) > 1:
+			bundlePath = args[1]
+			args = args[1:]
+		case args[0] == "--no-bundle":
+			noBundle = true
 		case strings.HasSuffix(args[0], ".star"):
 			starFile = args[0]
 		case strings.HasSuffix(args[0], ".yaml") || strings.HasSuffix(args[0], ".yml"):
@@ -281,14 +294,17 @@ func testCmd(args []string) int {
 			VirtualTime: virtualTime,
 			ExploreMode: exploreMode,
 		}
-		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, formatFlag, logFormat, logLevel, dryRun)
+		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, formatFlag, logFormat, logLevel, dryRun, bundlePath, noBundle)
 	}
 
 	return testYAMLCmd(configPath, specPath, outputPath, logFormat, logLevel)
 }
 
 // testStarCmd runs tests from a .star file.
-func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level, dryRun bool) int {
+// bundlePath ("" = default filename) and noBundle control RFC-025
+// archive bundle emission; when noBundle is true the run produces
+// only the legacy --output files and no .fb archive.
+func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level, dryRun bool, bundlePath string, noBundle bool) int {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
 
@@ -381,8 +397,31 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		logger.Info("normalized trace written", slog.String("path", normalizePath))
 	}
 
+	// RFC-025: emit `.fb` archive bundle (default on; --no-bundle to skip).
+	// Writes alongside the regular --output (trace.json) path so callers
+	// that already parse trace.json continue to work. The bundle is a
+	// strict superset: trace.json is embedded inside it.
+	if !noBundle {
+		var seedVal int64 = -1
+		if rcfg.Seed != nil {
+			seedVal = int64(*rcfg.Seed)
+		}
+		if err := emitBundle(logger, starFile, seedVal, result, bundlePath); err != nil {
+			logger.Error("bundle emit failed", slog.String("error", err.Error()))
+			// Non-fatal: we still want pass/fail status to flow out.
+		}
+	}
+
 	// Print summary.
 	fmt.Fprintf(os.Stderr, "\n%d passed, %d failed\n", result.Pass, result.Fail)
+
+	// Terminal replay hint per failed test (RFC-025 §Observability).
+	// Makes `replay_command` visible without digging into JSON. Skipped
+	// when the bundle is disabled — without a bundle there's nothing to
+	// replay.
+	if !noBundle && result.Fail > 0 {
+		printReplayHints(os.Stderr, result)
+	}
 
 	// JSON output to stdout.
 	if formatFlag == "json" {
@@ -1959,4 +1998,110 @@ func replaceFile(src, dst string) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+// emitBundle writes a `.fb` archive bundle capturing this run. The
+// bundle contains manifest.json (test summary), env.json (environment
+// fingerprint), trace.json (existing --output shape), and replay.sh
+// (one-liner reproduction script). Default path is
+// `run-<ts>-<seed>.fb` in cwd; override via --bundle or the
+// $FAULTBOX_BUNDLE_DIR env var. RFC-025.
+func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.SuiteResult, explicitPath string) error {
+	if result == nil {
+		return nil
+	}
+
+	// Marshal the full trace once — it goes verbatim into the bundle
+	// under trace.json so downstream consumers see the exact same
+	// format as today's `--output` flag.
+	traceBytes, err := bundle.MarshalTraceForBundle(star.BuildTraceOutput(starFile, result))
+	if err != nil {
+		return fmt.Errorf("trace marshal: %w", err)
+	}
+
+	var recordedSeed uint64
+	if seed >= 0 {
+		recordedSeed = uint64(seed)
+	}
+
+	in := bundle.BuildInput{
+		FaultboxVersion: faultboxVersion(),
+		Seed:            recordedSeed,
+		SpecRoot:        starFile,
+		Tests:           testRowsFromResult(result),
+		Trace:           traceBytes,
+	}
+	w, filename, err := bundle.Build(in)
+	if err != nil {
+		return err
+	}
+
+	dst := bundle.ResolvePath(explicitPath, os.Getenv("FAULTBOX_BUNDLE_DIR"), filename)
+	if err := w.WriteTo(dst); err != nil {
+		return err
+	}
+	logger.Info("bundle written", slog.String("path", dst))
+	// Surface the path on stderr too — the INFO log may be suppressed
+	// by --log-format or --debug-off configurations.
+	fmt.Fprintf(os.Stderr, "Bundle: %s\n", dst)
+	return nil
+}
+
+// testRowsFromResult flattens a SuiteResult into the manifest's rows.
+// Matrix tests show up as individual rows with the synthesised name
+// already set upstream; fault_assumption membership is not yet
+// propagated (Phase 1 scope — comes in a later phase).
+func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
+	if result == nil {
+		return nil
+	}
+	rows := make([]bundle.TestRow, 0, len(result.Tests))
+	for _, tr := range result.Tests {
+		outcome := "passed"
+		if tr.Result == "fail" {
+			outcome = "failed"
+		} else if tr.Result == "error" {
+			outcome = "errored"
+		}
+		rows = append(rows, bundle.TestRow{
+			Name:       tr.Name,
+			Outcome:    outcome,
+			DurationMs: tr.DurationMs,
+			Seed:       tr.Seed,
+		})
+	}
+	return rows
+}
+
+// printReplayHints emits a `Replay: faultbox replay …` line per failed
+// test, so users see the command at the end of the terminal output
+// without having to open the bundle. One line per failure — concise
+// and greppable.
+func printReplayHints(w io.Writer, result *star.SuiteResult) {
+	if result == nil {
+		return
+	}
+	hinted := false
+	for _, tr := range result.Tests {
+		if tr.Result != "fail" && tr.Result != "error" {
+			continue
+		}
+		if !hinted {
+			fmt.Fprintln(w) // spacer before the hints block
+			hinted = true
+		}
+		fmt.Fprintf(w, "Replay: faultbox replay <bundle.fb> --test %s --seed %d\n",
+			tr.Name, tr.Seed)
+	}
+}
+
+// faultboxVersion returns the compiled-in version string. The actual
+// value is injected at build time via -ldflags (see cmd/faultbox/main.go:49);
+// at dev time we fall back to a placeholder so bundles are still
+// produced.
+func faultboxVersion() string {
+	if v := strings.TrimSpace(version); v != "" {
+		return v
+	}
+	return "dev"
 }
