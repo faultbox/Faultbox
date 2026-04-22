@@ -78,6 +78,8 @@ func run() int {
 		return mcpCmd()
 	case "recipes":
 		return recipesCmd(args[1:])
+	case "inspect":
+		return inspectCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
@@ -2104,4 +2106,194 @@ func faultboxVersion() string {
 		return v
 	}
 	return "dev"
+}
+
+// inspectCmd handles: `faultbox inspect <bundle.fb>`
+//   faultbox inspect run.fb                    # summary + file list
+//   faultbox inspect run.fb <path-in-archive>  # dump one file to stdout
+//   faultbox inspect run.fb --extract <dir>    # extract all to dir
+//
+// Implements RFC-025 Phase 2. Version mismatches between the producer
+// and this binary are surfaced as warnings; inspect never refuses on
+// version (it's a read-only tool).
+func inspectCmd(args []string) int {
+	var extractDir string
+	var bundlePath, fileArg string
+
+	for len(args) > 0 {
+		switch {
+		case strings.HasPrefix(args[0], "--extract="):
+			extractDir = strings.TrimPrefix(args[0], "--extract=")
+		case args[0] == "--extract" && len(args) > 1:
+			extractDir = args[1]
+			args = args[1:]
+		case args[0] == "-h", args[0] == "--help":
+			printInspectUsage()
+			return 0
+		case strings.HasPrefix(args[0], "-"):
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[0])
+			printInspectUsage()
+			return 1
+		case bundlePath == "":
+			bundlePath = args[0]
+		case fileArg == "":
+			fileArg = args[0]
+		default:
+			fmt.Fprintf(os.Stderr, "unexpected argument: %s\n", args[0])
+			printInspectUsage()
+			return 1
+		}
+		args = args[1:]
+	}
+
+	if bundlePath == "" {
+		fmt.Fprintln(os.Stderr, "faultbox inspect: bundle path required")
+		printInspectUsage()
+		return 1
+	}
+
+	r, err := bundle.Open(bundlePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	// Soft-gate version warning before any output. `inspect` never
+	// refuses — per RFC-025 comment, it's a read-only tool and
+	// stranding users is worse than showing stale metadata.
+	printVersionBannerIfDrift(os.Stderr, r, faultboxVersion())
+
+	switch {
+	case extractDir != "":
+		n, err := r.Extract(extractDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "extract failed: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "Extracted %d files to %s\n", n, extractDir)
+		return 0
+
+	case fileArg != "":
+		data, err := r.File(fileArg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		if _, err := os.Stdout.Write(data); err != nil {
+			return 1
+		}
+		return 0
+
+	default:
+		return printInspectSummary(os.Stdout, r)
+	}
+}
+
+// printInspectSummary writes the default `faultbox inspect <bundle>`
+// output — a human-readable header with producer version, run id,
+// seed, test summary, and the file list. Machine-readable fields live
+// in the JSONs; this view is for fast scanning.
+func printInspectSummary(w io.Writer, r *bundle.Reader) int {
+	m := r.Manifest()
+	env := r.Env()
+
+	fmt.Fprintf(w, "Bundle:          %s\n", r.Path())
+	fmt.Fprintf(w, "Produced by:     faultbox %s", m.FaultboxVersion)
+	if env != nil && env.FaultboxCommit != "" {
+		fmt.Fprintf(w, " (%s)", env.FaultboxCommit)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Schema version:  %d\n", m.SchemaVersion)
+	fmt.Fprintf(w, "Run ID:          %s\n", m.RunID)
+	fmt.Fprintf(w, "Created:         %s\n", m.CreatedAt)
+	fmt.Fprintf(w, "Seed:            %d\n", m.Seed)
+	if m.SpecRoot != "" {
+		fmt.Fprintf(w, "Spec root:       %s\n", m.SpecRoot)
+	}
+
+	if env != nil {
+		if env.HostOS != "" || env.HostArch != "" {
+			fmt.Fprintf(w, "Host:            %s/%s", env.HostOS, env.HostArch)
+			if env.Kernel != "" {
+				fmt.Fprintf(w, " (kernel %s)", env.Kernel)
+			}
+			fmt.Fprintln(w)
+		}
+		if env.GoToolchain != "" {
+			fmt.Fprintf(w, "Go toolchain:    %s\n", env.GoToolchain)
+		}
+		if env.DockerVersion != "" {
+			fmt.Fprintf(w, "Docker:          %s\n", env.DockerVersion)
+		}
+		if len(env.RuntimeHints) > 0 {
+			fmt.Fprintf(w, "Runtime hints:   %s\n", strings.Join(env.RuntimeHints, ", "))
+		}
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Tests: %d total, %d passed, %d failed, %d errored\n",
+		m.Summary.Total, m.Summary.Passed, m.Summary.Failed, m.Summary.Errored)
+	if len(m.Tests) > 0 {
+		for _, t := range m.Tests {
+			marker := ""
+			switch t.Outcome {
+			case "passed":
+				marker = "✓"
+			case "failed":
+				marker = "✗"
+			case "errored":
+				marker = "!"
+			default:
+				marker = "?"
+			}
+			fmt.Fprintf(w, "  %s %s (%dms)\n", marker, t.Name, t.DurationMs)
+		}
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Files:")
+	for _, f := range r.Files() {
+		fmt.Fprintf(w, "  %s\n", f)
+	}
+	return 0
+}
+
+// printVersionBannerIfDrift emits a one-line warning on stderr when
+// the bundle was produced by a faultbox version that drifts from the
+// currently-running one. The "don't refuse, just warn" behaviour
+// follows the policy pinned to RFC-025 (#59 comment).
+func printVersionBannerIfDrift(w io.Writer, r *bundle.Reader, current string) {
+	m := r.Manifest()
+	if m == nil {
+		return
+	}
+	vm := bundle.CheckVersion(m.FaultboxVersion, current)
+	switch vm.Kind {
+	case bundle.VersionSame:
+		return
+	case bundle.VersionMinorPatchDrift, bundle.VersionUnknown:
+		fmt.Fprintf(w, "warn: bundle was produced by faultbox %s; current is %s (behaviour may differ slightly; install %s for byte-identical replay)\n",
+			vm.BundleVer, vm.CurrentVer, vm.BundleVer)
+	case bundle.VersionMajorDrift:
+		fmt.Fprintf(w, "warn: bundle was produced by faultbox %s; current is %s — MAJOR version mismatch; replay will refuse. Install %s to run it.\n",
+			vm.BundleVer, vm.CurrentVer, vm.BundleVer)
+	}
+}
+
+// printInspectUsage prints the subcommand's help text. Kept in the
+// main.go style (plain Fprintln) so it matches the rest of the CLI.
+func printInspectUsage() {
+	const usage = `faultbox inspect — examine a .fb bundle
+
+USAGE
+  faultbox inspect <bundle.fb>                    # summary + file list
+  faultbox inspect <bundle.fb> <path-in-archive>  # dump one file to stdout
+  faultbox inspect <bundle.fb> --extract <dir>    # extract all to dir
+
+EXAMPLES
+  faultbox inspect run-2026-04-22-42.fb
+  faultbox inspect run-2026-04-22-42.fb manifest.json | jq .summary
+  faultbox inspect run-2026-04-22-42.fb --extract ./unpacked/
+`
+	fmt.Fprint(os.Stderr, usage)
 }
