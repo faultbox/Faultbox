@@ -1149,7 +1149,11 @@ func (rt *Runtime) stopServices() {
 		}
 	}
 
-	// Cancel non-reused sessions.
+	// Cancel non-reused sessions and tear down their proxies. Leaving
+	// the proxy alive across tests would cause the next test's
+	// EnsureProxy call to reuse a listener whose target points at the
+	// now-dead PID, so real traffic stalls until the proxy read
+	// timeout fires (see #61).
 	for name, rs := range rt.sessions {
 		if reused[name] {
 			// Keep session alive; just clear dynamic fault rules.
@@ -1157,6 +1161,9 @@ func (rt *Runtime) stopServices() {
 			continue
 		}
 		rs.cancel()
+		if rt.proxyMgr != nil {
+			rt.proxyMgr.StopService(name)
+		}
 	}
 	// Wait for non-reused sessions to finish.
 	kept := make(map[string]*runningSession)

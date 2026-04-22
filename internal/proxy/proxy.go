@@ -247,6 +247,28 @@ func (m *Manager) StopAll() {
 	}
 }
 
+// StopService tears down every proxy belonging to a single service,
+// across all of its interfaces. Used during per-test teardown so that
+// a following test's EnsureProxy call allocates a fresh listener bound
+// to the new backend target, rather than returning a stale one whose
+// upstream points at a dead PID from the previous test.
+func (m *Manager) StopService(svcName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	prefix := svcName + ":"
+	for key, rp := range m.proxies {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		rp.cancel()
+		if rp.proxy != nil {
+			rp.proxy.Stop()
+		}
+		delete(m.proxies, key)
+	}
+}
+
 // SupportsProxy reports whether a protocol has a proxy implementation that
 // can be started in pass-through mode (no rules installed). Callers that
 // want to pre-start proxies for every interface (RFC-024 data-path mode)
