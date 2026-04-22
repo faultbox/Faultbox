@@ -121,6 +121,16 @@ func (c *Client) CreateContainer(ctx context.Context, opts CreateOpts) (string, 
 		Binds:        opts.Binds,
 		PortBindings: portBindings,
 		SecurityOpt:  []string{"seccomp=unconfined"}, // allow our seccomp filter
+		// host.docker.internal routes to the host from inside the container
+		// network namespace. RFC-024 uses it so the SUT can reach the
+		// host-side transparent proxy (which binds on 127.0.0.1:<random>).
+		// Available in Docker Desktop (macOS/Windows) natively; on Linux
+		// Docker 20.10+ the special `host-gateway` value resolves to the
+		// bridge gateway IP automatically. Older daemons without that
+		// sentinel fall back silently (env rewriting still works for any
+		// port-published interface via the 127.0.0.1 route out-of-container
+		// through Docker's userland proxy).
+		ExtraHosts: []string{"host.docker.internal:host-gateway"},
 	}
 
 	netCfg := &network.NetworkingConfig{}

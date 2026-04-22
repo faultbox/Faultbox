@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -2599,6 +2600,57 @@ app = service("app", "/tmp/mock",
 	}
 }
 
+// TestBuildContainerEnvRewritesViaHostDockerInternal verifies the v0.9.6
+// RFC-024 follow-up: container consumers receive proxy addresses spelled
+// as host.docker.internal:<port>, not 127.0.0.1:<port>. Without this
+// rewrite the SUT inside its container network namespace has no route
+// to the host-side proxy and the whole data-path story falls apart.
+func TestBuildContainerEnvRewritesViaHostDockerInternal(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db",
+    interface("main", "postgres", 5432),
+    image = "postgres:16",
+)
+api = service("api",
+    interface("public", "http", 8080),
+    image = "alpine",
+    env = {
+        "DATABASE_URL": "postgres://u:p@db:5432/appdb",
+    },
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer ln.Close()
+	proxyAddr := ln.Addr().String()
+	rt.proxyMgr.RegisterListenAddr("db", "main", proxyAddr)
+
+	env := rt.buildContainerEnv(rt.services["api"])
+	envMap := map[string]string{}
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		envMap[k] = v
+	}
+
+	_, proxyPort, _ := splitHostPort(proxyAddr)
+	wantAddr := "host.docker.internal:" + strconv.Itoa(proxyPort)
+
+	if got := envMap["FAULTBOX_DB_MAIN_ADDR"]; got != wantAddr {
+		t.Errorf("FAULTBOX_DB_MAIN_ADDR = %q, want %q (host.docker.internal)", got, wantAddr)
+	}
+	if got := envMap["FAULTBOX_DB_MAIN_HOST"]; got != "host.docker.internal" {
+		t.Errorf("FAULTBOX_DB_MAIN_HOST = %q, want host.docker.internal", got)
+	}
+	wantDB := "postgres://u:p@" + wantAddr + "/appdb"
+	if got := envMap["DATABASE_URL"]; got != wantDB {
+		t.Errorf("DATABASE_URL = %q, want %q", got, wantDB)
+	}
+}
+
 // TestProxyDataPathEndToEnd is the full RFC-024 loop:
 //   - Stand up a real HTTP upstream.
 //   - Pre-start a proxy pointing at that upstream.
@@ -2673,26 +2725,61 @@ api = service("api", "/tmp/mock",
 	}
 }
 
-// TestPreStartProxiesSkipsUnsupportedProtocols verifies Phase 1's graceful
-// degradation: interfaces whose protocol has no proxy (e.g., raw tcp) are
-// skipped silently rather than failing service startup. Customer POCs that
-// use TCP keep working unchanged on v0.9.5.
-func TestPreStartProxiesSkipsUnsupportedProtocols(t *testing.T) {
+// TestPreStartProxiesStartsTCPProxy verifies that as of v0.9.6 tcp
+// interfaces are no longer skipped: the TCP proxy shipped in v0.9.6
+// registers under SupportsProxy("tcp"), so preStartProxies stands one up
+// and the SUT's plain-tcp traffic enters the same data path as the
+// 14 parsed-protocol proxies. The graceful-skip behaviour remains for
+// any future protocol added without a proxy implementation.
+func TestPreStartProxiesStartsTCPProxy(t *testing.T) {
+	// Upstream echo server for the pre-started proxy to target — a real
+	// listener is required so TCPProxy.Start's net.DialTimeout succeeds
+	// when the first client connects.
+	upstream, stopUpstream := startEchoForRuntime(t)
+	defer stopUpstream()
+
 	rt := New(testLogger())
-	err := rt.LoadString("test.star", `
+	src := `
 legacy = service("legacy", "/tmp/mock",
-    interface("raw", "tcp", 7777),
+    interface("raw", "tcp", ` + strconv.Itoa(upstream.port) + `),
 )
-`)
-	if err != nil {
+`
+	if err := rt.LoadString("test.star", src); err != nil {
 		t.Fatalf("LoadString: %v", err)
 	}
 	if err := rt.preStartProxies(context.Background(), "legacy", rt.services["legacy"]); err != nil {
-		t.Errorf("preStartProxies returned error for tcp-only service: %v", err)
+		t.Fatalf("preStartProxies: %v", err)
 	}
-	if rt.proxyMgr.GetProxyAddr("legacy", "raw") != "" {
-		t.Error("expected no proxy for tcp interface, got one registered")
+	defer rt.proxyMgr.StopAll()
+
+	if rt.proxyMgr.GetProxyAddr("legacy", "raw") == "" {
+		t.Error("tcp interface: expected proxy to be pre-started, got none")
 	}
+}
+
+// startEchoForRuntime is a tiny TCP echo used by the runtime-level tests;
+// duplicated here rather than imported from the proxy package to avoid a
+// test-only cross-package dep. Returns a loopback port + cleanup.
+type echoAddrInfo struct {
+	port int
+}
+
+func startEchoForRuntime(t *testing.T) (echoAddrInfo, func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("echo listen: %v", err)
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) { defer c.Close(); io.Copy(c, c) }(c)
+		}
+	}()
+	return echoAddrInfo{port: ln.Addr().(*net.TCPAddr).Port}, func() { ln.Close() }
 }
 
 // Note: the runtime-level integration test for the zero-traffic event
