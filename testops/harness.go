@@ -10,9 +10,8 @@
 //	go test ./testops/... -update      # regenerate goldens
 //	go test ./testops/... -run mock_demo -v
 //
-// Phase 0 ships the harness and registry only; goldens are seeded in a
-// follow-up once product-level determinism in NormalizeTrace is stable
-// (see testops/FINDINGS.md).
+// Bugs the harness discovers are tracked as GitHub issues, not as
+// local markdown — link to the issue URL from each Case's Skip: field.
 package testops
 
 import "time"
@@ -96,7 +95,7 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   60 * time.Second,
 		LinuxOnly: true,
-		Skip:      "passes in Lima but test_db_slow + test_happy_path fail on GitHub-hosted ubuntu-latest — see FINDINGS #3",
+		Skip:      "passes in Lima but fails on GitHub-hosted ubuntu-latest — see https://github.com/faultbox/Faultbox/issues/57",
 	},
 	{
 		Name:      "poc_demo",
@@ -104,7 +103,7 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   90 * time.Second,
 		LinuxOnly: true,
-		Skip:      "test_happy_path assert_eventually on /tmp/inventory.wal openat fails deterministically in Lima — see FINDINGS #2",
+		Skip:      "test_happy_path assert_eventually on /tmp/inventory.wal openat fails deterministically — see https://github.com/faultbox/Faultbox/issues/56",
 	},
 	{
 		Name:      "poc_demo_container",

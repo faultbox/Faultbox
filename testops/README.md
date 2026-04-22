@@ -13,7 +13,6 @@ testops/
   harness.go           # Case type + corpus registry (authoritative)
   harness_test.go      # //go:build linux — runs every Case
   goldens/             # committed *.norm files, one per Case
-  FINDINGS.md          # product bugs discovered while building the harness
   README.md            # this file
 ```
 
@@ -43,8 +42,9 @@ make env-exec CMD="go test ./testops/... -v"
 2. Seed the golden from a known-good environment:
    `go test ./testops/... -run <name> -update`
 3. Inspect `testops/goldens/<name>.norm` — it must be stable across
-   repeated runs with the same seed. If not, file a determinism bug in
-   [FINDINGS.md](FINDINGS.md) and set `Skip:` on the case until fixed.
+   repeated runs with the same seed. If not, open a GitHub issue with
+   the reproducer and set `Skip:` on the case pointing at the issue URL
+   until fixed.
 4. Commit the registry change and the golden in one PR.
 
 ## Un-skipping a LinuxOnly case
