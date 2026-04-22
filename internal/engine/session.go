@@ -239,6 +239,43 @@ func (s *Session) ClearDynamicFaultRules() {
 	s.dynamicRules = nil
 }
 
+// DynamicRuleReport summarises one dynamic rule's activity over its window.
+// Emitted when the fault is removed so callers can see which rules never
+// matched any traffic — often a sign that the fault window didn't cover
+// actual app I/O (e.g., client cached an init-time response and reused it).
+// RFC-024 adjacent; shipped in v0.9.4.
+type DynamicRuleReport struct {
+	Syscall    string
+	Action     string
+	Op         string
+	Label      string
+	MatchCount int64
+}
+
+// DynamicRuleActivity returns one report per currently-installed dynamic
+// fault rule, including its match counter. Safe to call before
+// ClearDynamicFaultRules so callers can diff the counter snapshot.
+func (s *Session) DynamicRuleActivity() []DynamicRuleReport {
+	s.dynamicRulesMu.RLock()
+	defer s.dynamicRulesMu.RUnlock()
+	if s.dynamicRules == nil {
+		return nil
+	}
+	var out []DynamicRuleReport
+	for _, rules := range s.dynamicRules {
+		for _, r := range rules {
+			out = append(out, DynamicRuleReport{
+				Syscall:    r.Syscall,
+				Action:     actionName(r.Action),
+				Op:         r.Op,
+				Label:      r.Label,
+				MatchCount: r.MatchCount(),
+			})
+		}
+	}
+	return out
+}
+
 // getDynamicRules returns dynamic rules for a syscall number.
 func (s *Session) getDynamicRules(nr int32) []*FaultRule {
 	s.dynamicRulesMu.RLock()

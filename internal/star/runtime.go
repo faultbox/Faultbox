@@ -1477,6 +1477,20 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 		found["clock_gettime"] = true
 	}
 
+	// Union syscalls from any fault_assumption() targeting this service.
+	// Without this, fault_assumption(target=svc, custom_op=deny(...)) inside
+	// fault_scenario/fault_matrix would load correctly but the filter would
+	// miss the underlying syscalls (custom ops referenced inside a
+	// fault_assumption call are invisible to the text-pattern scanner above).
+	// Customer-reported on v0.8.8 — fix shipped in v0.9.4.
+	for _, a := range rt.faultAssumptions {
+		for _, r := range a.Rules {
+			if r.Target != nil && r.Target.Name == svcName && r.Syscall != "" {
+				found[r.Syscall] = true
+			}
+		}
+	}
+
 	// Expand syscall families.
 	for _, sc := range []string{"write", "read", "open", "fsync", "sendto", "recvfrom"} {
 		if found[sc] {
@@ -1623,13 +1637,36 @@ func (rt *Runtime) removeTrace(svcName string) {
 	rt.events.Emit("trace_removed", svcName, nil)
 }
 
-// removeFaults clears fault rules for a service.
+// removeFaults clears fault rules for a service. Before clearing, it
+// inspects per-rule match counters and emits a `fault_zero_traffic` event
+// for any rule that never matched during the window — a common signal
+// that the test driver didn't force fresh upstream traffic while the fault
+// was active (e.g., the client cached an init-time response and reused it
+// instead of re-calling the upstream). Customer-reported signal in v0.8.8;
+// surfaced as an explicit event in v0.9.4 so users don't silently get
+// "test passed" when no injection actually fired.
 func (rt *Runtime) removeFaults(svcName string) {
 	rt.faultsMu.Lock()
 	delete(rt.faults, svcName)
 	rt.faultsMu.Unlock()
 
 	if rs, ok := rt.sessions[svcName]; ok {
+		for _, r := range rs.session.DynamicRuleActivity() {
+			if r.MatchCount > 0 {
+				continue
+			}
+			fields := map[string]string{
+				"syscall": r.Syscall,
+				"action":  r.Action,
+			}
+			if r.Op != "" {
+				fields["op"] = r.Op
+			}
+			if r.Label != "" {
+				fields["label"] = r.Label
+			}
+			rt.events.Emit("fault_zero_traffic", svcName, fields)
+		}
 		rs.session.ClearDynamicFaultRules()
 	}
 	rt.events.Emit("fault_removed", svcName, nil)
