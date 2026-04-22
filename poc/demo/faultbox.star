@@ -27,6 +27,11 @@ orders = service("orders",
 
 def test_happy_path():
     """Place an order — stock reserved, WAL written."""
+    # openat isn't targeted by any fault() here, so install a passive
+    # filter that observes it without faulting. Without this, the
+    # assert_eventually below has nothing to match against.
+    trace_start(inventory, syscalls = ["openat"])
+
     # Check stock is available.
     resp = orders.get(path="/inventory/widget")
     assert_eq(resp.status, 200)
@@ -48,9 +53,11 @@ def test_happy_path():
         syscall = "openat",
         path = "/tmp/inventory.wal",
     )
+    trace_stop(inventory)
 
 def test_inventory_slow():
     """Inventory writes delayed 500ms — order still succeeds but slow."""
+    trace_start(inventory, syscalls = ["openat"])
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"gadget","qty":1}')
         assert_eq(resp.status, 200)
@@ -64,9 +71,14 @@ def test_inventory_slow():
             path = "/tmp/inventory.wal",
         )
     fault(inventory, write=delay("500ms"), run=scenario)
+    trace_stop(inventory)
 
 def test_inventory_unreachable():
     """Order service can't connect to inventory — returns 503."""
+    # assert_never is only meaningful when the syscall is being observed;
+    # without trace_start the filter would ignore openat and the negative
+    # assertion would pass vacuously.
+    trace_start(inventory, syscalls = ["openat"])
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_eq(resp.status, 503)
@@ -79,6 +91,7 @@ def test_inventory_unreachable():
             path = "/tmp/inventory.wal",
         )
     fault(orders, connect=deny("ECONNREFUSED"), run=scenario)
+    trace_stop(inventory)
 
 def test_wal_fsync_failure():
     """WAL fsync fails — reservation should fail, data integrity preserved."""
