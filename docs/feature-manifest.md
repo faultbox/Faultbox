@@ -38,7 +38,7 @@ Status legend: **🟢 green** (CI signal proves it), **🟡 partial** (some mech
 | `fault(deny)` on syscalls | 1 | testops corpus + syscall-family test | 🔴 | Blocked on #57 |
 | `fault(delay)` on syscalls | 1 | testops corpus | 🔴 | Blocked on #57 |
 | `fault(hold)` on syscalls | 1 | testops corpus | 🔴 | No corpus entry yet |
-| `assert_eventually` temporal | 1 | testops corpus (real syscall trace) | 🔴 | Matching bug tracked in #56 |
+| `assert_eventually` temporal | 1 | testops corpus (real syscall trace) | 🟡 | Spec-level matching fix in #62; un-skip depends on #57 + #61 |
 | `assert_never` temporal | 1 | testops corpus | 🔴 | No corpus entry yet |
 | `--seed` deterministic replay | 1 | testops harness itself asserts identical traces across 5 runs | 🟢 | Already proven by corpus entries |
 | `depends_on` + healthcheck ordering | 1 | testops corpus covers transitively | 🟢 | |
@@ -114,8 +114,13 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 - Experimental (Tier 3): 8 rows, **~0% green** — expected; these are checklist-gated.
 
 The Critical gap is the story: core-workflow coverage is underwater.
-Issue #57 (shared-runner seccomp) is the single highest unlock —
-resolving it turns ~8 Critical rows from 🔴 to 🟢 at once.
+Issue #57 (shared-runner user-namespace + AppArmor interaction) is the
+single highest unlock — resolving it turns ~8 Critical rows from 🔴 to
+🟢 at once. Hypothesis confirmed in [#57 comment](https://github.com/faultbox/Faultbox/issues/57#issuecomment-4295465481):
+Ubuntu 24.04's `kernel.apparmor_restrict_unprivileged_userns=1` breaks
+faultbox's sandbox on GitHub-hosted runners while Lima works. Three
+fix paths documented there, ranging from a one-line CI sysctl to a
+proper `namespaces=` service kwarg.
 
 ---
 
