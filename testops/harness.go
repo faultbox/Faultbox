@@ -95,7 +95,6 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   60 * time.Second,
 		LinuxOnly: true,
-		Skip:      "passes in Lima but fails on GitHub-hosted ubuntu-latest — see https://github.com/faultbox/Faultbox/issues/57",
 	},
 	{
 		Name:      "poc_demo",
