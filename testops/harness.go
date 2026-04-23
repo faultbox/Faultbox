@@ -92,6 +92,12 @@ var Cases = []Case{
 		Seed:    1,
 		Timeout: 30 * time.Second,
 	},
+	{
+		Name:    "parallel_basic",
+		Spec:    "testops/corpus/parallel_basic.star",
+		Seed:    1,
+		Timeout: 30 * time.Second,
+	},
 
 	// --- LinuxOnly, currently skipped. ---
 	//

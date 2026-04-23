@@ -37,7 +37,7 @@ Status legend: **🟢 green** (CI signal proves it), **🟡 partial** (some mech
 | `service()` container mode (Docker) | 1 | testops corpus with pinned image digest | 🔴 | CI Docker provisioning not yet added |
 | `fault(deny)` on syscalls | 1 | testops corpus (poc_example test_api_cannot_reach_db; poc_demo test_wal_fsync_failure, test_disk_full) | 🟢 | |
 | `fault(delay)` on syscalls | 1 | testops corpus (poc_example test_db_slow; poc_demo test_inventory_slow) | 🟢 | |
-| `fault(hold)` on syscalls | 1 | testops corpus | 🔴 | No corpus entry exercises hold |
+| `parallel()` concurrent scenarios + hold/release scheduler | 1 | testops corpus (parallel_basic) | 🟢 | Hold is an internal scheduler primitive exercised by `parallel()` setup/teardown; `--explore=all/sample` adds interleaving enumeration on top |
 | `assert_eventually` temporal | 1 | testops corpus (poc_demo test_happy_path on openat) | 🟢 | |
 | `assert_never` temporal | 1 | testops corpus (poc_demo test_inventory_unreachable) | 🟢 | |
 | `--seed` deterministic replay | 1 | testops harness itself asserts identical traces across 5 runs | 🟢 | Already proven by corpus entries |
@@ -109,7 +109,7 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 
 ## Summary counts
 
-- Critical (Tier 1): 17 rows, **~65% green**.
+- Critical (Tier 1): 15 rows, **~87% green**.
 - Supported (Tier 2): 22 rows, **~55% green**.
 - Experimental (Tier 3): 8 rows, **~0% green** — expected; these are checklist-gated.
 
