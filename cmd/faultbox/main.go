@@ -80,6 +80,8 @@ func run() int {
 		return recipesCmd(args[1:])
 	case "inspect":
 		return inspectCmd(args[1:])
+	case "replay":
+		return replayCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
