@@ -92,6 +92,13 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"expect_success":      starlark.NewBuiltin("expect_success", builtinExpectSuccess),
 		"expect_error_within": starlark.NewBuiltin("expect_error_within", builtinExpectErrorWithin),
 		"expect_hang":         starlark.NewBuiltin("expect_hang", builtinExpectHang),
+		// JWT primitives backing @faultbox/mocks/jwt.star (customer ask
+		// B3 — v0.9.9). Three thin shims over internal/jwt; users
+		// normally reach for jwt.server() in the stdlib, not these
+		// builtins directly.
+		"jwt_keypair": starlark.NewBuiltin("jwt_keypair", builtinJWTKeypair),
+		"jwt_sign":    starlark.NewBuiltin("jwt_sign", builtinJWTSign),
+		"jwt_jwks":    starlark.NewBuiltin("jwt_jwks", builtinJWTJWKS),
 	}
 }
 
