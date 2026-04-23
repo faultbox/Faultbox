@@ -15,3 +15,4 @@ define high-level operations, and integrate with LLM agents.
 | [OpenAPI Mocks](19-openapi-mocks.md) | 15 min | http.server(openapi=...), example strategies, overrides, strict validation |
 | [`.fb` Bundles](20-bundles.md) | 10 min | Reproducibility-by-default, `faultbox inspect`, sharing runs, zero-traffic hints |
 | [JWT/JWKS Mocks](21-jwt-mocks.md) | 12 min | jwt.server() stdlib, EdDSA tokens, claim minting, JWKS outage faults |
+| [End-to-End: Go Microservice](22-go-microservice-end-to-end.md) | 30 min | Full stack: real containers + typed gRPC mocks + JWT + fault_matrix in one tutorial |
