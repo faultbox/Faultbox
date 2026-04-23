@@ -671,6 +671,7 @@ flag lookups, anything where the canned answer depends on the input.
 | `@faultbox/mocks/mongodb.star` | `mongo.server(name, interface, collections, depends_on)` | hand-written BSON OP_MSG/OP_QUERY responder |
 | `@faultbox/mocks/grpc.star` | `grpc.server(name, interface, descriptors, services, depends_on, tls)` | protoreflect + FileDescriptorSet (RFC-023) |
 | `@faultbox/mocks/http.star` | `http.server(name, interface, openapi, examples, validate, overrides, routes, default, depends_on, tls)` | kin-openapi + OpenAPI 3.0 (RFC-021) |
+| `@faultbox/mocks/jwt.star` | `jwt.server(name, interface, issuer, key_id, depends_on)` → struct with `.service` / `.sign(claims=…)` / `.jwks` | Auto-generated EdDSA keypair + standard JWKS endpoint (v0.9.9, customer ask B3) |
 
 **gRPC status-code shorthands (v0.9.8):** the `grpc` stdlib now exposes
 per-code helpers so you don't have to remember the `grpc_error(code="…")`

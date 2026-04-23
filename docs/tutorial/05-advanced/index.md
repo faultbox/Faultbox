@@ -14,3 +14,4 @@ define high-level operations, and integrate with LLM agents.
 | [Typed gRPC Mocks](18-typed-grpc-mocks.md) | 20 min | grpc.server(descriptors=...), FileDescriptorSet ingestion, typed responses for compiled-stub clients, reflection + grpcurl |
 | [OpenAPI Mocks](19-openapi-mocks.md) | 15 min | http.server(openapi=...), example strategies, overrides, strict validation |
 | [`.fb` Bundles](20-bundles.md) | 10 min | Reproducibility-by-default, `faultbox inspect`, sharing runs, zero-traffic hints |
+| [JWT/JWKS Mocks](21-jwt-mocks.md) | 12 min | jwt.server() stdlib, EdDSA tokens, claim minting, JWKS outage faults |
