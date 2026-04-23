@@ -16,6 +16,112 @@ faultbox init --name orders --port 8080 ./order-svc  # generate starter .star
 
 ---
 
+## Primitive Index
+
+Every builtin grouped by what it's for. Use Cmd-F to jump.
+
+**Topology** —
+[`service`](#service-topology),
+[`mock_service`](#mock_service),
+[`interface`](#interface).
+
+**Healthchecks** —
+[`tcp`](#healthchecks),
+[`http`](#healthchecks),
+[`kafka_ready`](#healthchecks).
+
+**Faults (syscall + protocol)** —
+[`fault`](#fault),
+[`fault_all`](#fault_all),
+[`fault_start`](#fault_start--fault_stop),
+[`fault_stop`](#fault_start--fault_stop),
+[`fault_assumption`](#fault_assumption),
+[`fault_scenario`](#fault_scenario),
+[`fault_matrix`](#fault_matrix),
+[`scenario`](#scenarios--generation),
+[`partition`](#partition),
+[`nondet`](#nondet).
+
+**Fault primitives** —
+[`deny`](#fault),
+[`delay`](#fault),
+[`allow`](#fault),
+[`response`](#protocol-faults) (proxy),
+[`error`](#protocol-faults) (proxy),
+[`drop`](#protocol-faults) (proxy),
+[`duplicate`](#protocol-faults) (proxy),
+[`op`](#named-operations).
+
+**Mock responses** —
+[`json_response`](#response-constructors),
+[`text_response`](#response-constructors),
+[`bytes_response`](#response-constructors),
+[`status_only`](#response-constructors),
+[`redirect`](#response-constructors),
+[`grpc_response`](#response-constructors),
+[`grpc_typed_response`](#response-constructors) (RFC-023),
+[`grpc_raw_response`](#response-constructors) (RFC-023),
+[`grpc_error`](#response-constructors),
+[`dynamic`](#response-constructors).
+
+**Stdlib mocks** (under `@faultbox/mocks/`) —
+[`kafka.broker`](#stdlib-mocks),
+[`redis.server`](#stdlib-mocks),
+[`mongo.server`](#stdlib-mocks),
+[`grpc.server`](#stdlib-mocks) + 7 status shorthands (v0.9.8),
+[`http.server`](#stdlib-mocks),
+[`jwt.server`](#stdlib-mocks) (v0.9.9).
+
+**Spec-load file readers** (RFC-026, v0.9.8) —
+[`load_file`](#file-readers--load_file-load_yaml-load_json-v098),
+[`load_yaml`](#file-readers--load_file-load_yaml-load_json-v098),
+[`load_json`](#file-readers--load_file-load_yaml-load_json-v098).
+
+**Assertions** —
+[`assert_true`](#assertions),
+[`assert_eq`](#assertions),
+[`assert_eventually`](#assertions),
+[`assert_never`](#assertions),
+[`assert_before`](#assertions).
+
+**Matrix expectations** (RFC-027, v0.9.8) —
+[`expect_success`](#expect_success--expect_error_withinms--expect_hang-v098),
+[`expect_error_within`](#expect_success--expect_error_withinms--expect_hang-v098),
+[`expect_hang`](#expect_success--expect_error_withinms--expect_hang-v098).
+
+**Event sources & decoders** —
+[`events`](#event-sources),
+[`stdout`](#event-sources),
+[`json_decoder`](#event-sources),
+[`logfmt_decoder`](#event-sources),
+[`regex_decoder`](#event-sources),
+[`monitor`](#monitors).
+
+**Concurrency primitives** —
+[`parallel`](#concurrency).
+
+**Tracing** —
+[`trace`](#tracing),
+[`trace_start`](#tracing),
+[`trace_stop`](#tracing).
+
+**Misc** —
+[`struct`](#struct---namespace-objects),
+[`load`](#loadfilename-symbol1-symbol2-).
+
+**Bottom-rung JWT primitives** (rarely needed; `jwt.server` is the
+supported surface) —
+[`jwt_keypair`](#stdlib-mocks),
+[`jwt_sign`](#stdlib-mocks),
+[`jwt_jwks`](#stdlib-mocks).
+
+> The fastest way to look up a kwarg list: search for the function
+> name in this file. Every primitive's section has a complete
+> kwarg table or signature line. Anything missing is a doc bug —
+> please file an issue.
+
+---
+
 ## Quick Start
 
 ```python
@@ -671,6 +777,7 @@ flag lookups, anything where the canned answer depends on the input.
 | `@faultbox/mocks/mongodb.star` | `mongo.server(name, interface, collections, depends_on)` | hand-written BSON OP_MSG/OP_QUERY responder |
 | `@faultbox/mocks/grpc.star` | `grpc.server(name, interface, descriptors, services, depends_on, tls)` | protoreflect + FileDescriptorSet (RFC-023) |
 | `@faultbox/mocks/http.star` | `http.server(name, interface, openapi, examples, validate, overrides, routes, default, depends_on, tls)` | kin-openapi + OpenAPI 3.0 (RFC-021) |
+| `@faultbox/mocks/jwt.star` | `jwt.server(name, interface, issuer, key_id, depends_on)` → struct with `.service` / `.sign(claims=…)` / `.jwks` | Auto-generated EdDSA keypair + standard JWKS endpoint (v0.9.9, customer ask B3) |
 
 **gRPC status-code shorthands (v0.9.8):** the `grpc` stdlib now exposes
 per-code helpers so you don't have to remember the `grpc_error(code="…")`
