@@ -11,16 +11,20 @@ Background: ../docs/design/testops.md (Phase plan).
 ```
 testops/
   harness.go           # Case type + corpus registry (authoritative)
-  harness_test.go      # //go:build linux — runs every Case
+  harness_test.go      # runs every Case (LinuxOnly cases skip on non-Linux)
+  corpus/              # curated Starlark specs
   goldens/             # committed *.norm files, one per Case
-  FINDINGS.md          # product bugs discovered while building the harness
   README.md            # this file
 ```
+
+Bugs discovered while building or extending the harness are tracked as
+GitHub issues, not in a local markdown file.
 
 ## Run
 
 The harness is a plain `go test` target, so it rides along with the
-existing CI workflow and lives under the `//go:build linux` tag.
+existing CI workflow. Mock-only cases run on any host; `LinuxOnly`
+cases skip automatically off Linux.
 
 ```
 go test ./testops/...                 # verify all goldens
@@ -43,8 +47,9 @@ make env-exec CMD="go test ./testops/... -v"
 2. Seed the golden from a known-good environment:
    `go test ./testops/... -run <name> -update`
 3. Inspect `testops/goldens/<name>.norm` — it must be stable across
-   repeated runs with the same seed. If not, file a determinism bug in
-   [FINDINGS.md](FINDINGS.md) and set `Skip:` on the case until fixed.
+   repeated runs with the same seed. If not, open a GitHub issue with
+   the reproducer and set `Skip:` on the case pointing at the issue URL
+   until fixed.
 4. Commit the registry change and the golden in one PR.
 
 ## Un-skipping a LinuxOnly case
