@@ -103,7 +103,6 @@ var Cases = []Case{
 		Seed:      1,
 		Timeout:   90 * time.Second,
 		LinuxOnly: true,
-		Skip:      "test_happy_path assert_eventually on /tmp/inventory.wal openat fails deterministically in Lima — see FINDINGS #2",
 	},
 	{
 		Name:      "poc_demo_container",

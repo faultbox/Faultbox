@@ -493,6 +493,17 @@ func NormalizeTrace(result *SuiteResult) string {
 					continue
 				}
 
+				// Skip allowed system-path accesses regardless of the
+				// specific path. Go's runtime probes cgroup/proc/sys
+				// paths at startup that vary by arch and host (e.g.
+				// /sys/fs/cgroup/.../cpu.max exists on GitHub-hosted
+				// runners but not in Lima). These are never
+				// application behavior; including them in the
+				// normalized trace makes goldens non-portable.
+				if decision == "allow (system path)" {
+					continue
+				}
+
 				// Normalize non-deterministic paths:
 				// socket:[12345] → socket (inode numbers change between runs)
 				// pipe:[12345] → pipe

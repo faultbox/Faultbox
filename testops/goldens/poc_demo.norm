@@ -1,0 +1,104 @@
+=== test_disk_full ===
+--- inventory ---
+service_started
+write allow pipe
+service_ready
+fault_applied
+write deny(no space left on device) socket
+fault_removed
+--- orders ---
+service_started
+service_ready
+--- test ---
+step_send orders
+step_recv orders
+=== test_flaky_network ===
+--- inventory ---
+service_started
+write allow pipe
+service_ready
+write allow socket
+openat allow /tmp/inventory.wal
+write allow /tmp/inventory.wal
+fsync allow /tmp/inventory.wal
+write allow socket
+--- orders ---
+service_started
+service_ready
+fault_applied
+fault_removed
+--- test ---
+step_send orders
+step_recv orders
+=== test_happy_path ===
+--- inventory ---
+service_started
+write allow pipe
+service_ready
+write allow socket
+write allow socket
+openat trace /tmp/inventory.wal
+write allow /tmp/inventory.wal
+fsync allow /tmp/inventory.wal
+write allow socket
+write allow socket
+--- orders ---
+service_started
+service_ready
+--- test ---
+step_send orders
+step_recv orders
+step_send orders
+step_recv orders
+step_send orders
+step_recv orders
+=== test_inventory_slow ===
+--- inventory ---
+service_started
+write allow pipe
+service_ready
+fault_applied
+write delay(500ms) socket
+openat allow /tmp/inventory.wal
+write delay(500ms) /tmp/inventory.wal
+fsync allow /tmp/inventory.wal
+write delay(500ms) socket
+fault_removed
+--- orders ---
+service_started
+service_ready
+--- test ---
+step_send orders
+step_recv orders
+=== test_inventory_unreachable ===
+--- inventory ---
+service_started
+write allow pipe
+service_ready
+--- orders ---
+service_started
+service_ready
+fault_applied
+connect deny(connection refused)
+fault_removed
+--- test ---
+step_send orders
+step_recv orders
+=== test_wal_fsync_failure ===
+--- inventory ---
+service_started
+write allow pipe
+service_ready
+fault_applied
+write allow socket
+openat allow /tmp/inventory.wal
+write allow /tmp/inventory.wal
+fsync deny(input/output error) /tmp/inventory.wal
+write allow socket
+fault_removed
+--- orders ---
+service_started
+service_ready
+--- test ---
+step_send orders
+step_recv orders
