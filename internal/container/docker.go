@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -71,6 +72,39 @@ func (c *Client) ImageEntrypoint(ctx context.Context, ref string) (entrypoint, c
 		return nil, nil, fmt.Errorf("inspect image %s: %w", ref, err)
 	}
 	return inspect.Config.Entrypoint, inspect.Config.Cmd, nil
+}
+
+// ImageDigest pulls (if needed) and returns the canonical content
+// digest for ref — the "sha256:..." that uniquely identifies the
+// bytes a future pull would resolve to. Used by `faultbox lock` to
+// pin images and by the bundle's env.json to record what actually
+// ran. Returns empty string + error if the image has no associated
+// digest (rare; happens for locally-built images that were never
+// pushed/pulled from a registry).
+func (c *Client) ImageDigest(ctx context.Context, ref string) (string, error) {
+	if err := c.PullImage(ctx, ref); err != nil {
+		return "", err
+	}
+	inspect, _, err := c.cli.ImageInspectWithRaw(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("inspect image %s: %w", ref, err)
+	}
+	// RepoDigests entries look like "mysql@sha256:abc..." — strip
+	// everything before the @ to get just the digest. Prefer the
+	// first matching entry; multiple entries occur when one image
+	// has been tagged from several registries.
+	for _, rd := range inspect.RepoDigests {
+		if at := strings.IndexByte(rd, '@'); at > 0 && at+1 < len(rd) {
+			return rd[at+1:], nil
+		}
+	}
+	// Fall back to the image ID. Less stable across daemons but
+	// still useful — a content-hash on the local store. Better than
+	// "no digest at all" for locally-built images.
+	if inspect.ID != "" {
+		return inspect.ID, nil
+	}
+	return "", fmt.Errorf("image %s has no digest (locally built and never pushed?)", ref)
 }
 
 // CreateOpts configures container creation.
