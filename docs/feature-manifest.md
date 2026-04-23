@@ -33,13 +33,13 @@ Status legend: **🟢 green** (CI signal proves it), **🟡 partial** (some mech
 
 | Feature | Tier | Mechanism | Status | Notes |
 |---|---|---|---|---|
-| `service()` binary mode (fork+exec) | 1 | testops corpus (LinuxOnly) + integration | 🟡 | Blocked on #57 for CI coverage |
+| `service()` binary mode (fork+exec) | 1 | testops corpus (poc_example, poc_demo) | 🟢 | Gated in CI on amd64 ubuntu-latest |
 | `service()` container mode (Docker) | 1 | testops corpus with pinned image digest | 🔴 | CI Docker provisioning not yet added |
-| `fault(deny)` on syscalls | 1 | testops corpus + syscall-family test | 🔴 | Blocked on #57 |
-| `fault(delay)` on syscalls | 1 | testops corpus | 🔴 | Blocked on #57 |
-| `fault(hold)` on syscalls | 1 | testops corpus | 🔴 | No corpus entry yet |
-| `assert_eventually` temporal | 1 | testops corpus (real syscall trace) | 🔴 | Matching bug tracked in #56 |
-| `assert_never` temporal | 1 | testops corpus | 🔴 | No corpus entry yet |
+| `fault(deny)` on syscalls | 1 | testops corpus (poc_example test_api_cannot_reach_db; poc_demo test_wal_fsync_failure, test_disk_full) | 🟢 | |
+| `fault(delay)` on syscalls | 1 | testops corpus (poc_example test_db_slow; poc_demo test_inventory_slow) | 🟢 | |
+| `fault(hold)` on syscalls | 1 | testops corpus | 🔴 | No corpus entry exercises hold |
+| `assert_eventually` temporal | 1 | testops corpus (poc_demo test_happy_path on openat) | 🟢 | |
+| `assert_never` temporal | 1 | testops corpus (poc_demo test_inventory_unreachable) | 🟢 | |
 | `--seed` deterministic replay | 1 | testops harness itself asserts identical traces across 5 runs | 🟢 | Already proven by corpus entries |
 | `depends_on` + healthcheck ordering | 1 | testops corpus covers transitively | 🟢 | |
 | Starlark spec language | 1 | Parser unit tests + corpus exercises | 🟢 | |
@@ -107,15 +107,17 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 
 ---
 
-## Summary counts (provisional, pre-confirmation)
+## Summary counts
 
-- Critical (Tier 1): 17 rows, **~12% green**.
+- Critical (Tier 1): 17 rows, **~47% green**.
 - Supported (Tier 2): 22 rows, **~55% green**.
 - Experimental (Tier 3): 8 rows, **~0% green** — expected; these are checklist-gated.
 
-The Critical gap is the story: core-workflow coverage is underwater.
-Issue #57 (shared-runner seccomp) is the single highest unlock —
-resolving it turns ~8 Critical rows from 🔴 to 🟢 at once.
+PR #64 (proxy teardown, closes #57 + #61) + PR #62 (openat matching,
+closes #56) unlocked 5 Critical rows at once by turning on real
+seccomp fault-injection coverage in CI on amd64 ubuntu-latest.
+Next largest gap: Docker-backed cases (#poc_demo_container,
+#poc_kafka_rfc014), which require CI Docker provisioning.
 
 ---
 
