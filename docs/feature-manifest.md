@@ -34,7 +34,7 @@ Status legend: **🟢 green** (CI signal proves it), **🟡 partial** (some mech
 | Feature | Tier | Mechanism | Status | Notes |
 |---|---|---|---|---|
 | `service()` binary mode (fork+exec) | 1 | testops corpus (poc_example, poc_demo) | 🟢 | Gated in CI on amd64 ubuntu-latest |
-| `service()` container mode (Docker) | 1 | testops corpus with pinned image digest | 🔴 | CI Docker provisioning not yet added |
+| `service()` container mode (Docker) | 1 | testops corpus (nginx_container_basic) | 🟢 | Container lifecycle + proxy-level HTTP fault injection against real nginx:1.27-alpine; ubuntu-latest provides Docker natively |
 | `fault(deny)` on syscalls | 1 | testops corpus (poc_example test_api_cannot_reach_db; poc_demo test_wal_fsync_failure, test_disk_full) | 🟢 | |
 | `fault(delay)` on syscalls | 1 | testops corpus (poc_example test_db_slow; poc_demo test_inventory_slow) | 🟢 | |
 | `parallel()` concurrent scenarios + hold/release scheduler | 1 | testops corpus (parallel_basic) | 🟢 | Hold is an internal scheduler primitive exercised by `parallel()` setup/teardown; `--explore=all/sample` adds interleaving enumeration on top |
@@ -109,7 +109,7 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 
 ## Summary counts
 
-- Critical (Tier 1): 15 rows, **~87% green**.
+- Critical (Tier 1): 15 rows, **~93% green**.
 - Supported (Tier 2): 22 rows, **~55% green**.
 - Experimental (Tier 3): 8 rows, **~0% green** — expected; these are checklist-gated.
 

@@ -66,6 +66,13 @@ testops-prep:
 	CGO_ENABLED=0 go build -o /tmp/mock-api       ./poc/mock-api/
 	CGO_ENABLED=0 go build -o /tmp/inventory-svc  ./poc/demo/inventory-svc/
 	CGO_ENABLED=0 go build -o /tmp/order-svc      ./poc/demo/order-svc/
+	@# faultbox-shim is linux-only (seccomp-notify); skip on other hosts.
+	@if [ "$$(uname -s)" = "Linux" ]; then \
+		CGO_ENABLED=0 go build -o /tmp/faultbox-shim ./cmd/faultbox-shim/ ; \
+		echo "Built /tmp/faultbox-shim (linux)" ; \
+	else \
+		echo "Skipping faultbox-shim: not Linux ($$(uname -s)) — Docker container mode requires Lima/Linux" ; \
+	fi
 
 # ─── Linux Dev Environment (Lima) ──────────────────────────────────
 

@@ -1,0 +1,7 @@
+=== test_proxy_fault_overrides_upstream ===
+--- test ---
+step_send web
+step_recv web
+--- web ---
+service_started
+service_ready
