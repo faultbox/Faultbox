@@ -1,0 +1,18 @@
+=== test_parallel_reads_both_succeed ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_send cache
+step_recv cache
+step_recv cache
+=== test_parallel_same_key_idempotent ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_send cache
+step_recv cache
+step_recv cache
