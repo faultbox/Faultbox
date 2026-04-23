@@ -43,7 +43,7 @@ Status legend: **🟢 green** (CI signal proves it), **🟡 partial** (some mech
 | `--seed` deterministic replay | 1 | testops harness itself asserts identical traces across 5 runs | 🟢 | Already proven by corpus entries |
 | `depends_on` + healthcheck ordering | 1 | testops corpus covers transitively | 🟢 | |
 | Starlark spec language | 1 | Parser unit tests + corpus exercises | 🟢 | |
-| `fault_assumption` / `fault_scenario` / `fault_matrix` | 1 | No dedicated corpus entry | 🔴 | Domain-centric builtins are v0.3.0 headline |
+| `fault_assumption` / `fault_scenario` / `fault_matrix` | 1 | testops corpus (fault_matrix_basic) | 🟢 | Protocol-level proxy rules now propagate through fault_scenario (bug fixed in same PR as corpus seed) |
 
 ### Protocol-aware faults — Critical (proposed)
 
@@ -109,7 +109,7 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 
 ## Summary counts
 
-- Critical (Tier 1): 17 rows, **~47% green**.
+- Critical (Tier 1): 17 rows, **~53% green**.
 - Supported (Tier 2): 22 rows, **~55% green**.
 - Experimental (Tier 3): 8 rows, **~0% green** — expected; these are checklist-gated.
 

@@ -1,0 +1,49 @@
+=== test_check_health ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_check_user ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_health_fails_when_flaky ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_matrix_check_health_health_flaky ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_matrix_check_health_users_timeout ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_matrix_check_user_health_flaky ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api
+=== test_matrix_check_user_users_timeout ===
+--- api ---
+service_started
+service_ready
+--- test ---
+step_send api
+step_recv api

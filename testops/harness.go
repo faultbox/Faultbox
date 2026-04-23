@@ -80,6 +80,12 @@ var Cases = []Case{
 		Seed:    1,
 		Timeout: 30 * time.Second,
 	},
+	{
+		Name:    "fault_matrix_basic",
+		Spec:    "testops/corpus/fault_matrix_basic.star",
+		Seed:    1,
+		Timeout: 30 * time.Second,
+	},
 
 	// --- LinuxOnly, currently skipped. ---
 	//
