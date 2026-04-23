@@ -86,6 +86,12 @@ var Cases = []Case{
 		Seed:    1,
 		Timeout: 30 * time.Second,
 	},
+	{
+		Name:    "redis_fault_basic",
+		Spec:    "testops/corpus/redis_fault_basic.star",
+		Seed:    1,
+		Timeout: 30 * time.Second,
+	},
 
 	// --- LinuxOnly, currently skipped. ---
 	//

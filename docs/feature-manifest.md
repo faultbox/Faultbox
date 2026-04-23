@@ -51,9 +51,9 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 
 | Feature | Tier | Mechanism | Status | Notes |
 |---|---|---|---|---|
-| HTTP proxy faults | 1 | `internal/proxy/http_test.go` + corpus | 🟡 | Unit tests exist, no integration corpus |
-| Postgres proxy faults | 1 | `internal/proxy/postgres_test.go` + corpus | 🟡 | Unit tests exist, no integration corpus |
-| Redis proxy faults | 1 | corpus | 🔴 | Unit tests only |
+| HTTP proxy faults | 1 | `internal/proxy/http_test.go` + corpus (fault_matrix_basic) | 🟢 | Path-matched error rules via `error(path=, status=, message=)` |
+| Postgres proxy faults | 1 | `internal/proxy/postgres_test.go` + corpus | 🟡 | No Postgres mock; real container needed — gated on CI Docker |
+| Redis proxy faults | 1 | `internal/proxy/redis_test.go` + corpus (redis_fault_basic) | 🟢 | Key-pattern matched error rules via stdlib recipes (oom/loading/readonly) |
 | MySQL proxy faults | 2 | unit + `sqlmatch` canonicalizer | 🟢 | Strong unit coverage |
 | Other protocols (HTTP2, UDP, Mongo, Cassandra, ClickHouse, Kafka, NATS, gRPC) | 2 | unit tests | 🟢 | 13 protocols, all have parse/proxy unit tests |
 
@@ -109,7 +109,7 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 
 ## Summary counts
 
-- Critical (Tier 1): 17 rows, **~53% green**.
+- Critical (Tier 1): 17 rows, **~65% green**.
 - Supported (Tier 2): 22 rows, **~55% green**.
 - Experimental (Tier 3): 8 rows, **~0% green** — expected; these are checklist-gated.
 
