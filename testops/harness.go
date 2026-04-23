@@ -105,6 +105,13 @@ var Cases = []Case{
 		Timeout:   120 * time.Second,
 		LinuxOnly: true,
 	},
+	{
+		Name:      "postgres_fault_basic",
+		Spec:      "testops/corpus/postgres_fault_basic.star",
+		Seed:      1,
+		Timeout:   180 * time.Second,
+		LinuxOnly: true,
+	},
 
 	// --- LinuxOnly, currently skipped. ---
 	//
