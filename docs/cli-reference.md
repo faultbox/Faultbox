@@ -14,7 +14,7 @@ faultbox test [flags] <file.star>
 |------|-------------|
 | `--test <name>` | Run only the matching test function |
 | `--runs <N>` | Run each test N times (stops on first failure per test) |
-| `--seed <N>` | Use specific seed for deterministic replay |
+| `--seed <N>` | Use specific seed for deterministic replay. Since v0.9.8 every run persists its seed to `.faultbox/last-seed` next to the spec; subsequent no-flag runs reuse it. Stderr prints `Seed: N (cli\|cached\|generated)` to show which tier fired. |
 | `--show all\|fail` | Filter output: `all` (default) or `fail` (only failures) |
 | `--format json` | Output structured JSON to stdout (human output on stderr) |
 | `--output <file>` | Write JSON trace results to file |

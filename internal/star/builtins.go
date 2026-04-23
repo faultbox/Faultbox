@@ -80,6 +80,18 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"grpc_typed_response": starlark.NewBuiltin("grpc_typed_response", builtinGRPCTypedResponse),
 		"grpc_raw_response":   starlark.NewBuiltin("grpc_raw_response", builtinGRPCRawResponse),
 		"grpc_error":          starlark.NewBuiltin("grpc_error", builtinGRPCError),
+		// Spec-load-time file readers (RFC-026 / v0.9.8). Paths resolve
+		// relative to the spec's directory; network schemes, oversize
+		// files, and non-string map keys are refused with clear errors.
+		"load_file": starlark.NewBuiltin("load_file", rt.builtinLoadFile),
+		"load_yaml": starlark.NewBuiltin("load_yaml", rt.builtinLoadYAML),
+		"load_json": starlark.NewBuiltin("load_json", rt.builtinLoadJSON),
+		// Fault-matrix outcome predicates (RFC-027 / v0.9.8). Drop into
+		// default_expect=/overrides= as replacements for the hand-rolled
+		// assertion lambdas every mature spec grows.
+		"expect_success":      starlark.NewBuiltin("expect_success", builtinExpectSuccess),
+		"expect_error_within": starlark.NewBuiltin("expect_error_within", builtinExpectErrorWithin),
+		"expect_hang":         starlark.NewBuiltin("expect_hang", builtinExpectHang),
 	}
 }
 

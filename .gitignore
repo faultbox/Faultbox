@@ -29,3 +29,8 @@ typings/
 .DS_Store
 Thumbs.db
 .claude/
+
+# RFC-025 bundle artifacts and seed cache (v0.9.7+).
+# Uncomment exceptions under regressions/ to check in golden bundles.
+*.fb
+.faultbox/

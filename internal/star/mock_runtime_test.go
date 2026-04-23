@@ -588,6 +588,67 @@ geo = grpc.server(
 	}
 }
 
+// TestMockServiceGRPCStdlibShorthands verifies the v0.9.8 per-code
+// helpers (grpc.unavailable, grpc.deadline_exceeded, …) produce the
+// same wire-level status as grpc.error(code="…"). The shorthand is
+// what customers reach for when hand-writing matrices; pinning a
+// test ensures a typo in the stdlib doesn't silently remap codes.
+func TestMockServiceGRPCStdlibShorthands(t *testing.T) {
+	pbPath := writeTestDescriptorSet(t)
+	cases := []struct {
+		starFn string
+		want   grpccodes.Code
+	}{
+		{"grpc.unavailable()", grpccodes.Unavailable},
+		{"grpc.deadline_exceeded()", grpccodes.DeadlineExceeded},
+		{"grpc.permission_denied()", grpccodes.PermissionDenied},
+		{"grpc.unauthenticated()", grpccodes.Unauthenticated},
+		{"grpc.not_found()", grpccodes.NotFound},
+		{"grpc.resource_exhausted()", grpccodes.ResourceExhausted},
+		{"grpc.internal()", grpccodes.Internal},
+	}
+	for _, c := range cases {
+		t.Run(c.want.String(), func(t *testing.T) {
+			port := freePort(t)
+			rt := New(testLogger())
+			src := fmt.Sprintf(`
+load("@faultbox/mocks/grpc.star", "grpc")
+
+geo = grpc.server(
+    name        = "geo",
+    interface   = interface("main", "grpc", %d),
+    descriptors = %q,
+    services    = {"/test.geo.GeoService/GetCity": %s},
+)
+`, port, pbPath, c.starFn)
+			if err := rt.LoadString("grpc_shorthand.star", src); err != nil {
+				t.Fatalf("LoadString: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := rt.startServices(ctx); err != nil {
+				t.Fatalf("startServices: %v", err)
+			}
+			defer rt.stopServices()
+
+			conn, _ := grpcdial.NewClient(fmt.Sprintf("127.0.0.1:%d", port),
+				grpcdial.WithTransportCredentials(insecurecreds.NewCredentials()))
+			defer conn.Close()
+
+			var resp anyRecv
+			err := conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity",
+				&grpcEmptyMsg{}, &resp)
+			st, ok := grpcstatus.FromError(err)
+			if !ok {
+				t.Fatalf("expected grpc status error, got %T: %v", err, err)
+			}
+			if st.Code() != c.want {
+				t.Errorf("%s → code %s, want %s", c.starFn, st.Code(), c.want)
+			}
+		})
+	}
+}
+
 // writeTestDescriptorSet materializes a synthetic FileDescriptorSet
 // (test.geo.City / GeoService.GetCity) to a temp .pb file and returns
 // the path. Same shape as buildCityDescriptorSet() in the protocol

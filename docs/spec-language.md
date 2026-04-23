@@ -672,6 +672,30 @@ flag lookups, anything where the canned answer depends on the input.
 | `@faultbox/mocks/grpc.star` | `grpc.server(name, interface, descriptors, services, depends_on, tls)` | protoreflect + FileDescriptorSet (RFC-023) |
 | `@faultbox/mocks/http.star` | `http.server(name, interface, openapi, examples, validate, overrides, routes, default, depends_on, tls)` | kin-openapi + OpenAPI 3.0 (RFC-021) |
 
+**gRPC status-code shorthands (v0.9.8):** the `grpc` stdlib now exposes
+per-code helpers so you don't have to remember the `grpc_error(code="…")`
+incantation. Each wraps `grpc_error()` with a sensible default message.
+
+```python
+load("@faultbox/mocks/grpc.star", "grpc")
+
+grpc.server(
+    name        = "users",
+    interface   = interface("main", "grpc", 50051),
+    descriptors = "./proto/users.pb",
+    services    = {
+        "/users.v1.Users/Get":       {"response": {"id": 1, "name": "Alice"}},
+        "/users.v1.Users/Admin":     grpc.permission_denied("admin only"),
+        "/users.v1.Users/Slow":      grpc.deadline_exceeded(),
+        "/users.v1.Users/Outage":    grpc.unavailable(),
+    },
+)
+```
+
+Available: `grpc.unavailable()`, `grpc.deadline_exceeded()`,
+`grpc.permission_denied()`, `grpc.unauthenticated()`, `grpc.not_found()`,
+`grpc.resource_exhausted()`, `grpc.internal()`.
+
 Stdlib constructors are thin Starlark wrappers around `mock_service()`
 that translate protocol-specific kwargs into the opaque `config=` map.
 Same Go runtime, same event log, same `fault()` integration — just a
@@ -834,6 +858,79 @@ fault_matrix(
 
 Add `overrides=` to `fault_matrix()` for per-cell expectations. See
 [CLI Reference](cli-reference.md) for all flags.
+
+### `expect_success()` / `expect_error_within(ms)` / `expect_hang()` (v0.9.8)
+
+Built-in outcome predicates for `default_expect=` and `overrides={}` in
+`fault_matrix()`. They replace the hand-rolled assertion helpers every
+mature spec grows ("is the result non-None? is the status under 500?"),
+giving each matrix row an explicit, machine-readable outcome intent
+that the v0.11.0 HTML report will consume (RFC-027, RFC-029).
+
+```python
+fault_matrix(
+    scenarios = [get_config, health],
+    faults    = [db_down, upstream_slow],
+    default_expect = expect_success(),            # row passes → 200-ish, fast
+    overrides = {
+        (get_config, upstream_slow): expect_error_within(ms = 10000),
+        (health, db_down):           expect_success(),  # health stays green
+        # Deliberately trigger a client-timeout path.
+        (get_config, db_down):       expect_hang(),
+    },
+)
+```
+
+Behaviour:
+
+- `expect_success()` — scenario returned non-nil, `status_code` (if
+  present) is `< 500`.
+- `expect_error_within(ms=N)` — scenario returned with an error shape
+  (`status_code >= 500` or non-empty `error` field) AND `duration_ms
+  <= N`. "Returned 200 fast" violates this because the row was
+  supposed to degrade.
+- `expect_hang()` — scenario did not return at all (row timeout
+  cancelled it). Used for deliberately exercising caller-timeout paths.
+
+Backwards compatible: `default_expect=` still accepts plain Starlark
+lambdas for rows that need custom checks.
+
+### File readers — `load_file()`, `load_yaml()`, `load_json()` (v0.9.8)
+
+Spec-load-time file reads. Use them instead of hand-inlining SQL
+fixtures, OpenAPI specs, or JSON config as Starlark string constants.
+
+```python
+# Read raw bytes — returns a Starlark string.
+seed_sql = load_file("./seed.sql")
+mysql.exec(sql = seed_sql)
+
+# Decode YAML into Starlark dict/list/scalar.
+fixture = load_yaml("./fixtures/users.yaml")
+for user in fixture["users"]:
+    print(user["email"])
+
+# Same shape for JSON. Integer-valued numbers become int, not float.
+rates = load_json("./config/rates.json")
+```
+
+Path resolution is **relative to the spec file's directory** (same
+base as `load()`), not the process `cwd`. Absolute paths work but
+emit an INFO log line.
+
+Security guardrails (see RFC-026 for rationale):
+
+- Network schemes (`http://`, `https://`, `file://` with remote
+  authority) refused with a clear error.
+- Size cap: 50 MB per file by default. Override via
+  `$FAULTBOX_LOAD_FILE_MAX_BYTES` (decimal bytes).
+- `$FAULTBOX_HERMETIC=1` rejects symlinks escaping the spec dir.
+- YAML non-string map keys refused (Starlark dicts need string keys).
+
+Every file read via these builtins is **also captured into the `.fb`
+bundle's `spec/` directory** so `faultbox inspect` and `faultbox
+replay` see the exact source tree that produced the run. No separate
+plumbing — piggybacks on the existing RFC-025 Phase 4 capture.
 
 ### `load(filename, symbol1, symbol2, ...)`
 
