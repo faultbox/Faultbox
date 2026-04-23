@@ -98,6 +98,13 @@ var Cases = []Case{
 		Seed:    1,
 		Timeout: 30 * time.Second,
 	},
+	{
+		Name:      "nginx_container_basic",
+		Spec:      "testops/corpus/nginx_container_basic.star",
+		Seed:      1,
+		Timeout:   120 * time.Second,
+		LinuxOnly: true,
+	},
 
 	// --- LinuxOnly, currently skipped. ---
 	//
