@@ -1473,6 +1473,46 @@ func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callab
 			}
 		}()
 
+		// 2b. Apply protocol-level fault rules from all assumptions.
+		// Without this, fault_assumption(rules=[...]) inside a
+		// fault_scenario or fault_matrix is silently cosmetic — matching
+		// the bug the fault(assumption, run=) path had before v0.9.4.
+		type proxyKey struct{ svc, iface string }
+		appliedProxies := make(map[proxyKey]struct{})
+		for _, fa := range fs.Faults {
+			for _, pr := range fa.ProxyRules {
+				if pr.Target == nil || pr.Target.Service == nil || pr.ProxyFault == nil {
+					continue
+				}
+				svcName := pr.Target.Service.Name
+				ifaceName := pr.Target.Interface.Name
+				proto := pr.Target.Interface.Protocol
+				port := pr.Target.Interface.Port
+				if pr.Target.Interface.HostPort > 0 {
+					port = pr.Target.Interface.HostPort
+				}
+				targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+				if _, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr); err != nil {
+					return nil, fmt.Errorf("fault_scenario %q: proxy start for %s.%s: %w", fs.Name, svcName, ifaceName, err)
+				}
+				rt.proxyMgr.AddRule(svcName, ifaceName, proxyFaultToRule(pr.ProxyFault))
+				appliedProxies[proxyKey{svcName, ifaceName}] = struct{}{}
+				rt.events.Emit("proxy_fault_applied", svcName, map[string]string{
+					"interface":  ifaceName,
+					"protocol":   proto,
+					"assumption": fa.Name,
+				})
+			}
+		}
+		defer func() {
+			for k := range appliedProxies {
+				rt.proxyMgr.ClearRules(k.svc, k.iface)
+				rt.events.Emit("proxy_fault_removed", k.svc, map[string]string{
+					"interface": k.iface,
+				})
+			}
+		}()
+
 		// 3. Run the scenario function and capture the return value.
 		result, err := starlark.Call(thread, fs.Scenario, nil, nil)
 		if err != nil {
