@@ -1,0 +1,7 @@
+=== test_proxy_fault_rewrites_select ===
+--- pg ---
+service_started
+service_ready
+--- test ---
+step_send pg
+step_recv pg
