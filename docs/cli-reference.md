@@ -222,6 +222,101 @@ before the summary. Major-version mismatch (`0.x` ↔ `1.x`) says
 
 ---
 
+### `faultbox replay` (v0.10.0)
+
+Re-run a `.fb` bundle. Reads the spec tree captured under `spec/`,
+extracts to a temp dir, and re-invokes `faultbox test` with the
+recorded seed so probabilistic faults reproduce.
+
+```
+faultbox replay <bundle.fb>                      # rerun every test
+faultbox replay <bundle.fb> --test <name>        # rerun one test
+faultbox replay <bundle.fb> --extract-only <dir> # extract spec/ but don't run
+```
+
+**Examples:**
+
+```bash
+faultbox replay run-2026-04-22-42.fb
+faultbox replay run-*.fb --test test_fault_scenario
+faultbox replay run-*.fb --extract-only ./debug/
+```
+
+**Version compatibility:**
+
+| Bundle vs current | Behaviour |
+|---|---|
+| Same X.Y.Z | Silent, replays |
+| Same major, minor/patch differs | Warns, replays |
+| Major version differs (0.x → 1.x) | **Refuses** — install bundle's version, or use `--extract-only` |
+
+Replay never emits its own `.fb` bundle (`--no-bundle` is implied)
+since the user is reproducing an existing run, not creating new
+evidence. Override by passing `--bundle <path>` if you do want one.
+
+---
+
+### `faultbox lock` (v0.10.0)
+
+Pin the byte-exact identity of every container image the spec
+references so two runs reach the same bytes. RFC-030.
+
+```
+faultbox lock [spec.star]              # generate / overwrite faultbox.lock
+faultbox lock --check [spec.star]      # exit 0 if matches; 2 if drifted
+faultbox lock --update [spec.star]     # explicit alias for the default
+```
+
+Spec defaults to `faultbox.star` in cwd. The lock file lives next
+to the spec.
+
+**Format** (`faultbox.lock`):
+
+```json
+{
+  "schema_version": 1,
+  "lock_version": "0.10.0",
+  "generated_at": "2026-04-23T12:00:00Z",
+  "images": {
+    "mysql:8.0.32":   "sha256:abc...",
+    "redis:7-alpine": "sha256:def..."
+  }
+}
+```
+
+**CI integration:**
+
+```bash
+faultbox lock --check                  # fail build if lock is stale
+FAULTBOX_LOCK_STRICT=1 faultbox test   # fail tests if no lock present
+```
+
+`faultbox test` always loads the lock if present and prints
+`Lock: faultbox.lock (faultbox <ver>, N images)` alongside the
+`Seed:` line. With `FAULTBOX_LOCK_STRICT=1` set, a missing lock
+file becomes a hard error — set this in CI to ensure every spec
+has a committed lock.
+
+**Examples:**
+
+```bash
+faultbox lock                          # write lock from cwd's spec
+faultbox lock infra/specs/auth.star    # non-default spec path
+faultbox lock --check                  # CI hook
+```
+
+**Out of scope for v0.10.0** (reserved fields in the schema):
+
+- Stdlib content hash (Phase 3)
+- Binary checksums for `service(binary=…)` (Phase 2)
+- Strict-mode comparison wired into the image pull path (Phase 2)
+
+The current preflight reports the lock's presence but doesn't yet
+fail the test when image digests drift; that's coming in v0.10.1.
+Use `faultbox lock --check` as a CI hook in the meantime.
+
+---
+
 ### `faultbox diff`
 
 Compare two normalized trace files. Returns exit code 0 if identical, 2 if different.

@@ -202,8 +202,12 @@ running against production-like configs.
 
 ## See also
 
-- [RFC-025](rfcs/0025-fb-bundle.md) — full specification
-- [RFC-027](https://github.com/faultbox/Faultbox/issues/60) —
-  `faultbox replay` (v0.10.0)
+- [RFC-025](https://github.com/faultbox/Faultbox/issues/59) — full specification
+- [RFC-030](https://github.com/faultbox/Faultbox/issues/69) —
+  `faultbox.lock` for image-digest pinning (v0.10.0)
 - [RFC-029](https://github.com/faultbox/Faultbox/issues/60) —
   `faultbox report` HTML rendering (v0.11.0)
+- [`faultbox replay` in CLI reference](cli-reference.md#faultbox-replay-v0100) —
+  the bundle's primary consumer; v0.10.0+
+- [`faultbox lock` in CLI reference](cli-reference.md#faultbox-lock-v0100) —
+  digest pinning that pairs with the bundle's env.json snapshot

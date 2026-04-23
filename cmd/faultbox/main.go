@@ -80,6 +80,10 @@ func run() int {
 		return recipesCmd(args[1:])
 	case "inspect":
 		return inspectCmd(args[1:])
+	case "replay":
+		return replayCmd(args[1:])
+	case "lock":
+		return lockCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
@@ -291,6 +295,16 @@ func testCmd(args []string) int {
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "Seed: %d (%s)\n", resolvedSeed, seedSource)
+
+		// RFC-030: when faultbox.lock exists next to the spec, load it
+		// and surface its presence. Verification against actual image
+		// digests happens later in the lifecycle (after services
+		// resolve their images) — this only loads the file and warns
+		// if it's malformed. Helpful note for users who set
+		// FAULTBOX_LOCK_STRICT=1 in CI.
+		if rc := preflightLockCheck(specDir); rc != 0 {
+			return rc
+		}
 		seedPtr := &resolvedSeed
 		// Default runs for explore=sample when not specified.
 		if exploreMode == "sample" && runs == 0 {
