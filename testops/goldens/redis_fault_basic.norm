@@ -1,0 +1,30 @@
+=== test_baseline_get ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_recv cache
+=== test_loading_selective ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_recv cache
+step_send cache
+step_recv cache
+=== test_oom_on_all_keys ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_recv cache
+=== test_readonly_on_config_keys ===
+--- cache ---
+service_started
+service_ready
+--- test ---
+step_send cache
+step_recv cache
