@@ -62,7 +62,7 @@ Runtime (internal/star/) -- parses topology, discovers tests
 ```
 faultbox/
 ├── cmd/
-│   ├── faultbox/             # CLI: test, run, generate commands
+│   ├── faultbox/             # CLI: test, run, generate, inspect, replay, lock, report
 │   └── faultbox-shim/        # Container entrypoint shim (Linux-only)
 ├── internal/
 │   ├── engine/               # Session lifecycle, fault rules, hold queues, notification loop
@@ -73,6 +73,8 @@ faultbox/
 │   ├── proxy/                # Transparent proxy for protocol-level fault injection
 │   ├── eventsource/          # Event source plugins (stdout, wal_stream, topic, tail, poll) + decoders
 │   ├── generate/             # Failure scenario generator (analyzer, matrix, codegen)
+│   ├── bundle/               # `.fb` archive writer/reader (tar.gz, manifest.json, env.json)
+│   ├── report/               # `faultbox report` — self-contained HTML report builder (RFC-029)
 │   ├── config/               # YAML topology parsing
 │   └── logging/              # Console/JSON structured logging
 ├── poc/
@@ -111,6 +113,8 @@ faultbox/
 | `recipes/` | Embedded stdlib — curated failure wrappers per RFC-018/019. Loaded via `load("@faultbox/recipes/<name>.star", ...)`. Shipped recipes: mongodb, http2, udp, cassandra, clickhouse. | `mongodb.star`, `cassandra.star`, etc. |
 | `internal/eventsource` | Event source plugins (stdout, wal_stream, topic, tail, poll) | `eventsource.go`, `stdout.go`, `walstream.go` |
 | `internal/generate` | Failure scenario generator (topology analysis → mutations) | `analyzer.go`, `matrix.go`, `codegen.go` |
+| `internal/bundle` | `.fb` archive writer/reader: manifest, env, trace, spec, replay.sh (RFC-025) | `bundle.go`, `writer.go`, `reader.go` |
+| `internal/report` | Single-file HTML report builder — inlined CSS/JS/data, swim-lane trace viewer, drill-down (RFC-029) | `report.go`, `template.html`, `app.js`, `style.css` |
 
 ## Code Standards
 

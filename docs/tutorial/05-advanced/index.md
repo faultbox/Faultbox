@@ -16,3 +16,4 @@ define high-level operations, and integrate with LLM agents.
 | [`.fb` Bundles](20-bundles.md) | 10 min | Reproducibility-by-default, `faultbox inspect`, sharing runs, zero-traffic hints |
 | [JWT/JWKS Mocks](21-jwt-mocks.md) | 12 min | jwt.server() stdlib, EdDSA tokens, claim minting, JWKS outage faults |
 | [End-to-End: Go Microservice](22-go-microservice-end-to-end.md) | 30 min | Full stack: real containers + typed gRPC mocks + JWT + fault_matrix in one tutorial |
+| [Reading a Report](23-reports.md) | 10 min | `faultbox report`, the HTML drill-down, swim-lane trace viewer, sharing reports |

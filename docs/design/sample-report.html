@@ -1,0 +1,3483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="generator" content="faultbox dev">
+  <title>Faultbox Report — 2026-04-23T11-30-00-7</title>
+  <style>/* Faultbox Report — v0.11.0
+ *
+ * Palette tokens mirror the marketing site (faultbox-site/src/styles/global.css)
+ * so the report feels like an extension of the same surface, not a tool output.
+ * Typography: Inter for body prose, JetBrains Mono for headings and data
+ * (the golang-web / Stripe-style restraint we picked for the site).
+ *
+ * Dark mode is free via prefers-color-scheme — no JS toggle required.
+ * State colour pairs (pass/fail/warn/skip) carry both a tint and an icon so
+ * colourblind readers get the signal without relying on hue alone.
+ */
+:root {
+  --bg: #fafafa;
+  --bg-elev: #ffffff;
+  --bg-code: #f0f0f0;
+  --fg: #222;
+  --fg-muted: #666;
+  --fg-subtle: #888;
+  --accent: #007d9c;
+  --accent-hover: #005b72;
+  --border: #ddd;
+  --border-strong: #c7c7c7;
+
+  --pass-fg: #0a6e3a;
+  --pass-bg: #e1f5ea;
+  --pass-border: #9fd6b6;
+
+  --fail-fg: #a3152b;
+  --fail-bg: #fce5e7;
+  --fail-border: #efa3ab;
+
+  --warn-fg: #7d5500;
+  --warn-bg: #fff3cd;
+  --warn-border: #e0c46b;
+
+  --skip-fg: #777;
+  --skip-bg: #ececec;
+  --skip-border: #d3d3d3;
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
+  --max-width: 1040px;
+  --radius: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --bg-elev: #161b22;
+    --bg-code: #161b22;
+    --fg: #e6edf3;
+    --fg-muted: #8b949e;
+    --fg-subtle: #6e7681;
+    --accent: #58a6ff;
+    --accent-hover: #79c0ff;
+    --border: #30363d;
+    --border-strong: #484f58;
+
+    --pass-fg: #56d364;
+    --pass-bg: #0e2e18;
+    --pass-border: #1f6a32;
+
+    --fail-fg: #ff7b72;
+    --fail-bg: #2d1113;
+    --fail-border: #6a1f23;
+
+    --warn-fg: #e3b341;
+    --warn-bg: #2d2410;
+    --warn-border: #6a5620;
+
+    --skip-fg: #8b949e;
+    --skip-bg: #1c2026;
+    --skip-border: #30363d;
+  }
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.55;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+code, pre, .mono {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+code {
+  background: var(--bg-code);
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+h1 { font-size: 1.6rem; }
+h2 { font-size: 1.15rem; margin-top: 2.5rem; margin-bottom: 1rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); }
+h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+
+.container {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+.report-header {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: saturate(1.2) blur(6px);
+}
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  height: 56px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.brand:hover { text-decoration: none; color: var(--accent); }
+.brand-mark { color: var(--accent); }
+.brand-sep { color: var(--fg-subtle); margin: 0 0.1rem; }
+.brand-section { color: var(--fg-muted); font-weight: 500; }
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+.pill.pass { background: var(--pass-bg); color: var(--pass-fg); border: 1px solid var(--pass-border); }
+.pill.fail { background: var(--fail-bg); color: var(--fail-fg); border: 1px solid var(--fail-border); }
+.pill.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-border); }
+
+/* ── Hero ───────────────────────────────────────────────────────── */
+.hero {
+  padding: 2.5rem 0 1.5rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.5rem;
+}
+.hero h1 { overflow-wrap: anywhere; }
+.subtitle {
+  color: var(--fg-muted);
+  margin-top: 0.5rem;
+  font-size: 1rem;
+}
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem;
+  margin-top: 1.75rem;
+}
+.stat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  padding: 0.9rem 1rem;
+}
+.stat-value {
+  font-family: var(--font-mono);
+  font-size: 1.8rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.stat-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin-top: 0.25rem;
+}
+.stat-caption {
+  font-size: 0.82rem;
+  color: var(--fg-subtle);
+  margin-top: 0.35rem;
+}
+
+/* ── Section heads + legend ─────────────────────────────────────── */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.section-head h2 { border-bottom: none; margin: 0; padding: 0; }
+.section-hint {
+  color: var(--fg-subtle);
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+}
+.legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  flex-wrap: wrap;
+}
+.legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
+.swatch {
+  display: inline-block;
+  width: 12px; height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+}
+.swatch.pass { background: var(--pass-bg); border-color: var(--pass-border); }
+.swatch.fail { background: var(--fail-bg); border-color: var(--fail-border); }
+.swatch.warn { background: var(--warn-bg); border-color: var(--warn-border); }
+.swatch.skip { background: var(--skip-bg); border-color: var(--skip-border); }
+
+/* ── Fault matrix ───────────────────────────────────────────────── */
+.matrix-scroll { overflow-x: auto; }
+.matrix {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  overflow: hidden;
+  min-width: fit-content;
+}
+.matrix-cell, .matrix-col-head, .matrix-row-head, .matrix-corner {
+  padding: 0.5rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+}
+.matrix-col-head, .matrix-row-head, .matrix-corner {
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.matrix-col-head { justify-content: center; }
+.matrix-corner { background: var(--bg); }
+.matrix-cell {
+  justify-content: center;
+  cursor: default;
+  position: relative;
+}
+.matrix-cell.pass { background: var(--pass-bg); color: var(--pass-fg); }
+.matrix-cell.fail { background: var(--fail-bg); color: var(--fail-fg); }
+.matrix-cell.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.matrix-cell.skip { background: var(--skip-bg); color: var(--skip-fg); }
+.matrix-cell-icon {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+/* Strip last-in-row borders for a cleaner grid edge. */
+.matrix > *:nth-last-child(-n+1) { border-right: none; }
+
+/* ── Attention list ─────────────────────────────────────────────── */
+.attention-item {
+  border: 1px solid var(--fail-border);
+  background: var(--fail-bg);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.attention-item.warn { border-color: var(--warn-border); background: var(--warn-bg); }
+.attention-item-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.attention-item-title {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--fail-fg);
+}
+.attention-item.warn .attention-item-title { color: var(--warn-fg); }
+.attention-item-reason {
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.attention-item-replay {
+  margin-top: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.attention-item-replay code {
+  flex: 1;
+  padding: 0.35rem 0.6rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* ── Tests table (fallback for non-matrix specs) ───────────────── */
+.tests-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-elev);
+}
+.tests-table th, .tests-table td {
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  vertical-align: top;
+}
+.tests-table th {
+  background: var(--bg);
+  font-weight: 500;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+.tests-table tbody tr:last-child td { border-bottom: none; }
+.tests-table td.outcome .pill { font-family: var(--font-mono); }
+
+/* ── Reproducibility ───────────────────────────────────────────── */
+.repro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+.repro-item {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+}
+.repro-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin-bottom: 0.2rem;
+}
+.repro-value {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+.repro-replay {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+.repro-replay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.repro-replay-title {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+}
+.repro-replay code {
+  display: block;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+}
+.copy-btn {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.copy-btn:hover { color: var(--fg); background: var(--bg-code); }
+.copy-btn.copied { color: var(--accent); border-color: var(--accent); }
+
+/* ── Footer ────────────────────────────────────────────────────── */
+.report-footer {
+  margin-top: 3rem;
+  border-top: 1px solid var(--border);
+  padding: 1.2rem 0 2rem;
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+  font-family: var(--font-mono);
+}
+.footer-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+.footer-sep { color: var(--fg-subtle); }
+
+/* ── Responsive ────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  h1 { font-size: 1.3rem; }
+  .hero { padding: 1.75rem 0 1rem; }
+  .stat-value { font-size: 1.5rem; }
+  .header-meta { font-size: 0.78rem; gap: 0.5rem; }
+  .container { padding: 0 1rem; }
+}
+
+/* ── Matrix interactions (Phase 2) ─────────────────────────────── */
+.matrix-cell[data-test] { cursor: pointer; }
+.matrix-cell[data-test]:hover {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 1;
+}
+.matrix-cell[data-test]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.attention-item[data-test] { cursor: pointer; }
+.attention-item[data-test]:hover .attention-item-title { text-decoration: underline; }
+
+.tests-table tbody tr[data-test] { cursor: pointer; }
+.tests-table tbody tr[data-test]:hover { background: var(--bg); }
+
+/* ── Observed coverage table ───────────────────────────────────── */
+.coverage-scroll { overflow-x: auto; }
+.coverage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-elev);
+  margin-top: 0.5rem;
+}
+.coverage-table th, .coverage-table td {
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  vertical-align: top;
+}
+.coverage-table th {
+  background: var(--bg);
+  font-weight: 500;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+.coverage-table th.num, .coverage-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.coverage-table tbody tr:last-child td { border-bottom: none; }
+.coverage-table .faulted-badge {
+  color: var(--fail-fg);
+  font-weight: 600;
+}
+.coverage-syscalls {
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+}
+.coverage-syscalls span {
+  margin-right: 0.6rem;
+  white-space: nowrap;
+}
+.coverage-syscalls span.hot {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* ── Drill-down dialog ─────────────────────────────────────────── */
+.drill-down {
+  border: none;
+  padding: 0;
+  background: transparent;
+  max-width: 860px;
+  width: 95%;
+  color: var(--fg);
+  /* Explicit centering: `<dialog>` with showModal() should center by
+     default, but user-agent stylesheets vary on vertical placement
+     (Firefox and older Chrome pin to the top). inset:0 + margin:auto
+     is the robust cross-browser recipe. */
+  inset: 0;
+  margin: auto;
+}
+.drill-down::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
+}
+.drill-down[open] { display: block; }
+.drill-down-surface {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.2);
+  max-height: calc(100vh - 4rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.drill-down-head {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.drill-down-title {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1.4rem;
+  font-family: var(--font-mono);
+}
+.drill-down-title h3 {
+  font-size: 1rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.drill-down-subtitle {
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  /* The h3 and this row are wrapped in a plain <div> (built in
+     drillDownHeader), so the parent's flex gap doesn't reach them.
+     Space them directly. */
+  margin-top: 0.75rem;
+}
+.drill-down-close {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.drill-down-close:hover { color: var(--fg); background: var(--bg-code); }
+
+.drill-down-body {
+  padding: 1rem 1.25rem 1.5rem;
+  overflow-y: auto;
+  font-size: 0.92rem;
+}
+.drill-down-body h4 {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+.drill-down-body h4:first-child { margin-top: 0; }
+.drill-down-reason {
+  padding: 0.75rem 0.9rem;
+  background: var(--fail-bg);
+  border: 1px solid var(--fail-border);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+.drill-down-reason.pass {
+  background: var(--pass-bg);
+  border-color: var(--pass-border);
+}
+
+.dd-faults {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.dd-faults th, .dd-faults td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.dd-faults th {
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-weight: 500;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dd-faults tbody tr:last-child td { border-bottom: none; }
+.dd-faults .hits-hot { color: var(--fail-fg); font-weight: 600; }
+.dd-faults .hits-zero { color: var(--warn-fg); font-weight: 500; }
+
+.dd-diag {
+  border-left: 3px solid var(--border-strong);
+  padding: 0.5rem 0.8rem;
+  background: var(--bg);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin-bottom: 0.5rem;
+}
+.dd-diag.error { border-left-color: var(--fail-border); }
+.dd-diag.warning { border-left-color: var(--warn-border); }
+.dd-diag-code {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dd-diag-msg {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  margin: 0.2rem 0 0.25rem;
+  overflow-wrap: anywhere;
+}
+.dd-diag-fix {
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+}
+
+.dd-replay code {
+  display: block;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  margin-bottom: 0.4rem;
+}
+.dd-replay-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+
+/* ── Swim-lane trace viewer ────────────────────────────────────── */
+.trace-viewer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 0.75rem;
+  /* overflow must stay visible: balloon tooltip and causal SVG lines
+     anchor absolute/pct-positioned inside here and may paint beyond
+     the lane edges. Horizontal lanes use % widths so there is no
+     overflow to clip anyway. */
+  overflow: visible;
+  position: relative;
+}
+.trace-lanes {
+  position: relative;
+}
+.trace-empty {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  padding: 0.5rem 0;
+}
+.trace-grid {
+  display: grid;
+  gap: 0.35rem;
+  align-items: center;
+  min-width: 480px;
+}
+.trace-lane-label {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  padding-right: 0.75rem;
+  text-align: right;
+  white-space: nowrap;
+}
+.trace-lane {
+  position: relative;
+  height: 24px;
+  background: linear-gradient(to right, var(--border) 1px, transparent 1px) 0 50% / 100% 1px no-repeat,
+              var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  /* Markers are absolutely positioned inside; overflow:visible lets
+     them scale on hover/select without getting clipped by the
+     border-radius, and the left% is clamped in renderMarker so
+     edge markers (seq == maxSeq) don't overhang. */
+  overflow: visible;
+}
+.trace-lane::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 50%; height: 1px;
+  background: var(--border);
+}
+.trace-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bg-elev);
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s;
+  z-index: 1;
+}
+.trace-marker:hover,
+.trace-marker:focus-visible { transform: translate(-50%, -50%) scale(1.4); outline: none; }
+.trace-marker.syscall { background: var(--accent); }
+.trace-marker.fault { background: var(--fail-fg); border-color: var(--fail-bg); width: 12px; height: 12px; }
+.trace-marker.lifecycle { background: var(--fg-muted); width: 8px; height: 8px; }
+.trace-marker.step { background: var(--warn-fg); border-color: var(--warn-bg); }
+.trace-marker.violation { background: var(--fail-fg); border-radius: 2px; width: 14px; height: 14px; }
+
+/* Highlight states used when a marker is hovered / clicked — the
+   hovered marker gets a ring in the accent colour and its causal
+   ancestors (computed from vector clocks, or the latest prior event
+   per other lane when no clock is present) get a softer ring. Other
+   markers fade slightly so the relationship pops. */
+.trace-marker.highlight-root {
+  box-shadow: 0 0 0 3px var(--accent);
+  transform: translate(-50%, -50%) scale(1.5);
+  z-index: 3;
+}
+.trace-marker.highlight-ancestor {
+  box-shadow: 0 0 0 2px var(--accent);
+  z-index: 2;
+}
+.trace-viewer.causal-active .trace-marker:not(.highlight-root):not(.highlight-ancestor) {
+  opacity: 0.35;
+}
+.trace-viewer.causal-active .trace-lane { opacity: 0.6; }
+
+/* SVG overlay — lines connect a hovered marker to its causal
+   ancestors across lanes. pointer-events:none so hover doesn't
+   flicker as lines cross over other markers. */
+.trace-causal-svg {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+.trace-causal-line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  fill: none;
+}
+
+/* Hover balloon — a small badge that rides alongside the marker.
+   Kept lightweight and side-mounted (not directly above) so causal
+   lines drawn from the hovered marker to its ancestors stay visible.
+   The actual detail view happens in .trace-detail below the lanes. */
+.trace-tooltip {
+  position: absolute;
+  z-index: 4;
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.55rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.3;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.16);
+  pointer-events: none;
+  white-space: nowrap;
+  display: none;
+}
+.trace-tooltip.active { display: block; }
+.trace-tooltip-head {
+  color: var(--accent);
+  font-weight: 600;
+}
+.trace-tooltip-sub {
+  color: var(--fg-muted);
+  font-size: 0.7rem;
+  margin-top: 0.1rem;
+}
+
+/* Selected (pinned on click) — stays ringed even after the mouse
+   leaves, so the detail panel below the lanes has a visual anchor. */
+.trace-marker.selected {
+  box-shadow: 0 0 0 3px var(--accent), 0 0 0 5px var(--bg);
+  transform: translate(-50%, -50%) scale(1.55);
+  z-index: 3;
+}
+
+/* Detail panel — replaces the old popover. Sits below the lanes and
+   axis so it never occludes the timeline. Rows are ordered: most
+   important at the top, "all fields" and vector clock tucked into
+   collapsible <details> so common cases stay compact. */
+.trace-detail {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.85rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+.trace-detail.empty { color: var(--fg-muted); font-size: 0.78rem; padding: 0.5rem 0.85rem; }
+.trace-detail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.5rem;
+}
+.trace-detail-title {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+.trace-detail-meta {
+  color: var(--fg-muted);
+  font-size: 0.74rem;
+}
+.trace-detail-row {
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) 1fr;
+  gap: 0 0.9rem;
+  padding: 0.1rem 0;
+}
+.trace-detail-label {
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 0.1rem;
+}
+.trace-detail-value { color: var(--fg); overflow-wrap: anywhere; }
+.trace-detail-value.emphasis { font-weight: 600; color: var(--fg); }
+.trace-detail-collapsible {
+  margin-top: 0.45rem;
+  border-top: 1px dashed var(--border);
+  padding-top: 0.4rem;
+}
+.trace-detail-collapsible summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0;
+  user-select: none;
+}
+.trace-detail-collapsible summary:hover { color: var(--fg); }
+.trace-detail-collapsible[open] summary { color: var(--accent); }
+.trace-detail-kv {
+  margin-top: 0.35rem;
+  padding-left: 0.25rem;
+}
+
+/* Event log table (collapsible) — a forensic companion to the
+   swim-lane view. Type filter chips live above the table header. */
+.trace-log {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.trace-log summary {
+  cursor: pointer;
+  padding: 0.55rem 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.trace-log summary::-webkit-details-marker { display: none; }
+.trace-log summary::before {
+  content: "▸";
+  color: var(--fg-subtle);
+  margin-right: 0.4rem;
+  transition: transform 0.12s;
+  display: inline-block;
+}
+.trace-log[open] summary::before { transform: rotate(90deg); }
+.trace-log summary:hover { color: var(--fg); background: var(--bg); }
+.trace-log-body { border-top: 1px solid var(--border); }
+.trace-log-filters {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.55rem 0.85rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.trace-log-chip {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-transform: lowercase;
+  line-height: 1.5;
+}
+.trace-log-chip:hover { color: var(--fg); border-color: var(--border-strong); }
+.trace-log-chip.active {
+  background: var(--accent);
+  color: var(--bg-elev);
+  border-color: var(--accent);
+}
+.trace-log-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.trace-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.trace-log-table th,
+.trace-log-table td {
+  padding: 0.35rem 0.65rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.trace-log-table th {
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  position: sticky;
+  top: 0;
+}
+.trace-log-table th.caret-col,
+.trace-log-table td.caret-col {
+  width: 1.75rem;
+  padding-left: 0.5rem;
+  padding-right: 0.25rem;
+  text-align: center;
+  color: var(--fg-muted);
+}
+.trace-log-table td.type { width: 1%; white-space: nowrap; }
+.trace-log-table td.service { width: 1%; white-space: nowrap; color: var(--fg-muted); }
+.trace-log-table tbody tr { cursor: pointer; }
+.trace-log-table tbody tr:hover { background: var(--bg); }
+.trace-log-table tbody tr.selected {
+  background: var(--bg-code);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.trace-log-type.type-syscall { color: var(--accent); }
+.trace-log-type.type-fault { color: var(--fail-fg); font-weight: 600; }
+.trace-log-type.type-violation { color: var(--fail-fg); font-weight: 600; }
+.trace-log-type.type-step { color: var(--warn-fg); }
+.trace-log-type.type-lifecycle { color: var(--fg-muted); }
+
+.trace-log-caret {
+  display: inline-block;
+  width: 0.75rem;
+  color: var(--fg-subtle);
+  transition: transform 120ms ease;
+}
+.trace-log-table tbody tr.open .trace-log-caret {
+  color: var(--accent);
+}
+
+/* Expansion row — full-width drawer that drops open underneath a
+ * clicked event. Same 4-column grid ancestor as the header row; we
+ * span all 4 cells with a single <td colspan="4"> child. */
+.trace-log-expand > td {
+  padding: 0;
+  background: var(--bg-code);
+  border-bottom: 1px solid var(--border);
+}
+.trace-log-expand .log-expand-body {
+  padding: 0.85rem 1rem 1rem 2.25rem;
+  display: grid;
+  gap: 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.log-expand-group-title {
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-subtle);
+  margin-bottom: 0.25rem;
+}
+.log-expand-kv {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) 1fr;
+  column-gap: 1rem;
+  row-gap: 0.25rem;
+}
+.log-expand-kv-row {
+  display: contents;
+}
+.log-expand-kv-key {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.log-expand-kv-val {
+  color: var(--fg);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.log-expand-empty {
+  color: var(--fg-subtle);
+  font-style: italic;
+}
+
+.trace-axis {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--fg-subtle);
+  display: flex;
+  justify-content: space-between;
+  padding: 0.35rem 0 0;
+}
+
+.trace-legend {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--fg-muted);
+}
+.trace-legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
+.trace-legend-dot {
+  display: inline-block;
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 1.5px solid var(--bg);
+}
+.trace-legend-dot.syscall { background: var(--accent); }
+.trace-legend-dot.fault { background: var(--fail-fg); }
+.trace-legend-dot.lifecycle { background: var(--fg-muted); }
+.trace-legend-dot.step { background: var(--warn-fg); }
+.trace-legend-dot.violation { background: var(--fail-fg); border-radius: 2px; }
+
+/* ── Image digests (collapsed inside reproducibility) ──────────── */
+.digest-details {
+  grid-column: 1 / -1; /* span full reproducibility row */
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+}
+.digest-details summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.55rem 0.9rem;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.digest-details summary::-webkit-details-marker { display: none; }
+.digest-details summary::before {
+  content: "▸";
+  color: var(--fg-subtle);
+  margin-right: 0.4rem;
+  transition: transform 0.12s;
+  display: inline-block;
+}
+.digest-details[open] summary::before { transform: rotate(90deg); }
+.digest-details summary:hover { color: var(--fg); }
+.digest-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+.digest-table th,
+.digest-table td {
+  padding: 0.45rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.digest-table th {
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.digest-table tbody tr:last-child td { border-bottom: none; }
+.digest-table td.digest-short { color: var(--fg); }
+.digest-table td.digest-full { color: var(--fg-muted); font-size: 0.72rem; overflow-wrap: anywhere; }
+.digest-table .copy-btn { font-size: 0.7rem; padding: 0.2rem 0.5rem; }
+
+/* ── Top-level Spec section ────────────────────────────────────── */
+#spec-body { margin-top: 1.5rem; }
+
+/* ── Starlark syntax highlighting (lightweight, in-repo tokenizer) ──
+   Tokens map to site palette variables so the scheme follows
+   light/dark automatically. Keep palette narrow: too many tones
+   make the source feel noisy. */
+.tok-comment { color: var(--fg-subtle); font-style: italic; }
+.tok-string  { color: var(--pass-fg); }
+.tok-number  { color: var(--warn-fg); }
+.tok-keyword { color: var(--accent); font-weight: 600; }
+.tok-builtin { color: var(--accent-hover); }
+.tok-def     { color: var(--accent-hover); font-weight: 700; }
+.tok-param   { color: var(--fg-muted); }
+
+.spec-file {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+}
+.spec-file summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.55rem 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  user-select: none;
+  font-family: var(--font-mono);
+}
+.spec-file summary::-webkit-details-marker { display: none; }
+.spec-file summary::before {
+  content: "▸";
+  color: var(--fg-subtle);
+  margin-right: 0.4rem;
+  transition: transform 0.12s;
+  display: inline-block;
+}
+.spec-file[open] summary::before { transform: rotate(90deg); }
+.spec-file summary:hover { background: var(--bg); }
+.spec-file-path {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+.spec-file-size {
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+}
+.spec-file-body {
+  border-top: 1px solid var(--border);
+  max-height: 520px;
+  overflow: auto;
+  background: var(--bg-code);
+}
+
+/* Source viewer: monospaced, line-numbered, with a scroll-target
+   attribute per line so the JS can auto-scroll to a specific def.
+   Kept intentionally minimal — no syntax highlighting yet, because
+   the report must stay under budget and highlighting adds a lexer. */
+.source-code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  margin: 0;
+  padding: 0.4rem 0;
+}
+.source-line {
+  display: flex;
+  gap: 0.9rem;
+  padding-inline: 0.9rem;
+  white-space: pre;
+}
+.source-line:hover { background: var(--bg); }
+.source-line-no {
+  color: var(--fg-subtle);
+  text-align: right;
+  user-select: none;
+  flex: 0 0 3em;
+  font-variant-numeric: tabular-nums;
+}
+.source-line-code {
+  flex: 1;
+  color: var(--fg);
+  white-space: pre;
+}
+.source-line.hit {
+  background: var(--warn-bg);
+  border-left: 2px solid var(--warn-fg);
+  padding-left: calc(0.9rem - 2px);
+}
+.source-line.hit:hover { background: var(--warn-bg); }
+
+/* Coverage table: services now link into the spec section. */
+.coverage-table a.service-link {
+  color: var(--fg);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--border-strong);
+  cursor: pointer;
+}
+.coverage-table a.service-link:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Drill-down Source + Topology collapsibles. Share visual language
+   with trace-detail collapsibles but live at drill-down level. */
+.dd-fold {
+  margin-top: 0.9rem;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.dd-fold summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.5rem 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.dd-fold summary::-webkit-details-marker { display: none; }
+.dd-fold summary::before {
+  content: "▸";
+  color: var(--fg-subtle);
+  margin-right: 0.4rem;
+  transition: transform 0.12s;
+  display: inline-block;
+}
+.dd-fold[open] summary::before { transform: rotate(90deg); }
+.dd-fold summary:hover { color: var(--fg); background: var(--bg); }
+.dd-fold-body {
+  border-top: 1px solid var(--border);
+  max-height: 380px;
+  overflow: auto;
+}
+.dd-fold-empty {
+  padding: 0.75rem 0.9rem;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.dd-topology {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.75rem 0.9rem;
+}
+.dd-topology-chip {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  text-decoration: none;
+}
+.dd-topology-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  text-decoration: none;
+}
+.dd-topology-chip-meta {
+  color: var(--fg-muted);
+  margin-left: 0.35rem;
+  font-size: 0.72rem;
+}
+
+/* ── Print (CTOs screenshot sections into decks) ───────────────── */
+@media print {
+  .report-header { position: static; }
+  body { background: #fff; color: #111; }
+  .stat, .repro-item, .repro-replay, .matrix, .tests-table {
+    background: #fff;
+    border-color: #ccc;
+    box-shadow: none;
+  }
+  .copy-btn { display: none; }
+  a { color: inherit; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+  <script id="faultbox-data" type="application/json">{"manifest":{"schema_version":1,"faultbox_version":"0.11.0","run_id":"2026-04-23T11-30-00-7","created_at":"2026-04-23T11:30:00Z","seed":7,"spec_root":"examples/orders/faultbox.star","tests":[{"name":"test_order_flow__none","outcome":"passed","duration_ms":82,"seed":7},{"name":"test_order_flow__db_down","outcome":"passed","duration_ms":110,"seed":7,"fault_assumptions":["postgres: connect=ECONNREFUSED"]},{"name":"test_order_flow__cache_latency","outcome":"failed","duration_ms":2840,"seed":7,"fault_assumptions":["redis: read=delay(500ms)"]},{"name":"test_order_flow__disk_full","outcome":"passed","duration_ms":134,"seed":7,"fault_assumptions":["fs: write=ENOSPC"]},{"name":"test_inventory__none","outcome":"passed","duration_ms":95,"seed":7},{"name":"test_inventory__db_down","outcome":"failed","duration_ms":210,"seed":7,"fault_assumptions":["postgres: connect=ECONNREFUSED"]},{"name":"test_inventory__cache_latency","outcome":"passed","duration_ms":180,"seed":7},{"name":"test_inventory__disk_full","outcome":"passed","duration_ms":100,"seed":7},{"name":"test_checkout__none","outcome":"passed","duration_ms":115,"seed":7},{"name":"test_checkout__db_down","outcome":"passed","duration_ms":140,"seed":7},{"name":"test_checkout__cache_latency","outcome":"passed","duration_ms":200,"seed":7},{"name":"test_checkout__disk_full","outcome":"passed","duration_ms":122,"seed":7}],"summary":{"total":12,"passed":10,"failed":2,"errored":0}},"env":{"faultbox_version":"0.11.0","faultbox_commit":"5b3c5d4a1f9e2b6c7d8e","host_os":"linux","host_arch":"arm64","kernel":"6.1.0-faultbox","go_toolchain":"go1.26.1","docker_version":"25.0.2","runtime_hints":["lima"],"images":{"kafka:3.7.0":"sha256:01234567890abcdef01234567890abcdef012345","nats:2.10":"sha256:facefeed9876543210abcd1111222233334444ff","postgres:16-alpine":"sha256:a1b2c3d4e5f67890abcdef1122334455667788aa","redis:7-alpine":"sha256:deadbeef9876543210abcd1111222233334444ff"}},"trace":{"duration_ms":4328,"fail":2,"matrix":{"cells":[{"duration_ms":82,"fault":"none","passed":true,"scenario":"order_flow"},{"duration_ms":110,"fault":"db_down","passed":true,"scenario":"order_flow"},{"duration_ms":2840,"fault":"cache_latency","passed":false,"reason":"assert_eq: request took 2.8s, expected \u003c 1s","scenario":"order_flow"},{"duration_ms":134,"fault":"disk_full","passed":true,"scenario":"order_flow"},{"duration_ms":95,"fault":"none","passed":true,"scenario":"inventory"},{"duration_ms":210,"fault":"db_down","passed":false,"reason":"assert_true: response.ok was false","scenario":"inventory"},{"duration_ms":180,"fault":"cache_latency","passed":true,"scenario":"inventory"},{"duration_ms":100,"fault":"disk_full","passed":true,"scenario":"inventory"},{"duration_ms":115,"fault":"none","passed":true,"scenario":"checkout"},{"duration_ms":140,"fault":"db_down","passed":true,"scenario":"checkout"},{"duration_ms":200,"fault":"cache_latency","passed":true,"scenario":"checkout"},{"duration_ms":122,"fault":"disk_full","passed":true,"scenario":"checkout"}],"failed":2,"faults":["none","db_down","cache_latency","disk_full"],"passed":10,"scenarios":["order_flow","inventory","checkout"],"total":12},"pass":10,"star_file":"examples/orders/faultbox.star","tests":[{"duration_ms":82,"events":[{"seq":1,"service":"orders","type":"service_started","vector_clock":{"orders":1}},{"seq":2,"service":"orders","type":"service_ready","vector_clock":{"orders":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"body":"{\"user_id\":42,\"items\":[{\"sku\":\"A-100\",\"qty\":2}]}","interface":"http","method":"POST","path":"/orders","protocol":"http","target":"orders"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":8,"service":"orders","type":"syscall","vector_clock":{"orders":3,"test":1}},{"fields":{"latency_ms":"14","protocol":"postgres","query":"SELECT id, email, credit_limit FROM users WHERE id = $1","rows":"1"},"seq":9,"service":"postgres","type":"proxy","vector_clock":{"orders":3,"postgres":3,"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"/var/run/redis.sock","syscall":"connect"},"seq":10,"service":"orders","type":"syscall","vector_clock":{"orders":4,"postgres":3,"test":1}},{"fields":{"command":"GET","key":"cart:u42","latency_ms":"1","protocol":"redis","result":"miss"},"seq":11,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":3,"test":1}},{"fields":{"latency_ms":"8","protocol":"postgres","query":"INSERT INTO orders (user_id, total_cents, items) VALUES ($1, $2, $3) RETURNING id","rows":"1"},"seq":12,"service":"postgres","type":"proxy","vector_clock":{"orders":3,"postgres":4,"test":1}},{"fields":{"decision":"allow","op":"io.write","path":"/var/log/orders/audit.log","syscall":"write"},"seq":13,"service":"orders","type":"syscall","vector_clock":{"orders":5,"postgres":4,"redis":3,"test":1}},{"fields":{"command":"SETEX","key":"order:1247","latency_ms":"1","protocol":"redis","ttl":"300"},"seq":14,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":4,"test":1}},{"fields":{"api":"Produce","latency_ms":"6","partition":"3","protocol":"kafka","size":"284","topic":"orders.created"},"seq":15,"service":"orders","type":"proxy","vector_clock":{"orders":6,"postgres":4,"redis":4,"test":1}},{"fields":{"method":"POST","path":"/orders","status":"201","target":"orders"},"seq":16,"service":"test","type":"step_recv","vector_clock":{"orders":6,"postgres":4,"redis":4,"test":2}}],"name":"test_order_flow__none","result":"pass","seed":7,"syscall_summary":{"orders":{"breakdown":{"connect":4,"read":32,"write":40},"faulted":0,"total":76},"postgres":{"breakdown":{"connect":2,"read":8,"write":8},"faulted":0,"total":18},"redis":{"breakdown":{"read":3,"write":3},"faulted":0,"total":6}}},{"duration_ms":110,"events":[{"seq":1,"service":"orders","type":"service_started","vector_clock":{"orders":1}},{"seq":2,"service":"orders","type":"service_ready","vector_clock":{"orders":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"body":"{\"user_id\":42,\"items\":[{\"sku\":\"A-100\",\"qty\":2}]}","interface":"http","method":"POST","path":"/orders","protocol":"http","target":"orders"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":8,"service":"orders","type":"syscall","vector_clock":{"orders":3,"test":1}},{"fields":{"latency_ms":"14","protocol":"postgres","query":"SELECT id, email, credit_limit FROM users WHERE id = $1","rows":"1"},"seq":9,"service":"postgres","type":"proxy","vector_clock":{"orders":3,"postgres":3,"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"/var/run/redis.sock","syscall":"connect"},"seq":10,"service":"orders","type":"syscall","vector_clock":{"orders":4,"postgres":3,"test":1}},{"fields":{"command":"GET","key":"cart:u42","latency_ms":"1","protocol":"redis","result":"miss"},"seq":11,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":3,"test":1}},{"fields":{"latency_ms":"8","protocol":"postgres","query":"INSERT INTO orders (user_id, total_cents, items) VALUES ($1, $2, $3) RETURNING id","rows":"1"},"seq":12,"service":"postgres","type":"proxy","vector_clock":{"orders":3,"postgres":4,"test":1}},{"fields":{"decision":"allow","op":"io.write","path":"/var/log/orders/audit.log","syscall":"write"},"seq":13,"service":"orders","type":"syscall","vector_clock":{"orders":5,"postgres":4,"redis":3,"test":1}},{"fields":{"command":"SETEX","key":"order:1247","latency_ms":"1","protocol":"redis","ttl":"300"},"seq":14,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":4,"test":1}},{"fields":{"api":"Produce","latency_ms":"6","partition":"3","protocol":"kafka","size":"284","topic":"orders.created"},"seq":15,"service":"orders","type":"proxy","vector_clock":{"orders":6,"postgres":4,"redis":4,"test":1}},{"fields":{"action":"deny","errno":"ECONNREFUSED","label":"db_down","syscall":"connect"},"seq":16,"service":"orders","type":"fault_applied","vector_clock":{"orders":7,"postgres":4,"redis":4,"test":1}},{"fields":{"decision":"deny(ECONNREFUSED)","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":17,"service":"orders","type":"syscall","vector_clock":{"orders":8,"postgres":4,"redis":4,"test":1}},{"fields":{"method":"POST","path":"/orders","status":"201","target":"orders"},"seq":18,"service":"test","type":"step_recv","vector_clock":{"orders":8,"postgres":4,"redis":4,"test":2}}],"faults":[{"action":"deny","errno":"ECONNREFUSED","hits":1,"label":"db_down","service":"postgres","syscall":"connect"}],"name":"test_order_flow__db_down","result":"pass","seed":7,"syscall_summary":{"orders":{"breakdown":{"connect":4,"read":32,"write":40},"faulted":0,"total":76},"postgres":{"breakdown":{"connect":2,"read":8,"write":8},"faulted":0,"total":18},"redis":{"breakdown":{"read":3,"write":3},"faulted":0,"total":6}}},{"diagnostics":[{"code":"ASSERTION_MISMATCH","level":"error","message":"request took 2.8s, expected \u003c 1s","suggestion":"service may be retrying on slow cache reads without a timeout"}],"duration_ms":2840,"events":[{"seq":1,"service":"orders","type":"service_started","vector_clock":{"orders":1}},{"seq":2,"service":"orders","type":"service_ready","vector_clock":{"orders":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"body":"{\"user_id\":42,\"items\":[{\"sku\":\"A-100\",\"qty\":2}]}","interface":"http","method":"POST","path":"/orders","protocol":"http","target":"orders"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":8,"service":"orders","type":"syscall","vector_clock":{"orders":3,"test":1}},{"fields":{"latency_ms":"14","protocol":"postgres","query":"SELECT id, email, credit_limit FROM users WHERE id = $1","rows":"1"},"seq":9,"service":"postgres","type":"proxy","vector_clock":{"orders":3,"postgres":3,"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"/var/run/redis.sock","syscall":"connect"},"seq":10,"service":"orders","type":"syscall","vector_clock":{"orders":4,"postgres":3,"test":1}},{"fields":{"action":"delay","command":"GET","key":"cart:u42","latency_ms":"500","protocol":"redis"},"seq":11,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":3,"test":1}},{"fields":{"decision":"delay(500ms)","label":"cache_latency","latency_ms":"500","op":"io.read","syscall":"read"},"seq":12,"service":"redis","type":"syscall","vector_clock":{"orders":4,"postgres":3,"redis":4,"test":1}},{"fields":{"action":"delay","command":"GET","key":"cart:u42","latency_ms":"500","protocol":"redis"},"seq":13,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":5,"test":1}},{"fields":{"decision":"delay(500ms)","label":"cache_latency","latency_ms":"500","op":"io.read","syscall":"read"},"seq":14,"service":"redis","type":"syscall","vector_clock":{"orders":4,"postgres":3,"redis":6,"test":1}},{"fields":{"action":"delay","command":"GET","key":"cart:u42","latency_ms":"500","protocol":"redis"},"seq":15,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":7,"test":1}},{"fields":{"decision":"delay(500ms)","label":"cache_latency","latency_ms":"500","op":"io.read","syscall":"read"},"seq":16,"service":"redis","type":"syscall","vector_clock":{"orders":4,"postgres":3,"redis":8,"test":1}},{"fields":{"reason":"request took 2.8s, expected \u003c 1s","test":"test_order_flow__cache_latency"},"seq":17,"service":"test","type":"violation","vector_clock":{"test":2}},{"fields":{"method":"POST","path":"/orders","status":"500","target":"orders"},"seq":18,"service":"test","type":"step_recv","vector_clock":{"orders":4,"postgres":3,"redis":8,"test":3}}],"failure_type":"assertion","faults":[{"action":"delay","errno":"500ms","hits":42,"label":"cache_latency","service":"redis","syscall":"read"}],"name":"test_order_flow__cache_latency","reason":"request took 2.8s, expected \u003c 1s","result":"fail","seed":7,"syscall_summary":{"orders":{"breakdown":{},"faulted":0,"total":210},"redis":{"breakdown":{"read":42,"write":10},"faulted":42,"total":52}}},{"duration_ms":134,"events":[{"seq":1,"service":"orders","type":"service_started","vector_clock":{"orders":1}},{"seq":2,"service":"orders","type":"service_ready","vector_clock":{"orders":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"body":"{\"user_id\":42,\"items\":[{\"sku\":\"A-100\",\"qty\":2}]}","interface":"http","method":"POST","path":"/orders","protocol":"http","target":"orders"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":8,"service":"orders","type":"syscall","vector_clock":{"orders":3,"test":1}},{"fields":{"latency_ms":"14","protocol":"postgres","query":"SELECT id, email, credit_limit FROM users WHERE id = $1","rows":"1"},"seq":9,"service":"postgres","type":"proxy","vector_clock":{"orders":3,"postgres":3,"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"/var/run/redis.sock","syscall":"connect"},"seq":10,"service":"orders","type":"syscall","vector_clock":{"orders":4,"postgres":3,"test":1}},{"fields":{"command":"GET","key":"cart:u42","latency_ms":"1","protocol":"redis","result":"miss"},"seq":11,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":3,"test":1}},{"fields":{"latency_ms":"8","protocol":"postgres","query":"INSERT INTO orders (user_id, total_cents, items) VALUES ($1, $2, $3) RETURNING id","rows":"1"},"seq":12,"service":"postgres","type":"proxy","vector_clock":{"orders":3,"postgres":4,"test":1}},{"fields":{"action":"deny","errno":"ENOSPC","label":"disk_full","syscall":"write"},"seq":13,"service":"orders","type":"fault_applied","vector_clock":{"orders":5,"postgres":4,"redis":3,"test":1}},{"fields":{"decision":"deny(ENOSPC)","op":"io.write","path":"/var/log/orders/audit.log","syscall":"write"},"seq":14,"service":"orders","type":"syscall","vector_clock":{"orders":6,"postgres":4,"redis":3,"test":1}},{"fields":{"command":"SETEX","key":"order:1247","latency_ms":"1","protocol":"redis","ttl":"300"},"seq":15,"service":"redis","type":"proxy","vector_clock":{"orders":4,"postgres":3,"redis":4,"test":1}},{"fields":{"api":"Produce","latency_ms":"6","partition":"3","protocol":"kafka","size":"284","topic":"orders.created"},"seq":16,"service":"orders","type":"proxy","vector_clock":{"orders":7,"postgres":4,"redis":4,"test":1}},{"fields":{"method":"POST","path":"/orders","status":"201","target":"orders"},"seq":17,"service":"test","type":"step_recv","vector_clock":{"orders":7,"postgres":4,"redis":4,"test":2}}],"faults":[{"action":"deny","errno":"ENOSPC","hits":1,"label":"disk_full","service":"orders","syscall":"write"}],"name":"test_order_flow__disk_full","result":"pass","seed":7,"syscall_summary":{"orders":{"breakdown":{"connect":4,"read":32,"write":40},"faulted":0,"total":76},"postgres":{"breakdown":{"connect":2,"read":8,"write":8},"faulted":0,"total":18},"redis":{"breakdown":{"read":3,"write":3},"faulted":0,"total":6}}},{"duration_ms":95,"events":[{"seq":1,"service":"inventory","type":"service_started","vector_clock":{"inventory":1}},{"seq":2,"service":"inventory","type":"service_ready","vector_clock":{"inventory":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"interface":"http","method":"GET","path":"/stock/A-100","protocol":"http","target":"inventory"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"command":"GET","key":"stock:A-100","latency_ms":"1","protocol":"redis","result":"miss"},"seq":8,"service":"redis","type":"proxy","vector_clock":{"redis":3}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":9,"service":"inventory","type":"syscall","vector_clock":{"inventory":3,"redis":3,"test":1}},{"fields":{"latency_ms":"11","protocol":"postgres","query":"SELECT sku, on_hand, reserved FROM stock WHERE sku = $1","rows":"1"},"seq":10,"service":"postgres","type":"proxy","vector_clock":{"inventory":3,"postgres":3,"redis":3,"test":1}},{"fields":{"command":"SETEX","key":"stock:A-100","latency_ms":"1","protocol":"redis","ttl":"60"},"seq":11,"service":"redis","type":"proxy","vector_clock":{"redis":4}},{"fields":{"method":"GET","path":"/stock/A-100","status":"200","target":"inventory"},"seq":12,"service":"test","type":"step_recv","vector_clock":{"inventory":3,"postgres":3,"redis":3,"test":2}}],"name":"test_inventory__none","result":"pass","seed":7,"syscall_summary":{"inventory":{"breakdown":{"connect":4,"read":40,"write":41},"faulted":0,"total":85},"postgres":{"breakdown":{"connect":2,"read":7,"write":6},"faulted":0,"total":15},"redis":{"breakdown":{"read":3,"write":2},"faulted":0,"total":5}}},{"diagnostics":[{"code":"ASSERTION_MISMATCH","level":"error","message":"response.ok was false","suggestion":"inventory service may be missing a cache fallback when DB is down"}],"duration_ms":210,"events":[{"seq":1,"service":"inventory","type":"service_started","vector_clock":{"inventory":1}},{"seq":2,"service":"inventory","type":"service_ready","vector_clock":{"inventory":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"interface":"http","method":"GET","path":"/stock/A-100","protocol":"http","target":"inventory"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"action":"deny","errno":"ECONNREFUSED","label":"db_down","syscall":"connect"},"seq":8,"service":"postgres","type":"fault_applied","vector_clock":{"postgres":3}},{"fields":{"decision":"deny(ECONNREFUSED)","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":9,"service":"postgres","type":"syscall","vector_clock":{"postgres":4}},{"fields":{"action":"deny","errno":"ECONNREFUSED","label":"db_down","syscall":"connect"},"seq":10,"service":"postgres","type":"fault_applied","vector_clock":{"postgres":5}},{"fields":{"decision":"deny(ECONNREFUSED)","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":11,"service":"postgres","type":"syscall","vector_clock":{"postgres":6}},{"fields":{"action":"deny","errno":"ECONNREFUSED","label":"db_down","syscall":"connect"},"seq":12,"service":"postgres","type":"fault_applied","vector_clock":{"postgres":7}},{"fields":{"decision":"deny(ECONNREFUSED)","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":13,"service":"postgres","type":"syscall","vector_clock":{"postgres":8}},{"fields":{"reason":"response.ok was false","test":"test_inventory__db_down"},"seq":14,"service":"test","type":"violation","vector_clock":{"test":2}},{"fields":{"method":"GET","path":"/stock/A-100","status":"503","target":"inventory"},"seq":15,"service":"test","type":"step_recv","vector_clock":{"inventory":2,"test":3}}],"failure_type":"assertion","faults":[{"action":"deny","errno":"ECONNREFUSED","hits":3,"label":"db_down","service":"postgres","syscall":"connect"}],"name":"test_inventory__db_down","reason":"response.ok was false","result":"fail","seed":7,"syscall_summary":{"inventory":{"breakdown":{},"faulted":0,"total":85},"postgres":{"breakdown":{"connect":3},"faulted":3,"total":3}}},{"duration_ms":180,"events":[{"seq":1,"service":"inventory","type":"service_started","vector_clock":{"inventory":1}},{"seq":2,"service":"inventory","type":"service_ready","vector_clock":{"inventory":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"interface":"http","method":"GET","path":"/stock/A-100","protocol":"http","target":"inventory"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"command":"GET","key":"stock:A-100","latency_ms":"120","protocol":"redis","result":"miss"},"seq":8,"service":"redis","type":"proxy","vector_clock":{"redis":3}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":9,"service":"inventory","type":"syscall","vector_clock":{"inventory":3,"redis":3,"test":1}},{"fields":{"latency_ms":"11","protocol":"postgres","query":"SELECT sku, on_hand, reserved FROM stock WHERE sku = $1","rows":"1"},"seq":10,"service":"postgres","type":"proxy","vector_clock":{"inventory":3,"postgres":3,"redis":3,"test":1}},{"fields":{"command":"SETEX","key":"stock:A-100","latency_ms":"1","protocol":"redis","ttl":"60"},"seq":11,"service":"redis","type":"proxy","vector_clock":{"redis":4}},{"fields":{"method":"GET","path":"/stock/A-100","status":"200","target":"inventory"},"seq":12,"service":"test","type":"step_recv","vector_clock":{"inventory":3,"postgres":3,"redis":3,"test":2}}],"name":"test_inventory__cache_latency","result":"pass","seed":7,"syscall_summary":{"inventory":{"breakdown":{"connect":4,"read":40,"write":41},"faulted":0,"total":85},"postgres":{"breakdown":{"connect":2,"read":7,"write":6},"faulted":0,"total":15},"redis":{"breakdown":{"read":3,"write":2},"faulted":0,"total":5}}},{"duration_ms":100,"events":[{"seq":1,"service":"inventory","type":"service_started","vector_clock":{"inventory":1}},{"seq":2,"service":"inventory","type":"service_ready","vector_clock":{"inventory":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"interface":"http","method":"GET","path":"/stock/A-100","protocol":"http","target":"inventory"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"command":"GET","key":"stock:A-100","latency_ms":"1","protocol":"redis","result":"miss"},"seq":8,"service":"redis","type":"proxy","vector_clock":{"redis":3}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":9,"service":"inventory","type":"syscall","vector_clock":{"inventory":3,"redis":3,"test":1}},{"fields":{"latency_ms":"11","protocol":"postgres","query":"SELECT sku, on_hand, reserved FROM stock WHERE sku = $1","rows":"1"},"seq":10,"service":"postgres","type":"proxy","vector_clock":{"inventory":3,"postgres":3,"redis":3,"test":1}},{"fields":{"command":"SETEX","key":"stock:A-100","latency_ms":"1","protocol":"redis","ttl":"60"},"seq":11,"service":"redis","type":"proxy","vector_clock":{"redis":4}},{"fields":{"action":"deny","errno":"ENOSPC","label":"disk_full","syscall":"write"},"seq":12,"service":"inventory","type":"fault_applied","vector_clock":{"inventory":4,"postgres":3,"redis":3,"test":1}},{"fields":{"decision":"deny(ENOSPC)","op":"io.write","path":"/var/log/inventory/metrics.log","syscall":"write"},"seq":13,"service":"inventory","type":"syscall","vector_clock":{"inventory":5,"postgres":3,"redis":3,"test":1}},{"fields":{"method":"GET","path":"/stock/A-100","status":"200","target":"inventory"},"seq":14,"service":"test","type":"step_recv","vector_clock":{"inventory":5,"postgres":3,"redis":3,"test":2}}],"faults":[{"action":"deny","errno":"ENOSPC","hits":1,"label":"disk_full","service":"inventory","syscall":"write"}],"name":"test_inventory__disk_full","result":"pass","seed":7,"syscall_summary":{"inventory":{"breakdown":{"connect":4,"read":40,"write":41},"faulted":0,"total":85},"postgres":{"breakdown":{"connect":2,"read":7,"write":6},"faulted":0,"total":15},"redis":{"breakdown":{"read":3,"write":2},"faulted":0,"total":5}}},{"duration_ms":115,"events":[{"seq":1,"service":"checkout","type":"service_started","vector_clock":{"checkout":1}},{"seq":2,"service":"checkout","type":"service_ready","vector_clock":{"checkout":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"body":"{\"order_id\":1247,\"payment_token\":\"tok_live_abc123\"}","interface":"http","method":"POST","path":"/checkout","protocol":"http","target":"checkout"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":8,"service":"checkout","type":"syscall","vector_clock":{"checkout":3,"test":1}},{"fields":{"latency_ms":"1","protocol":"postgres","query":"BEGIN"},"seq":9,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":3,"test":1}},{"fields":{"latency_ms":"9","protocol":"postgres","query":"UPDATE orders SET status = 'paid' WHERE id = $1","rows":"1"},"seq":10,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":4,"test":1}},{"fields":{"latency_ms":"2","protocol":"postgres","query":"COMMIT"},"seq":11,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":5,"test":1}},{"fields":{"command":"DEL","key":"cart:u42","latency_ms":"1","protocol":"redis"},"seq":12,"service":"redis","type":"proxy","vector_clock":{"redis":3}},{"fields":{"api":"Produce","latency_ms":"5","partition":"1","protocol":"kafka","size":"312","topic":"orders.confirmed"},"seq":13,"service":"checkout","type":"proxy","vector_clock":{"checkout":4,"postgres":5,"test":1}},{"fields":{"method":"POST","path":"/checkout","status":"200","target":"checkout"},"seq":14,"service":"test","type":"step_recv","vector_clock":{"checkout":4,"postgres":5,"test":2}}],"name":"test_checkout__none","result":"pass","seed":7,"syscall_summary":{"checkout":{"breakdown":{"connect":3,"read":28,"write":33},"faulted":0,"total":64},"postgres":{"breakdown":{"connect":2,"read":10,"write":12},"faulted":0,"total":24},"redis":{"breakdown":{"read":2,"write":2},"faulted":0,"total":4}}},{"duration_ms":140,"events":[{"seq":1,"service":"checkout","type":"service_started","vector_clock":{"checkout":1}},{"seq":2,"service":"checkout","type":"service_ready","vector_clock":{"checkout":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"body":"{\"order_id\":1247,\"payment_token\":\"tok_live_abc123\"}","interface":"http","method":"POST","path":"/checkout","protocol":"http","target":"checkout"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":8,"service":"checkout","type":"syscall","vector_clock":{"checkout":3,"test":1}},{"fields":{"latency_ms":"1","protocol":"postgres","query":"BEGIN"},"seq":9,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":3,"test":1}},{"fields":{"latency_ms":"9","protocol":"postgres","query":"UPDATE orders SET status = 'paid' WHERE id = $1","rows":"1"},"seq":10,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":4,"test":1}},{"fields":{"latency_ms":"2","protocol":"postgres","query":"COMMIT"},"seq":11,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":5,"test":1}},{"fields":{"command":"DEL","key":"cart:u42","latency_ms":"1","protocol":"redis"},"seq":12,"service":"redis","type":"proxy","vector_clock":{"redis":3}},{"fields":{"api":"Produce","latency_ms":"5","partition":"1","protocol":"kafka","size":"312","topic":"orders.confirmed"},"seq":13,"service":"checkout","type":"proxy","vector_clock":{"checkout":4,"postgres":5,"test":1}},{"fields":{"method":"POST","path":"/checkout","status":"200","target":"checkout"},"seq":14,"service":"test","type":"step_recv","vector_clock":{"checkout":4,"postgres":5,"test":2}}],"name":"test_checkout__db_down","result":"pass","seed":7,"syscall_summary":{"checkout":{"breakdown":{"connect":3,"read":28,"write":33},"faulted":0,"total":64},"postgres":{"breakdown":{"connect":2,"read":10,"write":12},"faulted":0,"total":24},"redis":{"breakdown":{"read":2,"write":2},"faulted":0,"total":4}}},{"duration_ms":200,"events":[{"seq":1,"service":"checkout","type":"service_started","vector_clock":{"checkout":1}},{"seq":2,"service":"checkout","type":"service_ready","vector_clock":{"checkout":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"body":"{\"order_id\":1247,\"payment_token\":\"tok_live_abc123\"}","interface":"http","method":"POST","path":"/checkout","protocol":"http","target":"checkout"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":8,"service":"checkout","type":"syscall","vector_clock":{"checkout":3,"test":1}},{"fields":{"latency_ms":"1","protocol":"postgres","query":"BEGIN"},"seq":9,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":3,"test":1}},{"fields":{"latency_ms":"9","protocol":"postgres","query":"UPDATE orders SET status = 'paid' WHERE id = $1","rows":"1"},"seq":10,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":4,"test":1}},{"fields":{"latency_ms":"2","protocol":"postgres","query":"COMMIT"},"seq":11,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":5,"test":1}},{"fields":{"command":"DEL","key":"cart:u42","latency_ms":"1","protocol":"redis"},"seq":12,"service":"redis","type":"proxy","vector_clock":{"redis":3}},{"fields":{"api":"Produce","latency_ms":"5","partition":"1","protocol":"kafka","size":"312","topic":"orders.confirmed"},"seq":13,"service":"checkout","type":"proxy","vector_clock":{"checkout":4,"postgres":5,"test":1}},{"fields":{"method":"POST","path":"/checkout","status":"200","target":"checkout"},"seq":14,"service":"test","type":"step_recv","vector_clock":{"checkout":4,"postgres":5,"test":2}}],"name":"test_checkout__cache_latency","result":"pass","seed":7,"syscall_summary":{"checkout":{"breakdown":{"connect":3,"read":28,"write":33},"faulted":0,"total":64},"postgres":{"breakdown":{"connect":2,"read":10,"write":12},"faulted":0,"total":24},"redis":{"breakdown":{"read":2,"write":2},"faulted":0,"total":4}}},{"duration_ms":122,"events":[{"seq":1,"service":"checkout","type":"service_started","vector_clock":{"checkout":1}},{"seq":2,"service":"checkout","type":"service_ready","vector_clock":{"checkout":2}},{"seq":3,"service":"postgres","type":"service_started","vector_clock":{"postgres":1}},{"seq":4,"service":"postgres","type":"service_ready","vector_clock":{"postgres":2}},{"seq":5,"service":"redis","type":"service_started","vector_clock":{"redis":1}},{"seq":6,"service":"redis","type":"service_ready","vector_clock":{"redis":2}},{"fields":{"body":"{\"order_id\":1247,\"payment_token\":\"tok_live_abc123\"}","interface":"http","method":"POST","path":"/checkout","protocol":"http","target":"checkout"},"seq":7,"service":"test","type":"step_send","vector_clock":{"test":1}},{"fields":{"decision":"allow","op":"net.connect","path":"postgres:5432","syscall":"connect"},"seq":8,"service":"checkout","type":"syscall","vector_clock":{"checkout":3,"test":1}},{"fields":{"latency_ms":"1","protocol":"postgres","query":"BEGIN"},"seq":9,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":3,"test":1}},{"fields":{"latency_ms":"9","protocol":"postgres","query":"UPDATE orders SET status = 'paid' WHERE id = $1","rows":"1"},"seq":10,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":4,"test":1}},{"fields":{"latency_ms":"2","protocol":"postgres","query":"COMMIT"},"seq":11,"service":"postgres","type":"proxy","vector_clock":{"checkout":3,"postgres":5,"test":1}},{"fields":{"command":"DEL","key":"cart:u42","latency_ms":"1","protocol":"redis"},"seq":12,"service":"redis","type":"proxy","vector_clock":{"redis":3}},{"fields":{"api":"Produce","latency_ms":"5","partition":"1","protocol":"kafka","size":"312","topic":"orders.confirmed"},"seq":13,"service":"checkout","type":"proxy","vector_clock":{"checkout":4,"postgres":5,"test":1}},{"fields":{"method":"POST","path":"/checkout","status":"200","target":"checkout"},"seq":14,"service":"test","type":"step_recv","vector_clock":{"checkout":4,"postgres":5,"test":2}}],"name":"test_checkout__disk_full","result":"pass","seed":7,"syscall_summary":{"checkout":{"breakdown":{"connect":3,"read":28,"write":33},"faulted":0,"total":64},"postgres":{"breakdown":{"connect":2,"read":10,"write":12},"faulted":0,"total":24},"redis":{"breakdown":{"read":2,"write":2},"faulted":0,"total":4}}}],"version":2},"specs":{"spec/faultbox.star":"# faultbox.star — orders / inventory / checkout demo topology\nload(\"@faultbox/recipes/postgres.star\", \"postgres\")\nload(\"@faultbox/recipes/redis.star\", \"redis\")\nload(\"./helpers/retries.star\", \"retry_on_5xx\")\n\norders = service(\"orders\", image = \"orders:latest\",\n    interface = interface(\"http\", port = 8080),\n    healthcheck = healthcheck(\"/healthz\"),\n    depends_on = [\"postgres\", \"redis\"])\n\ninventory = service(\"inventory\", image = \"inventory:latest\",\n    interface = interface(\"http\", port = 8081),\n    healthcheck = healthcheck(\"/healthz\"),\n    depends_on = [\"postgres\", \"redis\"])\n\ncheckout = service(\"checkout\", image = \"checkout:latest\",\n    interface = interface(\"http\", port = 8082),\n    healthcheck = healthcheck(\"/healthz\"),\n    depends_on = [\"postgres\", \"redis\"])\n\npostgres = service(\"postgres\", image = \"postgres:16-alpine\")\nredis    = service(\"redis\", image = \"redis:7-alpine\")\n\ndef test_order_flow__none():\n    r = orders.post(\"/orders\", {\"user_id\": 42, \"items\": [{\"sku\": \"A-100\", \"qty\": 2}]})\n    assert_eq(r.status, 201)\n\ndef test_order_flow__cache_latency():\n    fault(redis, read = delay(\"500ms\"), label = \"cache_latency\")\n    r = retry_on_5xx(lambda: orders.post(\"/orders\", {\"user_id\": 42}))\n    assert_eq(r.status, 201)\n\ndef test_inventory__db_down():\n    fault(postgres, connect = deny(\"ECONNREFUSED\"), label = \"db_down\")\n    r = inventory.get(\"/stock/A-100\")\n    assert_true(r.ok)\n\ndef test_checkout__none():\n    r = checkout.post(\"/checkout\", {\"order_id\": 1247, \"payment_token\": \"tok_live_abc\"})\n    assert_eq(r.status, 200)\n","spec/helpers/retries.star":"# helpers/retries.star — shared retry logic for the suite.\n\ndef retry_on_5xx(fn, max_attempts = 3):\n    \"\"\"Invoke fn() until it returns a 2xx, up to max_attempts times.\"\"\"\n    last = None\n    for _ in range(max_attempts):\n        last = fn()\n        if last.status \u003c 500:\n            return last\n    return last\n"}}</script>
+
+  <header class="report-header">
+    <div class="container header-row">
+      <a class="brand" href="https://faultbox.io" target="_blank" rel="noopener">
+        <svg class="brand-mark" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="2"/>
+          <path d="M8 12 L11 15 L16 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">faultbox</span>
+        <span class="brand-sep">›</span>
+        <span class="brand-section">report</span>
+      </a>
+      <div class="header-meta" id="header-meta"></div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <h1 id="hero-title">Faultbox Report — 2026-04-23T11-30-00-7</h1>
+      <p class="subtitle" id="hero-subtitle">10 of 12 checks held; 2 regressed under fault.</p>
+      <div class="hero-stats" id="hero-stats"></div>
+    </section>
+
+    <section id="attention-section" hidden>
+      <h2>Attention</h2>
+      <div id="attention-list"></div>
+    </section>
+
+    <section id="matrix-section" hidden>
+      <div class="section-head">
+        <h2>Fault matrix</h2>
+        <div class="legend" aria-label="Matrix cell legend">
+          <span class="legend-item"><span class="swatch pass"></span>passed</span>
+          <span class="legend-item"><span class="swatch fail"></span>failed</span>
+          <span class="legend-item"><span class="swatch warn"></span>flagged</span>
+          <span class="legend-item"><span class="swatch skip"></span>skipped</span>
+        </div>
+      </div>
+      <div class="matrix-scroll">
+        <div id="matrix"></div>
+      </div>
+      <p class="section-hint" id="matrix-hint"></p>
+    </section>
+
+    <section id="tests-section" hidden>
+      <h2>Tests</h2>
+      <table class="tests-table">
+        <thead>
+          <tr><th>Test</th><th>Outcome</th><th>Duration</th><th>Fault assumptions</th></tr>
+        </thead>
+        <tbody id="tests-tbody"></tbody>
+      </table>
+    </section>
+
+    <section id="coverage-section" hidden>
+      <div class="section-head">
+        <h2>Observed coverage</h2>
+        <p class="section-hint" id="coverage-hint">What actually happened — per service, measured from the run itself.</p>
+      </div>
+      <div class="coverage-scroll">
+        <table class="coverage-table">
+          <thead>
+            <tr>
+              <th>Service</th>
+              <th class="num">Tests</th>
+              <th class="num">Syscalls</th>
+              <th class="num">Faulted</th>
+              <th>Top syscalls</th>
+            </tr>
+          </thead>
+          <tbody id="coverage-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="reproducibility-section">
+      <h2>Reproducibility</h2>
+      <div class="repro-grid" id="repro-grid"></div>
+      <div class="repro-replay" id="repro-replay"></div>
+    </section>
+
+    <section id="spec-section" hidden>
+      <div class="section-head">
+        <h2>Spec</h2>
+        <p class="section-hint">The Starlark sources captured in this bundle. Click to expand a file, deep-link to specific lines, or cross-jump from coverage / topology.</p>
+      </div>
+      <div id="spec-body"></div>
+    </section>
+  </main>
+
+  <dialog id="drill-down" class="drill-down" aria-labelledby="dd-title-text">
+    <div class="drill-down-surface">
+      <header class="drill-down-head">
+        <div class="drill-down-title" id="dd-title"></div>
+        <button class="drill-down-close" type="button" aria-label="Close">✕</button>
+      </header>
+      <div class="drill-down-body" id="dd-body"></div>
+    </div>
+  </dialog>
+
+  <footer class="report-footer">
+    <div class="container footer-row">
+      <span>Generated by <code>faultbox report</code> v<span id="footer-version">dev</span></span>
+      <span class="footer-sep">·</span>
+      <span id="footer-timestamp">2026-04-23T20:57:48Z</span>
+      <span class="footer-sep">·</span>
+      <a href="https://faultbox.io/docs/reports" target="_blank" rel="noopener">About this report</a>
+    </div>
+  </footer>
+
+  <script>/* Faultbox Report — v0.11.0 client-side renderer.
+ *
+ * The Go side embeds manifest.json, env.json and trace.json into a
+ * single data <script> tag (id="faultbox-data", type=application/json).
+ * This file parses that, then paints each section from the DOM IDs the
+ * template already laid out. No framework, no bundler, ~one file of
+ * plain functions — matches the "one HTML, offline-forever" promise.
+ *
+ * Render order matters only in that the hero stats read from the same
+ * derived counts the matrix uses; otherwise every render* below is
+ * independent and can be read top-to-bottom.
+ */
+(function () {
+  "use strict";
+
+  // ── Data loading ────────────────────────────────────────────────
+  function loadData() {
+    var node = document.getElementById("faultbox-data");
+    if (!node) return null;
+    try {
+      return JSON.parse(node.textContent || "{}");
+    } catch (err) {
+      console.error("faultbox: failed to parse embedded data", err);
+      return null;
+    }
+  }
+
+  // ── Small helpers ───────────────────────────────────────────────
+  function el(tag, attrs, children) {
+    var e = document.createElement(tag);
+    if (attrs) {
+      for (var k in attrs) {
+        if (k === "class") e.className = attrs[k];
+        else if (k === "text") e.textContent = attrs[k];
+        else if (k === "html") e.innerHTML = attrs[k];
+        else if (k.slice(0, 2) === "on" && typeof attrs[k] === "function")
+          e.addEventListener(k.slice(2), attrs[k]);
+        else e.setAttribute(k, attrs[k]);
+      }
+    }
+    if (children) {
+      for (var i = 0; i < children.length; i++) {
+        var c = children[i];
+        if (c == null) continue;
+        if (typeof c === "string") e.appendChild(document.createTextNode(c));
+        else e.appendChild(c);
+      }
+    }
+    return e;
+  }
+
+  function fmtDuration(ms) {
+    if (ms == null) return "";
+    if (ms < 1000) return ms + " ms";
+    var s = ms / 1000;
+    if (s < 60) return s.toFixed(s < 10 ? 2 : 1) + " s";
+    var m = Math.floor(s / 60);
+    var rem = Math.round(s - m * 60);
+    return m + "m " + rem + "s";
+  }
+
+  function fmtTimestamp(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+  }
+
+  function escapeText(s) {
+    return (s == null ? "" : String(s));
+  }
+
+  function bundleBasename() {
+    // When the user opens the report by double-clicking it, the bundle
+    // file sits in the same directory. We can't read the filesystem,
+    // but we can reconstruct a reasonable replay target from run_id.
+    // Fallback: the generic name "<bundle>.fb".
+    var m = (window.__FAULTBOX__ && window.__FAULTBOX__.manifest) || {};
+    if (!m.run_id) return "<bundle>.fb";
+    return "run-" + m.run_id + ".fb";
+  }
+
+  // ── Derived counts ──────────────────────────────────────────────
+  function deriveMetrics(data) {
+    var manifest = data.manifest || {};
+    var trace = data.trace || {};
+    var tests = trace.tests || [];
+    var matrix = trace.matrix || null;
+
+    var services = {};
+    var totalEvents = 0;
+    var faultsDelivered = 0;
+
+    for (var i = 0; i < tests.length; i++) {
+      var t = tests[i];
+      var ss = t.syscall_summary || {};
+      for (var svc in ss) services[svc] = true;
+      totalEvents += (t.events ? t.events.length : 0);
+      if (t.faults) {
+        for (var j = 0; j < t.faults.length; j++) {
+          faultsDelivered += (t.faults[j].hits || 0);
+        }
+      }
+    }
+
+    return {
+      scenarios: matrix ? (matrix.scenarios || []).length : 0,
+      faults: matrix ? (matrix.faults || []).length : 0,
+      serviceCount: Object.keys(services).length,
+      eventCount: totalEvents,
+      faultsDelivered: faultsDelivered,
+      hasMatrix: !!matrix,
+      durationMs: manifest.tests ? sumDuration(manifest.tests) : (trace.duration_ms || 0),
+    };
+  }
+
+  function sumDuration(rows) {
+    var total = 0;
+    for (var i = 0; i < rows.length; i++) total += (rows[i].duration_ms || 0);
+    return total;
+  }
+
+  // ── Header pill + run ID ────────────────────────────────────────
+  function renderHeaderMeta(data) {
+    var host = document.getElementById("header-meta");
+    if (!host) return;
+    var m = data.manifest || {};
+    var s = m.summary || {};
+    var pillClass = "pass";
+    var pillText = "✓ " + (s.passed || 0) + "/" + (s.total || 0) + " passed";
+    if ((s.failed || 0) + (s.errored || 0) > 0) {
+      pillClass = "fail";
+      pillText = "✗ " + (s.failed || 0) + " failed";
+      if (s.errored) pillText += " · " + s.errored + " errored";
+    }
+    host.innerHTML = "";
+    host.appendChild(el("span", { class: "pill " + pillClass, text: pillText }));
+    if (m.run_id) host.appendChild(el("span", { class: "mono", text: m.run_id }));
+  }
+
+  // ── Hero stats ──────────────────────────────────────────────────
+  function renderHeroStats(data, metrics) {
+    var host = document.getElementById("hero-stats");
+    if (!host) return;
+    var m = data.manifest || {};
+    var s = m.summary || {};
+
+    var cards = [];
+    if (metrics.hasMatrix) {
+      cards.push(stat(metrics.scenarios + " × " + metrics.faults, "matrix cells",
+        String((m.summary && m.summary.total) || 0) + " runs"));
+    } else {
+      cards.push(stat(String(s.total || 0), "tests", null));
+    }
+    cards.push(stat(String(metrics.faultsDelivered), "faults delivered",
+      metrics.faultsDelivered === 0 && (s.total || 0) > 0
+        ? "no faults matched (zero traffic?)"
+        : null));
+    cards.push(stat(String(metrics.serviceCount), "services observed",
+      metrics.eventCount ? metrics.eventCount + " events captured" : null));
+    cards.push(stat(fmtDuration(metrics.durationMs), "duration",
+      m.created_at ? fmtTimestamp(m.created_at) : null));
+
+    host.innerHTML = "";
+    for (var i = 0; i < cards.length; i++) host.appendChild(cards[i]);
+  }
+
+  function stat(value, label, caption) {
+    var kids = [
+      el("div", { class: "stat-value", text: value }),
+      el("div", { class: "stat-label", text: label }),
+    ];
+    if (caption) kids.push(el("div", { class: "stat-caption", text: caption }));
+    return el("div", { class: "stat" }, kids);
+  }
+
+  // ── Fault matrix ────────────────────────────────────────────────
+  function renderMatrix(data) {
+    var section = document.getElementById("matrix-section");
+    var host = document.getElementById("matrix");
+    var hint = document.getElementById("matrix-hint");
+    if (!section || !host) return;
+    var matrix = (data.trace && data.trace.matrix) || null;
+    if (!matrix || !(matrix.scenarios || []).length || !(matrix.faults || []).length) return;
+
+    section.hidden = false;
+    var scenarios = matrix.scenarios;
+    var faults = matrix.faults;
+    var cells = matrix.cells || [];
+
+    // Build lookup for O(1) cell access.
+    var byKey = {};
+    for (var i = 0; i < cells.length; i++) {
+      var c = cells[i];
+      byKey[c.scenario + "∷" + c.fault] = c;
+    }
+
+    // Grid: [corner] [fault1] [fault2] ... / [scenario1] [cell] [cell] ...
+    var grid = el("div", { class: "matrix" });
+    grid.style.gridTemplateColumns = "minmax(140px, max-content) repeat(" + faults.length + ", minmax(90px, 1fr))";
+
+    grid.appendChild(el("div", { class: "matrix-corner", text: "scenario ╲ fault" }));
+    for (var f = 0; f < faults.length; f++) {
+      grid.appendChild(el("div", { class: "matrix-col-head", text: faults[f] }));
+    }
+    for (var s = 0; s < scenarios.length; s++) {
+      grid.appendChild(el("div", { class: "matrix-row-head", text: scenarios[s] }));
+      for (var ff = 0; ff < faults.length; ff++) {
+        var cell = byKey[scenarios[s] + "∷" + faults[ff]];
+        grid.appendChild(renderCell(cell));
+      }
+    }
+
+    host.innerHTML = "";
+    host.appendChild(grid);
+    if (hint) {
+      hint.textContent = "Click any cell to open the per-test drill-down: "
+        + "faults applied, diagnostics, event trace, and a one-click replay command.";
+    }
+  }
+
+  function renderCell(cell) {
+    if (!cell) {
+      return el("div", { class: "matrix-cell skip", title: "not run" },
+        [el("span", { class: "matrix-cell-icon", text: "·" })]);
+    }
+    var kind = cell.passed ? "pass" : "fail";
+    var icon = cell.passed ? "✓" : "✗";
+    var title = cell.scenario + " × " + cell.fault;
+    if (!cell.passed && cell.reason) title += "\n" + cell.reason;
+    if (cell.duration_ms != null) title += "\nduration: " + fmtDuration(cell.duration_ms);
+    // Matrix test names follow the `test_<scenario>__<fault>` convention
+    // emitted by the `fault_matrix()` builtin. Binding it here is what
+    // turns a cell click into a drill-down open.
+    var testName = "test_" + cell.scenario + "__" + cell.fault;
+    var attrs = {
+      class: "matrix-cell " + kind,
+      title: title,
+      tabindex: "0",
+      role: "button",
+      "data-test": testName,
+      onclick: function () { openDrillDown(testName); },
+      onkeydown: function (e) {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openDrillDown(testName);
+        }
+      },
+    };
+    return el("div", attrs, [el("span", { class: "matrix-cell-icon", text: icon })]);
+  }
+
+  // ── Attention list (failures + warnings) ───────────────────────
+  function renderAttention(data) {
+    var section = document.getElementById("attention-section");
+    var host = document.getElementById("attention-list");
+    if (!section || !host) return;
+    var tests = (data.trace && data.trace.tests) || [];
+    var replayCmd = "faultbox replay " + bundleBasename();
+
+    var attention = [];
+    for (var i = 0; i < tests.length; i++) {
+      var t = tests[i];
+      if (t.result === "fail" || t.result === "error") {
+        attention.push({ kind: "fail", test: t });
+      } else if (t.diagnostics && t.diagnostics.length) {
+        var hasWarn = false;
+        for (var j = 0; j < t.diagnostics.length; j++) {
+          if (t.diagnostics[j].level === "warning" || t.diagnostics[j].level === "error") {
+            hasWarn = true; break;
+          }
+        }
+        if (hasWarn) attention.push({ kind: "warn", test: t });
+      }
+    }
+    if (!attention.length) return;
+    section.hidden = false;
+    host.innerHTML = "";
+    for (var k = 0; k < attention.length; k++) {
+      host.appendChild(renderAttentionItem(attention[k], replayCmd));
+    }
+  }
+
+  function renderAttentionItem(entry, replayCmd) {
+    var t = entry.test;
+    var title = t.name;
+    var reason = t.reason || (t.error_detail && t.error_detail.message) || "";
+    var cmd = replayCmd + " --test " + t.name;
+
+    var head = el("div", { class: "attention-item-head" }, [
+      el("span", { class: "attention-item-title", text: (entry.kind === "fail" ? "✗ " : "⚠ ") + title }),
+      el("span", { class: "mono", text: fmtDuration(t.duration_ms) }),
+    ]);
+    var kids = [head];
+    if (reason) kids.push(el("div", { class: "attention-item-reason", text: reason }));
+    if (t.diagnostics && t.diagnostics.length) {
+      for (var i = 0; i < t.diagnostics.length; i++) {
+        var d = t.diagnostics[i];
+        if (d.level !== "warning" && d.level !== "error") continue;
+        kids.push(el("div", { class: "attention-item-reason",
+          text: "[" + d.code + "] " + d.message }));
+      }
+    }
+    kids.push(replayRow(cmd));
+    return el("div", {
+      class: "attention-item " + entry.kind,
+      "data-test": t.name,
+      onclick: function (e) {
+        // Replay-row clicks handle their own copy behaviour and must
+        // not trigger a drill-down.
+        if (e.target.closest(".attention-item-replay")) return;
+        openDrillDown(t.name);
+      },
+    }, kids);
+  }
+
+  function replayRow(cmd) {
+    var code = el("code", { class: "mono", text: cmd });
+    var btn = el("button", {
+      class: "copy-btn",
+      type: "button",
+      "aria-label": "Copy replay command",
+      onclick: function () { copyToClipboard(cmd, btn); },
+      text: "Copy",
+    });
+    return el("div", { class: "attention-item-replay" }, [code, btn]);
+  }
+
+  // ── Tests table (fallback when no matrix) ───────────────────────
+  function renderTestsTable(data) {
+    var section = document.getElementById("tests-section");
+    var body = document.getElementById("tests-tbody");
+    if (!section || !body) return;
+
+    var manifest = data.manifest || {};
+    var matrix = (data.trace && data.trace.matrix) || null;
+    if (matrix) return; // matrix tests already covered
+    if (!(manifest.tests && manifest.tests.length)) return;
+    section.hidden = false;
+    body.innerHTML = "";
+    for (var i = 0; i < manifest.tests.length; i++) {
+      var r = manifest.tests[i];
+      var pillClass = r.outcome === "passed" ? "pass" :
+                      r.outcome === "failed" ? "fail" : "warn";
+      var fa = (r.fault_assumptions || []).join(", ");
+      var tr = el("tr", {
+        "data-test": r.name,
+        onclick: (function (n) { return function () { openDrillDown(n); }; })(r.name),
+      }, [
+        el("td", { text: r.name }),
+        el("td", { class: "outcome" }, [el("span", { class: "pill " + pillClass, text: r.outcome })]),
+        el("td", { text: fmtDuration(r.duration_ms) }),
+        el("td", { text: fa }),
+      ]);
+      body.appendChild(tr);
+    }
+  }
+
+  // ── Observed coverage ───────────────────────────────────────────
+  function renderCoverage(data) {
+    var section = document.getElementById("coverage-section");
+    var tbody = document.getElementById("coverage-tbody");
+    if (!section || !tbody) return;
+
+    var tests = (data.trace && data.trace.tests) || [];
+    if (!tests.length) return;
+
+    // Aggregate syscall_summary across all tests, grouped by service.
+    // The shape each test already produces is per-service; we union
+    // the breakdowns and track tests touching each service.
+    var byService = {};
+    for (var i = 0; i < tests.length; i++) {
+      var t = tests[i];
+      var ss = t.syscall_summary || {};
+      for (var svc in ss) {
+        var s = ss[svc];
+        if (!byService[svc]) {
+          byService[svc] = { tests: {}, total: 0, faulted: 0, breakdown: {} };
+        }
+        byService[svc].tests[t.name] = true;
+        byService[svc].total += (s.total || 0);
+        byService[svc].faulted += (s.faulted || 0);
+        for (var sc in (s.breakdown || {})) {
+          byService[svc].breakdown[sc] = (byService[svc].breakdown[sc] || 0) + s.breakdown[sc];
+        }
+      }
+    }
+
+    var services = Object.keys(byService);
+    if (!services.length) return;
+    services.sort();
+    section.hidden = false;
+    tbody.innerHTML = "";
+
+    for (var s = 0; s < services.length; s++) {
+      var name = services[s];
+      var agg = byService[name];
+      var top = topSyscalls(agg.breakdown, 4);
+      var tr = el("tr", null, [
+        el("td", null, [serviceNameCell(name)]),
+        el("td", { class: "num", text: String(Object.keys(agg.tests).length) }),
+        el("td", { class: "num", text: String(agg.total) }),
+        el("td", { class: "num",
+          html: agg.faulted ? '<span class="faulted-badge">' + agg.faulted + '<\/span>' : "0" }),
+        el("td", { class: "coverage-syscalls" }, top),
+      ]);
+      tbody.appendChild(tr);
+    }
+  }
+
+  // serviceNameCell renders a service name as a link into the spec
+  // section (if a matching definition is found at render time) — or
+  // falls back to a plain text span. Keeps the table visually quiet
+  // but makes the name actionable.
+  function serviceNameCell(name) {
+    var def = findServiceLine(name);
+    if (!def) return document.createTextNode(name);
+    var a = el("a", {
+      class: "service-link",
+      href: "#" + specAnchorId(def.path, def.line),
+      "data-service": name,
+      onclick: function (e) {
+        e.preventDefault();
+        focusSpecLine(def.path, def.line);
+      },
+      text: name,
+    });
+    return a;
+  }
+
+  function topSyscalls(breakdown, n) {
+    var entries = [];
+    for (var k in breakdown) entries.push([k, breakdown[k]]);
+    entries.sort(function (a, b) { return b[1] - a[1]; });
+    var out = [];
+    for (var i = 0; i < Math.min(n, entries.length); i++) {
+      out.push(el("span", { class: i === 0 ? "hot" : null,
+        text: entries[i][0] + " (" + entries[i][1] + ")" }));
+    }
+    if (entries.length > n) out.push(el("span", { text: "+" + (entries.length - n) + " more" }));
+    return out;
+  }
+
+  // ── Drill-down modal ────────────────────────────────────────────
+  var testsByName = {};
+
+  function indexTests(data) {
+    testsByName = {};
+    var tests = (data.trace && data.trace.tests) || [];
+    for (var i = 0; i < tests.length; i++) testsByName[tests[i].name] = tests[i];
+  }
+
+  function openDrillDown(testName) {
+    var test = testsByName[testName];
+    if (!test) {
+      console.warn("faultbox: no trace entry for", testName);
+      return;
+    }
+    var dialog = document.getElementById("drill-down");
+    var titleHost = document.getElementById("dd-title");
+    var body = document.getElementById("dd-body");
+    if (!dialog || !titleHost || !body) return;
+
+    titleHost.innerHTML = "";
+    titleHost.appendChild(drillDownHeader(test));
+
+    body.innerHTML = "";
+    populateDrillDown(body, test);
+
+    if (typeof dialog.showModal === "function") {
+      dialog.showModal();
+    } else {
+      dialog.setAttribute("open", "");
+    }
+  }
+
+  function closeDrillDown() {
+    var dialog = document.getElementById("drill-down");
+    if (!dialog) return;
+    if (typeof dialog.close === "function") dialog.close();
+    else dialog.removeAttribute("open");
+  }
+
+  function drillDownHeader(test) {
+    var outcome = test.result === "pass" ? "passed" : (test.result === "fail" ? "failed" : "errored");
+    var pillCls = outcome === "passed" ? "pass" : (outcome === "failed" ? "fail" : "warn");
+    var subtitle = el("div", { class: "drill-down-subtitle" }, [
+      el("span", { class: "pill " + pillCls, text: outcome }),
+      el("span", null, [document.createTextNode(fmtDuration(test.duration_ms))]),
+      el("span", null, [document.createTextNode("seed " + (test.seed != null ? test.seed : "—"))]),
+    ]);
+    return el("div", null, [
+      el("h3", { id: "dd-title-text", text: test.name }),
+      subtitle,
+    ]);
+  }
+
+  function populateDrillDown(body, test) {
+    // Reason / assertion message (shown whether or not the test failed
+    // — a passing test with a reason is rare, but we want it visible).
+    if (test.reason) {
+      body.appendChild(el("h4", { text: "Reason" }));
+      body.appendChild(el("div", {
+        class: "drill-down-reason " + (test.result === "pass" ? "pass" : ""),
+        text: test.reason,
+      }));
+    }
+
+    // Faults applied.
+    if (test.faults && test.faults.length) {
+      body.appendChild(el("h4", { text: "Faults applied" }));
+      body.appendChild(faultsTable(test.faults));
+    }
+
+    // Diagnostics.
+    if (test.diagnostics && test.diagnostics.length) {
+      body.appendChild(el("h4", { text: "Diagnostics" }));
+      for (var i = 0; i < test.diagnostics.length; i++) {
+        body.appendChild(renderDiag(test.diagnostics[i]));
+      }
+    }
+
+    // Replay command.
+    body.appendChild(el("h4", { text: "Replay" }));
+    body.appendChild(drillDownReplay(test));
+
+    // Trace (swim-lane).
+    body.appendChild(el("h4", { text: "Event trace" }));
+    body.appendChild(renderTrace(test));
+
+    // Topology — which services this test actually touched, each
+    // cross-linking to its spec definition.
+    body.appendChild(buildTopologyFold(test));
+
+    // Source — owning .star file with line-number gutter, auto-scrolled
+    // to `def test_<name>`. Closed by default; opens on demand.
+    body.appendChild(buildSourceFold(test));
+  }
+
+  // buildTopologyFold lists the services this test actually touched.
+  // Derived from syscall_summary (what actually executed syscalls) so
+  // the list matches observation, not declaration. Each chip cross-
+  // jumps to the service's definition in the top-level Spec section.
+  function buildTopologyFold(test) {
+    var ss = test.syscall_summary || {};
+    var services = Object.keys(ss).sort();
+    var fold = document.createElement("details");
+    fold.className = "dd-fold";
+    var sum = document.createElement("summary");
+    sum.innerHTML = "<span>Topology \u2014 " + services.length + " service"
+      + (services.length === 1 ? "" : "s") + " touched<\/span>"
+      + "<span>click to toggle<\/span>";
+    fold.appendChild(sum);
+
+    var body = el("div", { class: "dd-fold-body" });
+    if (!services.length) {
+      body.appendChild(el("div", { class: "dd-fold-empty",
+        text: "No services recorded syscalls for this test." }));
+      fold.appendChild(body);
+      return fold;
+    }
+    var row = el("div", { class: "dd-topology" });
+    for (var i = 0; i < services.length; i++) {
+      var name = services[i];
+      var stats = ss[name];
+      var def = findServiceLine(name);
+      var meta = (stats.total || 0) + " syscalls"
+        + (stats.faulted ? " · " + stats.faulted + " faulted" : "");
+      var chip;
+      if (def) {
+        chip = el("a", {
+          class: "dd-topology-chip",
+          href: "#" + specAnchorId(def.path, def.line),
+          onclick: (function (p, l) {
+            return function (e) {
+              e.preventDefault();
+              closeDrillDown();
+              setTimeout(function () { focusSpecLine(p, l); }, 120);
+            };
+          })(def.path, def.line),
+        }, [
+          document.createTextNode(name),
+          el("span", { class: "dd-topology-chip-meta", text: meta }),
+        ]);
+      } else {
+        chip = el("span", { class: "dd-topology-chip", title: "no spec definition found" }, [
+          document.createTextNode(name),
+          el("span", { class: "dd-topology-chip-meta", text: meta }),
+        ]);
+      }
+      row.appendChild(chip);
+    }
+    body.appendChild(row);
+    fold.appendChild(body);
+    return fold;
+  }
+
+  // buildSourceFold renders the spec file that owns this test. The
+  // file body is rendered eagerly (reuses the same line-numbered
+  // viewer as the top-level Spec section) and, on open, scrolls the
+  // `def test_<name>` line into the center of the scroll container.
+  function buildSourceFold(test) {
+    var fold = document.createElement("details");
+    fold.className = "dd-fold";
+    var def = findTestLine(test.name);
+    var summaryMeta = def
+      ? "<span>" + def.path.replace(/^spec\//, "") + " · line " + def.line + "<\/span>"
+      : "<span>no matching spec def<\/span>";
+    var sum = document.createElement("summary");
+    sum.innerHTML = "<span>Source<\/span>" + summaryMeta;
+    fold.appendChild(sum);
+
+    var body = el("div", { class: "dd-fold-body" });
+    if (!def) {
+      body.appendChild(el("div", { class: "dd-fold-empty",
+        text: "Could not locate def " + test.name + "() in any bundled spec." }));
+      fold.appendChild(body);
+      return fold;
+    }
+    // Render a line-numbered viewer. Use a distinct DOM scope so the
+    // same spec can also appear in the top-level section without id
+    // collisions (anchors differ because the drill-down node is
+    // transient and not globally addressable).
+    var content = (specIndex && specIndex.byPath[def.path])
+      ? specIndex.byPath[def.path].body
+      : "";
+    var pre = document.createElement("pre");
+    pre.className = "source-code";
+    var lines = content.split(/\r?\n/);
+    var hitRow = null;
+    for (var i = 0; i < lines.length; i++) {
+      var lineNo = i + 1;
+      var codeSpan = document.createElement("span");
+      codeSpan.className = "source-line-code";
+      codeSpan.innerHTML = highlightStarlark(lines[i]);
+      var row = el("div", {
+        class: "source-line" + (lineNo === def.line ? " hit" : ""),
+        "data-line": String(lineNo),
+      }, [
+        el("span", { class: "source-line-no", text: String(lineNo) }),
+      ]);
+      row.appendChild(codeSpan);
+      pre.appendChild(row);
+      if (lineNo === def.line) hitRow = row;
+    }
+    body.appendChild(pre);
+    fold.appendChild(body);
+
+    // Scroll on open. Native <details> fires a toggle event we can
+    // hook — no need for a MutationObserver.
+    fold.addEventListener("toggle", function () {
+      if (fold.open && hitRow) {
+        requestAnimationFrame(function () {
+          hitRow.scrollIntoView({ block: "center" });
+        });
+      }
+    });
+    return fold;
+  }
+
+  function faultsTable(faults) {
+    var tbl = el("table", { class: "dd-faults" });
+    var thead = el("thead", null, [el("tr", null, [
+      el("th", { text: "Service" }),
+      el("th", { text: "Syscall" }),
+      el("th", { text: "Action" }),
+      el("th", { text: "Errno/detail" }),
+      el("th", { text: "Hits" }),
+      el("th", { text: "Label" }),
+    ])]);
+    var tbody = el("tbody");
+    for (var i = 0; i < faults.length; i++) {
+      var f = faults[i];
+      var hitsCls = "";
+      if (f.hits > 0) hitsCls = "hits-hot";
+      else if (f.action && f.action !== "trace") hitsCls = "hits-zero";
+      tbody.appendChild(el("tr", null, [
+        el("td", null, [serviceRef(f.service || "")]),
+        el("td", { text: f.syscall || "" }),
+        el("td", { text: f.action || "" }),
+        el("td", { text: f.errno || "" }),
+        el("td", { class: hitsCls, text: String(f.hits != null ? f.hits : 0) }),
+        el("td", { text: f.label || "" }),
+      ]));
+    }
+    tbl.appendChild(thead);
+    tbl.appendChild(tbody);
+    return tbl;
+  }
+
+  // serviceRef returns a clickable <a> that closes the drill-down
+  // and jumps to the service's definition line in the Spec section —
+  // or plain text if no definition is found. Used anywhere a service
+  // name appears inside the drill-down (faults table, topology, etc.)
+  // so cross-linking is consistent across the report.
+  function serviceRef(name) {
+    if (!name) return document.createTextNode("");
+    var def = findServiceLine(name);
+    if (!def) return document.createTextNode(name);
+    return el("a", {
+      class: "service-link",
+      href: "#" + specAnchorId(def.path, def.line),
+      onclick: (function (p, l) {
+        return function (e) {
+          e.preventDefault();
+          closeDrillDown();
+          setTimeout(function () { focusSpecLine(p, l); }, 120);
+        };
+      })(def.path, def.line),
+      text: name,
+    });
+  }
+
+  function renderDiag(d) {
+    var cls = "dd-diag";
+    if (d.level === "error") cls += " error";
+    else if (d.level === "warning") cls += " warning";
+    var kids = [
+      el("div", { class: "dd-diag-code", text: (d.level || "info") + " · " + (d.code || "") }),
+      el("div", { class: "dd-diag-msg", text: d.message || "" }),
+    ];
+    if (d.suggestion) kids.push(el("div", { class: "dd-diag-fix", text: d.suggestion }));
+    return el("div", { class: cls }, kids);
+  }
+
+  function drillDownReplay(test) {
+    var cmd = "faultbox replay " + bundleBasename() + " --test " + test.name;
+    var head = el("div", { class: "dd-replay-head" });
+    var btn = el("button", {
+      class: "copy-btn", type: "button", "aria-label": "Copy replay command",
+      onclick: function () { copyToClipboard(cmd, btn); }, text: "Copy",
+    });
+    head.appendChild(el("span", { class: "mono",
+      text: "Reproduce just this test with the original seed." }));
+    head.appendChild(btn);
+    var host = el("div", { class: "dd-replay" }, [head, el("code", { class: "mono", text: cmd })]);
+    return host;
+  }
+
+  // ── Swim-lane trace viewer ──────────────────────────────────────
+  //
+  // Each service is one lane; time is the x-axis, derived from event
+  // seq numbers (a total order within the log). Markers distinguish
+  // syscalls, faults, lifecycle, step, and violation events.
+  //
+  // Interaction (v0.11.0):
+  //   - Hover:  a small side-mounted balloon with event head +
+  //             summary; SVG causal overlay connects the hovered
+  //             marker to its ancestors on other lanes.
+  //   - Click:  marker gets a persistent "selected" ring and the
+  //             detail panel below the lanes switches to that event
+  //             (structured: headline fields first, "all fields"
+  //             and "vector clock" tucked behind collapsibles).
+  //   - A companion event-log table below the detail panel gives a
+  //             forensic row-per-event view with type-filter chips.
+  //
+  // Causality: vector_clock is used when present (proper
+  // happens-before), with a fallback to "latest prior event per
+  // other lane" when a bundle lacks vector clocks.
+  function renderTrace(test) {
+    var events = test.events || [];
+    if (!events.length) {
+      return el("div", { class: "trace-empty",
+        text: "No events captured for this test. (Trace collection is enabled by default; empty traces usually mean the test ran entirely in the harness — no service syscalls executed.)" });
+    }
+
+    var lanes = {};
+    var order = [];
+    for (var i = 0; i < events.length; i++) {
+      var svc = events[i].service || "test";
+      if (!lanes[svc]) { lanes[svc] = []; order.push(svc); }
+      lanes[svc].push(events[i]);
+    }
+
+    var seqs = events.map(function (e) { return e.seq || 0; });
+    var minSeq = Math.min.apply(null, seqs);
+    var maxSeq = Math.max.apply(null, seqs);
+    if (minSeq === maxSeq) maxSeq = minSeq + 1;
+
+    var host = el("div", { class: "trace-viewer" });
+    var lanesWrap = el("div", { class: "trace-lanes" });
+    var grid = el("div", { class: "trace-grid" });
+    grid.style.gridTemplateColumns = "max-content 1fr";
+
+    var markerNodes = {}; // seq -> marker node
+    var laneIndexFor = {}; // service -> zero-based lane row index
+
+    for (var j = 0; j < order.length; j++) {
+      var svc = order[j];
+      laneIndexFor[svc] = j;
+      grid.appendChild(el("div", { class: "trace-lane-label", text: svc }));
+      var lane = el("div", { class: "trace-lane" });
+      var laneEvents = lanes[svc];
+      for (var k = 0; k < laneEvents.length; k++) {
+        var ev = laneEvents[k];
+        var m = renderMarker(ev, minSeq, maxSeq);
+        markerNodes[ev.seq] = m;
+        lane.appendChild(m);
+      }
+      grid.appendChild(lane);
+    }
+    lanesWrap.appendChild(grid);
+
+    // SVG overlay for causal lines. Mounted inside the lanes wrapper
+    // so its coordinate system shares the grid's layout — avoids
+    // reflow math when the viewer resizes.
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "trace-causal-svg");
+    lanesWrap.appendChild(svg);
+
+    // Side-mounted hover balloon — small, stays out of the causal
+    // line's direct path because it offsets to one side of the
+    // marker instead of straight above.
+    var tooltip = el("div", { class: "trace-tooltip", role: "tooltip" });
+    lanesWrap.appendChild(tooltip);
+
+    host.appendChild(lanesWrap);
+    host.appendChild(el("div", { class: "trace-axis" }, [
+      el("span", { text: "seq " + minSeq }),
+      el("span", { text: "seq " + maxSeq }),
+    ]));
+    host.appendChild(traceLegend());
+
+    // Detail panel (click-to-pin) below the axis/legend.
+    var detail = el("div", { class: "trace-detail empty",
+      text: "Click any point in the timeline to see its details here." });
+    host.appendChild(detail);
+
+    // Track the pinned event inside this closure so hover teardown
+    // can redraw the pinned overlay instead of clearing it (keeping
+    // the selected ring + causal lines visible between hovers).
+    var pinned = { ev: null };
+
+    // Event log table (collapsible, default-open) — forensic companion.
+    var eventLog = buildEventLog(events, order, function (ev) {
+      pinSelection(ev, host, markerNodes, detail, events, svg,
+        order, laneIndexFor, pinned);
+    });
+    host.appendChild(eventLog);
+
+    // Wire marker events. A closure per marker captures its event.
+    var lookup = {};
+    for (var i2 = 0; i2 < events.length; i2++) lookup[events[i2].seq] = events[i2];
+    for (var s in markerNodes) {
+      (function (ev, node) {
+        node.addEventListener("mouseenter", function () {
+          showTraceHover(ev, events, lanesWrap, node, tooltip, svg,
+            markerNodes, order, laneIndexFor);
+        });
+        node.addEventListener("focus", function () {
+          showTraceHover(ev, events, lanesWrap, node, tooltip, svg,
+            markerNodes, order, laneIndexFor);
+        });
+        node.addEventListener("mouseleave", function () {
+          hideTraceHover(lanesWrap, tooltip, svg, markerNodes,
+            events, pinned);
+        });
+        node.addEventListener("blur", function () {
+          hideTraceHover(lanesWrap, tooltip, svg, markerNodes,
+            events, pinned);
+        });
+        node.addEventListener("click", function (e) {
+          e.stopPropagation();
+          pinSelection(ev, host, markerNodes, detail, events, svg,
+            order, laneIndexFor, pinned);
+        });
+        node.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            pinSelection(ev, host, markerNodes, detail, events, svg,
+              order, laneIndexFor, pinned);
+          }
+        });
+      })(lookup[s], markerNodes[s]);
+    }
+
+    return host;
+  }
+
+  // pinSelection is the single entry-point for "user picked this
+  // event": it clears the previous selection's ring, sets the new
+  // one, renders the detail panel, keeps the causal overlay live
+  // for the pinned marker, and marks the matching row in the log.
+  function pinSelection(ev, host, markerNodes, detail, events, svg,
+                        order, laneIndexFor, pinned) {
+    // Clear previous selection markers and row highlights.
+    var prev = host.querySelector(".trace-marker.selected");
+    if (prev) prev.classList.remove("selected");
+    var prevRow = host.querySelector(".trace-log-table tr.selected");
+    if (prevRow) prevRow.classList.remove("selected");
+    clearHighlights(host);
+
+    pinned.ev = ev;
+
+    var node = markerNodes[ev.seq];
+    if (node) node.classList.add("selected");
+
+    // Render detail panel.
+    detail.classList.remove("empty");
+    detail.innerHTML = "";
+    detail.appendChild(buildDetailContent(ev));
+
+    // Open the event log if closed so scroll + highlight land in view.
+    var log = host.querySelector(".trace-log");
+    if (log && !log.open) log.open = true;
+
+    // Highlight matching log row and scroll it into view.
+    var row = host.querySelector('.trace-log-table tr[data-seq="' + ev.seq + '"]');
+    if (row) {
+      row.classList.add("selected");
+      row.scrollIntoView({ block: "nearest" });
+    }
+
+    // Persist causal overlay for the pinned event + ring the ancestors.
+    var lanesWrap = host.querySelector(".trace-lanes");
+    drawPinnedCausal(ev, events, svg, lanesWrap, markerNodes);
+  }
+
+  // drawPinnedCausal paints the causal lines and ancestor rings for
+  // the pinned event. Called from pinSelection and from
+  // hideTraceHover (so the pinned overlay survives hover teardown).
+  function drawPinnedCausal(ev, events, svg, lanesWrap, markerNodes) {
+    clearHighlights(lanesWrap);
+    var node = markerNodes[ev.seq];
+    if (!node) return;
+    node.classList.add("highlight-root");
+    lanesWrap.classList.add("causal-active");
+    var ancestors = findCausalAncestors(ev, events);
+    drawCausalLines(svg, node, ancestors, lanesWrap, markerNodes);
+  }
+
+  function clearHighlights(scope) {
+    var nodes = scope.querySelectorAll(".trace-marker.highlight-root, .trace-marker.highlight-ancestor");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].classList.remove("highlight-root", "highlight-ancestor");
+    }
+    scope.classList && scope.classList.remove("causal-active");
+  }
+
+  function renderMarker(ev, minSeq, maxSeq) {
+    var pct = ((ev.seq || 0) - minSeq) / (maxSeq - minSeq) * 100;
+    // Clamp to a narrow inner band so the first and last markers don't
+    // overhang the lane's rounded corners. 2.5% ≈ enough clearance for
+    // the 14px violation square on an ~800px-wide lane.
+    if (pct < 2.5) pct = 2.5;
+    if (pct > 97.5) pct = 97.5;
+    var kind = markerKind(ev);
+    var label = markerShortLabel(ev);
+    var m = el("div", {
+      class: "trace-marker " + kind,
+      tabindex: "0",
+      role: "button",
+      "aria-label": label,
+      "data-seq": String(ev.seq || 0),
+    });
+    m.style.left = pct.toFixed(2) + "%";
+    return m;
+  }
+
+  function markerKind(ev) {
+    var t = ev.type || "";
+    if (t === "fault_applied" || t === "fault_removed") return "fault";
+    if (t === "violation") return "violation";
+    if (t === "syscall") return "syscall";
+    if (t === "step_send" || t === "step_recv") return "step";
+    if (t === "service_started" || t === "service_ready" ||
+        t === "service_stopped" || t === "session_completed") return "lifecycle";
+    return "syscall";
+  }
+
+  function markerShortLabel(ev) {
+    var parts = [ev.type || "event"];
+    if (ev.fields && ev.fields.syscall) parts.push(ev.fields.syscall);
+    if (ev.service) parts.push("on " + ev.service);
+    return parts.join(" ");
+  }
+
+  // showTraceHover positions the balloon to the side of the marker
+  // (not directly above) so the causal lines we draw across lanes
+  // stay visible. We also compute causal ancestors and paint them.
+  function showTraceHover(ev, allEvents, lanesWrap, node, tooltip, svg,
+                          markerNodes, order, laneIndexFor) {
+    tooltip.innerHTML = "";
+    tooltip.appendChild(buildTooltipContent(ev));
+
+    var rect = node.getBoundingClientRect();
+    var lanesRect = lanesWrap.getBoundingClientRect();
+    var cx = rect.left - lanesRect.left + rect.width / 2;
+    var cy = rect.top - lanesRect.top + rect.height / 2;
+
+    // Pick a side that leaves the lines visible. Default: top-right
+    // of marker. Flip to top-left if we'd clip the viewer on the right.
+    // Flip to bottom-* if we're on the top lane.
+    var offsetX = 14;
+    var offsetY = -14;
+    var svc = ev.service || "test";
+    var laneIdx = laneIndexFor[svc];
+    var isTopLane = (laneIdx === 0);
+    if (isTopLane) offsetY = 18;
+
+    tooltip.style.left = (cx + offsetX) + "px";
+    tooltip.style.top = (cy + offsetY) + "px";
+    tooltip.style.transform = isTopLane ? "translate(0, 0)" : "translate(0, -100%)";
+    tooltip.classList.add("active");
+
+    // Clamp horizontally after layout if needed.
+    requestAnimationFrame(function () {
+      var tr = tooltip.getBoundingClientRect();
+      var overshoot = tr.right - lanesRect.right;
+      if (overshoot > 0) {
+        tooltip.style.left = (cx - offsetX - tr.width) + "px";
+      }
+    });
+
+    node.classList.add("highlight-root");
+    lanesWrap.classList.add("causal-active");
+
+    var ancestors = findCausalAncestors(ev, allEvents);
+    drawCausalLines(svg, node, ancestors, lanesWrap, markerNodes);
+  }
+
+  function hideTraceHover(lanesWrap, tooltip, svg, markerNodes, events, pinned) {
+    tooltip.classList.remove("active");
+    svg.innerHTML = "";
+    clearHighlights(lanesWrap);
+    // Restore the pinned overlay so hovering a non-pinned marker
+    // and then leaving it doesn't wipe the pinned event's causal
+    // context. Hover always wins while the mouse is over a marker;
+    // leaving returns to the pinned view.
+    if (pinned && pinned.ev) {
+      drawPinnedCausal(pinned.ev, events, svg, lanesWrap, markerNodes);
+    }
+  }
+
+  function buildTooltipContent(ev) {
+    var head = el("div", { class: "trace-tooltip-head", text: ev.type || "event" });
+    var sub = el("div", { class: "trace-tooltip-sub" });
+    var bits = [];
+    if (ev.service) bits.push(ev.service);
+    if (ev.fields && ev.fields.syscall) bits.push(ev.fields.syscall);
+    if (ev.fields && ev.fields.decision) bits.push("[" + ev.fields.decision + "]");
+    bits.push("seq " + (ev.seq || 0));
+    sub.textContent = bits.join(" · ");
+    return el("div", null, [head, sub]);
+  }
+
+  // buildDetailContent is the pinned-selection view shown below the
+  // lanes. Headline fields (type, service, primary summary) sit at
+  // the top; everything else tucks into collapsibles so the common
+  // case stays compact.
+  function buildDetailContent(ev) {
+    var head = el("div", { class: "trace-detail-head" }, [
+      el("span", { class: "trace-detail-title", text: ev.type || "event" }),
+      el("span", { class: "trace-detail-meta",
+        text: (ev.service || "—") + " · seq " + (ev.seq || 0) +
+              (ev.timestamp ? " · " + fmtTimestamp(ev.timestamp) : "") }),
+    ]);
+
+    var primary = el("div");
+    primary.appendChild(detailRow("service", ev.service || "—", true));
+    var summary = eventHeadline(ev);
+    if (summary) primary.appendChild(detailRow("summary", summary, true));
+    if (ev.fields) {
+      // Promote the two fields most users need to see first.
+      if (ev.fields.syscall) primary.appendChild(detailRow("syscall", ev.fields.syscall, false));
+      if (ev.fields.decision) primary.appendChild(detailRow("decision", ev.fields.decision, false));
+      if (ev.fields.path) primary.appendChild(detailRow("path", ev.fields.path, false));
+      if (ev.fields.reason && ev.type === "violation")
+        primary.appendChild(detailRow("reason", ev.fields.reason, false));
+    }
+
+    var container = el("div", null, [head, primary]);
+
+    // Collapsible: full field dump (everything not already promoted).
+    var hiddenKeys = { syscall: 1, decision: 1, path: 1, reason: 1 };
+    var extras = [];
+    if (ev.fields) {
+      var keys = Object.keys(ev.fields).sort();
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        if (hiddenKeys[k]) continue;
+        extras.push(detailRow(k, ev.fields[k], false));
+      }
+    }
+    if (ev.event_type && ev.event_type !== ev.type)
+      extras.unshift(detailRow("event_type", ev.event_type, false));
+    if (ev.partition_key)
+      extras.unshift(detailRow("partition", ev.partition_key, false));
+
+    // Always render both collapsibles (with an empty-state line when
+    // absent) so the panel's height is consistent across different
+    // event types — prevents the surrounding layout from twitching
+    // as the user clicks between markers.
+    container.appendChild(collapsible("All fields",
+      extras.length ? extras :
+        [el("div", { class: "trace-detail-kv trace-detail-value",
+          text: "(no additional fields)" })]));
+    var vcChildren = (ev.vector_clock && Object.keys(ev.vector_clock).length)
+      ? [el("div", { class: "trace-detail-kv", text: formatVectorClock(ev.vector_clock) })]
+      : [el("div", { class: "trace-detail-kv trace-detail-value", text: "(not recorded)" })];
+    container.appendChild(collapsible("Vector clock", vcChildren));
+    return container;
+  }
+
+  function detailRow(label, value, emphasis) {
+    var v = el("div", { class: "trace-detail-value" + (emphasis ? " emphasis" : ""),
+      text: String(value) });
+    return el("div", { class: "trace-detail-row" }, [
+      el("div", { class: "trace-detail-label", text: label }),
+      v,
+    ]);
+  }
+
+  function collapsible(title, children) {
+    var det = document.createElement("details");
+    det.className = "trace-detail-collapsible";
+    var sum = document.createElement("summary");
+    sum.textContent = title;
+    det.appendChild(sum);
+    for (var i = 0; i < children.length; i++) det.appendChild(children[i]);
+    return det;
+  }
+
+  // eventHeadline renders a single-line description that answers the
+  // question "what happened here?" — the main column of the event log
+  // table and the headline of the detail drawer. The goal is
+  // specificity: "connect → /var/run/redis.sock" beats "connect"
+  // because the reader doesn't have to expand the row to see *what*
+  // was connected to.
+  function eventHeadline(ev) {
+    var t = ev.type || "";
+    var f = ev.fields || {};
+
+    // Protocol-level (proxy) events — pick the most informative
+    // subject per protocol. The Go proxy layer emits type="proxy" with
+    // fields that identify the payload (query / command / topic / etc.),
+    // so we reconstruct a human-readable one-liner here.
+    if (t === "proxy") {
+      var proto = f.protocol || "";
+      if (proto === "http" || proto === "http2") {
+        var http = (f.method || "HTTP") + " " + (f.path || "");
+        if (f.status) http += " → " + f.status;
+        return http.trim();
+      }
+      if (proto === "postgres" || proto === "mysql" || proto === "clickhouse" ||
+          proto === "cassandra") {
+        var q = truncate(f.query || "query", 80);
+        if (f.rows) q += " · " + f.rows + "r";
+        if (f.error) q += " · " + f.error;
+        return q;
+      }
+      if (proto === "redis" || proto === "memcached") {
+        var r = (f.command || "") + (f.key ? " " + f.key : "");
+        if (f.result) r += " (" + f.result + ")";
+        if (f.error) r += " · " + f.error;
+        return r.trim();
+      }
+      if (proto === "kafka" || proto === "nats" || proto === "amqp") {
+        var m = (f.api || "msg") + (f.topic ? " " + f.topic
+          : f.subject ? " " + f.subject
+          : f.exchange ? " " + f.exchange : "");
+        if (f.partition) m += " p" + f.partition;
+        if (f.error) m += " · " + f.error;
+        return m.trim();
+      }
+      if (proto === "grpc") {
+        var g = f.method || "grpc";
+        if (f.code) g += " → " + f.code;
+        return g;
+      }
+      if (proto === "mongodb") {
+        var md = (f.command || "") + (f.collection ? " " + f.collection : "");
+        return md.trim();
+      }
+      // Unknown protocol — fall back to a compact key=value dump.
+      return compactFields(f);
+    }
+
+    if (t === "syscall") {
+      var head = f.syscall || "syscall";
+      // "connect → /tmp/redis.sock" is far more actionable than
+      // "connect → allow". Same for openat + path.
+      if (f.path) head += " → " + f.path;
+      else if (f.decision) head += " → " + f.decision;
+      if (f.path && f.decision && f.decision !== "allow")
+        head += " (" + f.decision + ")";
+      return head;
+    }
+
+    if (t === "step_send" || t === "step_recv") {
+      var arrow = t === "step_send" ? "→" : "←";
+      var parts = [arrow, f.target || "?"];
+      if (f.method) parts.push(f.method);
+      if (f.path) parts.push(f.path);
+      else if (f.interface) parts.push("[" + f.interface + "]");
+      if (t === "step_recv" && f.status) parts.push("→ " + f.status);
+      return parts.join(" ");
+    }
+
+    if (t === "fault_applied" || t === "fault_removed") {
+      var pre = t === "fault_applied" ? "+" : "−";
+      var body = (f.syscall || "?") + " " + (f.action || "");
+      if (f.errno) body += " " + f.errno;
+      if (f.label) body += " [" + f.label + "]";
+      return pre + " " + body;
+    }
+
+    if (t === "violation") return f.reason || "violation";
+    if (t.indexOf("service_") === 0) return t.replace("service_", "");
+    return compactFields(f) || null;
+  }
+
+  function truncate(s, n) {
+    s = String(s || "");
+    return s.length <= n ? s : s.slice(0, n - 1) + "…";
+  }
+
+  function compactFields(f) {
+    if (!f) return "";
+    var parts = [];
+    for (var k in f) parts.push(k + "=" + f[k]);
+    return parts.join(" ");
+  }
+
+  // buildEventLog returns a collapsible <details> containing the
+  // event log table with type-filter chips. Clicking a row invokes
+  // onSelect — the same flow as clicking a marker.
+  function buildEventLog(events, order, onSelect) {
+    var typesPresent = {};
+    for (var i = 0; i < events.length; i++) {
+      var t = events[i].type || "other";
+      typesPresent[t] = true;
+    }
+    var knownTypes = ["syscall", "fault_applied", "fault_removed",
+      "service_started", "service_ready", "service_stopped",
+      "step_send", "step_recv", "violation"];
+    var filterOpts = ["all"];
+    for (var j = 0; j < knownTypes.length; j++) {
+      if (typesPresent[knownTypes[j]]) filterOpts.push(knownTypes[j]);
+    }
+    // Append any unknown types so no events are unreachable by filter.
+    for (var kt in typesPresent) {
+      if (knownTypes.indexOf(kt) < 0 && kt !== "other") filterOpts.push(kt);
+    }
+
+    var wrap = document.createElement("details");
+    wrap.className = "trace-log";
+    // Default-open so the forensic view is discoverable; users who
+    // prefer a compact modal can collapse it with one click.
+    wrap.open = true;
+    var sum = document.createElement("summary");
+    sum.innerHTML = "<span>Event log — " + events.length + " entries<\/span>"
+      + "<span>click to toggle<\/span>";
+    wrap.appendChild(sum);
+
+    var body = el("div", { class: "trace-log-body" });
+    var filters = el("div", { class: "trace-log-filters", role: "toolbar" });
+    var chips = {};
+    for (var f = 0; f < filterOpts.length; f++) {
+      (function (type) {
+        var chip = el("button", {
+          class: "trace-log-chip" + (type === "all" ? " active" : ""),
+          type: "button", "data-filter": type, text: type,
+          onclick: function () { applyFilter(type); },
+        });
+        chips[type] = chip;
+        filters.appendChild(chip);
+      })(filterOpts[f]);
+    }
+    body.appendChild(filters);
+
+    var scroll = el("div", { class: "trace-log-scroll" });
+    var table = el("table", { class: "trace-log-table" });
+    var thead = el("thead", null, [el("tr", null, [
+      el("th", { class: "caret-col", "aria-label": "expand" }),
+      el("th", { class: "type", text: "type" }),
+      el("th", { class: "service", text: "service" }),
+      el("th", { text: "summary" }),
+    ])]);
+    var tbody = el("tbody");
+    for (var r = 0; r < events.length; r++) {
+      var pair = logRow(events[r], onSelect);
+      tbody.appendChild(pair[0]);
+      tbody.appendChild(pair[1]);
+    }
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    body.appendChild(scroll);
+    wrap.appendChild(body);
+
+    function applyFilter(type) {
+      for (var k in chips) chips[k].classList.remove("active");
+      if (chips[type]) chips[type].classList.add("active");
+      // Each event now contributes two rows (header + expansion); we
+      // key on data-seq / data-seq-expand so a filter match hides
+      // or shows both in lockstep.
+      var headers = tbody.querySelectorAll("tr[data-seq]");
+      for (var i = 0; i < headers.length; i++) {
+        var row = headers[i];
+        var rType = row.getAttribute("data-type") || "";
+        var seq = row.getAttribute("data-seq");
+        var matched = (type === "all" || rType === type);
+        row.style.display = matched ? "" : "none";
+        var expand = tbody.querySelector('tr[data-seq-expand="' + seq + '"]');
+        if (expand) {
+          // Only the header row toggles visibility when filtered —
+          // the expansion's own `hidden` attribute controls open/close.
+          expand.style.display = matched ? "" : "none";
+        }
+      }
+    }
+
+    return wrap;
+  }
+
+  // logRow builds one <tr> + a sibling expansion <tr> that toggles on
+  // click. The expansion carries the grouped detail view (Request /
+  // Response / Fault / System / Other) so users can inspect rich
+  // per-event fields right where they clicked, without scrolling back
+  // to the trace-viewer detail panel. Clicking the row also drives
+  // onSelect — the standard "pin this event on the lanes" behaviour.
+  function logRow(ev, onSelect) {
+    var caret = el("span", { class: "trace-log-caret", text: "▸" });
+    var tr = el("tr", {
+      "data-seq": String(ev.seq || 0),
+      "data-type": ev.type || "",
+    });
+    // The sequence number used to live in this first column alongside
+    // the caret, but the two competed for a 1%-wide column and wrapped
+    // on narrow viewports. The seq is still a useful anchor — moved
+    // into the expansion's Meta group below so it stays discoverable
+    // without cluttering the row.
+    tr.appendChild(el("td", { class: "caret-col" }, [caret]));
+    tr.appendChild(el("td", { class: "type" }, [
+      el("span", { class: "trace-log-type type-" + markerKind(ev), text: ev.type || "" }),
+    ]));
+    tr.appendChild(el("td", { class: "service", text: ev.service || "" }));
+    tr.appendChild(el("td", { text: eventHeadline(ev) || "" }));
+
+    // Expansion row sits directly beneath, same 4-column grid, spans
+    // all columns with a single cell. Hidden until the user clicks.
+    var expand = el("tr", { class: "trace-log-expand", "data-seq-expand": String(ev.seq || 0) });
+    expand.hidden = true;
+    var cell = el("td", { colspan: "4" });
+    expand.appendChild(cell);
+
+    tr.addEventListener("click", function () {
+      onSelect(ev);
+      var opening = expand.hidden;
+      expand.hidden = !opening;
+      tr.classList.toggle("open", opening);
+      caret.textContent = opening ? "▾" : "▸";
+      if (opening && !cell.firstChild) {
+        cell.appendChild(buildGroupedDetail(ev));
+      }
+    });
+
+    // Return both rows so the caller can append them adjacent.
+    return [tr, expand];
+  }
+
+  // Known field keys grouped by semantic role. "Request" is what a
+  // service tried to do; "Response" is what came back; "Fault" is the
+  // rule that bent reality; "System" is low-level attribution.
+  // Everything else spills into "Other" so nothing is lost.
+  var FIELD_GROUPS = {
+    Request:  ["method", "path", "target", "interface", "protocol",
+               "query", "topic", "partition", "api", "command", "key",
+               "subject", "exchange", "routing_key", "collection", "body",
+               "direction"],
+    Response: ["status", "rows", "result", "code", "error", "size"],
+    Fault:    ["action", "errno", "delay_ms", "label"],
+    System:   ["syscall", "pid", "decision", "op", "latency_ms", "ttl"],
+  };
+
+  // buildGroupedDetail renders one event's full metadata in sectioned
+  // key-value groups. Unlike the pinned-selection panel above the log,
+  // this view emphasises readability — it's meant to be skimmed while
+  // the surrounding event log rows stay in view.
+  function buildGroupedDetail(ev) {
+    var f = ev.fields || {};
+    var known = {};
+    var out = el("div", { class: "log-expand-body" });
+
+    var groups = ["Request", "Response", "Fault", "System"];
+    for (var gi = 0; gi < groups.length; gi++) {
+      var name = groups[gi];
+      var keys = FIELD_GROUPS[name];
+      var rows = [];
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        if (f[k] != null && f[k] !== "") {
+          rows.push(kvRow(k, f[k]));
+          known[k] = true;
+        }
+      }
+      if (rows.length) {
+        out.appendChild(groupSection(name, rows));
+      }
+    }
+
+    // "Other" catches any field not in a known group so no data is
+    // hidden (forward-compat for new event kinds).
+    var other = [];
+    for (var k2 in f) {
+      if (!known[k2]) other.push(kvRow(k2, f[k2]));
+    }
+    if (other.length) out.appendChild(groupSection("Other", other));
+
+    // Meta row: seq, vector clock, event_type, partition_key — always
+    // shown at the bottom, dim styling, so every row looks consistent.
+    var meta = [kvRow("seq", String(ev.seq || 0))];
+    if (ev.event_type && ev.event_type !== ev.type)
+      meta.push(kvRow("event_type", ev.event_type));
+    if (ev.partition_key && ev.partition_key !== ev.service)
+      meta.push(kvRow("partition_key", ev.partition_key));
+    if (ev.vector_clock && Object.keys(ev.vector_clock).length)
+      meta.push(kvRow("vector_clock", formatVectorClock(ev.vector_clock)));
+    out.appendChild(groupSection("Meta", meta));
+
+    if (!out.firstChild) {
+      out.appendChild(el("div", { class: "log-expand-empty",
+        text: "No additional fields recorded for this event." }));
+    }
+    return out;
+  }
+
+  function groupSection(title, rows) {
+    var sec = el("div", { class: "log-expand-group" });
+    sec.appendChild(el("div", { class: "log-expand-group-title", text: title }));
+    var grid = el("div", { class: "log-expand-kv" });
+    for (var i = 0; i < rows.length; i++) grid.appendChild(rows[i]);
+    sec.appendChild(grid);
+    return sec;
+  }
+
+  function kvRow(k, v) {
+    var row = el("div", { class: "log-expand-kv-row" }, [
+      el("div", { class: "log-expand-kv-key", text: k }),
+      el("div", { class: "log-expand-kv-val", text: String(v) }),
+    ]);
+    return row;
+  }
+
+  function formatVectorClock(vc) {
+    var parts = [];
+    var keys = Object.keys(vc).sort();
+    for (var i = 0; i < keys.length; i++) parts.push(keys[i] + ":" + vc[keys[i]]);
+    return "{" + parts.join(", ") + "}";
+  }
+
+  // happensBefore implements the vector-clock partial order used to
+  // discover causal ancestors. If either event lacks a vector clock,
+  // it falls back to a strict seq ordering — good enough for the
+  // "nearest prior event per other lane" fallback, and on real bundles
+  // vector clocks are always present anyway.
+  function happensBefore(a, b) {
+    if (!a.vector_clock || !b.vector_clock) {
+      return (a.seq || 0) < (b.seq || 0);
+    }
+    var hosts = {};
+    var k;
+    for (k in a.vector_clock) hosts[k] = true;
+    for (k in b.vector_clock) hosts[k] = true;
+    var strict = false;
+    for (k in hosts) {
+      var va = a.vector_clock[k] || 0;
+      var vb = b.vector_clock[k] || 0;
+      if (va > vb) return false;
+      if (va < vb) strict = true;
+    }
+    return strict;
+  }
+
+  // findCausalAncestors returns, for each other lane, the latest
+  // event Y such that Y happens-before target. This keeps the
+  // visualisation legible: at most (N-1) lines per hovered marker,
+  // not the full transitive set.
+  function findCausalAncestors(target, allEvents) {
+    var perService = {};
+    var targetSvc = target.service || "test";
+    for (var i = 0; i < allEvents.length; i++) {
+      var e = allEvents[i];
+      if (e === target) continue;
+      var svc = e.service || "test";
+      if (svc === targetSvc) continue;
+      if (!happensBefore(e, target)) continue;
+      var existing = perService[svc];
+      if (!existing || (e.seq || 0) > (existing.seq || 0)) perService[svc] = e;
+    }
+    var out = [];
+    for (var s in perService) out.push(perService[s]);
+    return out;
+  }
+
+  function drawCausalLines(svg, rootNode, ancestors, host, markerNodes) {
+    svg.innerHTML = "";
+    if (!ancestors.length) return;
+    var hostRect = host.getBoundingClientRect();
+    var rootRect = rootNode.getBoundingClientRect();
+    var rx = rootRect.left - hostRect.left + rootRect.width / 2;
+    var ry = rootRect.top - hostRect.top + rootRect.height / 2;
+
+    for (var i = 0; i < ancestors.length; i++) {
+      var a = ancestors[i];
+      var ancNode = markerNodes[a.seq];
+      if (!ancNode) continue;
+      ancNode.classList.add("highlight-ancestor");
+      var aRect = ancNode.getBoundingClientRect();
+      var ax = aRect.left - hostRect.left + aRect.width / 2;
+      var ay = aRect.top - hostRect.top + aRect.height / 2;
+      // Gentle curve via quadratic Bézier — goes through the mid-x
+      // at the mid-y of the two endpoints so lines don't overlap
+      // when stacked vertically.
+      var mx = (ax + rx) / 2;
+      var my = (ay + ry) / 2;
+      var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", "M " + ax + " " + ay + " Q " + mx + " " + my + " " + rx + " " + ry);
+      path.setAttribute("class", "trace-causal-line");
+      svg.appendChild(path);
+    }
+  }
+
+  function traceLegend() {
+    return el("div", { class: "trace-legend" }, [
+      legendDot("syscall", "syscall"),
+      legendDot("fault", "fault"),
+      legendDot("step", "step"),
+      legendDot("lifecycle", "lifecycle"),
+      legendDot("violation", "violation"),
+    ]);
+  }
+
+  function legendDot(cls, label) {
+    return el("span", { class: "trace-legend-item" }, [
+      el("span", { class: "trace-legend-dot " + cls }),
+      document.createTextNode(label),
+    ]);
+  }
+
+  // ── Reproducibility panel ───────────────────────────────────────
+  function renderRepro(data) {
+    var grid = document.getElementById("repro-grid");
+    var replay = document.getElementById("repro-replay");
+    if (!grid || !replay) return;
+
+    var m = data.manifest || {};
+    var env = data.env || {};
+
+    var items = [];
+    items.push(reproItem("Faultbox",
+      env.faultbox_version || m.faultbox_version || "—",
+      env.faultbox_commit ? env.faultbox_commit.slice(0, 8) : null));
+    if (env.go_toolchain) items.push(reproItem("Go toolchain", env.go_toolchain, null));
+    if (env.host_os || env.host_arch) {
+      items.push(reproItem("Host",
+        (env.host_os || "?") + "/" + (env.host_arch || "?"),
+        env.kernel ? "kernel " + env.kernel : null));
+    }
+    if (env.docker_version) items.push(reproItem("Docker", env.docker_version, null));
+    if (env.runtime_hints && env.runtime_hints.length) {
+      items.push(reproItem("Runtime hints", env.runtime_hints.join(", "), null));
+    }
+    items.push(reproItem("Seed", String(m.seed || 0), null));
+    if (m.spec_root) items.push(reproItem("Spec root", m.spec_root, null));
+    if (m.created_at) items.push(reproItem("Created", fmtTimestamp(m.created_at), null));
+
+    grid.innerHTML = "";
+    for (var i = 0; i < items.length; i++) grid.appendChild(items[i]);
+
+    // Image digests: collapsed table. Scales to dozens of images
+    // without taking vertical space, and lets users copy the full
+    // digest even when we only show the short form inline.
+    if (env.images && Object.keys(env.images).length) {
+      grid.appendChild(renderDigestTable(env.images));
+    }
+
+    // Replay call-out.
+    var cmd = "faultbox replay " + bundleBasename();
+    replay.innerHTML = "";
+    var head = el("div", { class: "repro-replay-head" }, [
+      el("span", { class: "repro-replay-title", text: "Rerun this exact run" }),
+    ]);
+    var code = el("code", { class: "mono", text: cmd });
+    var btn = el("button", {
+      class: "copy-btn", type: "button", "aria-label": "Copy replay command",
+      onclick: function () { copyToClipboard(cmd, btn); }, text: "Copy",
+    });
+    head.appendChild(btn);
+    replay.appendChild(head);
+    replay.appendChild(code);
+  }
+
+  function reproItem(label, value, caption) {
+    var kids = [
+      el("div", { class: "repro-label", text: label }),
+      el("div", { class: "repro-value", text: value }),
+    ];
+    if (caption) kids.push(el("div", { class: "repro-label", text: caption }));
+    return el("div", { class: "repro-item" }, kids);
+  }
+
+  // renderDigestTable produces a <details> element containing a
+  // table of image → short digest → copyable full digest. Spans the
+  // full width of the reproducibility grid via `grid-column: 1/-1`.
+  function renderDigestTable(images) {
+    var wrap = document.createElement("details");
+    wrap.className = "digest-details";
+    var keys = Object.keys(images).sort();
+
+    var sum = document.createElement("summary");
+    sum.innerHTML = "<span>Image digests \u2014 " + keys.length + " image"
+      + (keys.length === 1 ? "" : "s") + " pinned<\/span>"
+      + "<span>click to toggle<\/span>";
+    wrap.appendChild(sum);
+
+    var table = el("table", { class: "digest-table" });
+    var thead = el("thead", null, [el("tr", null, [
+      el("th", { text: "Image" }),
+      el("th", { text: "Digest (short)" }),
+      el("th", { text: "Digest (full)" }),
+      el("th", null),
+    ])]);
+    table.appendChild(thead);
+    var tbody = el("tbody");
+    for (var i = 0; i < keys.length; i++) {
+      var img = keys[i];
+      var full = images[img];
+      var shortPart = full.indexOf(":") === -1 ? full : full.split(":")[1].slice(0, 12);
+      var copyBtn = el("button", {
+        class: "copy-btn", type: "button", "aria-label": "Copy full digest",
+        text: "Copy",
+      });
+      (function (cmd, btn) {
+        btn.addEventListener("click", function () { copyToClipboard(cmd, btn); });
+      })(full, copyBtn);
+      tbody.appendChild(el("tr", null, [
+        el("td", { text: img }),
+        el("td", { class: "digest-short", text: shortPart }),
+        el("td", { class: "digest-full", text: full }),
+        el("td", null, [copyBtn]),
+      ]));
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  // ── Spec section (top-level) ────────────────────────────────────
+  //
+  // Renders every spec/*.star file from the bundle as a collapsible
+  // source viewer. The viewer has line numbers, stable anchors
+  // (#spec-<path>-L<n>), and a focusSpecLine() helper used by the
+  // coverage-table service links and the drill-down topology /
+  // source cross-jumps.
+  var specIndex = null; // {byPath: {path: {lines: [...]}}}
+
+  function renderSpec(data) {
+    var specs = data.specs || {};
+    var paths = Object.keys(specs).sort();
+    if (!paths.length) return;
+    var section = document.getElementById("spec-section");
+    var host = document.getElementById("spec-body");
+    if (!section || !host) return;
+    section.hidden = false;
+
+    specIndex = { byPath: {} };
+    host.innerHTML = "";
+
+    for (var i = 0; i < paths.length; i++) {
+      var p = paths[i];
+      var body = specs[p] || "";
+      var fileEl = buildSpecFile(p, body);
+      host.appendChild(fileEl);
+      specIndex.byPath[p] = { body: body, element: fileEl };
+    }
+  }
+
+  function specAnchorId(path, line) {
+    return "spec-" + path.replace(/[^a-zA-Z0-9_.-]/g, "_") + "-L" + line;
+  }
+
+  function buildSpecFile(path, body) {
+    var file = document.createElement("details");
+    file.className = "spec-file";
+    file.id = "spec-" + path.replace(/[^a-zA-Z0-9_.-]/g, "_");
+
+    var sum = document.createElement("summary");
+    var displayPath = path.replace(/^spec\//, "");
+    var bytes = body.length;
+    sum.appendChild(el("span", { class: "spec-file-path", text: displayPath }));
+    sum.appendChild(el("span", { class: "spec-file-size",
+      text: bytes < 1024 ? bytes + " B" : (bytes / 1024).toFixed(1) + " KB" }));
+    file.appendChild(sum);
+
+    var bodyWrap = el("div", { class: "spec-file-body" });
+    bodyWrap.appendChild(renderSourceCode(path, body));
+    file.appendChild(bodyWrap);
+
+    return file;
+  }
+
+  function renderSourceCode(path, body) {
+    var pre = document.createElement("pre");
+    pre.className = "source-code";
+    var lines = body.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var lineNo = i + 1;
+      var codeSpan = document.createElement("span");
+      codeSpan.className = "source-line-code";
+      codeSpan.innerHTML = highlightStarlark(lines[i]);
+      var row = el("div", {
+        class: "source-line",
+        id: specAnchorId(path, lineNo),
+        "data-line": String(lineNo),
+      }, [
+        el("span", { class: "source-line-no", text: String(lineNo) }),
+      ]);
+      row.appendChild(codeSpan);
+      pre.appendChild(row);
+    }
+    return pre;
+  }
+
+  // highlightStarlark is a small hand-rolled tokenizer tuned to the
+  // Starlark dialect Faultbox specs use. Emits the same HTML a full
+  // syntax highlighter would, but in ~2 KB and without an external
+  // dependency. Colours come from CSS variables (.tok-*), so the
+  // scheme follows light/dark mode automatically.
+  //
+  // Tokens recognised:
+  //   - line comments (#…)
+  //   - single- and double-quoted strings (incl. escape skip)
+  //   - decimal numbers
+  //   - keywords (Python subset Starlark supports)
+  //   - built-ins (Faultbox surface: service, fault, scenario, …)
+  //   - def-name (the identifier immediately after `def`)
+  //
+  // Triple-quoted strings and line continuations are not supported;
+  // they would bleed across line boundaries and are rare enough in
+  // spec files that the loss is acceptable for v0.11.0.
+  var STAR_KEYWORDS = {
+    "def": 1, "lambda": 1, "return": 1, "if": 1, "elif": 1, "else": 1,
+    "for": 1, "while": 1, "in": 1, "not": 1, "and": 1, "or": 1,
+    "True": 1, "False": 1, "None": 1, "pass": 1, "break": 1, "continue": 1,
+    "load": 1, "with": 1, "as": 1,
+  };
+  var STAR_BUILTINS = {
+    "service": 1, "mock_service": 1, "domain": 1,
+    "fault": 1, "fault_assumption": 1, "fault_scenario": 1, "fault_matrix": 1,
+    "scenario": 1,
+    "assert_eq": 1, "assert_true": 1, "assert_false": 1,
+    "assert_never": 1, "assert_eventually": 1, "assert_error": 1,
+    "expect_success": 1, "expect_error_within": 1, "expect_hang": 1,
+    "delay": 1, "deny": 1, "hold": 1, "allow": 1,
+    "load_file": 1, "load_yaml": 1, "load_json": 1,
+    "jwt_keypair": 1, "jwt_sign": 1, "jwks": 1,
+    "healthcheck": 1, "interface": 1, "port": 1, "image": 1,
+    "reset": 1, "seed": 1, "depends_on": 1,
+    "print": 1, "len": 1, "range": 1, "str": 1, "int": 1, "dict": 1, "list": 1,
+  };
+
+  // Note: the regex `/[<]/g` is deliberately written with a character
+  // class so the literal two-character sequence `<\/` never appears in
+  // this file. The Go side runs escapeScriptContent on the embedded JS
+  // to neutralise `<\/script>` closures; a bare `/<\/g` would be mangled
+  // to `/<\/g` and break the regex parser.
+  function htmlEscape(s) {
+    return s.replace(/&/g, "&amp;").replace(/[<]/g, "&lt;").replace(/[>]/g, "&gt;");
+  }
+
+  function tok(type, value) {
+    return '<span class="tok-' + type + '">' + htmlEscape(value) + "<\/span>";
+  }
+
+  function highlightStarlark(line) {
+    var out = "";
+    var i = 0;
+    var expectDefName = false;
+    while (i < line.length) {
+      var c = line.charAt(i);
+
+      // Comment runs to end of line.
+      if (c === "#") {
+        out += tok("comment", line.slice(i));
+        break;
+      }
+
+      // String literal — match the opening quote, skip escapes.
+      if (c === '"' || c === "'") {
+        var q = c;
+        var j = i + 1;
+        while (j < line.length) {
+          if (line.charAt(j) === "\\") { j += 2; continue; }
+          if (line.charAt(j) === q) { j++; break; }
+          j++;
+        }
+        out += tok("string", line.slice(i, j));
+        i = j;
+        continue;
+      }
+
+      // Number (decimal, int or float).
+      if (/\d/.test(c)) {
+        var nm = /^\d+(?:\.\d+)?/.exec(line.slice(i));
+        if (nm) {
+          out += tok("number", nm[0]);
+          i += nm[0].length;
+          continue;
+        }
+      }
+
+      // Identifier / keyword / builtin.
+      if (/[a-zA-Z_]/.test(c)) {
+        var idm = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(line.slice(i));
+        if (idm) {
+          var word = idm[0];
+          var klass = "ident";
+          if (expectDefName) { klass = "def"; expectDefName = false; }
+          else if (STAR_KEYWORDS[word]) {
+            klass = "keyword";
+            if (word === "def") expectDefName = true;
+          } else if (STAR_BUILTINS[word]) {
+            klass = "builtin";
+          }
+          if (klass === "ident") {
+            out += htmlEscape(word);
+          } else {
+            out += tok(klass, word);
+          }
+          i += word.length;
+          continue;
+        }
+      }
+
+      // Whitespace / punctuation — passthrough, escape only if meaningful.
+      out += htmlEscape(c);
+      i++;
+    }
+    return out;
+  }
+
+  // focusSpecLine expands the matching spec file, clears any prior
+  // highlight, adds a yellow band on the target line, scrolls it into
+  // view, and returns true on success. Callers (service links,
+  // drill-down source jumps) don't need to do the heavy lifting.
+  function focusSpecLine(path, line) {
+    if (!specIndex || !specIndex.byPath[path]) return false;
+    var file = specIndex.byPath[path].element;
+    if (!file) return false;
+    if (!file.open) file.open = true;
+
+    // Clear previous hits across all spec files.
+    var hits = document.querySelectorAll(".source-line.hit");
+    for (var i = 0; i < hits.length; i++) hits[i].classList.remove("hit");
+
+    var row = document.getElementById(specAnchorId(path, line));
+    if (!row) return false;
+    row.classList.add("hit");
+    // Also bring the top-level section into view before scrolling
+    // inside it, so users on a tall page don't miss the jump.
+    file.scrollIntoView({ block: "start", behavior: "smooth" });
+    setTimeout(function () {
+      row.scrollIntoView({ block: "center" });
+    }, 60);
+    return true;
+  }
+
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  // findDefinition searches spec files for the first line matching a
+  // pattern. Returns {path, line} or null.
+  function findDefinition(pattern) {
+    if (!specIndex) return null;
+    for (var p in specIndex.byPath) {
+      var body = specIndex.byPath[p].body || "";
+      var lines = body.split(/\r?\n/);
+      for (var i = 0; i < lines.length; i++) {
+        if (pattern.test(lines[i])) return { path: p, line: i + 1 };
+      }
+    }
+    return null;
+  }
+
+  function findTestLine(testName) {
+    var pat = new RegExp("^\\s*def\\s+" + escapeRegExp(testName) + "\\s*\\(");
+    return findDefinition(pat);
+  }
+
+  function findServiceLine(serviceName) {
+    var esc = escapeRegExp(serviceName);
+    var pat = new RegExp(
+      "(?:^|\\b)(?:service|mock_service)\\s*\\(\\s*[\"']" + esc + "[\"']");
+    return findDefinition(pat);
+  }
+
+  // ── Clipboard ───────────────────────────────────────────────────
+  function copyToClipboard(text, btn) {
+    function done() {
+      if (!btn) return;
+      btn.classList.add("copied");
+      var orig = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(function () {
+        btn.classList.remove("copied");
+        btn.textContent = orig;
+      }, 1400);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+      return;
+    }
+    fallback();
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (e) { /* ignore */ }
+      document.body.removeChild(ta);
+      done();
+    }
+  }
+
+  // ── Main ────────────────────────────────────────────────────────
+  function main() {
+    var data = loadData();
+    if (!data || !data.manifest) {
+      console.warn("faultbox: no manifest; nothing to render");
+      return;
+    }
+    // Expose for console debugging; harmless in production.
+    window.__FAULTBOX__ = data;
+
+    indexTests(data);
+
+    var metrics = deriveMetrics(data);
+    renderHeaderMeta(data);
+    renderHeroStats(data, metrics);
+    renderAttention(data);
+    renderMatrix(data);
+    renderTestsTable(data);
+    // renderSpec must run before renderCoverage because the coverage
+    // table builds service-name links via findServiceLine(), which
+    // reads the specIndex populated by renderSpec. Without this order
+    // every service name in the coverage table falls back to plain
+    // text — the links still render, but they're not actionable.
+    renderSpec(data);
+    renderCoverage(data);
+    renderRepro(data);
+
+    wireDrillDownClose();
+    openFromLocationHash();
+  }
+
+  // openFromLocationHash lets users share direct-to-drill-down URLs
+  // like `report.html#test=test_foo`. Each test also updates the hash
+  // when opened, so a back button closes the dialog.
+  function openFromLocationHash() {
+    var h = window.location.hash || "";
+    var m = h.match(/^#test=(.+)$/);
+    if (m && m[1]) openDrillDown(decodeURIComponent(m[1]));
+    window.addEventListener("hashchange", function () {
+      var h2 = window.location.hash || "";
+      if (!h2) { closeDrillDown(); return; }
+      var mm = h2.match(/^#test=(.+)$/);
+      if (mm && mm[1]) openDrillDown(decodeURIComponent(mm[1]));
+    });
+  }
+
+  function wireDrillDownClose() {
+    var dialog = document.getElementById("drill-down");
+    if (!dialog) return;
+    var closeBtn = dialog.querySelector(".drill-down-close");
+    if (closeBtn) closeBtn.addEventListener("click", closeDrillDown);
+    // Clicking the backdrop (anything outside the surface) closes too.
+    dialog.addEventListener("click", function (e) {
+      if (e.target === dialog) closeDrillDown();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", main);
+  } else {
+    main();
+  }
+})();
+</script>
+</body>
+</html>

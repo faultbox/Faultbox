@@ -46,6 +46,12 @@ across services. `--explore` mode walks all interleavings automatically.
 **Starlark specs** -- topology, faults, and assertions in one file. No YAML.
 No separate config language. The spec is code.
 
+**Reproducibility bundles + HTML reports** -- every run writes a `.fb` bundle
+with trace, env, spec, and a replay command. Run `faultbox report <bundle.fb>`
+for a single self-contained HTML — fault matrix, swim-lane trace viewer, full
+drill-down. Email it, Slack it, commit it. Offline forever.
+[Live example ›](https://faultbox.io/reports/sample.html)
+
 ## Install
 
 ```bash
