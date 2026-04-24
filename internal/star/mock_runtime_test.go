@@ -30,6 +30,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 	grpcstructpb "google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/protocol"
 )
 
@@ -75,6 +76,73 @@ auth = mock_service("auth",
 	if svc.Mock.Default["http"] == nil {
 		t.Fatal("default response missing")
 	}
+}
+
+// TestApplyFaultsOnMockServiceDoesNotPanic reproduces the v0.11.1
+// customer-reported nil-pointer panic (inDrive Freight report, bug
+// #2): fault_matrix/fault_scenario apply paths called
+// rs.session.SetDynamicFaultRules() against a mock service whose
+// runningSession is registered with session=nil (mock_runtime.go
+// doesn't spin up a seccomp session for mocks). The call dereferenced
+// a nil *engine.Session and SIGSEGV'd inside the notification loop.
+//
+// The fix: applyFaults skips the session mutation with a clear
+// warning when the target has no seccomp session — syscall-level
+// faults don't apply to mocks by design, but the test must continue
+// so proxy-level faults on the same target still fire. Belt-and-
+// braces, Session.SetDynamicFaultRules also nil-guards its receiver.
+func TestApplyFaultsOnMockServiceDoesNotPanic(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `
+mock_service("upstream_mock",
+    interface("api", "http", 18091),
+    routes = {
+        "GET /": status_only(200),
+    },
+)
+`); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Register a zero-session runningSession the same way
+	// startMockService does — the production code path we can't
+	// easily invoke here without a real port binding.
+	rt.sessions["upstream_mock"] = &runningSession{session: nil}
+
+	// Directly call applyFaults with a deny rule. Pre-fix this
+	// panics with SIGSEGV on rs.session.SetDynamicFaultRules.
+	faults := map[string]*FaultDef{
+		"connect": {Action: "deny", Errno: "ECONNREFUSED"},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("applyFaults panicked on mock service: %v", r)
+		}
+	}()
+
+	err := rt.applyFaults("upstream_mock", faults)
+	// The fix treats this as a silent skip (returns nil) so
+	// fault_matrix cells targeting the mock don't abort the whole
+	// suite. A warning is logged but isn't asserted here — log
+	// content is brittle to test.
+	if err != nil {
+		t.Errorf("applyFaults returned error: %v (want nil — mock should skip gracefully)", err)
+	}
+}
+
+// TestSessionSetDynamicFaultRulesNilReceiver belt-and-braces: a nil
+// *engine.Session must not panic when SetDynamicFaultRules is called
+// on it. Protects against future callers who forget the mock check.
+func TestSessionSetDynamicFaultRulesNilReceiver(t *testing.T) {
+	var s *engine.Session // intentionally nil
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("nil receiver panicked: %v", r)
+		}
+	}()
+	s.SetDynamicFaultRules(nil)
+	s.ClearDynamicFaultRules()
 }
 
 // TestMockServiceUnknownProtocol verifies the spec-load guard on protocols

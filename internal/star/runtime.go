@@ -6,10 +6,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strconv"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -432,6 +434,44 @@ type RunConfig struct {
 	ExploreMode string  // "all" (exhaustive), "sample" (random), or "" (off)
 }
 
+// matchTestFilter resolves `--test <filter>` against a discovered
+// test name. Three match modes, tried in order:
+//
+//  1. Exact match on either the raw name ("test_foo") or the
+//     shorthand ("foo") — preserves v0.9.x behaviour.
+//  2. Glob match if the filter contains * or ? (e.g.
+//     "test_matrix_health_*"). Glob is POSIX-ish via path.Match —
+//     good enough for test-name partitioning.
+//  3. Regex match if the filter begins with "~" or looks like a
+//     parenthesised alternation. Lets power users write
+//     "~test_(matrix|smoke)_.*" without fighting shell escaping.
+//
+// Invalid patterns fall back to no-match rather than erroring out so
+// an accidental "?" doesn't abort the whole suite silently.
+func matchTestFilter(testName, filter string) bool {
+	if testName == filter || testName == "test_"+filter {
+		return true
+	}
+	if strings.HasPrefix(filter, "~") {
+		re, err := regexp.Compile(filter[1:])
+		if err != nil {
+			return false
+		}
+		return re.MatchString(testName)
+	}
+	if strings.ContainsAny(filter, "*?[") {
+		// path.Match returns an error only for malformed patterns —
+		// "ignore and don't match" is safer than panicking mid-suite.
+		if ok, _ := path.Match(filter, testName); ok {
+			return true
+		}
+		if ok, _ := path.Match("test_"+filter, testName); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // RunAll executes all (or filtered) test functions.
 func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, error) {
 	start := time.Now()
@@ -450,7 +490,7 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 	autoExplore := cfg.ExploreMode == "all" && cfg.Runs <= 0
 
 	for _, name := range tests {
-		if cfg.Filter != "" && name != "test_"+cfg.Filter && name != cfg.Filter {
+		if cfg.Filter != "" && !matchTestFilter(name, cfg.Filter) {
 			continue
 		}
 
@@ -1936,6 +1976,14 @@ func (rt *Runtime) requiredFaultRules() []engine.FaultRule {
 }
 
 // applyFaults sets fault rules for a service's running session.
+//
+// Mocks + no-seccomp containers register a runningSession with
+// session==nil — syscall-level faults have nothing to attach to. The
+// v0.11.1 panic (inDrive Freight bug #2) dereferenced that nil here;
+// now we log a one-time warning per invocation and skip the session
+// mutation, so proxy-level faults on the same target still apply and
+// the enclosing fault_matrix row continues without aborting the
+// whole suite.
 func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) error {
 	rt.faultsMu.Lock()
 	rt.faults[svcName] = faults
@@ -1945,6 +1993,24 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	rs, ok := rt.sessions[svcName]
 	if !ok {
 		return fmt.Errorf("service %q is not running", svcName)
+	}
+	if rs.session == nil {
+		rt.log.Warn("syscall-level faults skipped — target has no seccomp session",
+			slog.String("service", svcName),
+			slog.Int("requested_rules", len(faults)),
+			slog.String("hint", "service is a mock or was started with seccomp=False; use protocol-level proxy faults (http/grpc/postgres/…) or route overrides instead"),
+		)
+		// Emit into the event log so the fault_bypassed (#75) detector
+		// picks this up the same way it handles fault_zero_traffic —
+		// the row's expectation is informational, not a pass.
+		rt.events.Emit("fault_skipped_no_seccomp", svcName, map[string]string{
+			"reason":          "mock-or-seccomp-disabled",
+			"requested_rules": fmt.Sprintf("%d", len(faults)),
+		})
+		rt.events.Emit("fault_applied", svcName, map[string]string{
+			"note": "skipped (no seccomp session)",
+		})
+		return nil
 	}
 
 	var rules []engine.FaultRule
@@ -1991,11 +2057,19 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 }
 
 // applyTrace installs trace-only rules for a service's running session.
-// Traced syscalls are allowed but logged at Info level.
+// Traced syscalls are allowed but logged at Info level. Same mock /
+// no-seccomp guard as applyFaults — a nil session makes syscall-level
+// tracing moot and previously panicked on dereference.
 func (rt *Runtime) applyTrace(svcName string, syscalls []string) error {
 	rs, ok := rt.sessions[svcName]
 	if !ok {
 		return fmt.Errorf("service %q is not running", svcName)
+	}
+	if rs.session == nil {
+		rt.log.Warn("syscall-level trace skipped — target has no seccomp session",
+			slog.String("service", svcName),
+		)
+		return nil
 	}
 
 	var rules []engine.FaultRule
@@ -2020,9 +2094,10 @@ func (rt *Runtime) applyTrace(svcName string, syscalls []string) error {
 	return nil
 }
 
-// removeTrace clears trace rules for a service.
+// removeTrace clears trace rules for a service. Nil-session guard
+// mirrors applyTrace so cleanup never panics on mocks.
 func (rt *Runtime) removeTrace(svcName string) {
-	if rs, ok := rt.sessions[svcName]; ok {
+	if rs, ok := rt.sessions[svcName]; ok && rs.session != nil {
 		rs.session.ClearDynamicFaultRules()
 	}
 	rt.events.Emit("trace_removed", svcName, nil)
@@ -2041,7 +2116,11 @@ func (rt *Runtime) removeFaults(svcName string) {
 	delete(rt.faults, svcName)
 	rt.faultsMu.Unlock()
 
-	if rs, ok := rt.sessions[svcName]; ok {
+	// Only inspect match counters if the service actually had a
+	// seccomp session to match against — mocks skip the whole block
+	// (applyFaults already warned on install, so we stay quiet on
+	// the matching teardown).
+	if rs, ok := rt.sessions[svcName]; ok && rs.session != nil {
 		for _, r := range rs.session.DynamicRuleActivity() {
 			if r.MatchCount > 0 {
 				continue

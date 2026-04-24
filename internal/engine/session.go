@@ -218,7 +218,17 @@ func (s *Session) Run(ctx context.Context) (*Result, error) {
 
 // SetDynamicFaultRules replaces the dynamic fault rules for the session.
 // These rules are checked by the notification loop alongside static rules.
+//
+// Nil-safe on purpose: mock services and container services started
+// with seccomp=False register no underlying *Session. Callers used to
+// race ahead and dereference a nil receiver here (Freight #75.2 in
+// v0.11.1 — a fault_matrix row targeting a mock panicked the whole
+// suite). Guard at the method level so any future caller that forgets
+// the mock check degrades gracefully rather than crashing.
 func (s *Session) SetDynamicFaultRules(rules []FaultRule) {
+	if s == nil {
+		return
+	}
 	s.dynamicRulesMu.Lock()
 	defer s.dynamicRulesMu.Unlock()
 	ruleMap := make(map[int32][]*FaultRule)
@@ -232,8 +242,12 @@ func (s *Session) SetDynamicFaultRules(rules []FaultRule) {
 	s.dynamicRules = ruleMap
 }
 
-// ClearDynamicFaultRules removes all dynamic fault rules.
+// ClearDynamicFaultRules removes all dynamic fault rules. Nil-safe for
+// the same reason as SetDynamicFaultRules above.
 func (s *Session) ClearDynamicFaultRules() {
+	if s == nil {
+		return
+	}
 	s.dynamicRulesMu.Lock()
 	defer s.dynamicRulesMu.Unlock()
 	s.dynamicRules = nil
@@ -256,6 +270,9 @@ type DynamicRuleReport struct {
 // fault rule, including its match counter. Safe to call before
 // ClearDynamicFaultRules so callers can diff the counter snapshot.
 func (s *Session) DynamicRuleActivity() []DynamicRuleReport {
+	if s == nil {
+		return nil
+	}
 	s.dynamicRulesMu.RLock()
 	defer s.dynamicRulesMu.RUnlock()
 	if s.dynamicRules == nil {
@@ -287,8 +304,11 @@ func (s *Session) getDynamicRules(nr int32) []*FaultRule {
 }
 
 // RegisterHoldQueue creates a hold queue and returns it.
-// The tag is used to link hold rules to the queue.
+// The tag is used to link hold rules to the queue. Nil-safe.
 func (s *Session) RegisterHoldQueue(tag string) *HoldQueue {
+	if s == nil {
+		return nil
+	}
 	s.holdRulesMu.Lock()
 	defer s.holdRulesMu.Unlock()
 	if s.holdQueues == nil {
@@ -299,8 +319,11 @@ func (s *Session) RegisterHoldQueue(tag string) *HoldQueue {
 	return q
 }
 
-// GetHoldQueue returns the hold queue for the given tag.
+// GetHoldQueue returns the hold queue for the given tag. Nil-safe.
 func (s *Session) GetHoldQueue(tag string) *HoldQueue {
+	if s == nil {
+		return nil
+	}
 	s.holdRulesMu.RLock()
 	defer s.holdRulesMu.RUnlock()
 	if s.holdQueues == nil {
@@ -310,7 +333,11 @@ func (s *Session) GetHoldQueue(tag string) *HoldQueue {
 }
 
 // AddHoldRules adds hold rules for a tag. These are checked before fault rules.
+// Nil-safe — mock services register a runningSession with session=nil.
 func (s *Session) AddHoldRules(tag string, rules []FaultRule) {
+	if s == nil {
+		return
+	}
 	s.holdRulesMu.Lock()
 	defer s.holdRulesMu.Unlock()
 	if s.holdRules == nil {
@@ -327,7 +354,11 @@ func (s *Session) AddHoldRules(tag string, rules []FaultRule) {
 }
 
 // RemoveHoldRules removes all hold rules and closes the queue for a tag.
+// Nil-safe — mock services and seccomp=False containers have no session.
 func (s *Session) RemoveHoldRules(tag string) {
+	if s == nil {
+		return
+	}
 	s.holdRulesMu.Lock()
 	defer s.holdRulesMu.Unlock()
 	// Remove rules with this tag.
@@ -352,7 +383,11 @@ func (s *Session) RemoveHoldRules(tag string) {
 }
 
 // CloseAllHoldQueues closes all hold queues (cleanup on session stop).
+// Nil-safe so teardown paths don't panic on mock targets.
 func (s *Session) CloseAllHoldQueues() {
+	if s == nil {
+		return
+	}
 	s.holdRulesMu.Lock()
 	defer s.holdRulesMu.Unlock()
 	for _, q := range s.holdQueues {

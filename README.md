@@ -52,6 +52,39 @@ for a single self-contained HTML — fault matrix, swim-lane trace viewer, full
 drill-down. Email it, Slack it, commit it. Offline forever.
 [Live example ›](https://faultbox.io/reports/sample.html)
 
+## What Faultbox injects
+
+Four layers, composable in one spec:
+
+| Layer | What you inject | How |
+|---|---|---|
+| **Syscall** | `deny(errno)`, `delay(duration)`, `hold()` on any intercepted syscall (`connect`, `write`, `read`, `openat`, `fsync`, `sendto`, `recvfrom`, …) | seccomp-notify on the SUT's own process |
+| **Protocol (request)** | Per-method rules on the wire — e.g., gRPC `UNAVAILABLE` for `/svc/Method`, HTTP 503 for `POST /orders`, Postgres query-level denies, Kafka publish failures | transparent proxy in front of the upstream; 15 protocols today |
+| **Protocol (response)** | Rewrite status, body, or headers the upstream returns — corrupt a Postgres SELECT result, flip a Redis INCR to wrong value, drop a Kafka offset | same proxy, response-side rules |
+| **Mock** | Canned response from a scripted mock service, no real dep | `mock_service()` — HTTP, HTTP/2, gRPC, JWKS, and more |
+
+Plus: `monitor()` Starlark callbacks over the event log, `assert_eventually()`
+temporal assertions, `expect_success` / `expect_error_within` / `expect_hang`
+outcome predicates on `fault_matrix` rows, and vector-clock causal overlays in
+the report for distributed debugging.
+
+## Where Faultbox fits
+
+Faultbox **complements** integration tests — it doesn't replace them.
+
+- **Use integration tests** for business-logic correctness ("does order
+  creation compute the right commission?"), happy-path coverage, and
+  end-to-end flows against real dependencies.
+- **Use Faultbox** for resilience behavior under failure ("what does my
+  service return when Postgres refuses the connection, when gRPC upstream
+  returns `UNAVAILABLE`, when Redis adds 500ms of latency?"). This is what
+  integration tests struggle with — you can't make a real Postgres refuse
+  connections on cue without surgery on the test harness.
+- **Not a load tester** — `fault_matrix` runs cells serially. Reach for
+  k6 / Gatling / Goose when you care about throughput under failure.
+- **Not production chaos** — Faultbox is a pre-prod / local / CI tool.
+  Use Gremlin or Chaos Mesh in real environments.
+
 ## Install
 
 ```bash

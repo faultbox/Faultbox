@@ -2113,6 +2113,41 @@ fault_matrix(
 // reaches every generated FaultScenarioDef, and the spec stays loadable
 // when it's omitted (default stays false so existing matrices keep
 // their current semantics).
+// TestMatchTestFilter exercises the three --test matching modes
+// shipped in v0.11.2 per the inDrive Freight ask: exact, glob
+// (`*` / `?` / `[]`), and regex (`~<pattern>`). Exact-match
+// behaviour from v0.9.x is preserved so existing CI jobs keep
+// working after the upgrade.
+func TestMatchTestFilter(t *testing.T) {
+	cases := []struct {
+		name   string
+		test   string
+		filter string
+		want   bool
+	}{
+		{"exact long", "test_health", "test_health", true},
+		{"exact short", "test_health", "health", true},
+		{"no match", "test_health", "test_orders", false},
+
+		{"glob suffix", "test_matrix_health_db_down", "test_matrix_health_*", true},
+		{"glob shorthand", "test_matrix_health_db_down", "matrix_health_*", true},
+		{"glob no match", "test_smoke", "test_matrix_*", false},
+		{"glob ? single", "test_a1", "test_a?", true},
+		{"glob ? too many", "test_a12", "test_a?", false},
+
+		{"regex alternation", "test_matrix_health_db_down", "~test_(matrix|smoke)_.*", true},
+		{"regex anchored", "test_order_flow", "~^test_order", true},
+		{"regex no match", "test_health", "~^test_orders$", false},
+		{"regex invalid falls back", "test_health", "~(((", false},
+	}
+	for _, tc := range cases {
+		if got := matchTestFilter(tc.test, tc.filter); got != tc.want {
+			t.Errorf("matchTestFilter(%q, %q) = %v, want %v — %s",
+				tc.test, tc.filter, got, tc.want, tc.name)
+		}
+	}
+}
+
 func TestFaultMatrixRequireFaultsFire(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `
