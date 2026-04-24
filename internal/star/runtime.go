@@ -37,6 +37,17 @@ type TestResult struct {
 	Events      []Event        `json:"events,omitempty"`
 	ReturnValue starlark.Value `json:"-"`          // scenario return value for fault_scenario/fault_matrix
 	Matrix      *MatrixInfo    `json:"-"`          // non-nil if from fault_matrix()
+
+	// ExpectationName is the callable.Name() of the fs.Expect predicate
+	// used by this test, when one was provided. Empty for bare tests and
+	// for fault_scenario/fault_matrix rows without expect=/default_expect=.
+	ExpectationName string `json:"expectation,omitempty"`
+	// ExpectationViolated is true when Result=="fail" was produced by the
+	// expect predicate rejecting the scenario return value — as opposed
+	// to a body assert_* firing or an untyped runtime error. RFC-027
+	// surfaces this as the fourth outcome "expectation_violated" in the
+	// bundle manifest and the HTML report.
+	ExpectationViolated bool `json:"-"`
 }
 
 // SuiteResult captures the outcome of all test functions.
@@ -119,6 +130,13 @@ type Runtime struct {
 	// currentFaultScenario is set by makeFaultScenarioRunner during execution
 	// so RunTest can copy MatrixInfo to the TestResult.
 	currentFaultScenario *FaultScenarioDef
+
+	// expectationInfo records the expect predicate name and whether it was
+	// violated during the most recent fault_scenario/fault_matrix test.
+	// Set by makeFaultScenarioRunner, read and cleared by RunTest so it
+	// survives the runner's own defers that clear currentFaultScenario.
+	expectationName     string
+	expectationViolated bool
 
 	// mockTLSImpl is lazy-initialized the first time a tls=True mock service
 	// starts. The whole runtime shares one CA so clients can trust every
@@ -533,6 +551,12 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	rt.monitorErrors = nil
 	rt.monitorMu.Unlock()
 
+	// Reset expectation metadata — makeFaultScenarioRunner may re-populate
+	// these for fault_scenario/fault_matrix tests. Plain user tests leave
+	// them at their zero values so TestResult.ExpectationName stays empty.
+	rt.expectationName = ""
+	rt.expectationViolated = false
+
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
 
@@ -569,6 +593,14 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		matrixInfo = rt.currentFaultScenario.Matrix
 	}
 
+	// Snapshot expectation metadata. makeFaultScenarioRunner records both
+	// the predicate name (always) and whether the predicate rejected the
+	// scenario result (only when starlark.Call above returned err from the
+	// expect callable). The two values feed TestResult and, downstream,
+	// the RFC-027 manifest fields and HTML report palette.
+	expectName := rt.expectationName
+	expectViolated := rt.expectationViolated
+
 	// Stop services.
 	rt.stopServices()
 
@@ -577,10 +609,12 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	if err != nil {
 		return TestResult{
 			Name: name, Result: "fail",
-			Reason:     err.Error(),
-			DurationMs: time.Since(start).Milliseconds(),
-			Events:     events,
-			Matrix:     matrixInfo,
+			Reason:              err.Error(),
+			DurationMs:          time.Since(start).Milliseconds(),
+			Events:              events,
+			Matrix:              matrixInfo,
+			ExpectationName:     expectName,
+			ExpectationViolated: expectViolated,
 		}
 	}
 
@@ -591,20 +625,22 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	if len(monErrs) > 0 {
 		return TestResult{
 			Name: name, Result: "fail",
-			Reason:     fmt.Sprintf("monitor violation: %v", monErrs[0]),
-			DurationMs: time.Since(start).Milliseconds(),
-			Events:     events,
-			Matrix:     matrixInfo,
+			Reason:          fmt.Sprintf("monitor violation: %v", monErrs[0]),
+			DurationMs:      time.Since(start).Milliseconds(),
+			Events:          events,
+			Matrix:          matrixInfo,
+			ExpectationName: expectName,
 		}
 	}
 
 	return TestResult{
-		Name:        name,
-		Result:      "pass",
-		DurationMs:  time.Since(start).Milliseconds(),
-		Events:      events,
-		ReturnValue: retVal,
-		Matrix:      matrixInfo,
+		Name:            name,
+		Result:          "pass",
+		DurationMs:      time.Since(start).Milliseconds(),
+		Events:          events,
+		ReturnValue:     retVal,
+		Matrix:          matrixInfo,
+		ExpectationName: expectName,
 	}
 }
 
@@ -1527,13 +1563,19 @@ func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callab
 			return nil, fmt.Errorf("monitor violation: %v", monErrs[0])
 		}
 
-		// 5. Call expect(result) if provided.
+		// 5. Call expect(result) if provided. Record the predicate name
+		// so RunTest can populate TestResult.ExpectationName, and flag
+		// rt.expectationViolated on rejection so the outer layer can
+		// distinguish RFC-027's "expectation_violated" outcome from a
+		// body assert_* that fires before expect runs.
 		if fs.Expect != nil {
+			rt.expectationName = fs.Expect.Name()
 			if result == nil {
 				result = starlark.None
 			}
 			_, err := starlark.Call(thread, fs.Expect, starlark.Tuple{result}, nil)
 			if err != nil {
+				rt.expectationViolated = true
 				return nil, err
 			}
 		}

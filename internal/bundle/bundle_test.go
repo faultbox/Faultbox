@@ -268,6 +268,60 @@ func TestBuildPopulatesAllCoreFiles(t *testing.T) {
 	}
 }
 
+// TestBuildRFC027ExpectationOutcome exercises the Phase 2 additive
+// manifest fields: a row whose expect predicate rejected the scenario
+// result ships as outcome="expectation_violated", and the Summary
+// refines the failed count into ExpectationViolated without losing it
+// from Failed (legacy consumers still see the row in the failed
+// bucket). A sibling row with outcome="failed" keeps the taxonomy
+// honest — only the flagged row counts toward ExpectationViolated.
+func TestBuildRFC027ExpectationOutcome(t *testing.T) {
+	in := BuildInput{
+		FaultboxVersion: "0.11.1-test",
+		Seed:            7,
+		CreatedAt:       time.Date(2026, 4, 24, 9, 0, 0, 0, time.UTC),
+		Tests: []TestRow{
+			{Name: "test_matrix_get_db_down", Outcome: "passed", DurationMs: 40, Expectation: "expect_success"},
+			{Name: "test_matrix_get_up_slow", Outcome: "expectation_violated", DurationMs: 50, Expectation: "expect_error_within"},
+			{Name: "test_body_assert", Outcome: "failed", DurationMs: 30},
+		},
+		Trace: []byte(`{"version":1}`),
+	}
+	w, _, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buf, err := w.encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	contents := readBundleBytes(t, buf.Bytes())
+
+	var man Manifest
+	if err := json.Unmarshal(contents["manifest.json"], &man); err != nil {
+		t.Fatalf("manifest parse: %v", err)
+	}
+
+	want := Summary{Total: 3, Passed: 1, Failed: 2, ExpectationViolated: 1}
+	if man.Summary != want {
+		t.Errorf("summary = %+v, want %+v", man.Summary, want)
+	}
+
+	// Spot-check a row round-trips the new fields through JSON.
+	var violated *TestRow
+	for i := range man.Tests {
+		if man.Tests[i].Outcome == "expectation_violated" {
+			violated = &man.Tests[i]
+		}
+	}
+	if violated == nil {
+		t.Fatalf("no expectation_violated row in manifest: %+v", man.Tests)
+	}
+	if violated.Expectation != "expect_error_within" {
+		t.Errorf("expectation = %q, want expect_error_within", violated.Expectation)
+	}
+}
+
 func TestBuildCapturesSpecFiles(t *testing.T) {
 	// Phase 4: every local .star file the runtime loaded should land
 	// under spec/<relative-path> in the archive so a bundle is enough

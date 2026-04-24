@@ -1002,6 +1002,25 @@ Behaviour:
 Backwards compatible: `default_expect=` still accepts plain Starlark
 lambdas for rows that need custom checks.
 
+#### Outcome taxonomy (v0.11.1)
+
+Every `fault_scenario` / `fault_matrix` row produces one of four
+outcomes in `manifest.json` and the HTML report:
+
+| Outcome | Pill | Meaning |
+|---|---|---|
+| `passed` | green | Scenario returned; expect predicate (if any) accepted the result. |
+| `failed` | red | An `assert_*` inside the scenario body fired before the predicate ran. |
+| `expectation_violated` | amber | Body assertions were clean, but the expect predicate disagreed with the result. |
+| `errored` | grey | Scenario raised an untyped error (crash, timeout outside a predicate). |
+
+`expectation_violated` is a refinement of `failed` — legacy consumers
+that only know the three-way taxonomy still see the row in the
+`summary.failed` count. The predicate name (e.g. `expect_success`,
+`expect_error_within`, or `lambda` for user callables) lands in
+`manifest.tests[].expectation` and surfaces alongside the pill in the
+report's tests table and drill-down header.
+
 ### File readers — `load_file()`, `load_yaml()`, `load_json()` (v0.9.8)
 
 Spec-load-time file reads. Use them instead of hand-inlining SQL
