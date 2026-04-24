@@ -2109,6 +2109,84 @@ fault_matrix(
 	}
 }
 
+// TestFaultMatrixRequireFaultsFire covers issue #75: the kwarg parses,
+// reaches every generated FaultScenarioDef, and the spec stays loadable
+// when it's omitted (default stays false so existing matrices keep
+// their current semantics).
+func TestFaultMatrixRequireFaultsFire(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db",
+    interface("main", "tcp", 5432),
+)
+
+def probe():
+    return "ok"
+
+scenario(probe)
+
+db_down = fault_assumption("db_down",
+    target = db,
+    connect = deny("ECONNREFUSED"),
+)
+
+fault_matrix(
+    scenarios            = [probe],
+    faults               = [db_down],
+    default_expect       = expect_success(),
+    require_faults_fire  = True,
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	fs, ok := rt.faultScenarios["matrix_probe_db_down"]
+	if !ok {
+		t.Fatalf("fault_matrix did not register matrix_probe_db_down; got %v", rt.faultScenarios)
+	}
+	if !fs.RequireFaultsFire {
+		t.Errorf("RequireFaultsFire = false, want true")
+	}
+}
+
+// TestFaultMatrixRequireFaultsFireDefaultsOff verifies backwards
+// compatibility: a matrix without the kwarg leaves RequireFaultsFire
+// false so legacy specs behave identically.
+func TestFaultMatrixRequireFaultsFireDefaultsOff(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db", interface("main", "tcp", 5432))
+def probe(): return "ok"
+scenario(probe)
+db_down = fault_assumption("db_down", target = db, connect = deny("ECONNREFUSED"))
+fault_matrix(scenarios = [probe], faults = [db_down], default_expect = expect_success())
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	fs := rt.faultScenarios["matrix_probe_db_down"]
+	if fs == nil || fs.RequireFaultsFire {
+		t.Errorf("default RequireFaultsFire should be false, got %+v", fs)
+	}
+}
+
+// TestFaultMatrixRequireFaultsFireRejectsWrongType surfaces a typo
+// (string instead of bool) with a clear error rather than a silent
+// no-op.
+func TestFaultMatrixRequireFaultsFireRejectsWrongType(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db", "/tmp/mock-db", interface("main", "tcp", 5432))
+def probe(): return "ok"
+scenario(probe)
+db_down = fault_assumption("db_down", target = db, connect = deny("ECONNREFUSED"))
+fault_matrix(scenarios = [probe], faults = [db_down], require_faults_fire = "yes")
+`)
+	if err == nil || !strings.Contains(err.Error(), "require_faults_fire") {
+		t.Errorf("expected require_faults_fire type error, got: %v", err)
+	}
+}
+
 func TestFaultMatrixDiscoverTests(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `

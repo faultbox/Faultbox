@@ -96,10 +96,12 @@ func Build(in BuildInput) (*Writer, string, error) {
 }
 
 // summaryFromTests tallies the pass/fail/error counts from a slice of
-// rows. Kept tiny so tests can call it directly. RFC-027's
-// "expectation_violated" is a refinement of "failed" — we bump both
-// Failed and ExpectationViolated so legacy consumers that only know the
-// v0.10.0 taxonomy still see the row in the failed bucket.
+// rows. RFC-027's "expectation_violated" is a refinement of "failed"
+// (bump both Failed and ExpectationViolated so legacy consumers that
+// only know the v0.10.0 taxonomy still see the row in the failed
+// bucket). Issue #75's "fault_bypassed" is a refinement of "passed"
+// (bump both Passed and FaultBypassed so CI pipelines gating on
+// Failed don't flap but users can still see the ambiguity signal).
 func summaryFromTests(rows []TestRow) Summary {
 	var s Summary
 	for _, r := range rows {
@@ -114,6 +116,9 @@ func summaryFromTests(rows []TestRow) Summary {
 		case "expectation_violated":
 			s.Failed++
 			s.ExpectationViolated++
+		case "fault_bypassed":
+			s.Passed++
+			s.FaultBypassed++
 		}
 	}
 	return s

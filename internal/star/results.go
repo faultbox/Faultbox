@@ -38,16 +38,18 @@ type MatrixOutput struct {
 
 // MatrixCellOutput is one cell in the fault matrix. RFC-027 adds
 // Outcome + Expectation so the HTML report can paint the cell with
-// the four-way palette (passed/failed/expectation_violated/errored)
-// without needing to cross-reference the manifest.
+// the four-way palette without cross-referencing the manifest; issue
+// #75 adds the fifth outcome "fault_bypassed" (grey) plus the list
+// of unmatched rules that triggered it.
 type MatrixCellOutput struct {
-	Scenario    string `json:"scenario"`
-	Fault       string `json:"fault"`
-	Passed      bool   `json:"passed"`
-	Outcome     string `json:"outcome,omitempty"`
-	Expectation string `json:"expectation,omitempty"`
-	DurationMs  int64  `json:"duration_ms"`
-	Reason      string `json:"reason,omitempty"`
+	Scenario      string         `json:"scenario"`
+	Fault         string         `json:"fault"`
+	Passed        bool           `json:"passed"`
+	Outcome       string         `json:"outcome,omitempty"`
+	Expectation   string         `json:"expectation,omitempty"`
+	DurationMs    int64          `json:"duration_ms"`
+	Reason        string         `json:"reason,omitempty"`
+	BypassedRules []BypassedRule `json:"bypassed_rules,omitempty"` // type from runtime.go
 }
 
 // TestTraceOutput is the per-test section of the trace output.
@@ -63,8 +65,10 @@ type TestTraceOutput struct {
 	// RFC-027 expectation metadata — mirrored from the manifest so
 	// trace.json is self-contained for the drill-down renderer. Empty
 	// Expectation means the test had no expect=/default_expect=.
-	Expectation         string                          `json:"expectation,omitempty"`
-	ExpectationViolated bool                            `json:"expectation_violated,omitempty"`
+	Expectation         string         `json:"expectation,omitempty"`
+	ExpectationViolated bool           `json:"expectation_violated,omitempty"`
+	FaultBypassed       bool           `json:"fault_bypassed,omitempty"`
+	BypassedRules       []BypassedRule `json:"bypassed_rules,omitempty"`
 	ErrorDetail         *ErrorDetail                    `json:"error_detail,omitempty"`
 	Faults              []FaultInfo                     `json:"faults,omitempty"`
 	SyscallSummary      map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
@@ -126,6 +130,8 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 			Events:              tr.Events,
 			Expectation:         tr.ExpectationName,
 			ExpectationViolated: tr.ExpectationViolated,
+			FaultBypassed:       tr.FaultBypassed,
+			BypassedRules:       tr.BypassedRules,
 		}
 		if tr.ReturnValue != nil && tr.ReturnValue != starlark.None {
 			tto.ReturnValue = tr.ReturnValue.String()
@@ -166,22 +172,28 @@ func buildMatrixOutput(result *SuiteResult) *MatrixOutput {
 			faultOrder = append(faultOrder, tr.Matrix.FaultName)
 		}
 		outcome := "passed"
-		if tr.Result == "fail" {
+		switch tr.Result {
+		case "fail":
 			outcome = "failed"
 			if tr.ExpectationViolated {
 				outcome = "expectation_violated"
 			}
-		} else if tr.Result == "error" {
+		case "error":
 			outcome = "errored"
+		default:
+			if tr.FaultBypassed {
+				outcome = "fault_bypassed"
+			}
 		}
 		cells = append(cells, MatrixCellOutput{
-			Scenario:    tr.Matrix.ScenarioName,
-			Fault:       tr.Matrix.FaultName,
-			Passed:      tr.Result == "pass",
-			Outcome:     outcome,
-			Expectation: tr.ExpectationName,
-			DurationMs:  tr.DurationMs,
-			Reason:      tr.Reason,
+			Scenario:      tr.Matrix.ScenarioName,
+			Fault:         tr.Matrix.FaultName,
+			Passed:        tr.Result == "pass" && !tr.FaultBypassed,
+			Outcome:       outcome,
+			Expectation:   tr.ExpectationName,
+			DurationMs:    tr.DurationMs,
+			Reason:        tr.Reason,
+			BypassedRules: tr.BypassedRules,
 		})
 	}
 

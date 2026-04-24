@@ -1002,24 +1002,52 @@ Behaviour:
 Backwards compatible: `default_expect=` still accepts plain Starlark
 lambdas for rows that need custom checks.
 
-#### Outcome taxonomy (v0.11.1)
+#### Outcome taxonomy (v0.11.2)
 
-Every `fault_scenario` / `fault_matrix` row produces one of four
+Every `fault_scenario` / `fault_matrix` row produces one of five
 outcomes in `manifest.json` and the HTML report:
 
 | Outcome | Pill | Meaning |
 |---|---|---|
-| `passed` | green | Scenario returned; expect predicate (if any) accepted the result. |
+| `passed` | green | Scenario returned; expect predicate (if any) accepted the result; any required faults fired. |
 | `failed` | red | An `assert_*` inside the scenario body fired before the predicate ran. |
 | `expectation_violated` | amber | Body assertions were clean, but the expect predicate disagreed with the result. |
+| `fault_bypassed` | grey | Scenario returned cleanly, but a fault rule was installed and never matched a syscall (only with `require_faults_fire=True`). |
 | `errored` | grey | Scenario raised an untyped error (crash, timeout outside a predicate). |
 
 `expectation_violated` is a refinement of `failed` — legacy consumers
 that only know the three-way taxonomy still see the row in the
-`summary.failed` count. The predicate name (e.g. `expect_success`,
+`summary.failed` count. `fault_bypassed` is a refinement of `passed`
+— the scenario did pass, but the test is uninformative because the
+fault never fired. The predicate name (e.g. `expect_success`,
 `expect_error_within`, or `lambda` for user callables) lands in
 `manifest.tests[].expectation` and surfaces alongside the pill in the
 report's tests table and drill-down header.
+
+#### `require_faults_fire=True` on `fault_matrix()` (v0.11.2)
+
+Opt-in gate that demotes rows where at least one installed fault rule
+never matched a syscall during the test:
+
+```python
+fault_matrix(
+    scenarios           = [checkout, orders, health],
+    faults              = [db_down, cache_slow],
+    default_expect      = expect_success(),
+    require_faults_fire = True,
+)
+```
+
+Without the flag (default), a cell returning HTTP 200 goes green even
+if the service cached an init-time response and never touched the
+faulted upstream. With the flag on, such cells become
+`fault_bypassed` (grey) and the drill-down lists every rule the
+runtime saw unmatched — usually a hint that the scenario is hitting a
+different code path than intended.
+
+`require_faults_fire` composes with any `default_expect` /
+`overrides` — the fault-fired check runs after the expect predicate.
+Rows that already `failed` or `errored` keep their outcome.
 
 ### File readers — `load_file()`, `load_yaml()`, `load_json()` (v0.9.8)
 

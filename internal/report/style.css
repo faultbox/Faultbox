@@ -42,6 +42,15 @@
   --violated-bg: #fff7e0;
   --violated-border: #ddb555;
 
+  /* Issue #75 fault_bypassed — the fault rule never matched a syscall.
+   * Grey signals "uninformative / not actually tested" rather than
+   * failure. Darker border + dashed style keeps it visually distinct
+   * from --skip (cells that weren't scheduled at all).
+   */
+  --bypass-fg: #555;
+  --bypass-bg: #ececec;
+  --bypass-border: #999;
+
   --skip-fg: #777;
   --skip-bg: #ececec;
   --skip-border: #d3d3d3;
@@ -80,6 +89,10 @@
     --violated-fg: #f2c657;
     --violated-bg: #332713;
     --violated-border: #7a5d25;
+
+    --bypass-fg: #b8b8b8;
+    --bypass-bg: #24282e;
+    --bypass-border: #585e68;
 
     --skip-fg: #8b949e;
     --skip-bg: #1c2026;
@@ -184,6 +197,7 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
 .pill.fail { background: var(--fail-bg); color: var(--fail-fg); border: 1px solid var(--fail-border); }
 .pill.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-border); }
 .pill.violated { background: var(--violated-bg); color: var(--violated-fg); border: 1px solid var(--violated-border); }
+.pill.bypassed { background: var(--bypass-bg); color: var(--bypass-fg); border: 1px dashed var(--bypass-border); }
 .pill.skip { background: var(--skip-bg); color: var(--skip-fg); border: 1px solid var(--skip-border); }
 
 /* ── Hero ───────────────────────────────────────────────────────── */
@@ -302,6 +316,13 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
 .matrix-cell.fail { background: var(--fail-bg); color: var(--fail-fg); }
 .matrix-cell.warn { background: var(--warn-bg); color: var(--warn-fg); }
 .matrix-cell.violated { background: var(--violated-bg); color: var(--violated-fg); }
+.matrix-cell.bypassed {
+  background: var(--bypass-bg);
+  color: var(--bypass-fg);
+  /* Dashed inner outline hints "this cell ran but was inert" — avoids
+   * confusion with skip cells (solid grey, never scheduled). */
+  box-shadow: inset 0 0 0 1px var(--bypass-border);
+}
 .matrix-cell.errored { background: var(--skip-bg); color: var(--skip-fg); }
 .matrix-cell.skip { background: var(--skip-bg); color: var(--skip-fg); }
 .matrix-cell-icon {

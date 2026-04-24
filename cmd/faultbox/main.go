@@ -2091,9 +2091,11 @@ func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.S
 // already set upstream; fault_assumption membership is not yet
 // propagated (Phase 1 scope — comes in a later phase).
 //
-// RFC-027: a row whose fail came from fs.Expect rejecting the scenario
-// result is emitted as "expectation_violated" instead of plain
-// "failed". Expectation carries the predicate name for the HTML report.
+// Outcome precedence (issue #75, RFC-027):
+//   - body assert_*/error   → "failed" / "errored"
+//   - expect predicate rejected → "expectation_violated"
+//   - pass but fault bypassed → "fault_bypassed"
+//   - otherwise              → "passed"
 func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 	if result == nil {
 		return nil
@@ -2101,20 +2103,37 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 	rows := make([]bundle.TestRow, 0, len(result.Tests))
 	for _, tr := range result.Tests {
 		outcome := "passed"
-		if tr.Result == "fail" {
+		switch tr.Result {
+		case "fail":
 			outcome = "failed"
 			if tr.ExpectationViolated {
 				outcome = "expectation_violated"
 			}
-		} else if tr.Result == "error" {
+		case "error":
 			outcome = "errored"
+		default:
+			if tr.FaultBypassed {
+				outcome = "fault_bypassed"
+			}
 		}
+
+		var bypassed []bundle.BypassedRule
+		for _, r := range tr.BypassedRules {
+			bypassed = append(bypassed, bundle.BypassedRule{
+				Service: r.Service,
+				Syscall: r.Syscall,
+				Action:  r.Action,
+				Label:   r.Label,
+			})
+		}
+
 		rows = append(rows, bundle.TestRow{
-			Name:        tr.Name,
-			Outcome:     outcome,
-			DurationMs:  tr.DurationMs,
-			Seed:        tr.Seed,
-			Expectation: tr.ExpectationName,
+			Name:          tr.Name,
+			Outcome:       outcome,
+			DurationMs:    tr.DurationMs,
+			Seed:          tr.Seed,
+			Expectation:   tr.ExpectationName,
+			BypassedRules: bypassed,
 		})
 	}
 	return rows

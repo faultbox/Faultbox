@@ -322,6 +322,63 @@ func TestBuildRFC027ExpectationOutcome(t *testing.T) {
 	}
 }
 
+// TestBuildIssue75FaultBypassedOutcome: a row whose fault was
+// installed but never matched a syscall ships as
+// outcome="fault_bypassed". It refines "passed" (Summary.Passed still
+// counts it — CI gates on failed don't flap) and the bypassed rules
+// round-trip through JSON so the drill-down can render them.
+func TestBuildIssue75FaultBypassedOutcome(t *testing.T) {
+	in := BuildInput{
+		FaultboxVersion: "0.11.2-test",
+		Seed:            9,
+		CreatedAt:       time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC),
+		Tests: []TestRow{
+			{Name: "test_matrix_checkout_db_down", Outcome: "fault_bypassed", DurationMs: 45, Expectation: "expect_success",
+				BypassedRules: []BypassedRule{
+					{Service: "db", Syscall: "connect", Action: "deny", Label: "db_down"},
+				}},
+			{Name: "test_matrix_orders_db_down", Outcome: "passed", DurationMs: 80, Expectation: "expect_success"},
+		},
+		Trace: []byte(`{"version":1}`),
+	}
+	w, _, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buf, err := w.encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	contents := readBundleBytes(t, buf.Bytes())
+
+	var man Manifest
+	if err := json.Unmarshal(contents["manifest.json"], &man); err != nil {
+		t.Fatalf("manifest parse: %v", err)
+	}
+
+	want := Summary{Total: 2, Passed: 2, FaultBypassed: 1}
+	if man.Summary != want {
+		t.Errorf("summary = %+v, want %+v", man.Summary, want)
+	}
+
+	var bypassed *TestRow
+	for i := range man.Tests {
+		if man.Tests[i].Outcome == "fault_bypassed" {
+			bypassed = &man.Tests[i]
+		}
+	}
+	if bypassed == nil {
+		t.Fatalf("no fault_bypassed row in manifest: %+v", man.Tests)
+	}
+	if len(bypassed.BypassedRules) != 1 {
+		t.Fatalf("bypassed rules = %d, want 1", len(bypassed.BypassedRules))
+	}
+	r := bypassed.BypassedRules[0]
+	if r.Service != "db" || r.Syscall != "connect" || r.Action != "deny" || r.Label != "db_down" {
+		t.Errorf("bypassed rule = %+v, want db/connect/deny/db_down", r)
+	}
+}
+
 func TestBuildCapturesSpecFiles(t *testing.T) {
 	// Phase 4: every local .star file the runtime loaded should land
 	// under spec/<relative-path> in the archive so a bundle is enough
