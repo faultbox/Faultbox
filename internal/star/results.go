@@ -36,30 +36,40 @@ type MatrixOutput struct {
 	Failed    int                `json:"failed"`
 }
 
-// MatrixCellOutput is one cell in the fault matrix.
+// MatrixCellOutput is one cell in the fault matrix. RFC-027 adds
+// Outcome + Expectation so the HTML report can paint the cell with
+// the four-way palette (passed/failed/expectation_violated/errored)
+// without needing to cross-reference the manifest.
 type MatrixCellOutput struct {
-	Scenario   string `json:"scenario"`
-	Fault      string `json:"fault"`
-	Passed     bool   `json:"passed"`
-	DurationMs int64  `json:"duration_ms"`
-	Reason     string `json:"reason,omitempty"`
+	Scenario    string `json:"scenario"`
+	Fault       string `json:"fault"`
+	Passed      bool   `json:"passed"`
+	Outcome     string `json:"outcome,omitempty"`
+	Expectation string `json:"expectation,omitempty"`
+	DurationMs  int64  `json:"duration_ms"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // TestTraceOutput is the per-test section of the trace output.
 type TestTraceOutput struct {
-	Name           string                          `json:"name"`
-	Result         string                          `json:"result"`
-	Reason         string                          `json:"reason,omitempty"`
-	FailureType    string                          `json:"failure_type,omitempty"`
-	Seed           uint64                          `json:"seed"`
-	DurationMs     int64                           `json:"duration_ms"`
-	ReturnValue    string                          `json:"return_value,omitempty"`
-	ReplayCmd      string                          `json:"replay_command,omitempty"`
-	ErrorDetail    *ErrorDetail                    `json:"error_detail,omitempty"`
-	Faults         []FaultInfo                     `json:"faults,omitempty"`
-	SyscallSummary map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
-	Diagnostics    []Diagnostic                    `json:"diagnostics,omitempty"`
-	Events         []Event                         `json:"events"`
+	Name        string `json:"name"`
+	Result      string `json:"result"`
+	Reason      string `json:"reason,omitempty"`
+	FailureType string `json:"failure_type,omitempty"`
+	Seed        uint64 `json:"seed"`
+	DurationMs  int64  `json:"duration_ms"`
+	ReturnValue string `json:"return_value,omitempty"`
+	ReplayCmd   string `json:"replay_command,omitempty"`
+	// RFC-027 expectation metadata — mirrored from the manifest so
+	// trace.json is self-contained for the drill-down renderer. Empty
+	// Expectation means the test had no expect=/default_expect=.
+	Expectation         string                          `json:"expectation,omitempty"`
+	ExpectationViolated bool                            `json:"expectation_violated,omitempty"`
+	ErrorDetail         *ErrorDetail                    `json:"error_detail,omitempty"`
+	Faults              []FaultInfo                     `json:"faults,omitempty"`
+	SyscallSummary      map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
+	Diagnostics         []Diagnostic                    `json:"diagnostics,omitempty"`
+	Events              []Event                         `json:"events"`
 }
 
 // Diagnostic is an actionable hint for LLM agents and humans.
@@ -107,13 +117,15 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 	}
 	for _, tr := range result.Tests {
 		tto := TestTraceOutput{
-			Name:        tr.Name,
-			Result:      tr.Result,
-			Reason:      tr.Reason,
-			FailureType: classifyFailure(tr.Reason),
-			Seed:        tr.Seed,
-			DurationMs:  tr.DurationMs,
-			Events:      tr.Events,
+			Name:                tr.Name,
+			Result:              tr.Result,
+			Reason:              tr.Reason,
+			FailureType:         classifyFailure(tr.Reason),
+			Seed:                tr.Seed,
+			DurationMs:          tr.DurationMs,
+			Events:              tr.Events,
+			Expectation:         tr.ExpectationName,
+			ExpectationViolated: tr.ExpectationViolated,
 		}
 		if tr.ReturnValue != nil && tr.ReturnValue != starlark.None {
 			tto.ReturnValue = tr.ReturnValue.String()
@@ -153,12 +165,23 @@ func buildMatrixOutput(result *SuiteResult) *MatrixOutput {
 			faultSet[tr.Matrix.FaultName] = true
 			faultOrder = append(faultOrder, tr.Matrix.FaultName)
 		}
+		outcome := "passed"
+		if tr.Result == "fail" {
+			outcome = "failed"
+			if tr.ExpectationViolated {
+				outcome = "expectation_violated"
+			}
+		} else if tr.Result == "error" {
+			outcome = "errored"
+		}
 		cells = append(cells, MatrixCellOutput{
-			Scenario:   tr.Matrix.ScenarioName,
-			Fault:      tr.Matrix.FaultName,
-			Passed:     tr.Result == "pass",
-			DurationMs: tr.DurationMs,
-			Reason:     tr.Reason,
+			Scenario:    tr.Matrix.ScenarioName,
+			Fault:       tr.Matrix.FaultName,
+			Passed:      tr.Result == "pass",
+			Outcome:     outcome,
+			Expectation: tr.ExpectationName,
+			DurationMs:  tr.DurationMs,
+			Reason:      tr.Reason,
 		})
 	}
 

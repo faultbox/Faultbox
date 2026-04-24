@@ -33,6 +33,15 @@
   --warn-bg: #fff3cd;
   --warn-border: #e0c46b;
 
+  /* RFC-027 expectation_violated — a refinement of failed. Amber/gold
+   * instead of the orange-brown --warn so matrix cells and outcome
+   * pills have four distinct hues: green (passed), red (failed),
+   * amber (expectation_violated), grey (errored).
+   */
+  --violated-fg: #8a5f00;
+  --violated-bg: #fff7e0;
+  --violated-border: #ddb555;
+
   --skip-fg: #777;
   --skip-bg: #ececec;
   --skip-border: #d3d3d3;
@@ -67,6 +76,10 @@
     --warn-fg: #e3b341;
     --warn-bg: #2d2410;
     --warn-border: #6a5620;
+
+    --violated-fg: #f2c657;
+    --violated-bg: #332713;
+    --violated-border: #7a5d25;
 
     --skip-fg: #8b949e;
     --skip-bg: #1c2026;
@@ -170,6 +183,8 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
 .pill.pass { background: var(--pass-bg); color: var(--pass-fg); border: 1px solid var(--pass-border); }
 .pill.fail { background: var(--fail-bg); color: var(--fail-fg); border: 1px solid var(--fail-border); }
 .pill.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-border); }
+.pill.violated { background: var(--violated-bg); color: var(--violated-fg); border: 1px solid var(--violated-border); }
+.pill.skip { background: var(--skip-bg); color: var(--skip-fg); border: 1px solid var(--skip-border); }
 
 /* ── Hero ───────────────────────────────────────────────────────── */
 .hero {
@@ -286,6 +301,8 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
 .matrix-cell.pass { background: var(--pass-bg); color: var(--pass-fg); }
 .matrix-cell.fail { background: var(--fail-bg); color: var(--fail-fg); }
 .matrix-cell.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.matrix-cell.violated { background: var(--violated-bg); color: var(--violated-fg); }
+.matrix-cell.errored { background: var(--skip-bg); color: var(--skip-fg); }
 .matrix-cell.skip { background: var(--skip-bg); color: var(--skip-fg); }
 .matrix-cell-icon {
   font-family: var(--font-mono);

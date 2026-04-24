@@ -96,7 +96,10 @@ func Build(in BuildInput) (*Writer, string, error) {
 }
 
 // summaryFromTests tallies the pass/fail/error counts from a slice of
-// rows. Kept tiny so tests can call it directly.
+// rows. Kept tiny so tests can call it directly. RFC-027's
+// "expectation_violated" is a refinement of "failed" — we bump both
+// Failed and ExpectationViolated so legacy consumers that only know the
+// v0.10.0 taxonomy still see the row in the failed bucket.
 func summaryFromTests(rows []TestRow) Summary {
 	var s Summary
 	for _, r := range rows {
@@ -108,6 +111,9 @@ func summaryFromTests(rows []TestRow) Summary {
 			s.Failed++
 		case "errored":
 			s.Errored++
+		case "expectation_violated":
+			s.Failed++
+			s.ExpectationViolated++
 		}
 	}
 	return s

@@ -70,6 +70,33 @@
     return (s == null ? "" : String(s));
   }
 
+  // RFC-027: map the four manifest outcomes to pill / matrix-cell
+  // classes. Unknown outcomes fall back to "warn" so a future
+  // schema_version that adds a tag we haven't shipped still renders
+  // visibly (rather than vanishing into default text).
+  function outcomeClass(outcome) {
+    switch (outcome) {
+      case "passed": return "pass";
+      case "failed": return "fail";
+      case "expectation_violated": return "violated";
+      case "errored": return "errored";
+      default: return "warn";
+    }
+  }
+
+  // outcomeFromTrace collapses the legacy trace.json result field plus
+  // the RFC-027 expectation_violated refinement into the canonical
+  // manifest string. Kept in one place so the drill-down header, the
+  // tests table, and the matrix stay in lockstep.
+  function outcomeFromTrace(test) {
+    if (!test) return "";
+    if (test.result === "pass") return "passed";
+    if (test.result === "fail") {
+      return test.expectation_violated ? "expectation_violated" : "failed";
+    }
+    return "errored";
+  }
+
   function bundleBasename() {
     // When the user opens the report by double-clicking it, the bundle
     // file sits in the same directory. We can't read the filesystem,
@@ -131,6 +158,13 @@
     if ((s.failed || 0) + (s.errored || 0) > 0) {
       pillClass = "fail";
       pillText = "✗ " + (s.failed || 0) + " failed";
+      // RFC-027: a matrix row whose expect predicate rejected the
+      // scenario result is counted in failed (kept for legacy
+      // consumers) and surfaced separately here so users can scan
+      // the header and see at a glance how many rows disagreed.
+      if (s.expectation_violated) {
+        pillText += " (" + s.expectation_violated + " violated expectation)";
+      }
       if (s.errored) pillText += " · " + s.errored + " errored";
     }
     host.innerHTML = "";
@@ -224,10 +258,23 @@
       return el("div", { class: "matrix-cell skip", title: "not run" },
         [el("span", { class: "matrix-cell-icon", text: "·" })]);
     }
-    var kind = cell.passed ? "pass" : "fail";
-    var icon = cell.passed ? "✓" : "✗";
-    var title = cell.scenario + " × " + cell.fault;
-    if (!cell.passed && cell.reason) title += "\n" + cell.reason;
+    // RFC-027: prefer the explicit outcome string (passed / failed /
+    // expectation_violated / errored). Legacy trace.json files without
+    // the field fall back to the old passed/fail binary so older
+    // bundles still render.
+    var outcome = cell.outcome || (cell.passed ? "passed" : "failed");
+    var kind = outcomeClass(outcome);
+    var icon;
+    switch (outcome) {
+      case "passed": icon = "✓"; break;
+      case "failed": icon = "✗"; break;
+      case "expectation_violated": icon = "≠"; break;
+      case "errored": icon = "!"; break;
+      default: icon = "?";
+    }
+    var title = cell.scenario + " × " + cell.fault + "\n" + outcome;
+    if (cell.expectation) title += " (" + cell.expectation + ")";
+    if (outcome !== "passed" && cell.reason) title += "\n" + cell.reason;
     if (cell.duration_ms != null) title += "\nduration: " + fmtDuration(cell.duration_ms);
     // Matrix test names follow the `test_<scenario>__<fault>` convention
     // emitted by the `fault_matrix()` builtin. Binding it here is what
@@ -340,8 +387,7 @@
     body.innerHTML = "";
     for (var i = 0; i < manifest.tests.length; i++) {
       var r = manifest.tests[i];
-      var pillClass = r.outcome === "passed" ? "pass" :
-                      r.outcome === "failed" ? "fail" : "warn";
+      var pillClass = outcomeClass(r.outcome);
       var fa = (r.fault_assumptions || []).join(", ");
       var tr = el("tr", {
         "data-test": r.name,
@@ -350,6 +396,7 @@
         el("td", { text: r.name }),
         el("td", { class: "outcome" }, [el("span", { class: "pill " + pillClass, text: r.outcome })]),
         el("td", { text: fmtDuration(r.duration_ms) }),
+        el("td", { text: r.expectation || "" }),
         el("td", { text: fa }),
       ]);
       body.appendChild(tr);
@@ -482,13 +529,18 @@
   }
 
   function drillDownHeader(test) {
-    var outcome = test.result === "pass" ? "passed" : (test.result === "fail" ? "failed" : "errored");
-    var pillCls = outcome === "passed" ? "pass" : (outcome === "failed" ? "fail" : "warn");
-    var subtitle = el("div", { class: "drill-down-subtitle" }, [
+    var outcome = outcomeFromTrace(test);
+    var pillCls = outcomeClass(outcome);
+    var subtitleKids = [
       el("span", { class: "pill " + pillCls, text: outcome }),
       el("span", null, [document.createTextNode(fmtDuration(test.duration_ms))]),
       el("span", null, [document.createTextNode("seed " + (test.seed != null ? test.seed : "—"))]),
-    ]);
+    ];
+    if (test.expectation) {
+      subtitleKids.push(el("span", { class: "mono", title: "expect predicate used by this row",
+        text: "expect: " + test.expectation }));
+    }
+    var subtitle = el("div", { class: "drill-down-subtitle" }, subtitleKids);
     return el("div", null, [
       el("h3", { id: "dd-title-text", text: test.name }),
       subtitle,

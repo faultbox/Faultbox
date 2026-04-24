@@ -2090,6 +2090,10 @@ func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.S
 // Matrix tests show up as individual rows with the synthesised name
 // already set upstream; fault_assumption membership is not yet
 // propagated (Phase 1 scope — comes in a later phase).
+//
+// RFC-027: a row whose fail came from fs.Expect rejecting the scenario
+// result is emitted as "expectation_violated" instead of plain
+// "failed". Expectation carries the predicate name for the HTML report.
 func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 	if result == nil {
 		return nil
@@ -2099,14 +2103,18 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 		outcome := "passed"
 		if tr.Result == "fail" {
 			outcome = "failed"
+			if tr.ExpectationViolated {
+				outcome = "expectation_violated"
+			}
 		} else if tr.Result == "error" {
 			outcome = "errored"
 		}
 		rows = append(rows, bundle.TestRow{
-			Name:       tr.Name,
-			Outcome:    outcome,
-			DurationMs: tr.DurationMs,
-			Seed:       tr.Seed,
+			Name:        tr.Name,
+			Outcome:     outcome,
+			DurationMs:  tr.DurationMs,
+			Seed:        tr.Seed,
+			Expectation: tr.ExpectationName,
 		})
 	}
 	return rows

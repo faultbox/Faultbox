@@ -32,23 +32,38 @@ type Manifest struct {
 }
 
 // Summary is the headline pass/fail/errored count for the run, for
-// quick scanning without walking the tests array.
+// quick scanning without walking the tests array. ExpectationViolated
+// is a refinement of Failed introduced by RFC-027 — rows whose expect
+// predicate rejected the scenario result. Those rows are also counted
+// in Failed, so existing consumers stay correct without a schema bump.
 type Summary struct {
-	Total   int `json:"total"`
-	Passed  int `json:"passed"`
-	Failed  int `json:"failed"`
-	Errored int `json:"errored"`
+	Total               int `json:"total"`
+	Passed              int `json:"passed"`
+	Failed              int `json:"failed"`
+	Errored             int `json:"errored"`
+	ExpectationViolated int `json:"expectation_violated,omitempty"`
 }
 
 // TestRow is one row of the tests array in the manifest. Mirrors the
 // existing TestTraceOutput fields that callers need without pulling in
 // the larger per-test event log — the latter still lives in trace.json.
+//
+// RFC-027 additions (additive, does not bump SchemaVersion):
+//   - Outcome gains the value "expectation_violated" for rows whose
+//     expect predicate rejected the scenario result. Tools that only
+//     know the v0.10.0 taxonomy can treat it as a refinement of
+//     "failed" (which is why Summary.Failed still counts it).
+//   - Expectation records the expect predicate's Name() (e.g.
+//     "expect_success", "expect_error_within", or "lambda" for a
+//     user-supplied callable) so the RFC-029 HTML report can render
+//     the predicate alongside the outcome pill.
 type TestRow struct {
 	Name             string   `json:"name"`
-	Outcome          string   `json:"outcome"` // "passed" | "failed" | "errored"
+	Outcome          string   `json:"outcome"` // "passed" | "failed" | "errored" | "expectation_violated"
 	DurationMs       int64    `json:"duration_ms"`
 	Seed             uint64   `json:"seed,omitempty"`
 	FaultAssumptions []string `json:"fault_assumptions,omitempty"`
+	Expectation      string   `json:"expectation,omitempty"`
 }
 
 // Env is `env.json` — the machine-readable fingerprint of the
