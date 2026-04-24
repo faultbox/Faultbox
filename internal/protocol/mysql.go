@@ -5,14 +5,51 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 func init() {
 	Register(&mysqlProtocol{})
+
+	// The go-sql-driver/mysql default logger prints every bad-connection
+	// error to stderr — during healthcheck/seed poll that means dozens of
+	// "[mysql] packets.go:58 unexpected EOF" lines per cold start, which
+	// drowns real signal. We wrap the default with a filter that drops
+	// the well-known retry-time noise and passes everything else
+	// through. Real failures surface via Query/Exec return values, not
+	// via the driver's package logger, so dropping these is safe.
+	inner := log.New(os.Stderr, "[mysql] ", log.Ldate|log.Ltime|log.Lshortfile)
+	_ = mysql.SetLogger(&mysqlFilterLogger{inner: inner})
+}
+
+// mysqlNoisePatterns captures substrings emitted by go-sql-driver/mysql
+// during connection-retry loops. These are expected during healthcheck
+// polling and don't indicate a real fault.
+var mysqlNoisePatterns = []string{
+	"unexpected EOF",
+	"invalid connection",
+	"bad connection",
+	"broken pipe",
+	"connection refused",
+}
+
+type mysqlFilterLogger struct {
+	inner mysql.Logger
+}
+
+func (l *mysqlFilterLogger) Print(v ...any) {
+	msg := fmt.Sprint(v...)
+	for _, pat := range mysqlNoisePatterns {
+		if strings.Contains(msg, pat) {
+			return
+		}
+	}
+	l.inner.Print(v...)
 }
 
 type mysqlProtocol struct{}
