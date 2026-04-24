@@ -317,6 +317,63 @@ Use `faultbox lock --check` as a CI hook in the meantime.
 
 ---
 
+### `faultbox report` (v0.11.0)
+
+Build a single self-contained HTML report from a `.fb` bundle. The
+output is one file — CSS, JS, and bundle data all inlined — that
+opens in any browser with no network access. RFC-029.
+
+```
+faultbox report <bundle.fb>                     # writes report.html next to the bundle
+faultbox report <bundle.fb> --output <path>     # custom output path
+faultbox report <bundle.fb> -o -                # write to stdout
+```
+
+**What the report contains:**
+
+- Header band with run ID and pass/fail pill.
+- Hero stats: matrix size, faults delivered, services observed,
+  duration. One narrative subtitle saying how the run went.
+- Attention list: failed tests and warning diagnostics surfaced
+  first, each with a ready-to-paste replay command.
+- Fault matrix grid (scenarios × faults). Click any cell for
+  drill-down.
+- Observed coverage table (per-service syscall activity).
+- Reproducibility panel (versions, image digests, replay command).
+
+**Drill-down panel** (opens on cell click, or via URL hash
+`#test=<name>`):
+
+- Reason, faults applied (with hit counts), diagnostics.
+- Replay command for just that test.
+- Swim-lane event trace: services as lanes, markers per
+  syscall / fault / lifecycle / violation event.
+
+**Examples:**
+
+```bash
+faultbox test faultbox.star
+# → Bundle: run-2026-04-22T15-03-11-42.fb
+
+faultbox report run-2026-04-22T15-03-11-42.fb
+# → wrote report.html
+
+open report.html                                 # macOS
+xdg-open report.html                             # linux
+```
+
+**Sharing:** the file works offline. Email it, drop it in Slack,
+commit it to git, or upload it to S3 / GitHub Pages / Cloudflare
+Pages. No server, no build step.
+
+**Live example:** [faultbox.io/reports/sample.html](https://faultbox.io/reports/sample.html).
+
+See [docs/reports.md](reports.md) for the full reference and
+[tutorial chapter 23](tutorial/05-advanced/23-reports.md) for a
+guided tour.
+
+---
+
 ### `faultbox diff`
 
 Compare two normalized trace files. Returns exit code 0 if identical, 2 if different.

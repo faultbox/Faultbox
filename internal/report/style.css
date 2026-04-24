@@ -1,0 +1,1366 @@
+/* Faultbox Report — v0.11.0
+ *
+ * Palette tokens mirror the marketing site (faultbox-site/src/styles/global.css)
+ * so the report feels like an extension of the same surface, not a tool output.
+ * Typography: Inter for body prose, JetBrains Mono for headings and data
+ * (the golang-web / Stripe-style restraint we picked for the site).
+ *
+ * Dark mode is free via prefers-color-scheme — no JS toggle required.
+ * State colour pairs (pass/fail/warn/skip) carry both a tint and an icon so
+ * colourblind readers get the signal without relying on hue alone.
+ */
+:root {
+  --bg: #fafafa;
+  --bg-elev: #ffffff;
+  --bg-code: #f0f0f0;
+  --fg: #222;
+  --fg-muted: #666;
+  --fg-subtle: #888;
+  --accent: #007d9c;
+  --accent-hover: #005b72;
+  --border: #ddd;
+  --border-strong: #c7c7c7;
+
+  --pass-fg: #0a6e3a;
+  --pass-bg: #e1f5ea;
+  --pass-border: #9fd6b6;
+
+  --fail-fg: #a3152b;
+  --fail-bg: #fce5e7;
+  --fail-border: #efa3ab;
+
+  --warn-fg: #7d5500;
+  --warn-bg: #fff3cd;
+  --warn-border: #e0c46b;
+
+  --skip-fg: #777;
+  --skip-bg: #ececec;
+  --skip-border: #d3d3d3;
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
+  --max-width: 1040px;
+  --radius: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --bg-elev: #161b22;
+    --bg-code: #161b22;
+    --fg: #e6edf3;
+    --fg-muted: #8b949e;
+    --fg-subtle: #6e7681;
+    --accent: #58a6ff;
+    --accent-hover: #79c0ff;
+    --border: #30363d;
+    --border-strong: #484f58;
+
+    --pass-fg: #56d364;
+    --pass-bg: #0e2e18;
+    --pass-border: #1f6a32;
+
+    --fail-fg: #ff7b72;
+    --fail-bg: #2d1113;
+    --fail-border: #6a1f23;
+
+    --warn-fg: #e3b341;
+    --warn-bg: #2d2410;
+    --warn-border: #6a5620;
+
+    --skip-fg: #8b949e;
+    --skip-bg: #1c2026;
+    --skip-border: #30363d;
+  }
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.55;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+code, pre, .mono {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+code {
+  background: var(--bg-code);
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+h1 { font-size: 1.6rem; }
+h2 { font-size: 1.15rem; margin-top: 2.5rem; margin-bottom: 1rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); }
+h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+
+.container {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+.report-header {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: saturate(1.2) blur(6px);
+}
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  height: 56px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.brand:hover { text-decoration: none; color: var(--accent); }
+.brand-mark { color: var(--accent); }
+.brand-sep { color: var(--fg-subtle); margin: 0 0.1rem; }
+.brand-section { color: var(--fg-muted); font-weight: 500; }
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+.pill.pass { background: var(--pass-bg); color: var(--pass-fg); border: 1px solid var(--pass-border); }
+.pill.fail { background: var(--fail-bg); color: var(--fail-fg); border: 1px solid var(--fail-border); }
+.pill.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-border); }
+
+/* ── Hero ───────────────────────────────────────────────────────── */
+.hero {
+  padding: 2.5rem 0 1.5rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.5rem;
+}
+.hero h1 { overflow-wrap: anywhere; }
+.subtitle {
+  color: var(--fg-muted);
+  margin-top: 0.5rem;
+  font-size: 1rem;
+}
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem;
+  margin-top: 1.75rem;
+}
+.stat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  padding: 0.9rem 1rem;
+}
+.stat-value {
+  font-family: var(--font-mono);
+  font-size: 1.8rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.stat-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin-top: 0.25rem;
+}
+.stat-caption {
+  font-size: 0.82rem;
+  color: var(--fg-subtle);
+  margin-top: 0.35rem;
+}
+
+/* ── Section heads + legend ─────────────────────────────────────── */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.section-head h2 { border-bottom: none; margin: 0; padding: 0; }
+.section-hint {
+  color: var(--fg-subtle);
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+}
+.legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  flex-wrap: wrap;
+}
+.legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
+.swatch {
+  display: inline-block;
+  width: 12px; height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+}
+.swatch.pass { background: var(--pass-bg); border-color: var(--pass-border); }
+.swatch.fail { background: var(--fail-bg); border-color: var(--fail-border); }
+.swatch.warn { background: var(--warn-bg); border-color: var(--warn-border); }
+.swatch.skip { background: var(--skip-bg); border-color: var(--skip-border); }
+
+/* ── Fault matrix ───────────────────────────────────────────────── */
+.matrix-scroll { overflow-x: auto; }
+.matrix {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  overflow: hidden;
+  min-width: fit-content;
+}
+.matrix-cell, .matrix-col-head, .matrix-row-head, .matrix-corner {
+  padding: 0.5rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+}
+.matrix-col-head, .matrix-row-head, .matrix-corner {
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.matrix-col-head { justify-content: center; }
+.matrix-corner { background: var(--bg); }
+.matrix-cell {
+  justify-content: center;
+  cursor: default;
+  position: relative;
+}
+.matrix-cell.pass { background: var(--pass-bg); color: var(--pass-fg); }
+.matrix-cell.fail { background: var(--fail-bg); color: var(--fail-fg); }
+.matrix-cell.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.matrix-cell.skip { background: var(--skip-bg); color: var(--skip-fg); }
+.matrix-cell-icon {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+/* Strip last-in-row borders for a cleaner grid edge. */
+.matrix > *:nth-last-child(-n+1) { border-right: none; }
+
+/* ── Attention list ─────────────────────────────────────────────── */
+.attention-item {
+  border: 1px solid var(--fail-border);
+  background: var(--fail-bg);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.attention-item.warn { border-color: var(--warn-border); background: var(--warn-bg); }
+.attention-item-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.attention-item-title {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--fail-fg);
+}
+.attention-item.warn .attention-item-title { color: var(--warn-fg); }
+.attention-item-reason {
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.attention-item-replay {
+  margin-top: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.attention-item-replay code {
+  flex: 1;
+  padding: 0.35rem 0.6rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* ── Tests table (fallback for non-matrix specs) ───────────────── */
+.tests-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-elev);
+}
+.tests-table th, .tests-table td {
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  vertical-align: top;
+}
+.tests-table th {
+  background: var(--bg);
+  font-weight: 500;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+.tests-table tbody tr:last-child td { border-bottom: none; }
+.tests-table td.outcome .pill { font-family: var(--font-mono); }
+
+/* ── Reproducibility ───────────────────────────────────────────── */
+.repro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+.repro-item {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+}
+.repro-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin-bottom: 0.2rem;
+}
+.repro-value {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+.repro-replay {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+.repro-replay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.repro-replay-title {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+}
+.repro-replay code {
+  display: block;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+}
+.copy-btn {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.copy-btn:hover { color: var(--fg); background: var(--bg-code); }
+.copy-btn.copied { color: var(--accent); border-color: var(--accent); }
+
+/* ── Footer ────────────────────────────────────────────────────── */
+.report-footer {
+  margin-top: 3rem;
+  border-top: 1px solid var(--border);
+  padding: 1.2rem 0 2rem;
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+  font-family: var(--font-mono);
+}
+.footer-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+.footer-sep { color: var(--fg-subtle); }
+
+/* ── Responsive ────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  h1 { font-size: 1.3rem; }
+  .hero { padding: 1.75rem 0 1rem; }
+  .stat-value { font-size: 1.5rem; }
+  .header-meta { font-size: 0.78rem; gap: 0.5rem; }
+  .container { padding: 0 1rem; }
+}
+
+/* ── Matrix interactions (Phase 2) ─────────────────────────────── */
+.matrix-cell[data-test] { cursor: pointer; }
+.matrix-cell[data-test]:hover {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 1;
+}
+.matrix-cell[data-test]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.attention-item[data-test] { cursor: pointer; }
+.attention-item[data-test]:hover .attention-item-title { text-decoration: underline; }
+
+.tests-table tbody tr[data-test] { cursor: pointer; }
+.tests-table tbody tr[data-test]:hover { background: var(--bg); }
+
+/* ── Observed coverage table ───────────────────────────────────── */
+.coverage-scroll { overflow-x: auto; }
+.coverage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-elev);
+  margin-top: 0.5rem;
+}
+.coverage-table th, .coverage-table td {
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  vertical-align: top;
+}
+.coverage-table th {
+  background: var(--bg);
+  font-weight: 500;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+.coverage-table th.num, .coverage-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.coverage-table tbody tr:last-child td { border-bottom: none; }
+.coverage-table .faulted-badge {
+  color: var(--fail-fg);
+  font-weight: 600;
+}
+.coverage-syscalls {
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+}
+.coverage-syscalls span {
+  margin-right: 0.6rem;
+  white-space: nowrap;
+}
+.coverage-syscalls span.hot {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* ── Drill-down dialog ─────────────────────────────────────────── */
+.drill-down {
+  border: none;
+  padding: 0;
+  background: transparent;
+  max-width: 860px;
+  width: 95%;
+  color: var(--fg);
+  /* Explicit centering: `<dialog>` with showModal() should center by
+     default, but user-agent stylesheets vary on vertical placement
+     (Firefox and older Chrome pin to the top). inset:0 + margin:auto
+     is the robust cross-browser recipe. */
+  inset: 0;
+  margin: auto;
+}
+.drill-down::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
+}
+.drill-down[open] { display: block; }
+.drill-down-surface {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.2);
+  max-height: calc(100vh - 4rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.drill-down-head {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.drill-down-title {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1.4rem;
+  font-family: var(--font-mono);
+}
+.drill-down-title h3 {
+  font-size: 1rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.drill-down-subtitle {
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  /* The h3 and this row are wrapped in a plain <div> (built in
+     drillDownHeader), so the parent's flex gap doesn't reach them.
+     Space them directly. */
+  margin-top: 0.75rem;
+}
+.drill-down-close {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.drill-down-close:hover { color: var(--fg); background: var(--bg-code); }
+
+.drill-down-body {
+  padding: 1rem 1.25rem 1.5rem;
+  overflow-y: auto;
+  font-size: 0.92rem;
+}
+.drill-down-body h4 {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+.drill-down-body h4:first-child { margin-top: 0; }
+.drill-down-reason {
+  padding: 0.75rem 0.9rem;
+  background: var(--fail-bg);
+  border: 1px solid var(--fail-border);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+.drill-down-reason.pass {
+  background: var(--pass-bg);
+  border-color: var(--pass-border);
+}
+
+.dd-faults {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.dd-faults th, .dd-faults td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.dd-faults th {
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-weight: 500;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dd-faults tbody tr:last-child td { border-bottom: none; }
+.dd-faults .hits-hot { color: var(--fail-fg); font-weight: 600; }
+.dd-faults .hits-zero { color: var(--warn-fg); font-weight: 500; }
+
+.dd-diag {
+  border-left: 3px solid var(--border-strong);
+  padding: 0.5rem 0.8rem;
+  background: var(--bg);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin-bottom: 0.5rem;
+}
+.dd-diag.error { border-left-color: var(--fail-border); }
+.dd-diag.warning { border-left-color: var(--warn-border); }
+.dd-diag-code {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dd-diag-msg {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  margin: 0.2rem 0 0.25rem;
+  overflow-wrap: anywhere;
+}
+.dd-diag-fix {
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+}
+
+.dd-replay code {
+  display: block;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  margin-bottom: 0.4rem;
+}
+.dd-replay-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+
+/* ── Swim-lane trace viewer ────────────────────────────────────── */
+.trace-viewer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 0.75rem;
+  /* overflow must stay visible: balloon tooltip and causal SVG lines
+     anchor absolute/pct-positioned inside here and may paint beyond
+     the lane edges. Horizontal lanes use % widths so there is no
+     overflow to clip anyway. */
+  overflow: visible;
+  position: relative;
+}
+.trace-lanes {
+  position: relative;
+}
+.trace-empty {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  padding: 0.5rem 0;
+}
+.trace-grid {
+  display: grid;
+  gap: 0.35rem;
+  align-items: center;
+  min-width: 480px;
+}
+.trace-lane-label {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  padding-right: 0.75rem;
+  text-align: right;
+  white-space: nowrap;
+}
+.trace-lane {
+  position: relative;
+  height: 24px;
+  background: linear-gradient(to right, var(--border) 1px, transparent 1px) 0 50% / 100% 1px no-repeat,
+              var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  /* Markers are absolutely positioned inside; overflow:visible lets
+     them scale on hover/select without getting clipped by the
+     border-radius, and the left% is clamped in renderMarker so
+     edge markers (seq == maxSeq) don't overhang. */
+  overflow: visible;
+}
+.trace-lane::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 50%; height: 1px;
+  background: var(--border);
+}
+.trace-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bg-elev);
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s;
+  z-index: 1;
+}
+.trace-marker:hover,
+.trace-marker:focus-visible { transform: translate(-50%, -50%) scale(1.4); outline: none; }
+.trace-marker.syscall { background: var(--accent); }
+.trace-marker.fault { background: var(--fail-fg); border-color: var(--fail-bg); width: 12px; height: 12px; }
+.trace-marker.lifecycle { background: var(--fg-muted); width: 8px; height: 8px; }
+.trace-marker.step { background: var(--warn-fg); border-color: var(--warn-bg); }
+.trace-marker.violation { background: var(--fail-fg); border-radius: 2px; width: 14px; height: 14px; }
+
+/* Highlight states used when a marker is hovered / clicked — the
+   hovered marker gets a ring in the accent colour and its causal
+   ancestors (computed from vector clocks, or the latest prior event
+   per other lane when no clock is present) get a softer ring. Other
+   markers fade slightly so the relationship pops. */
+.trace-marker.highlight-root {
+  box-shadow: 0 0 0 3px var(--accent);
+  transform: translate(-50%, -50%) scale(1.5);
+  z-index: 3;
+}
+.trace-marker.highlight-ancestor {
+  box-shadow: 0 0 0 2px var(--accent);
+  z-index: 2;
+}
+.trace-viewer.causal-active .trace-marker:not(.highlight-root):not(.highlight-ancestor) {
+  opacity: 0.35;
+}
+.trace-viewer.causal-active .trace-lane { opacity: 0.6; }
+
+/* SVG overlay — lines connect a hovered marker to its causal
+   ancestors across lanes. pointer-events:none so hover doesn't
+   flicker as lines cross over other markers. */
+.trace-causal-svg {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+.trace-causal-line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  fill: none;
+}
+
+/* Hover balloon — a small badge that rides alongside the marker.
+   Kept lightweight and side-mounted (not directly above) so causal
+   lines drawn from the hovered marker to its ancestors stay visible.
+   The actual detail view happens in .trace-detail below the lanes. */
+.trace-tooltip {
+  position: absolute;
+  z-index: 4;
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.55rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.3;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.16);
+  pointer-events: none;
+  white-space: nowrap;
+  display: none;
+}
+.trace-tooltip.active { display: block; }
+.trace-tooltip-head {
+  color: var(--accent);
+  font-weight: 600;
+}
+.trace-tooltip-sub {
+  color: var(--fg-muted);
+  font-size: 0.7rem;
+  margin-top: 0.1rem;
+}
+
+/* Selected (pinned on click) — stays ringed even after the mouse
+   leaves, so the detail panel below the lanes has a visual anchor. */
+.trace-marker.selected {
+  box-shadow: 0 0 0 3px var(--accent), 0 0 0 5px var(--bg);
+  transform: translate(-50%, -50%) scale(1.55);
+  z-index: 3;
+}
+
+/* Detail panel — replaces the old popover. Sits below the lanes and
+   axis so it never occludes the timeline. Rows are ordered: most
+   important at the top, "all fields" and vector clock tucked into
+   collapsible <details> so common cases stay compact. */
+.trace-detail {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.85rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+.trace-detail.empty { color: var(--fg-muted); font-size: 0.78rem; padding: 0.5rem 0.85rem; }
+.trace-detail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.5rem;
+}
+.trace-detail-title {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+.trace-detail-meta {
+  color: var(--fg-muted);
+  font-size: 0.74rem;
+}
+.trace-detail-row {
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) 1fr;
+  gap: 0 0.9rem;
+  padding: 0.1rem 0;
+}
+.trace-detail-label {
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 0.1rem;
+}
+.trace-detail-value { color: var(--fg); overflow-wrap: anywhere; }
+.trace-detail-value.emphasis { font-weight: 600; color: var(--fg); }
+.trace-detail-collapsible {
+  margin-top: 0.45rem;
+  border-top: 1px dashed var(--border);
+  padding-top: 0.4rem;
+}
+.trace-detail-collapsible summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0;
+  user-select: none;
+}
+.trace-detail-collapsible summary:hover { color: var(--fg); }
+.trace-detail-collapsible[open] summary { color: var(--accent); }
+.trace-detail-kv {
+  margin-top: 0.35rem;
+  padding-left: 0.25rem;
+}
+
+/* Event log table (collapsible) — a forensic companion to the
+   swim-lane view. Type filter chips live above the table header. */
+.trace-log {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.trace-log summary {
+  cursor: pointer;
+  padding: 0.55rem 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.trace-log summary::-webkit-details-marker { display: none; }
+.trace-log summary::before {
+  content: "▸";
+  color: var(--fg-subtle);
+  margin-right: 0.4rem;
+  transition: transform 0.12s;
+  display: inline-block;
+}
+.trace-log[open] summary::before { transform: rotate(90deg); }
+.trace-log summary:hover { color: var(--fg); background: var(--bg); }
+.trace-log-body { border-top: 1px solid var(--border); }
+.trace-log-filters {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.55rem 0.85rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.trace-log-chip {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-transform: lowercase;
+  line-height: 1.5;
+}
+.trace-log-chip:hover { color: var(--fg); border-color: var(--border-strong); }
+.trace-log-chip.active {
+  background: var(--accent);
+  color: var(--bg-elev);
+  border-color: var(--accent);
+}
+.trace-log-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.trace-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.trace-log-table th,
+.trace-log-table td {
+  padding: 0.35rem 0.65rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.trace-log-table th {
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  position: sticky;
+  top: 0;
+}
+.trace-log-table th.caret-col,
+.trace-log-table td.caret-col {
+  width: 1.75rem;
+  padding-left: 0.5rem;
+  padding-right: 0.25rem;
+  text-align: center;
+  color: var(--fg-muted);
+}
+.trace-log-table td.type { width: 1%; white-space: nowrap; }
+.trace-log-table td.service { width: 1%; white-space: nowrap; color: var(--fg-muted); }
+.trace-log-table tbody tr { cursor: pointer; }
+.trace-log-table tbody tr:hover { background: var(--bg); }
+.trace-log-table tbody tr.selected {
+  background: var(--bg-code);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.trace-log-type.type-syscall { color: var(--accent); }
+.trace-log-type.type-fault { color: var(--fail-fg); font-weight: 600; }
+.trace-log-type.type-violation { color: var(--fail-fg); font-weight: 600; }
+.trace-log-type.type-step { color: var(--warn-fg); }
+.trace-log-type.type-lifecycle { color: var(--fg-muted); }
+
+.trace-log-caret {
+  display: inline-block;
+  width: 0.75rem;
+  color: var(--fg-subtle);
+  transition: transform 120ms ease;
+}
+.trace-log-table tbody tr.open .trace-log-caret {
+  color: var(--accent);
+}
+
+/* Expansion row — full-width drawer that drops open underneath a
+ * clicked event. Same 4-column grid ancestor as the header row; we
+ * span all 4 cells with a single <td colspan="4"> child. */
+.trace-log-expand > td {
+  padding: 0;
+  background: var(--bg-code);
+  border-bottom: 1px solid var(--border);
+}
+.trace-log-expand .log-expand-body {
+  padding: 0.85rem 1rem 1rem 2.25rem;
+  display: grid;
+  gap: 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.log-expand-group-title {
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-subtle);
+  margin-bottom: 0.25rem;
+}
+.log-expand-kv {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) 1fr;
+  column-gap: 1rem;
+  row-gap: 0.25rem;
+}
+.log-expand-kv-row {
+  display: contents;
+}
+.log-expand-kv-key {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.log-expand-kv-val {
+  color: var(--fg);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.log-expand-empty {
+  color: var(--fg-subtle);
+  font-style: italic;
+}
+
+.trace-axis {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--fg-subtle);
+  display: flex;
+  justify-content: space-between;
+  padding: 0.35rem 0 0;
+}
+
+.trace-legend {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--fg-muted);
+}
+.trace-legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
+.trace-legend-dot {
+  display: inline-block;
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 1.5px solid var(--bg);
+}
+.trace-legend-dot.syscall { background: var(--accent); }
+.trace-legend-dot.fault { background: var(--fail-fg); }
+.trace-legend-dot.lifecycle { background: var(--fg-muted); }
+.trace-legend-dot.step { background: var(--warn-fg); }
+.trace-legend-dot.violation { background: var(--fail-fg); border-radius: 2px; }
+
+/* ── Image digests (collapsed inside reproducibility) ──────────── */
+.digest-details {
+  grid-column: 1 / -1; /* span full reproducibility row */
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+}
+.digest-details summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.55rem 0.9rem;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.digest-details summary::-webkit-details-marker { display: none; }
+.digest-details summary::before {
+  content: "▸";
+  color: var(--fg-subtle);
+  margin-right: 0.4rem;
+  transition: transform 0.12s;
+  display: inline-block;
+}
+.digest-details[open] summary::before { transform: rotate(90deg); }
+.digest-details summary:hover { color: var(--fg); }
+.digest-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+.digest-table th,
+.digest-table td {
+  padding: 0.45rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.digest-table th {
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.digest-table tbody tr:last-child td { border-bottom: none; }
+.digest-table td.digest-short { color: var(--fg); }
+.digest-table td.digest-full { color: var(--fg-muted); font-size: 0.72rem; overflow-wrap: anywhere; }
+.digest-table .copy-btn { font-size: 0.7rem; padding: 0.2rem 0.5rem; }
+
+/* ── Top-level Spec section ────────────────────────────────────── */
+#spec-body { margin-top: 1.5rem; }
+
+/* ── Starlark syntax highlighting (lightweight, in-repo tokenizer) ──
+   Tokens map to site palette variables so the scheme follows
+   light/dark automatically. Keep palette narrow: too many tones
+   make the source feel noisy. */
+.tok-comment { color: var(--fg-subtle); font-style: italic; }
+.tok-string  { color: var(--pass-fg); }
+.tok-number  { color: var(--warn-fg); }
+.tok-keyword { color: var(--accent); font-weight: 600; }
+.tok-builtin { color: var(--accent-hover); }
+.tok-def     { color: var(--accent-hover); font-weight: 700; }
+.tok-param   { color: var(--fg-muted); }
+
+.spec-file {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+}
+.spec-file summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.55rem 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  user-select: none;
+  font-family: var(--font-mono);
+}
+.spec-file summary::-webkit-details-marker { display: none; }
+.spec-file summary::before {
+  content: "▸";
+  color: var(--fg-subtle);
+  margin-right: 0.4rem;
+  transition: transform 0.12s;
+  display: inline-block;
+}
+.spec-file[open] summary::before { transform: rotate(90deg); }
+.spec-file summary:hover { background: var(--bg); }
+.spec-file-path {
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+.spec-file-size {
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+}
+.spec-file-body {
+  border-top: 1px solid var(--border);
+  max-height: 520px;
+  overflow: auto;
+  background: var(--bg-code);
+}
+
+/* Source viewer: monospaced, line-numbered, with a scroll-target
+   attribute per line so the JS can auto-scroll to a specific def.
+   Kept intentionally minimal — no syntax highlighting yet, because
+   the report must stay under budget and highlighting adds a lexer. */
+.source-code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  margin: 0;
+  padding: 0.4rem 0;
+}
+.source-line {
+  display: flex;
+  gap: 0.9rem;
+  padding-inline: 0.9rem;
+  white-space: pre;
+}
+.source-line:hover { background: var(--bg); }
+.source-line-no {
+  color: var(--fg-subtle);
+  text-align: right;
+  user-select: none;
+  flex: 0 0 3em;
+  font-variant-numeric: tabular-nums;
+}
+.source-line-code {
+  flex: 1;
+  color: var(--fg);
+  white-space: pre;
+}
+.source-line.hit {
+  background: var(--warn-bg);
+  border-left: 2px solid var(--warn-fg);
+  padding-left: calc(0.9rem - 2px);
+}
+.source-line.hit:hover { background: var(--warn-bg); }
+
+/* Coverage table: services now link into the spec section. */
+.coverage-table a.service-link {
+  color: var(--fg);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--border-strong);
+  cursor: pointer;
+}
+.coverage-table a.service-link:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Drill-down Source + Topology collapsibles. Share visual language
+   with trace-detail collapsibles but live at drill-down level. */
+.dd-fold {
+  margin-top: 0.9rem;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.dd-fold summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.5rem 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.dd-fold summary::-webkit-details-marker { display: none; }
+.dd-fold summary::before {
+  content: "▸";
+  color: var(--fg-subtle);
+  margin-right: 0.4rem;
+  transition: transform 0.12s;
+  display: inline-block;
+}
+.dd-fold[open] summary::before { transform: rotate(90deg); }
+.dd-fold summary:hover { color: var(--fg); background: var(--bg); }
+.dd-fold-body {
+  border-top: 1px solid var(--border);
+  max-height: 380px;
+  overflow: auto;
+}
+.dd-fold-empty {
+  padding: 0.75rem 0.9rem;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.dd-topology {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.75rem 0.9rem;
+}
+.dd-topology-chip {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  text-decoration: none;
+}
+.dd-topology-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  text-decoration: none;
+}
+.dd-topology-chip-meta {
+  color: var(--fg-muted);
+  margin-left: 0.35rem;
+  font-size: 0.72rem;
+}
+
+/* ── Print (CTOs screenshot sections into decks) ───────────────── */
+@media print {
+  .report-header { position: static; }
+  body { background: #fff; color: #111; }
+  .stat, .repro-item, .repro-replay, .matrix, .tests-table {
+    background: #fff;
+    border-color: #ccc;
+    box-shadow: none;
+  }
+  .copy-btn { display: none; }
+  a { color: inherit; text-decoration: none; }
+}

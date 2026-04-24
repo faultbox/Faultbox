@@ -84,6 +84,8 @@ func run() int {
 		return replayCmd(args[1:])
 	case "lock":
 		return lockCmd(args[1:])
+	case "report":
+		return reportCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
@@ -1782,6 +1784,10 @@ func printUsage() {
   faultbox mcp                               Start MCP server (for LLM agents)
   faultbox recipes list                      List embedded stdlib recipes
   faultbox recipes show <name>               Print a stdlib recipe source
+  faultbox inspect <bundle.fb>               Examine a .fb bundle
+  faultbox replay <bundle.fb>                Rerun a .fb bundle's tests
+  faultbox lock                              Manage faultbox.lock image digests
+  faultbox report <bundle.fb>                Build a self-contained HTML report
 
 Run flags:
   --log-format=console   Force colored console output
