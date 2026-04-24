@@ -284,6 +284,17 @@ func testCmd(args []string) int {
 		args = args[1:]
 	}
 
+	// Default to ./faultbox.star when no spec is supplied — matches the
+	// go test / pytest / cargo test ergonomics the inDrive Freight team
+	// flagged in the v0.11.1 feedback. Still requires the file to
+	// actually exist, so a typo at the wrong CWD still fails loudly
+	// rather than surprising the user.
+	if starFile == "" && configPath == "" && specPath == "" {
+		if _, err := os.Stat("faultbox.star"); err == nil {
+			starFile = "faultbox.star"
+		}
+	}
+
 	if starFile != "" {
 		// RFC-025 C3: resolve and persist the run seed. Explicit --seed
 		// always wins; otherwise we reuse the cached value from
@@ -1798,7 +1809,11 @@ Run flags:
   --env KEY=VALUE        Set environment variable for the target
 
 Test flags:
-  --test <name>            Run only matching test
+  --test <pattern>         Run only matching tests. Accepts:
+                             · exact name         --test=test_health
+                             · short form         --test=health
+                             · glob               --test='test_matrix_*'
+                             · regex (with ~)     --test='~test_(matrix|smoke)_.*'
   --runs <N>               Run each test N times (compact summary, stop on first failure)
   --seed <N>               Deterministic seed for replay
   --show all|fail          Filter output (default: all)
