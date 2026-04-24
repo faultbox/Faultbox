@@ -1002,7 +1002,7 @@ Behaviour:
 Backwards compatible: `default_expect=` still accepts plain Starlark
 lambdas for rows that need custom checks.
 
-#### Outcome taxonomy (v0.11.2)
+#### Outcome taxonomy (v0.11.1)
 
 Every `fault_scenario` / `fault_matrix` row produces one of five
 outcomes in `manifest.json` and the HTML report:
@@ -1024,7 +1024,7 @@ fault never fired. The predicate name (e.g. `expect_success`,
 `manifest.tests[].expectation` and surfaces alongside the pill in the
 report's tests table and drill-down header.
 
-#### `require_faults_fire=True` on `fault_matrix()` (v0.11.2)
+#### `require_faults_fire=True` on `fault_matrix()` (v0.11.1)
 
 Opt-in gate that demotes rows where at least one installed fault rule
 never matched a syscall during the test:
