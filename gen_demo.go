@@ -35,11 +35,12 @@ func main() {
 			{Name: "test_inventory__cache_latency", Outcome: "passed", DurationMs: 180, Seed: 7, Expectation: "expect_success"},
 			{Name: "test_inventory__disk_full", Outcome: "passed", DurationMs: 100, Seed: 7, Expectation: "expect_success"},
 			{Name: "test_checkout__none", Outcome: "passed", DurationMs: 115, Seed: 7, Expectation: "expect_success"},
-			{Name: "test_checkout__db_down", Outcome: "passed", DurationMs: 140, Seed: 7, Expectation: "expect_success"},
+			{Name: "test_checkout__db_down", Outcome: "fault_bypassed", DurationMs: 40, Seed: 7, FaultAssumptions: []string{"postgres: connect=ECONNREFUSED"}, Expectation: "expect_success",
+				BypassedRules: []bundle.BypassedRule{{Service: "postgres", Syscall: "connect", Action: "deny", Label: "db_down"}}},
 			{Name: "test_checkout__cache_latency", Outcome: "passed", DurationMs: 200, Seed: 7, Expectation: "expect_success"},
 			{Name: "test_checkout__disk_full", Outcome: "passed", DurationMs: 122, Seed: 7, Expectation: "expect_success"},
 		},
-		Summary: bundle.Summary{Total: 12, Passed: 10, Failed: 2, Errored: 0, ExpectationViolated: 1},
+		Summary: bundle.Summary{Total: 12, Passed: 10, Failed: 2, Errored: 0, ExpectationViolated: 1, FaultBypassed: 1},
 	}
 	must(w.AddJSON("manifest.json", manifest))
 
@@ -101,7 +102,10 @@ func buildMatrix() map[string]any {
 		{"scenario": "inventory", "fault": "cache_latency", "passed": true, "outcome": "passed", "expectation": "expect_success", "duration_ms": 180},
 		{"scenario": "inventory", "fault": "disk_full", "passed": true, "outcome": "passed", "expectation": "expect_success", "duration_ms": 100},
 		{"scenario": "checkout", "fault": "none", "passed": true, "outcome": "passed", "expectation": "expect_success", "duration_ms": 115},
-		{"scenario": "checkout", "fault": "db_down", "passed": true, "outcome": "passed", "expectation": "expect_success", "duration_ms": 140},
+		{"scenario": "checkout", "fault": "db_down", "passed": false, "outcome": "fault_bypassed", "expectation": "expect_success", "duration_ms": 40,
+			"bypassed_rules": []map[string]any{
+				{"service": "postgres", "syscall": "connect", "action": "deny", "label": "db_down"},
+			}},
 		{"scenario": "checkout", "fault": "cache_latency", "passed": true, "outcome": "passed", "expectation": "expect_success", "duration_ms": 200},
 		{"scenario": "checkout", "fault": "disk_full", "passed": true, "outcome": "passed", "expectation": "expect_success", "duration_ms": 122},
 	}

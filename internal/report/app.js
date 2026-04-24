@@ -70,27 +70,32 @@
     return (s == null ? "" : String(s));
   }
 
-  // RFC-027: map the four manifest outcomes to pill / matrix-cell
-  // classes. Unknown outcomes fall back to "warn" so a future
-  // schema_version that adds a tag we haven't shipped still renders
-  // visibly (rather than vanishing into default text).
+  // RFC-027 + issue #75: map the five manifest outcomes to pill /
+  // matrix-cell classes. Unknown outcomes fall back to "warn" so a
+  // future schema_version that adds a tag we haven't shipped still
+  // renders visibly (rather than vanishing into default text).
   function outcomeClass(outcome) {
     switch (outcome) {
       case "passed": return "pass";
       case "failed": return "fail";
       case "expectation_violated": return "violated";
+      case "fault_bypassed": return "bypassed";
       case "errored": return "errored";
       default: return "warn";
     }
   }
 
-  // outcomeFromTrace collapses the legacy trace.json result field plus
-  // the RFC-027 expectation_violated refinement into the canonical
-  // manifest string. Kept in one place so the drill-down header, the
-  // tests table, and the matrix stay in lockstep.
+  // outcomeFromTrace collapses the legacy trace.json result field
+  // plus RFC-027 expectation_violated and issue #75 fault_bypassed
+  // refinements into the canonical manifest string. Kept in one
+  // place so the drill-down header, the tests table, and the matrix
+  // stay in lockstep. Precedence mirrors cmd/faultbox/main.go:
+  // failed/errored > expectation_violated > fault_bypassed > passed.
   function outcomeFromTrace(test) {
     if (!test) return "";
-    if (test.result === "pass") return "passed";
+    if (test.result === "pass") {
+      return test.fault_bypassed ? "fault_bypassed" : "passed";
+    }
     if (test.result === "fail") {
       return test.expectation_violated ? "expectation_violated" : "failed";
     }
@@ -166,6 +171,13 @@
         pillText += " (" + s.expectation_violated + " violated expectation)";
       }
       if (s.errored) pillText += " · " + s.errored + " errored";
+    }
+    // Issue #75: bypass is a refinement of passed, not a failure, so
+    // it has its own badge after the main pill text rather than
+    // promoting the header to red.
+    if (s.fault_bypassed) {
+      pillText += " · " + s.fault_bypassed + " bypassed";
+      if (pillClass === "pass") pillClass = "bypassed";
     }
     host.innerHTML = "";
     host.appendChild(el("span", { class: "pill " + pillClass, text: pillText }));
@@ -269,12 +281,21 @@
       case "passed": icon = "✓"; break;
       case "failed": icon = "✗"; break;
       case "expectation_violated": icon = "≠"; break;
+      case "fault_bypassed": icon = "∅"; break;
       case "errored": icon = "!"; break;
       default: icon = "?";
     }
     var title = cell.scenario + " × " + cell.fault + "\n" + outcome;
     if (cell.expectation) title += " (" + cell.expectation + ")";
-    if (outcome !== "passed" && cell.reason) title += "\n" + cell.reason;
+    if (outcome === "fault_bypassed" && cell.bypassed_rules && cell.bypassed_rules.length) {
+      var bits = [];
+      for (var br = 0; br < cell.bypassed_rules.length; br++) {
+        var r = cell.bypassed_rules[br];
+        bits.push(r.service + "." + r.syscall);
+      }
+      title += "\nfault did not fire: " + bits.join(", ");
+    }
+    if (outcome !== "passed" && outcome !== "fault_bypassed" && cell.reason) title += "\n" + cell.reason;
     if (cell.duration_ms != null) title += "\nduration: " + fmtDuration(cell.duration_ms);
     // Matrix test names follow the `test_<scenario>__<fault>` convention
     // emitted by the `fault_matrix()` builtin. Binding it here is what
@@ -564,6 +585,18 @@
       body.appendChild(faultsTable(test.faults));
     }
 
+    // Issue #75: fault_bypassed rows surface the rules the runtime
+    // saw installed-but-never-matched. Without this the user is
+    // left guessing which fault was inert.
+    if (test.fault_bypassed && test.bypassed_rules && test.bypassed_rules.length) {
+      body.appendChild(el("h4", { text: "Faults that did not fire" }));
+      body.appendChild(bypassedRulesTable(test.bypassed_rules));
+      body.appendChild(el("div", { class: "stat-caption",
+        text: "These rules were installed but never matched a syscall. " +
+              "The scenario likely didn't exercise the faulted code path — " +
+              "cache hit, wrong syscall family, or alternate branch." }));
+    }
+
     // Diagnostics.
     if (test.diagnostics && test.diagnostics.length) {
       body.appendChild(el("h4", { text: "Diagnostics" }));
@@ -733,6 +766,32 @@
         el("td", { text: f.errno || "" }),
         el("td", { class: hitsCls, text: String(f.hits != null ? f.hits : 0) }),
         el("td", { text: f.label || "" }),
+      ]));
+    }
+    tbl.appendChild(thead);
+    tbl.appendChild(tbody);
+    return tbl;
+  }
+
+  // bypassedRulesTable renders the fault rules the runtime installed
+  // but never matched. The shape mirrors the trace-layer BypassedRule
+  // struct (service / syscall / action / label) — one row per rule.
+  function bypassedRulesTable(rules) {
+    var tbl = el("table", { class: "dd-faults" });
+    var thead = el("thead", null, [el("tr", null, [
+      el("th", { text: "Service" }),
+      el("th", { text: "Syscall" }),
+      el("th", { text: "Action" }),
+      el("th", { text: "Label" }),
+    ])]);
+    var tbody = el("tbody");
+    for (var i = 0; i < rules.length; i++) {
+      var r = rules[i];
+      tbody.appendChild(el("tr", null, [
+        el("td", null, [serviceRef(r.service || "")]),
+        el("td", { text: r.syscall || "" }),
+        el("td", { text: r.action || "" }),
+        el("td", { text: r.label || "" }),
       ]));
     }
     tbl.appendChild(thead);

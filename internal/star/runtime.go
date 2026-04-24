@@ -48,6 +48,27 @@ type TestResult struct {
 	// surfaces this as the fourth outcome "expectation_violated" in the
 	// bundle manifest and the HTML report.
 	ExpectationViolated bool `json:"-"`
+	// FaultBypassed flags a row where fault_matrix was asked to require
+	// the fault to fire (require_faults_fire=True) but the event log
+	// contained at least one fault_zero_traffic event — the fault rule
+	// was installed but the scenario never hit it. The outcome is
+	// "fault_bypassed" in the manifest, rendered grey in the HTML
+	// report. Does NOT overwrite failed/errored/expectation_violated.
+	FaultBypassed bool `json:"-"`
+	// BypassedRules lists the rule descriptors (service+syscall+label)
+	// the runtime flagged as zero-traffic. Surfaced in the drill-down
+	// so users know exactly which fault dodged the scenario.
+	BypassedRules []BypassedRule `json:"-"`
+}
+
+// BypassedRule describes one fault rule that was installed for this
+// test but never matched any syscall — the signal behind the
+// fault_bypassed outcome.
+type BypassedRule struct {
+	Service string `json:"service"`
+	Syscall string `json:"syscall"`
+	Action  string `json:"action,omitempty"`
+	Label   string `json:"label,omitempty"`
 }
 
 // SuiteResult captures the outcome of all test functions.
@@ -137,6 +158,12 @@ type Runtime struct {
 	// survives the runner's own defers that clear currentFaultScenario.
 	expectationName     string
 	expectationViolated bool
+
+	// requireFaultsFire mirrors FaultScenarioDef.RequireFaultsFire for
+	// the currently-running test so RunTest can tell whether to scan
+	// the event log for fault_zero_traffic events and demote the row
+	// to the fault_bypassed outcome. Reset at the top of RunTest.
+	requireFaultsFire bool
 
 	// mockTLSImpl is lazy-initialized the first time a tls=True mock service
 	// starts. The whole runtime shares one CA so clients can trust every
@@ -556,6 +583,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// them at their zero values so TestResult.ExpectationName stays empty.
 	rt.expectationName = ""
 	rt.expectationViolated = false
+	rt.requireFaultsFire = false
 
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
@@ -600,6 +628,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// the RFC-027 manifest fields and HTML report palette.
 	expectName := rt.expectationName
 	expectViolated := rt.expectationViolated
+	requireFaults := rt.requireFaultsFire
 
 	// Stop services.
 	rt.stopServices()
@@ -633,6 +662,33 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		}
 	}
 
+	// Issue #75: if the row asked the runtime to require every fault
+	// rule to actually fire, scan the event log for fault_zero_traffic
+	// markers and demote the outcome to "fault_bypassed" when any show
+	// up. Keeps Result at "pass" so legacy pass/fail counters don't
+	// change shape; the bundle/report layer reads FaultBypassed to
+	// paint the cell grey.
+	bypassed := false
+	var bypassedRules []BypassedRule
+	if requireFaults {
+		for _, ev := range events {
+			// Event.Type is the raw emit key ("fault_zero_traffic");
+			// Event.EventType gets the ".<syscall>" suffix via the
+			// EventLog auto-derivation, so match on Type to stay
+			// robust against future rewrites.
+			if ev.Type != "fault_zero_traffic" {
+				continue
+			}
+			bypassed = true
+			bypassedRules = append(bypassedRules, BypassedRule{
+				Service: ev.Service,
+				Syscall: ev.Fields["syscall"],
+				Action:  ev.Fields["action"],
+				Label:   ev.Fields["label"],
+			})
+		}
+	}
+
 	return TestResult{
 		Name:            name,
 		Result:          "pass",
@@ -641,6 +697,8 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		ReturnValue:     retVal,
 		Matrix:          matrixInfo,
 		ExpectationName: expectName,
+		FaultBypassed:   bypassed,
+		BypassedRules:   bypassedRules,
 	}
 }
 
@@ -1467,6 +1525,12 @@ func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callab
 		// Track current fault_scenario so RunTest can copy MatrixInfo.
 		rt.currentFaultScenario = fs
 		defer func() { rt.currentFaultScenario = nil }()
+
+		// Propagate fault_matrix's require_faults_fire flag to RunTest
+		// via a Runtime field — set now rather than snapshotted into
+		// RunTest from fs because the defer above clears
+		// currentFaultScenario before RunTest reads it.
+		rt.requireFaultsFire = fs.RequireFaultsFire
 
 		// 1. Collect and register all monitors (from assumptions + scenario-level).
 		var monitorIDs []int

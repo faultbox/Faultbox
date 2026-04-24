@@ -1371,6 +1371,7 @@ func (rt *Runtime) builtinFaultMatrix(thread *starlark.Thread, fn *starlark.Buil
 	var monitors []*MonitorDef
 	var overridesDict *starlark.Dict
 	var excludeList *starlark.List
+	var requireFaultsFire bool
 
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
@@ -1431,6 +1432,12 @@ func (rt *Runtime) builtinFaultMatrix(thread *starlark.Thread, fn *starlark.Buil
 				return nil, fmt.Errorf("fault_matrix() exclude= must be a list, got %s", kv[1].Type())
 			}
 			excludeList = l
+		case "require_faults_fire":
+			b, ok := kv[1].(starlark.Bool)
+			if !ok {
+				return nil, fmt.Errorf("fault_matrix() require_faults_fire= must be bool, got %s", kv[1].Type())
+			}
+			requireFaultsFire = bool(b)
 		default:
 			return nil, fmt.Errorf("fault_matrix() unexpected keyword %q", key)
 		}
@@ -1510,13 +1517,14 @@ func (rt *Runtime) builtinFaultMatrix(thread *starlark.Thread, fn *starlark.Buil
 			}
 
 			fs := &FaultScenarioDef{
-				Name:     name,
-				Scenario: sc,
-				Faults:   []*FaultAssumptionDef{fa},
-				Expect:   expect,
-				Monitors: monitors, // matrix-wide monitors
-				Timeout:  30 * time.Second,
-				Matrix:   &MatrixInfo{ScenarioName: sc.Name(), FaultName: fa.Name},
+				Name:              name,
+				Scenario:          sc,
+				Faults:            []*FaultAssumptionDef{fa},
+				Expect:            expect,
+				Monitors:          monitors, // matrix-wide monitors
+				Timeout:           30 * time.Second,
+				Matrix:            &MatrixInfo{ScenarioName: sc.Name(), FaultName: fa.Name},
+				RequireFaultsFire: requireFaultsFire,
 			}
 			rt.faultScenarios[name] = fs
 		}

@@ -32,16 +32,25 @@ type Manifest struct {
 }
 
 // Summary is the headline pass/fail/errored count for the run, for
-// quick scanning without walking the tests array. ExpectationViolated
-// is a refinement of Failed introduced by RFC-027 — rows whose expect
-// predicate rejected the scenario result. Those rows are also counted
-// in Failed, so existing consumers stay correct without a schema bump.
+// quick scanning without walking the tests array.
+//
+// ExpectationViolated is a refinement of Failed introduced by RFC-027
+// — rows whose expect predicate rejected the scenario result. Those
+// rows are also counted in Failed, so existing consumers stay correct
+// without a schema bump.
+//
+// FaultBypassed is a refinement of Passed introduced by issue #75 —
+// rows that would have been green but carried fault_zero_traffic
+// events under require_faults_fire=True. It does NOT bump Failed:
+// bypass is an ambiguity signal ("we don't know if the service is
+// resilient"), not a failure. Rendered in grey, reported separately.
 type Summary struct {
 	Total               int `json:"total"`
 	Passed              int `json:"passed"`
 	Failed              int `json:"failed"`
 	Errored             int `json:"errored"`
 	ExpectationViolated int `json:"expectation_violated,omitempty"`
+	FaultBypassed       int `json:"fault_bypassed,omitempty"`
 }
 
 // TestRow is one row of the tests array in the manifest. Mirrors the
@@ -49,21 +58,37 @@ type Summary struct {
 // the larger per-test event log — the latter still lives in trace.json.
 //
 // RFC-027 additions (additive, does not bump SchemaVersion):
-//   - Outcome gains the value "expectation_violated" for rows whose
-//     expect predicate rejected the scenario result. Tools that only
-//     know the v0.10.0 taxonomy can treat it as a refinement of
-//     "failed" (which is why Summary.Failed still counts it).
+//   - Outcome gains the values "expectation_violated" and
+//     "fault_bypassed". Tools that only know the v0.10.0 taxonomy can
+//     treat the former as a refinement of "failed" (Summary.Failed
+//     still counts it) and the latter as a refinement of "passed"
+//     (Summary.Passed still counts it).
 //   - Expectation records the expect predicate's Name() (e.g.
 //     "expect_success", "expect_error_within", or "lambda" for a
 //     user-supplied callable) so the RFC-029 HTML report can render
 //     the predicate alongside the outcome pill.
+//   - BypassedRules lists each fault rule that was installed but
+//     never matched a syscall during the test — the evidence behind
+//     the "fault_bypassed" outcome. Drives the drill-down section in
+//     the HTML report.
 type TestRow struct {
-	Name             string   `json:"name"`
-	Outcome          string   `json:"outcome"` // "passed" | "failed" | "errored" | "expectation_violated"
-	DurationMs       int64    `json:"duration_ms"`
-	Seed             uint64   `json:"seed,omitempty"`
-	FaultAssumptions []string `json:"fault_assumptions,omitempty"`
-	Expectation      string   `json:"expectation,omitempty"`
+	Name             string         `json:"name"`
+	Outcome          string         `json:"outcome"` // passed | failed | errored | expectation_violated | fault_bypassed
+	DurationMs       int64          `json:"duration_ms"`
+	Seed             uint64         `json:"seed,omitempty"`
+	FaultAssumptions []string       `json:"fault_assumptions,omitempty"`
+	Expectation      string         `json:"expectation,omitempty"`
+	BypassedRules    []BypassedRule `json:"bypassed_rules,omitempty"`
+}
+
+// BypassedRule mirrors star.BypassedRule for the manifest — we don't
+// import the star package from bundle to keep the dependency arrow
+// one-way. Populated only when Outcome == "fault_bypassed".
+type BypassedRule struct {
+	Service string `json:"service"`
+	Syscall string `json:"syscall"`
+	Action  string `json:"action,omitempty"`
+	Label   string `json:"label,omitempty"`
 }
 
 // Env is `env.json` — the machine-readable fingerprint of the
