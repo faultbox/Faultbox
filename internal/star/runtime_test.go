@@ -1136,6 +1136,67 @@ def test_ok():
 	}
 }
 
+// TestGRPCRetryableRecipe pins the v0.12 #79 contract for the
+// composite "flapping upstream" recipe: it returns a list of three
+// proxy fault rules whose probabilities sum to the requested
+// overall failure rate, with the default 60/25/15 status weights.
+func TestGRPCRetryableRecipe(t *testing.T) {
+	dir := t.TempDir()
+	absRecipe, err := filepath.Abs("../../recipes/grpc.star")
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	spec := `load("` + absRecipe + `", "grpc")
+
+api = service("api", "/tmp/mock-api",
+    interface("main", "grpc", 9000),
+)
+
+unstable = fault_assumption("unstable",
+    target = api.main,
+    rules  = grpc.retryable(method = "/pkg.Service/Do", probability = 0.4),
+)
+
+def test_ok():
+    pass
+`
+	if err := os.WriteFile(dir+"/faultbox.star", []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rt := New(testLogger())
+	if err := rt.LoadFile(dir + "/faultbox.star"); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	// The assumption must carry exactly the three rules with the
+	// expected status codes and per-rule probabilities (probability
+	// * weight / sum) so retry-policy tests behave predictably.
+	assumption, ok := rt.faultAssumptions["unstable"]
+	if !ok {
+		t.Fatal("fault_assumption 'unstable' not registered")
+	}
+	if len(assumption.ProxyRules) != 3 {
+		t.Fatalf("expected 3 proxy rules, got %d", len(assumption.ProxyRules))
+	}
+	wantStatus := map[int]float64{
+		14: 0.4 * 0.60, // unavailable
+		4:  0.4 * 0.25, // deadline_exceeded
+		10: 0.4 * 0.15, // aborted
+	}
+	for _, r := range assumption.ProxyRules {
+		pf := r.ProxyFault
+		want, ok := wantStatus[pf.Status]
+		if !ok {
+			t.Errorf("unexpected status %d in retryable rule set", pf.Status)
+			continue
+		}
+		if diff := pf.Probability - want; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("status %d probability = %.4f, want %.4f",
+				pf.Status, pf.Probability, want)
+		}
+	}
+}
+
 // TestStdlibLoad_Embedded verifies specs can import recipes via the
 // @faultbox/ prefix without any local recipes/ directory on disk.
 // This is the distribution mechanism from RFC-019.

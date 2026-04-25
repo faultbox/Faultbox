@@ -12,12 +12,69 @@
 #         rules  = [grpc.unavailable(method = "/pkg.Service/Method")],
 #     )
 #
+#     # Composite "real-world flapping upstream" mix.
+#     # Note: retryable() returns a list, so pass it to rules= directly
+#     # (no wrapping list) and concat with other rules using +.
+#     flapping = fault_assumption("flapping",
+#         target = api.main,
+#         rules  = grpc.retryable(method = "/pkg.Service/Method", probability = 0.3),
+#     )
+#
 # Scope: canonical gRPC status codes (google.rpc.Code 1-16). The proxy
 # matches rules by gRPC method path (e.g. "/pkg.Service/Method"); the
 # status code and message below are what the gRPC client receives
 # verbatim. Client-side status.FromError / switch-on-code handlers
 # recognize them by code, so retry policies behave identically to
 # production failures.
+
+# retryable models the canonical "flapping upstream" failure mix —
+# the trio of statuses production retry policies are written for.
+# Returns a list of error() rules whose individual probabilities are
+# scaled so the sum approximates the requested overall `probability`
+# of any failure firing on a given call.
+#
+# Default weighted blend:
+#   60% UNAVAILABLE (14)        — load shed, transient unreachable
+#   25% DEADLINE_EXCEEDED (4)   — slow upstream tipped over the call
+#                                  deadline
+#   15% ABORTED (10)            — txn conflict / optimistic lock loss
+#
+# Override the mix with `weights = {"unavailable": ..., "deadline_exceeded":
+# ..., "aborted": ...}` (any positive ratios; will be normalised).
+# Override the overall failure rate with `probability = 0.X`.
+#
+# Customer ask from the inDrive Freight v0.11.1 report (#11): the
+# common case of "model retryable failure mix" used to need three
+# hand-composed grpc.* lines plus manual probability arithmetic.
+def _retryable(method = "*", probability = 0.3, weights = None):
+    w = weights or {
+        "unavailable": 0.60,
+        "deadline_exceeded": 0.25,
+        "aborted": 0.15,
+    }
+    total = w.get("unavailable", 0) + w.get("deadline_exceeded", 0) + w.get("aborted", 0)
+    if total <= 0:
+        fail("grpc.retryable: weights must sum > 0")
+    return [
+        error(
+            method = method,
+            status = 14,
+            message = "server unavailable, retry",
+            probability = probability * w.get("unavailable", 0) / total,
+        ),
+        error(
+            method = method,
+            status = 4,
+            message = "deadline exceeded",
+            probability = probability * w.get("deadline_exceeded", 0) / total,
+        ),
+        error(
+            method = method,
+            status = 10,
+            message = "aborted - transactional conflict",
+            probability = probability * w.get("aborted", 0) / total,
+        ),
+    ]
 
 grpc = struct(
     # unavailable — code 14 (UNAVAILABLE). The most retried gRPC error.
@@ -103,4 +160,8 @@ grpc = struct(
     # connection_drop — closes the TCP connection mid-call. Forces
     # client reconnect through the resolver + subchannel paths.
     connection_drop = lambda method = "*": drop(method = method),
+
+    # retryable — composite "flapping upstream" mix. See _retryable
+    # above for the weighted blend and override knobs. (#79)
+    retryable = _retryable,
 )

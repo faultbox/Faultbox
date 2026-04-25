@@ -438,12 +438,7 @@ func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.T
 			case "topic":
 				pf.Topic, _ = starlark.AsString(kv[1])
 			case "probability":
-				s, _ := starlark.AsString(kv[1])
-				s = strings.TrimSuffix(s, "%")
-				fmt.Sscanf(s, "%f", &pf.Probability)
-				if pf.Probability > 1 {
-					pf.Probability /= 100.0
-				}
+				pf.Probability = parseProbability(kv[1])
 			}
 		}
 		if pf.Delay == 0 {
@@ -463,12 +458,7 @@ func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.T
 	}
 	prob := 1.0
 	if ps, ok := starKwarg(kwargs, "probability"); ok {
-		s, _ := starlark.AsString(ps)
-		s = strings.TrimSuffix(s, "%")
-		fmt.Sscanf(s, "%f", &prob)
-		if prob > 1 {
-			prob /= 100.0
-		}
+		prob = parseProbability(ps)
 	}
 	var label string
 	if ls, ok := starKwarg(kwargs, "label"); ok {
@@ -485,12 +475,7 @@ func builtinDeny(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 	}
 	prob := 1.0
 	if ps, ok := starKwarg(kwargs, "probability"); ok {
-		s, _ := starlark.AsString(ps)
-		s = strings.TrimSuffix(s, "%")
-		fmt.Sscanf(s, "%f", &prob)
-		if prob > 1 {
-			prob /= 100.0
-		}
+		prob = parseProbability(ps)
 	}
 	var label string
 	if ls, ok := starKwarg(kwargs, "label"); ok {
@@ -2137,12 +2122,7 @@ func builtinProxyResponse(thread *starlark.Thread, fn *starlark.Builtin, args st
 		case "value":
 			pf.Body, _ = starlark.AsString(kv[1])
 		case "probability":
-			s, _ := starlark.AsString(kv[1])
-			s = strings.TrimSuffix(s, "%")
-			fmt.Sscanf(s, "%f", &pf.Probability)
-			if pf.Probability > 1 {
-				pf.Probability /= 100.0
-			}
+			pf.Probability = parseProbability(kv[1])
 		}
 	}
 	return pf, nil
@@ -2175,12 +2155,7 @@ func builtinProxyError(thread *starlark.Thread, fn *starlark.Builtin, args starl
 				pf.Status = int(val)
 			}
 		case "probability":
-			s, _ := starlark.AsString(kv[1])
-			s = strings.TrimSuffix(s, "%")
-			fmt.Sscanf(s, "%f", &pf.Probability)
-			if pf.Probability > 1 {
-				pf.Probability /= 100.0
-			}
+			pf.Probability = parseProbability(kv[1])
 		}
 	}
 	return pf, nil
@@ -2201,12 +2176,7 @@ func builtinProxyDrop(thread *starlark.Thread, fn *starlark.Builtin, args starla
 		case "topic":
 			pf.Topic, _ = starlark.AsString(kv[1])
 		case "probability":
-			s, _ := starlark.AsString(kv[1])
-			s = strings.TrimSuffix(s, "%")
-			fmt.Sscanf(s, "%f", &pf.Probability)
-			if pf.Probability > 1 {
-				pf.Probability /= 100.0
-			}
+			pf.Probability = parseProbability(kv[1])
 		}
 	}
 	return pf, nil

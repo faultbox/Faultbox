@@ -670,6 +670,35 @@ func starKwarg(kwargs []starlark.Tuple, name string) (starlark.Value, bool) {
 	return nil, false
 }
 
+// parseProbability accepts probabilities expressed as a Starlark
+// Float (0.3), Int (30), or String ("30%" / "0.3"). Values >1 are
+// interpreted as percentages and divided by 100. Returns 0 on
+// types/strings the parser can't make sense of — callers should
+// pre-validate when zero would be surprising.
+//
+// The Float branch matters for stdlib recipes that compose rules
+// arithmetically (e.g. grpc.retryable scales the per-rule prob by a
+// weight ratio); the String branch keeps the original "0.3" / "30%"
+// ergonomics for hand-written specs.
+func parseProbability(v starlark.Value) float64 {
+	var p float64
+	switch t := v.(type) {
+	case starlark.Float:
+		p = float64(t)
+	case starlark.Int:
+		i, _ := t.Int64()
+		p = float64(i)
+	default:
+		s, _ := starlark.AsString(v)
+		s = strings.TrimSuffix(s, "%")
+		fmt.Sscanf(s, "%f", &p)
+	}
+	if p > 1 {
+		p /= 100.0
+	}
+	return p
+}
+
 func parseStarDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	return time.ParseDuration(s)
