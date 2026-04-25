@@ -80,8 +80,9 @@ func lockCmd(args []string) int {
 	}
 
 	images := collectImages(rt)
-	if len(images) == 0 {
-		fmt.Fprintln(os.Stderr, "no container images referenced in spec; lock would be empty")
+	binaries := collectBinaries(rt)
+	if len(images) == 0 && len(binaries) == 0 {
+		fmt.Fprintln(os.Stderr, "no container images or service binaries referenced in spec; lock would be empty")
 		// Still write/check so the file's lifecycle stays predictable.
 	}
 
@@ -90,25 +91,76 @@ func lockCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: resolve digests: %v\n", err)
 		return 1
 	}
+	binDigests, err := hashBinaries(binaries)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: hash binaries: %v\n", err)
+		return 1
+	}
 
 	lockPath := filepath.Join(filepath.Dir(specPath), lock.Filename)
 
 	switch mode {
 	case "check":
-		return runLockCheck(lockPath, resolved)
+		return runLockCheck(lockPath, resolved, binDigests)
 	case "write":
-		return runLockWrite(lockPath, resolved)
+		return runLockWrite(lockPath, resolved, binDigests)
 	}
 	return 0
+}
+
+// collectBinaries gathers the absolute paths of every binary-mode
+// service in the spec. Container-mode services have no Binary so
+// they're naturally excluded. (#77)
+func collectBinaries(rt *star.Runtime) []string {
+	seen := map[string]bool{}
+	for _, svc := range rt.Services() {
+		if svc.Binary == "" {
+			continue
+		}
+		seen[svc.Binary] = true
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// hashBinaries computes "sha256:<hex>" for each binary path. A
+// missing file is a hard error — the customer ships the binary
+// alongside the spec, so a path that doesn't resolve is a real
+// drift signal we want to surface immediately rather than silently
+// skip.
+func hashBinaries(paths []string) (map[string]string, error) {
+	if len(paths) == 0 {
+		return map[string]string{}, nil
+	}
+	out := make(map[string]string, len(paths))
+	for _, p := range paths {
+		fmt.Fprintf(os.Stderr, "Hashing %s ...\n", p)
+		dg, err := lock.HashBinary(p)
+		if err != nil {
+			return nil, err
+		}
+		out[p] = dg
+	}
+	return out, nil
 }
 
 // runLockWrite generates a fresh lock from the resolved digests and
 // writes it. Always overwrites — this is the lifecycle the user
 // asked for by running the command.
-func runLockWrite(path string, resolved map[string]string) int {
+func runLockWrite(path string, resolved, binaries map[string]string) int {
 	lk := lock.New(faultboxVersion(), time.Now())
 	for tag, digest := range resolved {
 		lk.Images[tag] = digest
+	}
+	if len(binaries) > 0 {
+		lk.Binaries = map[string]string{}
+		for p, dg := range binaries {
+			lk.Binaries[p] = dg
+		}
 	}
 	if err := lk.Write(path); err != nil {
 		fmt.Fprintf(os.Stderr, "error: write lock: %v\n", err)
@@ -116,15 +168,18 @@ func runLockWrite(path string, resolved map[string]string) int {
 	}
 	fmt.Fprintf(os.Stderr, "Wrote %s\n", path)
 	for _, tag := range sortedKeys(resolved) {
-		fmt.Fprintf(os.Stderr, "  %s → %s\n", tag, shortenDigest(resolved[tag]))
+		fmt.Fprintf(os.Stderr, "  image  %s → %s\n", tag, shortenDigest(resolved[tag]))
+	}
+	for _, p := range sortedKeys(binaries) {
+		fmt.Fprintf(os.Stderr, "  binary %s → %s\n", p, shortenDigest(binaries[p]))
 	}
 	return 0
 }
 
 // runLockCheck loads the existing lock and diffs it against current
-// resolved digests. Exit 0 when clean; 2 when drifted; 1 on infra
-// errors. CI scripts use the exit code.
-func runLockCheck(path string, resolved map[string]string) int {
+// resolved digests + binary hashes. Exit 0 when clean; 2 when
+// drifted; 1 on infra errors. CI scripts use the exit code.
+func runLockCheck(path string, resolved, binaries map[string]string) int {
 	lk, err := lock.Read(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: read lock: %v\n", err)
@@ -135,6 +190,8 @@ func runLockCheck(path string, resolved map[string]string) int {
 		return 1
 	}
 	drift := lk.CompareImages(resolved)
+	binDrift := lk.CompareBinaries(binaries)
+	drift.MergeBinaries(binDrift)
 	if drift.Empty() {
 		fmt.Fprintln(os.Stderr, "Lock is up to date.")
 		return 0

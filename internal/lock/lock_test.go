@@ -118,6 +118,92 @@ func TestCompareImagesRemovedFromSpec(t *testing.T) {
 	}
 }
 
+// TestHashBinaryRoundTrip checks the file-content hash is stable
+// across calls and matches a known fixed-input expectation.
+func TestHashBinaryRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	p := dir + "/svc-bin"
+	if err := os.WriteFile(p, []byte("hello faultbox"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	d1, err := HashBinary(p)
+	if err != nil {
+		t.Fatalf("HashBinary: %v", err)
+	}
+	d2, _ := HashBinary(p)
+	if d1 != d2 {
+		t.Errorf("hash unstable: %s vs %s", d1, d2)
+	}
+	if !strings.HasPrefix(d1, "sha256:") {
+		t.Errorf("expected sha256: prefix, got %s", d1)
+	}
+	// sha256("hello faultbox") — pinned so a refactor of HashBinary
+	// can't silently change the digest format.
+	want := "sha256:34130bc449629b65f34032cface1365eba8b276461a7ff3006ef50be85e50910"
+	if d1 != want {
+		t.Errorf("digest = %s, want %s", d1, want)
+	}
+}
+
+// TestCompareBinariesNewChangedRemoved exercises the three drift
+// shapes for binary entries — mirroring the image-side coverage.
+func TestCompareBinariesNewChangedRemoved(t *testing.T) {
+	lk := New("0.12.0", time.Now())
+	lk.Binaries = map[string]string{
+		"/tmp/api":  "sha256:aaaa",
+		"/tmp/gone": "sha256:dddd",
+	}
+	d := lk.CompareBinaries(map[string]string{
+		"/tmp/api":   "sha256:bbbb", // changed
+		"/tmp/extra": "sha256:cccc", // new
+	})
+	if len(d.NewBinaries) != 1 || d.NewBinaries[0] != "/tmp/extra" {
+		t.Errorf("NewBinaries = %v", d.NewBinaries)
+	}
+	if len(d.RemovedBinaries) != 1 || d.RemovedBinaries[0] != "/tmp/gone" {
+		t.Errorf("RemovedBinaries = %v", d.RemovedBinaries)
+	}
+	if ch, ok := d.ChangedBinaries["/tmp/api"]; !ok || ch.From != "sha256:aaaa" || ch.To != "sha256:bbbb" {
+		t.Errorf("ChangedBinaries = %+v", d.ChangedBinaries)
+	}
+	if d.Empty() {
+		t.Error("Drift.Empty() should be false")
+	}
+}
+
+// TestFormatRendersBinariesAndImagesTogether ensures the merged
+// Drift output names every drifted entry across both kinds. The
+// CI-actionable view (#82 + #77) is "exactly which images and
+// binaries do I need to look at" without bouncing between sections.
+func TestFormatRendersBinariesAndImagesTogether(t *testing.T) {
+	lk := New("0.12.0", time.Now())
+	lk.Images["mysql:8"] = "sha256:imga0000000000000000000000000000000000000000000000000000000000000"
+	lk.Binaries = map[string]string{
+		"/tmp/svc": "sha256:bin000000000000000000000000000000000000000000000000000000000000aa",
+	}
+	imgDrift := lk.CompareImages(map[string]string{
+		"mysql:8": "sha256:imgb0000000000000000000000000000000000000000000000000000000000000",
+	})
+	binDrift := lk.CompareBinaries(map[string]string{
+		"/tmp/svc": "sha256:bin000000000000000000000000000000000000000000000000000000000000bb",
+	})
+	imgDrift.MergeBinaries(binDrift)
+	out := imgDrift.Format()
+
+	wants := []string{
+		"drift detected (2 entries):",
+		"image",
+		"binary",
+		"mysql:8",
+		"/tmp/svc",
+	}
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			t.Errorf("Format() missing %q\n--- output ---\n%s", w, out)
+		}
+	}
+}
+
 // TestFormatRendersActionableTable pins the v0.12 #82 output: a
 // "drift detected (N entries):" header followed by one line per
 // drifted entry naming the locked vs current digest. This is the

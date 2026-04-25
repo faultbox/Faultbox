@@ -11,14 +11,35 @@
 package lock
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
+
+// HashBinary returns the canonical "sha256:<hex>" digest of the file
+// at path. Used by faultbox lock to pin volume-mounted binaries
+// (#77). The whole-file hash is the supply-chain-correct answer —
+// a 50 MB Go binary takes ~100ms which is acceptable for lock-time
+// work.
+func HashBinary(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash %s: %w", path, err)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
 
 // SchemaVersion is the lock-file schema version emitted by this
 // package. Bumps follow the same rules as bundle.SchemaVersion:
@@ -125,8 +146,14 @@ type Drift struct {
 	RemovedImages []string          // refs in lock but not observed
 	ChangedImages map[string]Change // refs whose digest moved
 
-	observed map[string]string // tag → observed digest
-	locked   map[string]string // tag → locked digest
+	NewBinaries     []string          // binary paths in observed but not in lock
+	RemovedBinaries []string          // paths in lock but not observed
+	ChangedBinaries map[string]Change // paths whose digest moved
+
+	observed         map[string]string // tag → observed digest
+	locked           map[string]string // tag → locked digest
+	observedBinaries map[string]string // path → observed digest
+	lockedBinaries   map[string]string // path → locked digest
 }
 
 // Change records the before/after digest pair for a single drifted
@@ -139,7 +166,75 @@ type Change struct {
 // Empty reports whether the Drift carries any actual differences.
 // Callers use this as a fast "is the lock up to date?" check.
 func (d Drift) Empty() bool {
-	return len(d.NewImages) == 0 && len(d.RemovedImages) == 0 && len(d.ChangedImages) == 0
+	return len(d.NewImages) == 0 && len(d.RemovedImages) == 0 && len(d.ChangedImages) == 0 &&
+		len(d.NewBinaries) == 0 && len(d.RemovedBinaries) == 0 && len(d.ChangedBinaries) == 0
+}
+
+// CompareBinaries diffs the lock's binaries map against an observed
+// map (typically `service binary path → sha256(file)`). Mirrors
+// CompareImages — kept as a separate method so callers can pin
+// images and binaries independently. Returns a Drift carrying only
+// the binary fields populated; merge via MergeBinaries when both
+// are needed in one report. (#77)
+func (lk *Lock) CompareBinaries(observed map[string]string) Drift {
+	d := Drift{
+		ChangedBinaries:  map[string]Change{},
+		observedBinaries: observed,
+		lockedBinaries:   map[string]string{},
+	}
+	if lk == nil {
+		for k := range observed {
+			d.NewBinaries = append(d.NewBinaries, k)
+		}
+		sort.Strings(d.NewBinaries)
+		return d
+	}
+	for path, dg := range lk.Binaries {
+		d.lockedBinaries[path] = dg
+	}
+	for path, gotDigest := range observed {
+		want, ok := lk.Binaries[path]
+		switch {
+		case !ok:
+			d.NewBinaries = append(d.NewBinaries, path)
+		case want != gotDigest:
+			d.ChangedBinaries[path] = Change{From: want, To: gotDigest}
+		}
+	}
+	for path := range lk.Binaries {
+		if _, ok := observed[path]; !ok {
+			d.RemovedBinaries = append(d.RemovedBinaries, path)
+		}
+	}
+	sort.Strings(d.NewBinaries)
+	sort.Strings(d.RemovedBinaries)
+	return d
+}
+
+// MergeBinaries copies the binary-side fields from b into d in
+// place. Lets callers compose CompareImages + CompareBinaries
+// results into a single Drift for unified Format() output.
+func (d *Drift) MergeBinaries(b Drift) {
+	d.NewBinaries = append(d.NewBinaries, b.NewBinaries...)
+	d.RemovedBinaries = append(d.RemovedBinaries, b.RemovedBinaries...)
+	if d.ChangedBinaries == nil {
+		d.ChangedBinaries = map[string]Change{}
+	}
+	for k, v := range b.ChangedBinaries {
+		d.ChangedBinaries[k] = v
+	}
+	if d.observedBinaries == nil {
+		d.observedBinaries = map[string]string{}
+	}
+	for k, v := range b.observedBinaries {
+		d.observedBinaries[k] = v
+	}
+	if d.lockedBinaries == nil {
+		d.lockedBinaries = map[string]string{}
+	}
+	for k, v := range b.lockedBinaries {
+		d.lockedBinaries[k] = v
+	}
 }
 
 // CompareImages diffs the lock's image map against an observed map
@@ -199,11 +294,14 @@ func (d Drift) Format() string {
 		return ""
 	}
 
-	type row struct{ tag, locked, current string }
-	rows := make([]row, 0, len(d.NewImages)+len(d.RemovedImages)+len(d.ChangedImages))
+	type row struct{ kind, tag, locked, current string }
+	rows := make([]row, 0,
+		len(d.NewImages)+len(d.RemovedImages)+len(d.ChangedImages)+
+			len(d.NewBinaries)+len(d.RemovedBinaries)+len(d.ChangedBinaries))
 
 	for _, tag := range d.NewImages {
 		rows = append(rows, row{
+			kind:    "image",
 			tag:     tag,
 			locked:  "<not in lock>",
 			current: digestForDisplay(d.observed[tag]),
@@ -211,6 +309,7 @@ func (d Drift) Format() string {
 	}
 	for _, tag := range d.RemovedImages {
 		rows = append(rows, row{
+			kind:    "image",
 			tag:     tag,
 			locked:  digestForDisplay(d.locked[tag]),
 			current: "<not found locally>",
@@ -226,15 +325,50 @@ func (d Drift) Format() string {
 	for _, tag := range changedTags {
 		ch := d.ChangedImages[tag]
 		rows = append(rows, row{
+			kind:    "image",
 			tag:     tag,
 			locked:  digestForDisplay(ch.From),
 			current: digestForDisplay(ch.To),
 		})
 	}
 
+	for _, p := range d.NewBinaries {
+		rows = append(rows, row{
+			kind:    "binary",
+			tag:     p,
+			locked:  "<not in lock>",
+			current: digestForDisplay(d.observedBinaries[p]),
+		})
+	}
+	for _, p := range d.RemovedBinaries {
+		rows = append(rows, row{
+			kind:    "binary",
+			tag:     p,
+			locked:  digestForDisplay(d.lockedBinaries[p]),
+			current: "<not found on disk>",
+		})
+	}
+	changedBins := make([]string, 0, len(d.ChangedBinaries))
+	for p := range d.ChangedBinaries {
+		changedBins = append(changedBins, p)
+	}
+	sort.Strings(changedBins)
+	for _, p := range changedBins {
+		ch := d.ChangedBinaries[p]
+		rows = append(rows, row{
+			kind:    "binary",
+			tag:     p,
+			locked:  digestForDisplay(ch.From),
+			current: digestForDisplay(ch.To),
+		})
+	}
+
 	// Column widths so the locked / current columns line up visually.
-	tagW, lockedW := 0, 0
+	kindW, tagW, lockedW := 0, 0, 0
 	for _, r := range rows {
+		if len(r.kind) > kindW {
+			kindW = len(r.kind)
+		}
 		if len(r.tag) > tagW {
 			tagW = len(r.tag)
 		}
@@ -246,8 +380,8 @@ func (d Drift) Format() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "drift detected (%d entries):\n", len(rows))
 	for _, r := range rows {
-		fmt.Fprintf(&b, "  %-*s   locked %-*s   current %s\n",
-			tagW, r.tag, lockedW, r.locked, r.current)
+		fmt.Fprintf(&b, "  %-*s  %-*s   locked %-*s   current %s\n",
+			kindW, r.kind, tagW, r.tag, lockedW, r.locked, r.current)
 	}
 	return b.String()
 }
