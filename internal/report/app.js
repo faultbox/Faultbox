@@ -951,6 +951,18 @@
     pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Actual" }));
     pairs.appendChild(el("div", { class: "dd-assertion-value mono actual", text: a.actual || "—" }));
 
+    // Recent context: snapshot of the last few step events at fail
+    // time, populated by the runtime in v0.12.4. Surfaces the
+    // actual values Starlark folded away (e.g. resp.status = 500)
+    // by reading the last step_recv's status_code field. Matches
+    // the common test pattern of asserting on a freshly-returned
+    // response — when the assertion is about a value 5 steps back
+    // this misses, but it gets the 80% case right with no spec
+    // changes from the user.
+    if (a.context && a.context.length) {
+      pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Recent" }));
+      pairs.appendChild(renderAssertionContext(a.context));
+    }
     if (a.file && a.line) {
       pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Location" }));
       var loc = el("div", { class: "dd-assertion-value mono" });
@@ -973,6 +985,38 @@
     }
     grid.appendChild(pairs);
     return grid;
+  }
+
+  // renderAssertionContext renders the runtime-captured "what just
+  // happened" trail next to Expected/Actual. Each row reads as a
+  // mini step-event headline so the user sees the values that drove
+  // the assertion result (status_code, error, success).
+  function renderAssertionContext(ctx) {
+    var host = el("div", { class: "dd-assertion-value mono" });
+    var list = el("ul", { class: "dd-assertion-context" });
+    for (var i = 0; i < ctx.length; i++) {
+      var c = ctx[i];
+      var arrow = c.type === "step_send" ? "→" : "←";
+      var line = arrow + " " + (c.target || "?")
+        + (c.method ? "." + c.method : "")
+        + (c.summary ? "  " + truncate(stripArrowFromSummary(c.summary), 90) : "");
+      if (c.status_code) line += "  [" + c.status_code + "]";
+      if (c.success === "false" && c.error) line += "  ERR: " + truncate(c.error, 60);
+      var li = el("li", { class: c.success === "false" ? "fail" : "" }, [
+        document.createTextNode(line),
+      ]);
+      list.appendChild(li);
+    }
+    host.appendChild(list);
+    return host;
+  }
+
+  // The runtime-emitted summary already starts with "→" or "←", but
+  // we render the arrow ourselves alongside type. Strip the leading
+  // arrow to avoid `→ → db.exec`.
+  function stripArrowFromSummary(s) {
+    if (!s) return "";
+    return s.replace(/^[→←]\s*/, "");
   }
 
   // resolveSpecPath maps a Starlark-reported file path (could be
@@ -1105,19 +1149,19 @@
     if (!laneEvents.length) laneEvents = events.slice();
     var hiddenSyscalls = events.length - laneEvents.length;
 
-    // v0.12.2: a tight loop of `db.exec(...)` calls produces N
-    // step_send/step_recv pairs with identical (target, method) — same
-    // shape, same lane location, no new information per marker. We
-    // collapse consecutive runs into a single canonical marker tagged
-    // with `_runCount` and `_runMembers`. The event-log table (below
-    // the lane) keeps every individual row so forensics survive.
-    laneEvents = dedupLaneRuns(laneEvents);
-    var hiddenSteps = 0;
-    for (var hi = 0; hi < laneEvents.length; hi++) {
-      if (laneEvents[hi]._runCount && laneEvents[hi]._runCount > 1) {
-        hiddenSteps += laneEvents[hi]._runCount - 1;
-      }
-    }
+    // v0.12.4: anchor-window + global cardinality fold.
+    // Anchors  = faults, violations, lifecycle, errored steps.
+    // Window   = ±10 events around each anchor → kept as-is.
+    // Outside  = group globally by (target, method, summary);
+    //            count > FOLD_THRESHOLD collapses to a single chip
+    //            positioned at the median rank of its members.
+    // Replaces v0.12.2's consecutive-runs dedup which missed the
+    // common case of monitor SELECT 1 calls *interleaved* with the
+    // user's flow — those didn't sit adjacent in the event stream
+    // and so kept rendering as N independent identical chips.
+    var folded = applyAnchorWindowFilter(laneEvents);
+    laneEvents = folded.kept;
+    var hiddenSteps = folded.foldedCount;
 
     var lanes = {};
     var order = [];
@@ -1327,58 +1371,129 @@
     return true;
   }
 
-  // dedupLaneRuns merges consecutive lane events with identical
-  // (target, method) — the symptom Boris flagged on the test_order_feed
-  // lane: a 1500-iteration `db.exec(...)` loop renders 3000 markers
-  // that all pin to the same lane position with the same one-line
-  // summary. We collapse the run into a single canonical marker
-  // (tagged with `_runCount` and `_runMembers`) so the visual axis
-  // recovers signal density. The event-log table below keeps every
-  // individual row.
-  function dedupLaneRuns(evs) {
-    if (!evs.length) return evs;
-    var out = [];
-    var run = null;
-    for (var i = 0; i < evs.length; i++) {
-      var ev = evs[i];
-      var key = laneRunKey(ev);
-      if (run && run.key === key) {
-        run.count++;
-        run.members.push(ev.seq);
-      } else {
-        if (run) out.push(finalizeRun(run));
-        run = { key: key, head: ev, count: 1, members: [ev.seq] };
-      }
+  // applyAnchorWindowFilter is the v0.12.4 lane filter. It picks
+  // events to keep on the swim lane using two complementary rules:
+  //
+  //   1. Anchor windows. Faults, violations, lifecycle, and errored
+  //      step events ("anchors") are always kept. So is every event
+  //      within ±LANE_WINDOW positions of any anchor — this preserves
+  //      the immediate cause / consequence around each interesting
+  //      moment in the trace.
+  //
+  //   2. Global cardinality fold. Outside the anchor windows, events
+  //      are grouped by (target, method, summary). Groups with
+  //      cardinality ≤ LANE_FOLD_KEEP_THRESHOLD render every member
+  //      individually (so a one-off appears as itself). Larger groups
+  //      collapse to a single representative chip — `_runCount` set
+  //      to the total, `_runMembers` listing every seq, marker
+  //      positioned at the *median* rank of its members.
+  //
+  // The result: the user's `api.http.post` and the violation marker
+  // get full per-event context; an interleaved `db.exec SELECT 1 ×
+  // 80000` monitor loop folds into one chip without dragging the
+  // user-flow markers along with it.
+  var LANE_WINDOW = 10;
+  var LANE_FOLD_KEEP_THRESHOLD = 5;
+
+  function applyAnchorWindowFilter(evs) {
+    if (!evs.length) return { kept: [], foldedCount: 0 };
+    var n = evs.length;
+
+    // Phase 1: mark every position that lives inside an anchor window.
+    var inWindow = new Array(n);
+    for (var i = 0; i < n; i++) inWindow[i] = false;
+    for (var i = 0; i < n; i++) {
+      if (!isAnchorEvent(evs[i])) continue;
+      var lo = Math.max(0, i - LANE_WINDOW);
+      var hi = Math.min(n - 1, i + LANE_WINDOW);
+      for (var j = lo; j <= hi; j++) inWindow[j] = true;
     }
-    if (run) out.push(finalizeRun(run));
-    return out;
+
+    // Phase 2: bucket the out-of-window events by fold key. We track
+    // the original positions so the final chip can sit at the median
+    // rank — important when the fold spans the whole timeline.
+    var groups = {};
+    var groupOrder = [];
+    for (var i = 0; i < n; i++) {
+      if (inWindow[i]) continue;
+      var key = laneFoldKey(evs[i]);
+      if (!groups[key]) {
+        groups[key] = { positions: [], head: evs[i] };
+        groupOrder.push(key);
+      }
+      groups[key].positions.push(i);
+    }
+
+    // Phase 3: emit events. Window events render as-is. Out-of-window
+    // groups either render every member individually (small groups,
+    // signal preserved) or fold into one chip placed at the median
+    // position so the chip approximates *when* most of the activity
+    // happened.
+    var emit = new Array(n).fill(null);
+    var fold = []; // {position, ev}
+    var foldedCount = 0;
+
+    for (var i = 0; i < n; i++) {
+      if (inWindow[i]) emit[i] = evs[i];
+    }
+    for (var k = 0; k < groupOrder.length; k++) {
+      var g = groups[groupOrder[k]];
+      if (g.positions.length <= LANE_FOLD_KEEP_THRESHOLD) {
+        // Small group — leave each marker visible so the user can
+        // still see one-off events that happen to share a key.
+        for (var p = 0; p < g.positions.length; p++) {
+          emit[g.positions[p]] = evs[g.positions[p]];
+        }
+        continue;
+      }
+      // Big group — fold to one chip at the median position.
+      var med = g.positions[Math.floor(g.positions.length / 2)];
+      var chip = {};
+      for (var f in g.head) chip[f] = g.head[f];
+      chip._runCount = g.positions.length;
+      chip._runMembers = g.positions.map(function (p) { return evs[p].seq; });
+      foldedCount += g.positions.length - 1;
+      fold.push({ position: med, ev: chip });
+    }
+    for (var k = 0; k < fold.length; k++) emit[fold[k].position] = fold[k].ev;
+
+    var kept = [];
+    for (var i = 0; i < n; i++) if (emit[i]) kept.push(emit[i]);
+    return { kept: kept, foldedCount: foldedCount };
   }
 
-  function laneRunKey(ev) {
-    var t = ev.type;
-    // Only step events fold into runs; faults, lifecycle, and
-    // violations stay atomic so each one keeps its own marker.
-    if (t !== "step_send" && t !== "step_recv") return "_atomic_" + (ev.seq || 0);
+  // isAnchorEvent flags events that pin the surrounding window of
+  // detail. Mirrors the bundle-side anchor list (see report.go's
+  // anchorTypes) plus errored step events — `success=false` is the
+  // user's "this is the bad request" tag and we don't want it to
+  // disappear into a fold.
+  function isAnchorEvent(ev) {
+    var t = ev.type || "";
+    if (t === "fault_applied" || t === "fault_removed" ||
+        t === "fault_skipped_no_seccomp" || t === "fault_zero_traffic" ||
+        t === "violation" ||
+        t === "service_started" || t === "service_ready" || t === "service_stopped" ||
+        t === "session_completed") {
+      return true;
+    }
+    if ((t === "step_send" || t === "step_recv") && ev.fields) {
+      if (ev.fields.success === "false") return true;
+      if (ev.fields.error) return true;
+    }
+    return false;
+  }
+
+  // laneFoldKey is the cardinality-fold partition. Step events fold
+  // by (target, method, summary) so polling SELECT 1 collapses while
+  // INSERT INTO orders stays distinct. Other event types fold by
+  // their type, but in practice non-step events are anchors and
+  // never reach this path.
+  function laneFoldKey(ev) {
+    var t = ev.type || "";
+    if (t !== "step_send" && t !== "step_recv") return "_typed_" + t;
     var f = ev.fields || {};
-    // v0.12.3: include the summary in the key so a `db.exec SELECT 1`
-    // monitor loop folds separately from a `db.exec INSERT INTO …`
-    // user write. Without the summary axis a 1500-iter loop of mixed
-    // queries collapsed into one chip and lost all signal.
     var summary = f.summary || (f.sql || f.query || f.path || f.command || f.topic || "");
     return "step:" + (f.target || "?") + "." + (f.method || "?") + "::" + summary;
-  }
-
-  function finalizeRun(run) {
-    if (run.count === 1) return run.head;
-    // Synthesize a marker event that's a shallow clone of the head
-    // event with run metadata attached. Click handlers consult
-    // `_runCount` / `_runMembers` to render the collapsed-run
-    // detail panel and keep the event log highlighting in sync.
-    var clone = {};
-    for (var k in run.head) clone[k] = run.head[k];
-    clone._runCount = run.count;
-    clone._runMembers = run.members;
-    return clone;
   }
 
   function renderMarker(ev, seqRank, laneCount) {
@@ -1492,12 +1607,20 @@
   }
 
   function buildTooltipContent(ev) {
-    var head = el("div", { class: "trace-tooltip-head", text: ev.type || "event" });
+    // v0.12.4: prefer the runtime-emitted summary as the headline so
+    // a step balloon reads "← api.http.post  /api/v2/orders  [500]"
+    // instead of the bare type. The user can tell what happened
+    // without pinning + scrolling to read fields.
+    var f = ev.fields || {};
+    var headline = f.summary || ev.type || "event";
+    var head = el("div", { class: "trace-tooltip-head", text: headline });
     var sub = el("div", { class: "trace-tooltip-sub" });
     var bits = [];
     if (ev.service) bits.push(ev.service);
-    if (ev.fields && ev.fields.syscall) bits.push(ev.fields.syscall);
-    if (ev.fields && ev.fields.decision) bits.push("[" + ev.fields.decision + "]");
+    if (f.syscall) bits.push(f.syscall);
+    if (f.decision) bits.push("[" + f.decision + "]");
+    if (f.status_code && !f.summary) bits.push("status=" + f.status_code);
+    if (f.error && f.success === "false") bits.push("ERR: " + truncate(f.error, 50));
     bits.push("seq " + (ev.seq || 0));
     sub.textContent = bits.join(" · ");
     return el("div", null, [head, sub]);

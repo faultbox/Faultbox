@@ -102,6 +102,44 @@ func TestAssertCapturesCallerPosition(t *testing.T) {
 	}
 }
 
+// TestAssertCapturesRecentContext verifies the v0.12.4 Context
+// snapshot — when a `assert_true(resp.status in [200, 201])` fires,
+// the most recent step_recv event (with status_code on it) lands on
+// AssertionDetail.Context so the report can show "Recent: ←
+// api.http.post /orders [500]" without the user pinning the lane.
+func TestAssertCapturesRecentContext(t *testing.T) {
+	rt := &Runtime{events: NewEventLog()}
+	rt.events.Emit("step_send", "test", map[string]string{
+		"target": "api", "method": "post", "summary": "→ api.post /orders",
+	})
+	rt.events.Emit("step_recv", "test", map[string]string{
+		"target": "api", "method": "post", "summary": "← api.post /orders [500]",
+		"status_code": "500", "success": "false", "error": "internal error",
+	})
+	thread := &starlark.Thread{Name: "test"}
+	args := starlark.Tuple{starlark.False, starlark.String("status should be 200")}
+	if _, err := rt.builtinAssertTrue(thread, nil, args, nil); err == nil {
+		t.Fatal("assert_true should fail on a False condition")
+	}
+	if rt.lastAssertion == nil || len(rt.lastAssertion.Context) == 0 {
+		t.Fatal("Context should carry the recent step events")
+	}
+	got := rt.lastAssertion.Context
+	last := got[len(got)-1]
+	if last.Type != "step_recv" {
+		t.Errorf("last context entry type: got %q, want step_recv", last.Type)
+	}
+	if last.StatusCode != "500" {
+		t.Errorf("StatusCode: got %q, want 500", last.StatusCode)
+	}
+	if last.Success != "false" {
+		t.Errorf("Success: got %q, want false", last.Success)
+	}
+	if !strings.Contains(last.Error, "internal error") {
+		t.Errorf("Error: got %q, expected to contain 'internal error'", last.Error)
+	}
+}
+
 // TestAssertEqPassDoesNotPopulate guarantees we don't leave stale
 // AssertionDetail behind on a passing call — the runtime resets
 // lastAssertion at the top of RunTest, but a successful assert_eq in

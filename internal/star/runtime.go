@@ -85,23 +85,41 @@ type BypassedRule struct {
 // AssertionDetail captures the comparison that produced an assertion
 // failure: the calling builtin (assert_eq / assert_true), the expected
 // and actual values rendered the way Starlark would print them, the
-// optional user message, and — new in v0.12.3 — the call site so the
-// report can lift the original expression text out of the spec source
-// and render something semantically meaningful for assert_true (where
-// "Actual: False" alone is uninformative).
+// optional user message, the call site (so the renderer can lift the
+// original expression text out of the spec), and — new in v0.12.4 —
+// a snapshot of the most recent step events the test driver issued.
 //
-// File/Line refer to the spec file path inside the bundle (bundle-
-// relative if possible, absolute fallback) and the 1-based line number
-// of the assertion call. The renderer walks the bundle's spec/
-// directory and slices the assert_*(…) call's first argument out to
-// show the user what was being checked.
+// Why Context: when a user writes `assert_true(resp.status in [200,
+// 201])`, Starlark has already collapsed the expression to False by
+// the time the builtin runs — the runtime can't see `resp.status =
+// 500` from the call site. But the previous step_recv event almost
+// certainly carries the value (`status_code: 500`, `error: …`). The
+// drill-down renders Context as "what just happened" so the user
+// doesn't have to scroll the event log to learn the actual value.
 type AssertionDetail struct {
-	Func     string `json:"func"`
-	Expected string `json:"expected,omitempty"`
-	Actual   string `json:"actual,omitempty"`
-	Message  string `json:"message,omitempty"`
-	File     string `json:"file,omitempty"`
-	Line     int32  `json:"line,omitempty"`
+	Func     string             `json:"func"`
+	Expected string             `json:"expected,omitempty"`
+	Actual   string             `json:"actual,omitempty"`
+	Message  string             `json:"message,omitempty"`
+	File     string             `json:"file,omitempty"`
+	Line     int32              `json:"line,omitempty"`
+	Context  []AssertionContext `json:"context,omitempty"`
+}
+
+// AssertionContext is a slimmed-down event snapshot — the bundle
+// already carries the full event log so we only keep the headline
+// fields: who answered last, what they said, did it succeed.
+// Truncated to ~8 entries so a long test doesn't bloat every
+// failed-row record.
+type AssertionContext struct {
+	Seq        int64  `json:"seq"`
+	Type       string `json:"type"`
+	Target     string `json:"target,omitempty"`
+	Method     string `json:"method,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+	StatusCode string `json:"status_code,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Success    string `json:"success,omitempty"`
 }
 
 // SuiteResult captures the outcome of all test functions.

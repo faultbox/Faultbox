@@ -13,6 +13,56 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.4] - 2026-04-25
+
+Two follow-ons from a customer second-read of the v0.12.3 report on
+a noisy proxy-mode test (one HTTP POST, ~80k events).
+
+### Added
+
+- **`AssertionDetail.Context`** — when an `assert_*` builtin fails,
+  the runtime snapshots the last 8 step events onto the assertion
+  detail. The drill-down renders them as a "Recent" mini-trail
+  (`← api.http.post /orders [500]`, etc.) so the user sees the
+  *actual values* Starlark already folded away, without having to
+  pin a lane marker and read the event-log fields. The lane balloon
+  (hover tooltip) prefers the runtime-emitted `summary` field as
+  its headline, and surfaces `status_code` / `error` inline for
+  failed step events.
+
+### Changed
+
+- **Lane filter rewritten: anchor windows + global cardinality
+  fold** ([applyAnchorWindowFilter](internal/report/app.js)).
+  Replaces v0.12.2/v0.12.3's consecutive-runs dedup, which missed
+  the common case of monitor `SELECT 1` polls *interleaved* with
+  the test body (no two adjacent → no fold).
+  - Anchor events (faults, violations, lifecycle, errored steps)
+    plus a ±10-position window around each render per-event.
+  - Outside the windows, events bucket globally by
+    `(target, method, summary)`. Buckets ≤ 5 render every member;
+    larger buckets fold into a single `× N` chip placed at the
+    *median* rank of the bucket so the chip approximates *when*
+    the activity peaked.
+  - Failed step events (`success=false`, or carrying an `error`
+    field) are anchors, so the customer's "DB network error"
+    floods become anchors, not noise.
+- Lane axis caption switched from "X repeat steps collapsed" to
+  the more accurate "X events folded outside anchor windows".
+- Lane tooltip headline now prefers the runtime-emitted `summary`
+  field (`← api.http.post /orders [500]`) over the bare event
+  type, with `status_code` / `error` inline for failed steps.
+
+### Limitations
+
+- Context is heuristic: it captures the *last* step events at
+  fail time. Tests that assert about a value 5 steps back will
+  see the most recent steps in Context, not the relevant one.
+  An explicit `assert_that(actual, predicate, msg)` builtin or
+  `actual=` kwarg on the existing builtins would be the crisp
+  upgrade — deferred to v0.13 once we see how often the
+  heuristic misses in practice.
+
 ## [0.12.3] - 2026-04-25
 
 Three drill-down ergonomics fixes from a customer first-read of the

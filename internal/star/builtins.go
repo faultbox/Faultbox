@@ -805,6 +805,46 @@ func callerPosition(thread *starlark.Thread) (string, int32) {
 	return frame.Pos.Filename(), int32(frame.Pos.Line)
 }
 
+// recentAssertionContext walks the runtime's event log backwards and
+// pulls the last few step events into an AssertionContext slice. The
+// drill-down + lane balloon render this as "what just happened" so
+// the user can see, e.g. `← api.http.post  /api/v2/orders  [500]`
+// inline with the assertion failure — the value Starlark already
+// folded away by the time we got here.
+//
+// Filter rule: keep step_send / step_recv only, walk backwards until
+// we have `max` entries or run out. Reverse so the slice reads
+// chronologically. Fault / violation events stay out of Context — the
+// drill-down already surfaces those in dedicated sections.
+func (rt *Runtime) recentAssertionContext(max int) []AssertionContext {
+	if rt.events == nil || max <= 0 {
+		return nil
+	}
+	all := rt.events.Events()
+	picks := make([]AssertionContext, 0, max)
+	for i := len(all) - 1; i >= 0 && len(picks) < max; i-- {
+		ev := all[i]
+		if ev.Type != "step_send" && ev.Type != "step_recv" {
+			continue
+		}
+		f := ev.Fields
+		picks = append(picks, AssertionContext{
+			Seq:        ev.Seq,
+			Type:       ev.Type,
+			Target:     f["target"],
+			Method:     f["method"],
+			Summary:    f["summary"],
+			StatusCode: f["status_code"],
+			Error:      f["error"],
+			Success:    f["success"],
+		})
+	}
+	for i, j := 0, len(picks)-1; i < j; i, j = i+1, j-1 {
+		picks[i], picks[j] = picks[j], picks[i]
+	}
+	return picks
+}
+
 // assert_true(condition, msg=)
 func (rt *Runtime) builtinAssertTrue(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 1 {
@@ -823,6 +863,7 @@ func (rt *Runtime) builtinAssertTrue(thread *starlark.Thread, fn *starlark.Built
 			Message:  msg,
 			File:     file,
 			Line:     line,
+			Context:  rt.recentAssertionContext(8),
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
@@ -860,6 +901,7 @@ func (rt *Runtime) builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin
 			Message:  custom,
 			File:     file,
 			Line:     line,
+			Context:  rt.recentAssertionContext(8),
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
