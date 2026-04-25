@@ -1164,7 +1164,7 @@
     var lanes = {};
     var order = [];
     for (var i = 0; i < laneEvents.length; i++) {
-      var svc = laneEvents[i].service || "test";
+      var svc = laneFor(laneEvents[i]);
       if (!lanes[svc]) { lanes[svc] = []; order.push(svc); }
       lanes[svc].push(laneEvents[i]);
     }
@@ -1378,6 +1378,21 @@
     if (!t) return true;
     if (t === "syscall") return false;
     return true;
+  }
+
+  // laneFor decides which lane an event belongs to. v0.12.7 routes
+  // step_send / step_recv to their *target* service rather than the
+  // emitter ("test"): a `db.exec(...)` call that fails surfaces on
+  // the db lane (where the user expects to see DB activity), not on
+  // the test lane buried among other interactions. Falls back to
+  // ev.service when fields.target is missing — keeps older bundles
+  // and non-step events on their original lanes.
+  function laneFor(ev) {
+    if ((ev.type === "step_send" || ev.type === "step_recv") &&
+        ev.fields && ev.fields.target) {
+      return ev.fields.target;
+    }
+    return ev.service || "test";
   }
 
   // applyLaneBudgetFilter is the v0.12.5 lane filter. Replaces both
@@ -1869,7 +1884,10 @@
     for (var i = 0; i < events.length; i++) {
       var t = events[i].type || "other";
       typesPresent[t] = true;
-      var s = events[i].service || "—";
+      // Service axis matches lane routing (laneFor) so the user
+      // filtering by "truck-api" finds step events to truck-api,
+      // not just truck-api's own lifecycle.
+      var s = laneFor(events[i]);
       servicesPresent[s] = true;
     }
     var knownTypes = ["syscall", "fault_applied", "fault_removed",
@@ -1960,13 +1978,19 @@
     ])]);
     var tbody = el("tbody");
 
-    // `renderedCount` tracks how many events we've materialised so
-    // far. The Load-more button reads it to decide what to append.
+    // v0.12.7: filter applies to the *full* event set, not the
+    // currently-rendered slice. The previous model loaded the first
+    // 200 then hid non-matching rows — meaning a filter for a
+    // service whose events sat past row 200 returned no visible
+    // rows. Now we maintain a `filteredEvents` view; the table
+    // pages from it, and toggling filters resets the page.
+    var filteredEvents = events.slice();
     var renderedCount = 0;
+    var caption;
     function appendBatch(n) {
-      var stop = Math.min(renderedCount + n, events.length);
+      var stop = Math.min(renderedCount + n, filteredEvents.length);
       for (var r = renderedCount; r < stop; r++) {
-        var pair = logRow(events[r], onSelect, wrap);
+        var pair = logRow(filteredEvents[r], onSelect, wrap);
         tbody.appendChild(pair[0]);
         tbody.appendChild(pair[1]);
       }
@@ -1983,28 +2007,27 @@
     function refreshLoadMore() {
       if (loadMoreWrap) loadMoreWrap.parentNode.removeChild(loadMoreWrap);
       loadMoreWrap = null;
-      if (renderedCount >= events.length) return;
-      var remaining = events.length - renderedCount;
+      if (renderedCount >= filteredEvents.length) return;
+      var remaining = filteredEvents.length - renderedCount;
       var btn = el("button", {
         class: "trace-log-loadmore", type: "button",
         text: "Load next " + Math.min(EVENT_LOG_PAGE_SIZE, remaining) +
               " (" + remaining + " remaining)",
         onclick: function () {
           appendBatch(EVENT_LOG_PAGE_SIZE);
-          // After a manual filter the new rows must respect it too.
-          applyFilter(activeFilter);
           refreshLoadMore();
+          updateCaption();
         },
       });
       var allBtn = null;
       if (remaining > EVENT_LOG_PAGE_SIZE) {
         allBtn = el("button", {
           class: "trace-log-loadmore secondary", type: "button",
-          text: "Show all " + events.length,
+          text: "Show all " + filteredEvents.length,
           onclick: function () {
             appendBatch(remaining);
-            applyFilter(activeFilter);
             refreshLoadMore();
+            updateCaption();
           },
         });
       }
@@ -2015,11 +2038,22 @@
     }
     refreshLoadMore();
 
-    body.appendChild(el("div", { class: "stat-caption",
-      text: "Showing first " + renderedCount + " of " + events.length +
-            " events. Filters apply across the loaded set." }));
+    caption = el("div", { class: "stat-caption", text: "" });
+    body.appendChild(caption);
+    updateCaption();
 
     wrap.appendChild(body);
+
+    function updateCaption() {
+      var hasFilter = activeKeys(activeServices).length || activeKeys(activeTypes).length;
+      var lead = "Showing first " + renderedCount + " of " + filteredEvents.length;
+      if (hasFilter) {
+        lead += " matching events (out of " + events.length + " total).";
+      } else {
+        lead += " events.";
+      }
+      caption.textContent = lead;
+    }
 
     function toggleService(svc) {
       if (activeServices[svc]) delete activeServices[svc];
@@ -2031,9 +2065,6 @@
       else activeTypes[type] = true;
       applyFilters();
     }
-    // Compatibility shim — refreshLoadMore() and Show-all both call
-    // this after appending new rows so the filter still applies.
-    function applyFilter() { applyFilters(); }
 
     function activeKeys(set) {
       var out = [];
@@ -2041,9 +2072,15 @@
       return out;
     }
 
-    function applyFilters() {
+    function matchesFilters(ev) {
       var svcKeys = activeKeys(activeServices);
       var typeKeys = activeKeys(activeTypes);
+      if (svcKeys.length && !activeServices[laneFor(ev)]) return false;
+      if (typeKeys.length && !activeTypes[ev.type || ""]) return false;
+      return true;
+    }
+
+    function applyFilters() {
       // Reflect chip active state.
       for (var k in serviceChips) {
         serviceChips[k].classList.toggle("active", !!activeServices[k]);
@@ -2051,26 +2088,16 @@
       for (var k in typeChips) {
         typeChips[k].classList.toggle("active", !!activeTypes[k]);
       }
-      var headers = tbody.querySelectorAll("tr[data-seq]");
-      for (var i = 0; i < headers.length; i++) {
-        var row = headers[i];
-        var rType = row.getAttribute("data-type") || "";
-        var rSvc = row.getAttribute("data-service") || "";
-        var seq = row.getAttribute("data-seq");
-        var svcOk = svcKeys.length === 0 || activeServices[rSvc];
-        var typeOk = typeKeys.length === 0 || activeTypes[rType];
-        var matched = svcOk && typeOk;
-        row.style.display = matched ? "" : "none";
-        var expand = tbody.querySelector('tr[data-seq-expand="' + seq + '"]');
-        if (expand) {
-          expand.style.display = matched ? "" : "none";
-        }
-      }
+      // Rebuild the filtered list from scratch and reset the page.
+      filteredEvents = events.filter(matchesFilters);
+      tbody.innerHTML = "";
+      renderedCount = 0;
+      appendBatch(EVENT_LOG_PAGE_SIZE);
+      refreshLoadMore();
+      updateCaption();
     }
 
-    // Click-to-filter on table cells. Wired in logRow but the
-    // handlers live here so they can mutate the closure's
-    // activeServices / activeTypes sets directly.
+    // Click-to-filter on table cells.
     wrap._addServiceFilter = function (svc) {
       activeServices = {};
       activeServices[svc] = true;
@@ -2093,10 +2120,14 @@
   // onSelect — the standard "pin this event on the lanes" behaviour.
   function logRow(ev, onSelect, logWrap) {
     var caret = el("span", { class: "trace-log-caret", text: "▸" });
+    // v0.12.7: service display + filter axis follow lane routing —
+    // step_send/step_recv land on their target service so filtering
+    // by "truck-api" matches the call to it, not just its lifecycle.
+    var rowService = laneFor(ev);
     var tr = el("tr", {
       "data-seq": String(ev.seq || 0),
       "data-type": ev.type || "",
-      "data-service": ev.service || "—",
+      "data-service": rowService,
     });
     tr.appendChild(el("td", { class: "caret-col" }, [caret]));
     // v0.12.6: type + service cells are clickable. Click → set the
@@ -2118,11 +2149,11 @@
     tr.appendChild(typeCell);
     var svcCell = el("td", {
       class: "service clickable",
-      text: ev.service || "",
+      text: rowService,
       title: "Click to filter by service",
       onclick: function (e) {
         e.stopPropagation();
-        if (logWrap && logWrap._addServiceFilter) logWrap._addServiceFilter(ev.service || "—");
+        if (logWrap && logWrap._addServiceFilter) logWrap._addServiceFilter(rowService);
       },
     });
     tr.appendChild(svcCell);

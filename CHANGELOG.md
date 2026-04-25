@@ -13,6 +13,33 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.7] - 2026-04-25
+
+Two fixes from a customer second-read of v0.12.6:
+
+### Changed
+
+- **Step events now lane on their target service.** Previously a
+  `db.exec(...)` call landed on the `test` lane (because the runtime
+  emits the event from the test driver), and the `db` lane only
+  showed db's own lifecycle. Users expected to see DB activity on
+  the db lane, not on the test driver lane buried among other
+  cross-service interactions. New `laneFor()` helper routes
+  `step_send` / `step_recv` to `ev.fields.target` when present,
+  with a fallback to `ev.service` for older bundles and non-step
+  events.
+- **Event-log filter applies to the full event set.** v0.12.6 loaded
+  the first 200 rows then hid non-matching ones — meaning a filter
+  for a service whose events sat past row 200 returned no visible
+  rows. Now the table maintains a `filteredEvents` view; toggling
+  filters rebuilds the view and resets the page so the first 200
+  *matching* events render. Caption updates to "Showing X of Y
+  matching events (out of Z total)" when filters are active.
+- **Service column display + filter axis follow lane routing.** The
+  service cell now shows `laneFor(ev)`, so filtering by `truck-api`
+  matches both truck-api's own lifecycle and the step events
+  pointed at it.
+
 ## [0.12.6] - 2026-04-25
 
 Three UX fixes from a customer read of the v0.12.5 report:
