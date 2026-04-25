@@ -14,15 +14,63 @@
   "use strict";
 
   // ── Data loading ────────────────────────────────────────────────
-  function loadData() {
-    var node = document.getElementById("faultbox-data");
-    if (!node) return null;
-    try {
-      return JSON.parse(node.textContent || "{}");
-    } catch (err) {
-      console.error("faultbox: failed to parse embedded data", err);
-      return null;
+  // The Go side inlines the manifest+env+trace payload as gzip+base64
+  // in <script id="faultbox-data-gz"> (RFC-031, v0.12). Browsers
+  // decompress via the DecompressionStream API (Chrome 80+, Safari
+  // 16.4+, Firefox 113+). A legacy path handles the v0.11 format
+  // where the data sat in #faultbox-data as raw JSON, so pre-0.12
+  // reports still render when opened by a newer faultbox build.
+  async function loadData() {
+    var gzNode = document.getElementById("faultbox-data-gz");
+    if (gzNode) {
+      try {
+        var b64 = (gzNode.textContent || "").trim();
+        var bytes = base64ToBytes(b64);
+        if (typeof DecompressionStream === "undefined") {
+          showUnsupportedBrowserError();
+          return null;
+        }
+        var stream = new Blob([bytes]).stream()
+          .pipeThrough(new DecompressionStream("gzip"));
+        var text = await new Response(stream).text();
+        return JSON.parse(text);
+      } catch (err) {
+        console.error("faultbox: failed to decode gzip+base64 payload", err);
+        return null;
+      }
     }
+    var legacy = document.getElementById("faultbox-data");
+    if (legacy) {
+      try {
+        return JSON.parse(legacy.textContent || "{}");
+      } catch (err) {
+        console.error("faultbox: failed to parse embedded data", err);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function base64ToBytes(b64) {
+    // The Go side encodes with URL-safe base64 (alphabet A-Z, a-z,
+    // 0-9, -, _) so that html/template doesn't HTML-escape "+" or
+    // "/" to numeric entities inside the <script> tag. atob() only
+    // accepts standard base64, so swap the substitutions back.
+    var std = b64.replace(/-/g, "+").replace(/_/g, "/");
+    var bin = atob(std);
+    var len = bin.length;
+    var out = new Uint8Array(len);
+    for (var i = 0; i < len; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function showUnsupportedBrowserError() {
+    var host = document.querySelector("main.container") || document.body;
+    var banner = el("div", { class: "browser-error" }, [
+      el("strong", { text: "This browser is too old to open this report." }),
+      el("p", { text: "Faultbox reports use the DecompressionStream API (Chrome 80+, Safari 16.4+, Firefox 113+). Please open in a modern browser." }),
+    ]);
+    host.insertBefore(banner, host.firstChild);
   }
 
   // ── Small helpers ───────────────────────────────────────────────
@@ -2039,8 +2087,8 @@
   }
 
   // ── Main ────────────────────────────────────────────────────────
-  function main() {
-    var data = loadData();
+  async function main() {
+    var data = await loadData();
     if (!data || !data.manifest) {
       console.warn("faultbox: no manifest; nothing to render");
       return;
@@ -2096,7 +2144,7 @@
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", main);
+    document.addEventListener("DOMContentLoaded", function () { main(); });
   } else {
     main();
   }

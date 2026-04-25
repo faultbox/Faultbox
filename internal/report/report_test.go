@@ -2,13 +2,54 @@ package report
 
 import (
 	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/faultbox/Faultbox/internal/bundle"
 )
+
+// extractDataPayload pulls the gzip+base64 block out of a rendered
+// report and returns the decompressed JSON bytes. Tests use this to
+// assert on report contents after RFC-031 Phase 1 swapped the inline
+// JSON tag for a compressed binary one.
+func extractDataPayload(t *testing.T, html string) []byte {
+	t.Helper()
+	const openMarker = `id="faultbox-data-gz"`
+	i := strings.Index(html, openMarker)
+	if i < 0 {
+		t.Fatalf("no %s tag in report", openMarker)
+	}
+	// Scan forward to the end of the opening <script ...> tag.
+	gt := strings.Index(html[i:], ">")
+	if gt < 0 {
+		t.Fatal("unterminated <script> opening tag")
+	}
+	bodyStart := i + gt + 1
+	bodyEnd := strings.Index(html[bodyStart:], "</script>")
+	if bodyEnd < 0 {
+		t.Fatal("unterminated <script> body")
+	}
+	b64 := strings.TrimSpace(html[bodyStart : bodyStart+bodyEnd])
+	gz, err := base64.URLEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+	gzr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer gzr.Close()
+	raw, err := io.ReadAll(gzr)
+	if err != nil {
+		t.Fatalf("gunzip: %v", err)
+	}
+	return raw
+}
 
 // buildTestBundle constructs a minimal but realistic .fb archive on
 // disk and returns its path. The shape mirrors what `faultbox test`
@@ -135,43 +176,40 @@ func TestBuildEmitsSelfContainedHTML(t *testing.T) {
 
 	got := buf.String()
 
-	// Structural markers: HTML shell, inlined script tag, CSS block.
-	checks := []string{
+	// Structural markers of the outer HTML shell — these are literal
+	// strings that must appear in the rendered report regardless of
+	// how the data payload is encoded.
+	shellChecks := []string{
 		"<!DOCTYPE html>",
-		`id="faultbox-data"`,
-		`type="application/json"`,
+		`id="faultbox-data-gz"`,
+		`type="application/octet-stream"`,
+		`data-encoding="gzip+base64"`,
 		"<style>",
 		":root {",
 		"faultbox",
-		// Manifest data should be visible in the inlined JSON.
-		"test_inventory_survives_redis_outage",
-		"2026-04-23T10-00-00-42",
-		// Matrix payload inlined.
-		"redis_write_eio",
-		// Env.
-		"go1.26.1",
-		// Generator line in footer.
+		// Generator line in footer (not inside the compressed data).
 		"0.11.0-test",
 	}
-	for _, c := range checks {
+	for _, c := range shellChecks {
 		if !strings.Contains(got, c) {
 			t.Errorf("report missing %q", c)
 		}
 	}
 
-	// The inlined data block should not contain a literal `</` sequence
-	// (it should have been rewritten to `<\/`). The broader "no `</`
-	// inside any script body" invariant is covered by
-	// TestEmbeddedScriptsStayOpen; this narrower check is kept because
-	// the data-block route is the one most likely to carry user content.
-	dataStart := strings.Index(got, `id="faultbox-data"`)
-	dataEnd := strings.Index(got[dataStart:], "</script>")
-	if dataStart < 0 || dataEnd < 0 {
-		t.Fatal("could not locate data script block")
+	// The bundle contents are only visible after gzip+base64 decode.
+	// Round-trip the payload and assert the strings that used to live
+	// in the plain-JSON inline block still appear.
+	raw := extractDataPayload(t, got)
+	contentChecks := []string{
+		"test_inventory_survives_redis_outage",
+		"2026-04-23T10-00-00-42",
+		"redis_write_eio",
+		"go1.26.1",
 	}
-	dataBlock := got[dataStart : dataStart+dataEnd]
-	if strings.Contains(dataBlock, "</") {
-		t.Errorf("data block contains raw </; inlineJSON did not escape")
+	for _, c := range contentChecks {
+		if !bytes.Contains(raw, []byte(c)) {
+			t.Errorf("decompressed payload missing %q", c)
+		}
 	}
 }
 
@@ -185,22 +223,7 @@ func TestBuildMatrixEncodedInPayload(t *testing.T) {
 	if err := Build(&buf, r, "0.11.0-test"); err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	// Extract the JSON payload from between the two script markers and
-	// ensure it round-trips to something with a matrix and at least one
-	// failed cell.
-	html := buf.String()
-	tagStart := strings.Index(html, `<script id="faultbox-data" type="application/json">`)
-	if tagStart < 0 {
-		t.Fatal("no data tag")
-	}
-	payloadStart := tagStart + len(`<script id="faultbox-data" type="application/json">`)
-	payloadEnd := strings.Index(html[payloadStart:], "</script>")
-	if payloadEnd < 0 {
-		t.Fatal("unterminated data tag")
-	}
-	payload := html[payloadStart : payloadStart+payloadEnd]
-	// Undo the inline-JSON defence so strict parsers accept it.
-	payload = strings.ReplaceAll(payload, `<\/`, "</")
+	raw := extractDataPayload(t, buf.String())
 
 	var decoded struct {
 		Manifest struct {
@@ -216,8 +239,8 @@ func TestBuildMatrixEncodedInPayload(t *testing.T) {
 			} `json:"matrix"`
 		} `json:"trace"`
 	}
-	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
-		t.Fatalf("parse inlined payload: %v", err)
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("parse decompressed payload: %v", err)
 	}
 	if decoded.Manifest.Summary.Failed != 1 {
 		t.Errorf("expected 1 failed test, got %d", decoded.Manifest.Summary.Failed)
@@ -236,14 +259,145 @@ func TestBuildMatrixEncodedInPayload(t *testing.T) {
 	}
 }
 
-func TestInlineJSONEscapesScriptTerminator(t *testing.T) {
-	got := inlineJSON([]byte(`{"a":"</script><script>alert(1)</script>"}`))
-	if strings.Contains(got, "</") {
-		t.Errorf("inlineJSON left raw </: %s", got)
+// TestBuildSummaryModeDropsTrace is the primary contract for
+// --summary mode (RFC-031 Phase 1): the resulting report's inlined
+// payload carries manifest + env but no trace, making the file
+// dramatically smaller than the full-mode equivalent built from the
+// same bundle.
+func TestBuildSummaryModeDropsTrace(t *testing.T) {
+	path := buildTestBundle(t)
+	r, err := bundle.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
 	}
-	if !strings.Contains(got, `<\/script>`) {
-		t.Errorf("inlineJSON did not rewrite to <\\/script>: %s", got)
+
+	var full, summary bytes.Buffer
+	if err := BuildWithOptions(&full, r, "0.12-test", Options{}); err != nil {
+		t.Fatalf("full build: %v", err)
 	}
+	r2, _ := bundle.Open(path)
+	if err := BuildWithOptions(&summary, r2, "0.12-test", Options{Summary: true}); err != nil {
+		t.Fatalf("summary build: %v", err)
+	}
+
+	fullPayload := extractDataPayload(t, full.String())
+	summaryPayload := extractDataPayload(t, summary.String())
+
+	// The full payload must carry the trace (matrix.cells live there)
+	// and summary must not.
+	if !bytes.Contains(fullPayload, []byte(`"trace"`)) {
+		t.Error("full payload missing trace field")
+	}
+	if bytes.Contains(summaryPayload, []byte(`"trace"`)) {
+		t.Error("summary payload still contains trace field")
+	}
+	// Manifest must survive in summary mode — it's the spine of the
+	// matrix + tests table + coverage sections.
+	if !bytes.Contains(summaryPayload, []byte("test_inventory_survives_redis_outage")) {
+		t.Error("summary payload missing manifest test data")
+	}
+
+	// Summary HTML must be materially smaller than full. With a test
+	// bundle this trimmed, we demand only that summary < full; real
+	// bundles show an order-of-magnitude difference.
+	if summary.Len() >= full.Len() {
+		t.Errorf("summary (%d) not smaller than full (%d)", summary.Len(), full.Len())
+	}
+
+	// The header size banner should show the mode so users opening
+	// the report can tell at a glance.
+	if !strings.Contains(summary.String(), `data-mode="summary"`) {
+		t.Error("summary report missing data-mode=summary on data tag")
+	}
+	if !strings.Contains(full.String(), `data-mode="full"`) {
+		t.Error("full report missing data-mode=full on data tag")
+	}
+}
+
+// TestGzipBytesShrinksRedundantPayload asserts the headline RFC-031
+// promise on a payload that resembles real event data (highly
+// redundant JSON). On a 100 KB highly-repetitive blob, the encoded
+// (gzip + URL-safe base64) output must be at least 3x smaller than
+// the original — guarding against a future change that disables
+// compression or picks a degenerate level.
+func TestGzipBytesShrinksRedundantPayload(t *testing.T) {
+	// Simulate an event log: 1000 copies of the same JSON object.
+	// Real bundles look similar (per-syscall events with repeating
+	// field names and small value variation).
+	var b bytes.Buffer
+	b.WriteString("[")
+	for i := 0; i < 1000; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"type":"syscall","name":"write","fd":3,"bytes":4096,"errno":0,"ts_ns":12345}`)
+	}
+	b.WriteString("]")
+	raw := b.Bytes()
+
+	gz, err := gzipBytes(raw)
+	if err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	encoded := base64.URLEncoding.EncodeToString(gz)
+
+	ratio := float64(len(raw)) / float64(len(encoded))
+	if ratio < 3.0 {
+		t.Errorf("compression ratio = %.2fx, want >= 3.0x (raw=%d encoded=%d)",
+			ratio, len(raw), len(encoded))
+	}
+}
+
+// TestBuildGzipShrinksPayload pins the headline benefit of
+// Phase 1: on a realistic payload (padded to expose gzip's redundancy
+// win), the base64'd gzip output must be meaningfully smaller than
+// the raw JSON would have been. Guards against future refactors that
+// accidentally disable compression.
+func TestBuildGzipShrinksPayload(t *testing.T) {
+	path := buildTestBundle(t)
+	r, err := bundle.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	// Raw size: what the old v0.11 path would have inlined.
+	data, err := gatherData(r)
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	rawJSON, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := Build(&buf, r, "0.12-test"); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	encoded := extractEncodedSize(t, buf.String())
+
+	// The test bundle is tiny, so the absolute shrink is small, but
+	// the compressed+base64 size must never exceed the raw size. This
+	// is the guardrail; on production-sized bundles the ratio is
+	// 4-6x in practice.
+	if encoded >= len(rawJSON) {
+		t.Errorf("gzip+base64 not shrinking: raw=%d encoded=%d", len(rawJSON), encoded)
+	}
+}
+
+// extractEncodedSize returns the length of the base64 payload inside
+// the faultbox-data-gz script tag, i.e. what was inlined into the
+// HTML (before gzip decompression).
+func extractEncodedSize(t *testing.T, html string) int {
+	t.Helper()
+	i := strings.Index(html, `id="faultbox-data-gz"`)
+	if i < 0 {
+		t.Fatal("no data tag")
+	}
+	gt := strings.Index(html[i:], ">")
+	bodyStart := i + gt + 1
+	bodyEnd := strings.Index(html[bodyStart:], "</script>")
+	return len(strings.TrimSpace(html[bodyStart : bodyStart+bodyEnd]))
 }
 
 // TestEmbeddedScriptsStayOpen is a regression guard against the exact

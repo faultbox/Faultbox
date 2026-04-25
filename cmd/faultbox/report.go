@@ -28,6 +28,7 @@ import (
 // viewer per RFC-029.
 func reportCmd(args []string) int {
 	var bundlePath, outPath string
+	var opts report.Options
 	for len(args) > 0 {
 		switch {
 		case strings.HasPrefix(args[0], "--output="):
@@ -38,6 +39,8 @@ func reportCmd(args []string) int {
 		case args[0] == "-o" && len(args) > 1:
 			outPath = args[1]
 			args = args[1:]
+		case args[0] == "--summary":
+			opts.Summary = true
 		case args[0] == "-h", args[0] == "--help":
 			printReportUsage()
 			return 0
@@ -76,14 +79,14 @@ func reportCmd(args []string) int {
 	}
 
 	if outPath == "-" {
-		if err := report.Build(os.Stdout, r, faultboxVersion()); err != nil {
+		if err := report.BuildWithOptions(os.Stdout, r, faultboxVersion(), opts); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
 		return 0
 	}
 
-	if err := report.BuildToFile(outPath, r, faultboxVersion()); err != nil {
+	if err := report.BuildToFileWithOptions(outPath, r, faultboxVersion(), opts); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
@@ -110,14 +113,25 @@ func printReportUsage() {
 USAGE
   faultbox report <bundle.fb>                     # writes report.html next to the bundle
   faultbox report <bundle.fb> --output <path>     # custom output path
+  faultbox report <bundle.fb> --summary           # drop trace; smallest output (CI-friendly)
   faultbox report <bundle.fb> -o -                # write to stdout
 
 The output is a single HTML file with all CSS, JS and bundle data
-inlined. It opens in any browser with no network access.
+inlined. It opens in any browser with no network access. Data is
+gzip+base64 encoded inside the HTML and decompressed in-browser via
+DecompressionStream (Chrome 80+, Safari 16.4+, Firefox 113+).
+
+MODES
+  default    full manifest + env + trace, gzip+base64 encoded. Drill-down
+             and swim-lane trace viewer available.
+  --summary  drop the trace; matrix + tests table + coverage only.
+             Typical output <100 KB — right for attaching to CI runs,
+             Slack threads, or Jira tickets.
 
 EXAMPLES
   faultbox report run-2026-04-22-42.fb
   faultbox report run.fb --output report.html
+  faultbox report run.fb --summary --output ci-summary.html
   faultbox report run.fb -o - | less
 `
 	fmt.Fprint(os.Stderr, usage)

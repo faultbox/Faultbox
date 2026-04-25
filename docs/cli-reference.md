@@ -317,7 +317,7 @@ Use `faultbox lock --check` as a CI hook in the meantime.
 
 ---
 
-### `faultbox report` (v0.11.0)
+### `faultbox report` (v0.11.0, v0.12 size redesign)
 
 Build a single self-contained HTML report from a `.fb` bundle. The
 output is one file — CSS, JS, and bundle data all inlined — that
@@ -326,8 +326,22 @@ opens in any browser with no network access. RFC-029.
 ```
 faultbox report <bundle.fb>                     # writes report.html next to the bundle
 faultbox report <bundle.fb> --output <path>     # custom output path
+faultbox report <bundle.fb> --summary           # drop trace; smallest output (CI-friendly)
 faultbox report <bundle.fb> -o -                # write to stdout
 ```
+
+**Output size (v0.12, RFC-031):** the inlined manifest+env+trace
+payload is gzip+base64-encoded inside the HTML and decompressed in
+the browser via `DecompressionStream` (Chrome 80+, Safari 16.4+,
+Firefox 113+). Typical shrink versus v0.11: 4-6×. The header shows
+the encoded payload size and mode (`full` or `summary`).
+
+**Modes:**
+
+| Flag | Typical size | Contents |
+|------|--------------|----------|
+| (default) | 1-5 MB | manifest + env + trace, gzip+base64. Drill-down + swim-lane available. |
+| `--summary` | <100 KB | manifest + env only. Matrix + tests + coverage; drill-down shows a "re-run with full trace" hint. CI-friendly. |
 
 **What the report contains:**
 

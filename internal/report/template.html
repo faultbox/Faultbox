@@ -9,7 +9,7 @@
   <style>{{.StyleCSS}}</style>
 </head>
 <body>
-  <script id="faultbox-data" type="application/json">{{.DataJSON}}</script>
+  <script id="faultbox-data-gz" type="application/octet-stream" data-encoding="gzip+base64" data-mode="{{.Mode}}">{{.DataB64}}</script>
 
   <header class="report-header">
     <div class="container header-row">
@@ -22,7 +22,9 @@
         <span class="brand-sep">›</span>
         <span class="brand-section">report</span>
       </a>
-      <div class="header-meta" id="header-meta"></div>
+      <div class="header-meta" id="header-meta">
+        <span class="size-banner" title="Inline payload size after gzip+base64 encoding (RFC-031)">{{.SizeBanner}}</span>
+      </div>
     </div>
   </header>
 

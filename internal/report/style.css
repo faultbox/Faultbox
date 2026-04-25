@@ -183,6 +183,19 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   color: var(--fg-muted);
   font-family: var(--font-mono);
 }
+.size-banner {
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.browser-error {
+  margin: 1rem 0;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--warn, #c77);
+  border-radius: 6px;
+  background: var(--warn-bg, rgba(204, 119, 119, 0.08));
+}
+.browser-error strong { display: block; margin-bottom: 0.25rem; }
+.browser-error p { margin: 0; }
 .pill {
   display: inline-flex;
   align-items: center;

@@ -25,20 +25,50 @@ func TestReportCmdWritesHTML(t *testing.T) {
 	}
 	got := string(data)
 
-	// Shell markers and the inlined data payload.
+	// Shell markers must appear verbatim. Bundle contents (test names,
+	// run id) live inside the gzip+base64 data block per RFC-031 and
+	// are checked separately by internal/report tests.
 	wants := []string{
 		"<!DOCTYPE html>",
-		`id="faultbox-data"`,
+		`id="faultbox-data-gz"`,
+		`type="application/octet-stream"`,
+		`data-encoding="gzip+base64"`,
 		":root {",             // CSS
 		"window.__FAULTBOX__", // app.js writes this after parse
-		"testrun",             // run ID from the synthetic bundle
-		"test_ok",
-		"test_bad",
 	}
 	for _, w := range wants {
 		if !strings.Contains(got, w) {
 			t.Errorf("report missing %q", w)
 		}
+	}
+}
+
+// TestReportCmdSummaryFlag exercises the v0.12 --summary mode end-to-
+// end through the CLI. Output must be smaller than the default mode
+// against the same bundle and must mark itself as summary in the
+// data-mode attribute.
+func TestReportCmdSummaryFlag(t *testing.T) {
+	bundlePath := writeTestBundle(t, "0.11.0")
+	full := filepath.Join(t.TempDir(), "full.html")
+	summary := filepath.Join(t.TempDir(), "summary.html")
+
+	if rc := reportCmd([]string{bundlePath, "--output", full}); rc != 0 {
+		t.Fatalf("full reportCmd rc = %d", rc)
+	}
+	if rc := reportCmd([]string{bundlePath, "--summary", "--output", summary}); rc != 0 {
+		t.Fatalf("summary reportCmd rc = %d", rc)
+	}
+
+	fb, _ := os.ReadFile(full)
+	sb, _ := os.ReadFile(summary)
+	if len(sb) >= len(fb) {
+		t.Errorf("summary (%d) not smaller than full (%d)", len(sb), len(fb))
+	}
+	if !strings.Contains(string(sb), `data-mode="summary"`) {
+		t.Error("summary output missing data-mode=summary attribute")
+	}
+	if !strings.Contains(string(fb), `data-mode="full"`) {
+		t.Error("full output missing data-mode=full attribute")
 	}
 }
 
