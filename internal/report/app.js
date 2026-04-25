@@ -1149,20 +1149,14 @@
     if (!laneEvents.length) laneEvents = events.slice();
     var hiddenSyscalls = events.length - laneEvents.length;
 
-    // v0.12.4: anchor-window + global cardinality fold.
-    // Anchors  = faults, violations, lifecycle, errored steps.
-    // Window   = ±10 events around each anchor → kept as-is.
-    // Outside  = group globally by (target, method, summary);
-    //            count > FOLD_THRESHOLD collapses to a single chip
-    //            positioned at the median rank of its members.
-    // Replaces v0.12.2's consecutive-runs dedup which missed the
-    // common case of monitor SELECT 1 calls *interleaved* with the
-    // user's flow — those didn't sit adjacent in the event stream
-    // and so kept rendering as N independent identical chips.
-    var folded = applyAnchorWindowFilter(laneEvents);
-    laneEvents = folded.kept;
-    var hiddenSteps = folded.foldedCount;
-
+    // v0.12.5: split into lanes first, then apply a hard per-lane
+    // budget. Replaces v0.12.4's anchor-window-with-fold filter,
+    // which kept rendering 86k DOM nodes when most step events were
+    // themselves anchors (success=false from DB network errors). The
+    // new filter guarantees ≤ LANE_BUDGET markers per lane regardless
+    // of event count — the bottleneck moves from event count to lane
+    // count, which is bounded by the number of services declared in
+    // the spec.
     var lanes = {};
     var order = [];
     for (var i = 0; i < laneEvents.length; i++) {
@@ -1170,6 +1164,17 @@
       if (!lanes[svc]) { lanes[svc] = []; order.push(svc); }
       lanes[svc].push(laneEvents[i]);
     }
+
+    var hiddenSteps = 0;
+    var budgetedLane = [];
+    for (var li = 0; li < order.length; li++) {
+      var svc = order[li];
+      var result = applyLaneBudgetFilter(lanes[svc]);
+      lanes[svc] = result.kept;
+      hiddenSteps += result.foldedCount;
+      for (var ki = 0; ki < result.kept.length; ki++) budgetedLane.push(result.kept[ki]);
+    }
+    laneEvents = budgetedLane;
 
     // Rank-based positioning: each kept event gets uniform spacing in
     // its rank order across the global lane set, regardless of how many
@@ -1227,7 +1232,7 @@
     var axisRight = laneCount + " marker" + (laneCount === 1 ? "" : "s");
     var hiddenBits = [];
     if (hiddenSteps > 0) {
-      hiddenBits.push(hiddenSteps + " repeat step" + (hiddenSteps === 1 ? "" : "s") + " collapsed");
+      hiddenBits.push(hiddenSteps + " event" + (hiddenSteps === 1 ? "" : "s") + " folded into slots");
     }
     if (hiddenSyscalls > 0) {
       hiddenBits.push(hiddenSyscalls + " syscall" + (hiddenSyscalls === 1 ? "" : "s") + " in event log");
@@ -1371,94 +1376,76 @@
     return true;
   }
 
-  // applyAnchorWindowFilter is the v0.12.4 lane filter. It picks
-  // events to keep on the swim lane using two complementary rules:
+  // applyLaneBudgetFilter is the v0.12.5 lane filter. Replaces both
+  // the consecutive-runs dedup (v0.12.2/3) and the anchor-window +
+  // cardinality fold (v0.12.4) — neither of which gave a hard upper
+  // bound on rendered DOM node count. With 86k events even the
+  // window approach kept everything (most step events were anchors)
+  // and crushed them visually into the same handful of pixels.
   //
-  //   1. Anchor windows. Faults, violations, lifecycle, and errored
-  //      step events ("anchors") are always kept. So is every event
-  //      within ±LANE_WINDOW positions of any anchor — this preserves
-  //      the immediate cause / consequence around each interesting
-  //      moment in the trace.
+  // New approach: bucket the lane's events into LANE_BUDGET visual
+  // *slots* in seq order. Each slot picks one representative —
+  // anchor first, else most-common fold-key head, else first event.
+  // The slot's `_runCount` / `_runMembers` carry the rest, so click
+  // expands to the full member list via the existing drill-down
+  // path.
   //
-  //   2. Global cardinality fold. Outside the anchor windows, events
-  //      are grouped by (target, method, summary). Groups with
-  //      cardinality ≤ LANE_FOLD_KEEP_THRESHOLD render every member
-  //      individually (so a one-off appears as itself). Larger groups
-  //      collapse to a single representative chip — `_runCount` set
-  //      to the total, `_runMembers` listing every seq, marker
-  //      positioned at the *median* rank of its members.
-  //
-  // The result: the user's `api.http.post` and the violation marker
-  // get full per-event context; an interleaved `db.exec SELECT 1 ×
-  // 80000` monitor loop folds into one chip without dragging the
-  // user-flow markers along with it.
-  var LANE_WINDOW = 10;
-  var LANE_FOLD_KEEP_THRESHOLD = 5;
+  // Hard guarantee: every lane renders ≤ LANE_BUDGET DOM markers
+  // regardless of event count. 86k → 50, 1M → 50, 50 → 50. Slot
+  // positions are uniformly spaced, so the user always sees
+  // distinct visual locations even when the underlying events
+  // would otherwise stack on top of each other.
+  var LANE_BUDGET = 50;
 
-  function applyAnchorWindowFilter(evs) {
+  function applyLaneBudgetFilter(evs) {
     if (!evs.length) return { kept: [], foldedCount: 0 };
+    if (evs.length <= LANE_BUDGET) {
+      return { kept: evs.slice(), foldedCount: 0 };
+    }
+
     var n = evs.length;
-
-    // Phase 1: mark every position that lives inside an anchor window.
-    var inWindow = new Array(n);
-    for (var i = 0; i < n; i++) inWindow[i] = false;
-    for (var i = 0; i < n; i++) {
-      if (!isAnchorEvent(evs[i])) continue;
-      var lo = Math.max(0, i - LANE_WINDOW);
-      var hi = Math.min(n - 1, i + LANE_WINDOW);
-      for (var j = lo; j <= hi; j++) inWindow[j] = true;
-    }
-
-    // Phase 2: bucket the out-of-window events by fold key. We track
-    // the original positions so the final chip can sit at the median
-    // rank — important when the fold spans the whole timeline.
-    var groups = {};
-    var groupOrder = [];
-    for (var i = 0; i < n; i++) {
-      if (inWindow[i]) continue;
-      var key = laneFoldKey(evs[i]);
-      if (!groups[key]) {
-        groups[key] = { positions: [], head: evs[i] };
-        groupOrder.push(key);
-      }
-      groups[key].positions.push(i);
-    }
-
-    // Phase 3: emit events. Window events render as-is. Out-of-window
-    // groups either render every member individually (small groups,
-    // signal preserved) or fold into one chip placed at the median
-    // position so the chip approximates *when* most of the activity
-    // happened.
-    var emit = new Array(n).fill(null);
-    var fold = []; // {position, ev}
+    var step = n / LANE_BUDGET;
+    var kept = [];
     var foldedCount = 0;
 
-    for (var i = 0; i < n; i++) {
-      if (inWindow[i]) emit[i] = evs[i];
-    }
-    for (var k = 0; k < groupOrder.length; k++) {
-      var g = groups[groupOrder[k]];
-      if (g.positions.length <= LANE_FOLD_KEEP_THRESHOLD) {
-        // Small group — leave each marker visible so the user can
-        // still see one-off events that happen to share a key.
-        for (var p = 0; p < g.positions.length; p++) {
-          emit[g.positions[p]] = evs[g.positions[p]];
-        }
-        continue;
-      }
-      // Big group — fold to one chip at the median position.
-      var med = g.positions[Math.floor(g.positions.length / 2)];
-      var chip = {};
-      for (var f in g.head) chip[f] = g.head[f];
-      chip._runCount = g.positions.length;
-      chip._runMembers = g.positions.map(function (p) { return evs[p].seq; });
-      foldedCount += g.positions.length - 1;
-      fold.push({ position: med, ev: chip });
-    }
-    for (var k = 0; k < fold.length; k++) emit[fold[k].position] = fold[k].ev;
+    for (var s = 0; s < LANE_BUDGET; s++) {
+      var lo = Math.floor(s * step);
+      var hi = (s === LANE_BUDGET - 1) ? n : Math.floor((s + 1) * step);
+      if (hi <= lo) continue;
+      var slot = evs.slice(lo, hi);
 
-    var kept = [];
-    for (var i = 0; i < n; i++) if (emit[i]) kept.push(emit[i]);
+      // Pick representative for the slot. An anchor wins outright —
+      // its visual marker (red square for violation, etc.) communicates
+      // that something interesting happened in this region. Otherwise
+      // pick the head of the most populous fold-key bucket so a slot
+      // dominated by `db.exec SELECT 1` shows that label in the chip.
+      var rep = null;
+      for (var j = 0; j < slot.length; j++) {
+        if (isAnchorEvent(slot[j])) { rep = slot[j]; break; }
+      }
+      if (!rep) {
+        var counts = {}, heads = {};
+        for (var j = 0; j < slot.length; j++) {
+          var k = laneFoldKey(slot[j]);
+          counts[k] = (counts[k] || 0) + 1;
+          if (!heads[k]) heads[k] = slot[j];
+        }
+        var maxK = null, maxC = 0;
+        for (var k in counts) {
+          if (counts[k] > maxC) { maxC = counts[k]; maxK = k; }
+        }
+        rep = heads[maxK] || slot[0];
+      }
+
+      var chip = {};
+      for (var k in rep) chip[k] = rep[k];
+      if (slot.length > 1) {
+        chip._runCount = slot.length;
+        chip._runMembers = slot.map(function (e) { return e.seq; });
+        foldedCount += slot.length - 1;
+      }
+      kept.push(chip);
+    }
     return { kept: kept, foldedCount: foldedCount };
   }
 

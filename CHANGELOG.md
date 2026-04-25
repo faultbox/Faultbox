@@ -13,6 +13,52 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.5] - 2026-04-25
+
+Hard per-lane marker budget. Walks back the v0.12.2/3 consecutive-runs
+dedup *and* the v0.12.4 anchor-window filter — neither gave a hard
+upper bound on rendered DOM nodes, and on the customer's 86k-event
+bundle the lane was still allocating 86k marker nodes (mostly invisible
+because they crushed into the same pixel cluster). Performance lag was
+the symptom; visual ambiguity ("these markers look identical but have
+different sequences") was the second symptom.
+
+### Changed
+
+- **Lane filter rewritten as `applyLaneBudgetFilter`**
+  ([internal/report/app.js](internal/report/app.js)). Per lane:
+  - If `laneEvents.length ≤ LANE_BUDGET` (50): render every event,
+    rank-positioned as before.
+  - Otherwise: bucket into 50 visual *slots* in seq order. Each slot
+    picks one representative — anchor first, else most-common
+    fold-key head, else first event. Slot's `_runCount` /
+    `_runMembers` carry the rest, so the existing drill-down path
+    expands the cluster without code changes.
+  - Hard guarantee: every lane renders ≤ 50 DOM markers regardless
+    of input size. 86k → 50, 1M → 50, 50 → 50.
+- **Lanes split happens before budgeting** so each service lane gets
+  its own 50-marker budget. A 7-lane test renders ≤ 350 markers
+  total (down from 86874 — a ~250× DOM-node reduction).
+- Trace axis caption updated from "X repeat steps collapsed" to
+  "X events folded into slots" — accurate for the new mechanic.
+
+### Removed
+
+- `applyAnchorWindowFilter`, `LANE_WINDOW`, `LANE_FOLD_KEEP_THRESHOLD`
+  (v0.12.4 internals — replaced by the budget filter).
+
+### Why slots over windows
+
+The v0.12.4 anchor-window approach was right in spirit but had no
+bound. When most step events are themselves anchors (which happens
+on any test that hits failure paths — DB network errors, retry loops,
+500s) every event ends up in a window and the filter degrades to
+identity. Slot-based aggregation has a constant-bounded output by
+construction; the trade-off is that a non-anchor event in a quiet
+slot can be absorbed into its slot's representative, but the full
+member list is still in `_runMembers` and the event-log table has
+every original row.
+
 ## [0.12.4] - 2026-04-25
 
 Two follow-ons from a customer second-read of the v0.12.3 report on
