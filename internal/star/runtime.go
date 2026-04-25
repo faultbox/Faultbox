@@ -2260,22 +2260,32 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	// Merge test driver's clock into target service — records causal "request sent".
 	rt.events.MergeClock(targetSvc, "test")
 
+	// Convert Starlark kwargs to map[string]any for the protocol plugin.
+	stepArgs := starlarkKwargsToMap(kwargs)
+
 	// Emit step_send event from test driver — shows request going out.
-	rt.events.Emit("step_send", "test", map[string]string{
+	// We enrich the field bag with semantic context (sql, query, path,
+	// body, args, table…) when the user passed those kwargs, so the
+	// drill-down can answer "what did this step actually do?" instead
+	// of leaving the user to read the spec source. Long values are
+	// truncated to keep bundle size and tooltip width reasonable; the
+	// untruncated form lives in the Starlark spec and the protocol's
+	// own log.
+	sendFields := map[string]string{
 		"target":    targetSvc,
 		"method":    method,
 		"interface": ref.Interface.Name,
 		"protocol":  ref.Interface.Protocol,
-	})
+	}
+	mergeStepKwargFields(sendFields, stepArgs)
+	sendFields["summary"] = stepSummary(targetSvc, method, stepArgs, nil, true)
+	rt.events.Emit("step_send", "test", sendFields)
 
 	// Dispatch via protocol plugin registry.
 	p, ok := protocol.Get(ref.Interface.Protocol)
 	if !ok {
 		return nil, fmt.Errorf("unsupported protocol %q (no plugin registered)", ref.Interface.Protocol)
 	}
-
-	// Convert Starlark kwargs to map[string]any for the protocol plugin.
-	stepArgs := starlarkKwargsToMap(kwargs)
 
 	stepResult, err := p.ExecuteStep(context.Background(), addr, method, stepArgs)
 	if err != nil {
@@ -2286,10 +2296,30 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	rt.events.MergeClock("test", targetSvc)
 
 	// Emit step_recv event — shows response received, with merged clock.
-	rt.events.Emit("step_recv", "test", map[string]string{
+	// Enrich with status_code, duration_ms, success, plus any
+	// plugin-provided Fields (e.g. mongodb's collection+documents,
+	// cassandra/clickhouse's rows count).
+	recvFields := map[string]string{
 		"target": targetSvc,
 		"method": method,
-	})
+	}
+	if stepResult != nil {
+		if stepResult.StatusCode != 0 {
+			recvFields["status_code"] = fmt.Sprintf("%d", stepResult.StatusCode)
+		}
+		recvFields["duration_ms"] = fmt.Sprintf("%d", stepResult.DurationMs)
+		recvFields["success"] = fmt.Sprintf("%t", stepResult.Success)
+		if !stepResult.Success && stepResult.Error != "" {
+			recvFields["error"] = truncate(stepResult.Error, 200)
+		}
+		for k, v := range stepResult.Fields {
+			if _, exists := recvFields[k]; !exists {
+				recvFields[k] = truncate(v, 200)
+			}
+		}
+		recvFields["summary"] = stepSummary(targetSvc, method, stepArgs, stepResult, false)
+	}
+	rt.events.Emit("step_recv", "test", recvFields)
 
 	// TCP send returns raw string for backward compatibility.
 	if ref.Interface.Protocol == "tcp" && stepResult.Success {
@@ -2306,6 +2336,96 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 		Ok:         stepResult.Success,
 		Error:      stepResult.Error,
 	}, nil
+}
+
+// stepKwargAllowlist is the set of kwarg names whose values we copy
+// into step_send event fields. The list is intentionally curated (not
+// "everything") so the bundle stays small and the drill-down focuses
+// on the keys users actually scan: SQL/CQL/queries for databases, path
+// + body for HTTP, topic + key for brokers, message + payload for
+// generic transports. New protocols are easy to slot in by adding a
+// key here.
+var stepKwargAllowlist = map[string]bool{
+	"sql":     true,
+	"query":   true,
+	"args":    true,
+	"params":  true,
+	"path":    true,
+	"body":    true,
+	"headers": true,
+	"table":   true,
+	"key":     true,
+	"value":   true,
+	"topic":   true,
+	"message": true,
+	"payload": true,
+	"db":      true,
+	"command": true,
+}
+
+// mergeStepKwargFields copies allow-listed kwargs from stepArgs into
+// the event-field bag, truncating long string values so a 100KB SQL
+// dump doesn't bloat every event in the bundle.
+func mergeStepKwargFields(fields map[string]string, stepArgs map[string]any) {
+	for k, v := range stepArgs {
+		if !stepKwargAllowlist[k] {
+			continue
+		}
+		if _, exists := fields[k]; exists {
+			continue
+		}
+		fields[k] = truncate(fmt.Sprintf("%v", v), 200)
+	}
+}
+
+// stepSummary builds a one-line "what is this step doing?" string
+// shaped for the lane tooltip and the drill-down's primary summary
+// row. Picking the right preview field per protocol is the difference
+// between "step_recv.db" and "← db.exec INSERT INTO orders …" — only
+// the latter answers Boris's "I can't tell what this is" complaint.
+func stepSummary(target, method string, stepArgs map[string]any, result *protocol.StepResult, send bool) string {
+	arrow := "→"
+	if !send {
+		arrow = "←"
+	}
+	head := fmt.Sprintf("%s %s.%s", arrow, target, method)
+	preview := ""
+	if v, ok := stepArgs["sql"].(string); ok && v != "" {
+		preview = v
+	} else if v, ok := stepArgs["query"].(string); ok && v != "" {
+		preview = v
+	} else if v, ok := stepArgs["path"].(string); ok && v != "" {
+		preview = v
+	} else if v, ok := stepArgs["topic"].(string); ok && v != "" {
+		preview = v
+	} else if v, ok := stepArgs["command"].(string); ok && v != "" {
+		preview = v
+	} else if v, ok := stepArgs["body"].(string); ok && v != "" {
+		preview = v
+	}
+	preview = truncate(strings.TrimSpace(preview), 80)
+	if preview != "" {
+		head += " " + preview
+	}
+	if !send && result != nil {
+		if result.StatusCode != 0 {
+			head += fmt.Sprintf("  [%d]", result.StatusCode)
+		}
+		if !result.Success && result.Error != "" {
+			head += "  ERR: " + truncate(result.Error, 60)
+		}
+	}
+	return head
+}
+
+// truncate caps s to n bytes, appending "…" when it cuts. Multi-byte
+// safe enough for our purposes — events store latin-1-ish identifiers
+// most of the time, and the truncation is lossy by design.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // starlarkKwargsToMap converts Starlark kwargs to a Go map for protocol plugins.

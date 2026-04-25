@@ -123,6 +123,18 @@ credentials, the bundle (and therefore the report) will too. This
 is the same trust boundary as the bundle itself — treat them
 equivalently.
 
+**My old bundle still looks sparse — even after upgrading
+faultbox.** A `.fb` bundle is frozen at the time the run was
+captured: it can only carry the fields the runtime knew how to
+emit at *that* version. Re-rendering an old bundle through a newer
+`faultbox report` lays out the existing data better, but it cannot
+invent fields that were never recorded. To benefit from later
+additions — structured `assert_eq` Expected/Actual, enriched
+step-event SQL/path/args, plugin-supplied result fields — re-run
+the suite from scratch on the new binary. The drill-down for runs
+captured on v0.12.2+ will show the SQL, status code, and rows
+that older bundles can't.
+
 **What browsers are supported?** Any browser with `<dialog>`
 support — Chrome 37+, Safari 15.4+, Firefox 98+, Edge 79+. For
 older environments the drill-down still opens, just without

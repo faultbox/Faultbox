@@ -1004,7 +1004,21 @@
     // so the lane isn't empty.
     var laneEvents = events.filter(isLaneEvent);
     if (!laneEvents.length) laneEvents = events.slice();
-    var hiddenCount = events.length - laneEvents.length;
+    var hiddenSyscalls = events.length - laneEvents.length;
+
+    // v0.12.2: a tight loop of `db.exec(...)` calls produces N
+    // step_send/step_recv pairs with identical (target, method) — same
+    // shape, same lane location, no new information per marker. We
+    // collapse consecutive runs into a single canonical marker tagged
+    // with `_runCount` and `_runMembers`. The event-log table (below
+    // the lane) keeps every individual row so forensics survive.
+    laneEvents = dedupLaneRuns(laneEvents);
+    var hiddenSteps = 0;
+    for (var hi = 0; hi < laneEvents.length; hi++) {
+      if (laneEvents[hi]._runCount && laneEvents[hi]._runCount > 1) {
+        hiddenSteps += laneEvents[hi]._runCount - 1;
+      }
+    }
 
     var lanes = {};
     var order = [];
@@ -1068,9 +1082,14 @@
 
     host.appendChild(lanesWrap);
     var axisRight = laneCount + " marker" + (laneCount === 1 ? "" : "s");
-    if (hiddenCount > 0) {
-      axisRight += " · " + hiddenCount + " syscall" + (hiddenCount === 1 ? "" : "s") + " in event log";
+    var hiddenBits = [];
+    if (hiddenSteps > 0) {
+      hiddenBits.push(hiddenSteps + " repeat step" + (hiddenSteps === 1 ? "" : "s") + " collapsed");
     }
+    if (hiddenSyscalls > 0) {
+      hiddenBits.push(hiddenSyscalls + " syscall" + (hiddenSyscalls === 1 ? "" : "s") + " in event log");
+    }
+    if (hiddenBits.length) axisRight += " · " + hiddenBits.join(" · ");
     host.appendChild(el("div", { class: "trace-axis" }, [
       el("span", { text: "seq " + firstSeq + " → " + lastSeq }),
       el("span", { text: axisRight }),
@@ -1209,6 +1228,55 @@
     return true;
   }
 
+  // dedupLaneRuns merges consecutive lane events with identical
+  // (target, method) — the symptom Boris flagged on the test_order_feed
+  // lane: a 1500-iteration `db.exec(...)` loop renders 3000 markers
+  // that all pin to the same lane position with the same one-line
+  // summary. We collapse the run into a single canonical marker
+  // (tagged with `_runCount` and `_runMembers`) so the visual axis
+  // recovers signal density. The event-log table below keeps every
+  // individual row.
+  function dedupLaneRuns(evs) {
+    if (!evs.length) return evs;
+    var out = [];
+    var run = null;
+    for (var i = 0; i < evs.length; i++) {
+      var ev = evs[i];
+      var key = laneRunKey(ev);
+      if (run && run.key === key) {
+        run.count++;
+        run.members.push(ev.seq);
+      } else {
+        if (run) out.push(finalizeRun(run));
+        run = { key: key, head: ev, count: 1, members: [ev.seq] };
+      }
+    }
+    if (run) out.push(finalizeRun(run));
+    return out;
+  }
+
+  function laneRunKey(ev) {
+    var t = ev.type;
+    // Only step events fold into runs; faults, lifecycle, and
+    // violations stay atomic so each one keeps its own marker.
+    if (t !== "step_send" && t !== "step_recv") return "_atomic_" + (ev.seq || 0);
+    var f = ev.fields || {};
+    return "step:" + (f.target || "?") + "." + (f.method || "?");
+  }
+
+  function finalizeRun(run) {
+    if (run.count === 1) return run.head;
+    // Synthesize a marker event that's a shallow clone of the head
+    // event with run metadata attached. Click handlers consult
+    // `_runCount` / `_runMembers` to render the collapsed-run
+    // detail panel and keep the event log highlighting in sync.
+    var clone = {};
+    for (var k in run.head) clone[k] = run.head[k];
+    clone._runCount = run.count;
+    clone._runMembers = run.members;
+    return clone;
+  }
+
   function renderMarker(ev, seqRank, laneCount) {
     // Rank-based positioning: each kept event gets the same horizontal
     // spacing as its neighbour, regardless of how many syscalls were
@@ -1224,14 +1292,23 @@
     if (pct > 97.5) pct = 97.5;
     var kind = markerKind(ev);
     var label = markerShortLabel(ev);
+    var cls = "trace-marker " + kind;
+    if (ev._runCount && ev._runCount > 1) cls += " run";
     var m = el("div", {
-      class: "trace-marker " + kind,
+      class: cls,
       tabindex: "0",
       role: "button",
       "aria-label": label,
       "data-seq": String(ev.seq || 0),
     });
     m.style.left = pct.toFixed(2) + "%";
+    if (ev._runCount && ev._runCount > 1) {
+      m.appendChild(el("span", {
+        class: "trace-marker-count",
+        text: "×" + ev._runCount,
+        title: ev._runCount + " consecutive " + (ev.fields ? ((ev.fields.target || "?") + "." + (ev.fields.method || "?")) : "step") + " events folded",
+      }));
+    }
     return m;
   }
 
@@ -1338,6 +1415,18 @@
     primary.appendChild(detailRow("service", ev.service || "—", true));
     var summary = eventHeadline(ev);
     if (summary) primary.appendChild(detailRow("summary", summary, true));
+    if (ev._runCount && ev._runCount > 1) {
+      // Surface the dedup pivot — Boris's "I see 81k events but only 3
+      // markers" complaint becomes "I see 3 markers, two are runs of
+      // 1500 and 22000 events respectively." The members list lets a
+      // user jump into the event-log table to inspect any specific
+      // iteration.
+      var members = ev._runMembers || [];
+      var memberSummary = ev._runCount + " consecutive event"
+        + (ev._runCount === 1 ? "" : "s") + " collapsed"
+        + (members.length ? " (seq " + members[0] + " → " + members[members.length - 1] + ")" : "");
+      primary.appendChild(detailRow("collapsed run", memberSummary, false));
+    }
     if (ev.fields) {
       // Promote the two fields most users need to see first.
       if (ev.fields.syscall) primary.appendChild(detailRow("syscall", ev.fields.syscall, false));
@@ -1466,12 +1555,19 @@
     }
 
     if (t === "step_send" || t === "step_recv") {
+      // v0.12.2 enriches step events with a runtime-emitted summary
+      // field that carries the protocol-aware preview (e.g. "← db.exec
+      // INSERT INTO orders…  [200]"). Prefer it whenever present —
+      // the reader doesn't need to scan three fields to learn what
+      // the step did.
+      if (f.summary) return f.summary;
       var arrow = t === "step_send" ? "→" : "←";
-      var parts = [arrow, f.target || "?"];
-      if (f.method) parts.push(f.method);
-      if (f.path) parts.push(f.path);
-      else if (f.interface) parts.push("[" + f.interface + "]");
-      if (t === "step_recv" && f.status) parts.push("→ " + f.status);
+      var parts = [arrow, (f.target || "?") + (f.method ? "." + f.method : "")];
+      var preview = f.sql || f.query || f.path || f.command || f.topic || f.body;
+      if (preview) parts.push(truncate(preview, 80));
+      if (t === "step_recv" && f.status_code) parts.push("[" + f.status_code + "]");
+      else if (t === "step_recv" && f.status) parts.push("[" + f.status + "]");
+      if (t === "step_recv" && f.error) parts.push("ERR: " + truncate(f.error, 60));
       return parts.join(" ");
     }
 

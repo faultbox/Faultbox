@@ -13,6 +13,67 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.2] - 2026-04-25
+
+Step-event readability pass. The v0.12.1 swim-lane fix solved syscall
+spam but left two follow-on problems Boris flagged on a regenerated
+`test_order_feed` report: 81k step events still drowned the lane,
+and a drill-down for `step_recv.db` showed only `target/method/
+event_type/partition` — nothing about *what* the step did. v0.12.2
+attacks both.
+
+### Added
+
+- **Enriched `step_send` / `step_recv` events.** The runtime now
+  copies allow-listed kwargs (`sql`, `query`, `args`, `params`,
+  `path`, `body`, `headers`, `table`, `key`, `value`, `topic`,
+  `message`, `payload`, `db`, `command`) into the event field bag,
+  truncated to 200 bytes per field. `step_recv` additionally carries
+  `status_code`, `duration_ms`, `success`, an `error` (when
+  `Success=false`), and any `Fields` the protocol plugin populates
+  on `StepResult` (e.g. mongodb's `collection`/`documents`,
+  cassandra/clickhouse's `rows`).
+- **`summary` field on every step event.** A one-line
+  protocol-aware preview shaped for the swim-lane tooltip and the
+  drill-down primary-summary row — `→ db.exec INSERT INTO orders…`,
+  `← api.get /orders/42  [200]`, `← api.get  ERR: context deadline
+  exceeded`. Replaces the old `step_recv · seq 22754` headline that
+  forced users to read the spec source to learn what was compared.
+- **Lane dedup for repeated step pairs.** Consecutive step events
+  with identical `(target, method)` collapse into a single canonical
+  marker tagged with `_runCount` and `_runMembers`; the marker
+  shows a `× N` count badge. The full per-event rows stay in the
+  event-log table for forensic access. A 1500-iteration `db.exec`
+  loop now renders one chip instead of 3000. The trace axis label
+  surfaces the collapse: `seq A → B · N markers · M repeat steps
+  collapsed · K syscalls in event log`.
+
+### Changed
+
+- The drill-down's "summary" row prefers `fields.summary` (new in
+  v0.12.2) when present, falling back to a JS-built composition
+  using the enriched fields. Old bundles (no `summary`,
+  no enriched kwargs) still render — just without the new preview.
+
+### Docs
+
+- Added an FAQ entry to `docs/reports.md` explaining that bundles
+  are frozen at run time and that re-rendering an old bundle
+  through a newer binary cannot invent fields the runtime didn't
+  emit. To benefit from v0.12.x additions (Expected/Actual,
+  enriched step fields), the suite must be re-run on the new
+  binary — not just re-rendered.
+
+### Customer note
+
+The v0.12.1 → v0.12.2 polish was driven by a customer who
+re-rendered an existing v0.11.2 bundle through the v0.12.1
+`faultbox report`. The visual fixes shipped, but the *event
+content* couldn't change because the bundle was frozen. v0.12.2
+makes that explicit (the new FAQ) and ensures that any run executed
+on v0.12.2+ produces drill-downs rich enough to diagnose without
+opening the spec.
+
 ## [0.12.1] - 2026-04-25
 
 Drill-down + report-shape polish driven by Boris's first read of a
