@@ -118,15 +118,34 @@ func TestCompareImagesRemovedFromSpec(t *testing.T) {
 	}
 }
 
-func TestFormatRendersAllSections(t *testing.T) {
+// TestFormatRendersActionableTable pins the v0.12 #82 output: a
+// "drift detected (N entries):" header followed by one line per
+// drifted entry naming the locked vs current digest. This is the
+// CI-actionable view inDrive Freight asked for; the prior format
+// summarised changes by category which forced an extra round-trip
+// to figure out *which* image moved.
+func TestFormatRendersActionableTable(t *testing.T) {
 	lk := New("0.10.0", time.Now())
-	lk.Images["a:1"] = "sha256:0000000000000000000000000000000000000000000000000000000000000aaa"
+	lk.Images["a:1"] = "sha256:aaaa00000000000000000000000000000000000000000000000000000000aaaa"
+	lk.Images["was-there:1"] = "sha256:dddd00000000000000000000000000000000000000000000000000000000dddd"
 	d := lk.CompareImages(map[string]string{
-		"a:1": "sha256:0000000000000000000000000000000000000000000000000000000000000bbb", // changed
-		"b:2": "sha256:ccc",                                                              // new
+		"a:1": "sha256:bbbb00000000000000000000000000000000000000000000000000000000bbbb", // changed
+		"b:2": "sha256:cccc00000000000000000000000000000000000000000000000000000000cccc", // new
 	})
 	out := d.Format()
-	wants := []string{"new images", "b:2", "a:1", "→"}
+
+	wants := []string{
+		"drift detected (3 entries):",
+		"a:1",
+		"b:2",
+		"was-there:1",
+		"locked",
+		"current",
+		"<not in lock>",
+		"<not found locally>",
+		"sha256:aaaa00000000", // shortDigest of locked a:1
+		"sha256:bbbb00000000", // shortDigest of current a:1
+	}
 	for _, w := range wants {
 		if !strings.Contains(out, w) {
 			t.Errorf("Format() missing %q\n--- output ---\n%s", w, out)

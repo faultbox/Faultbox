@@ -114,10 +114,19 @@ func (lk *Lock) Write(path string) error {
 // Drift describes the differences between an expected Lock (loaded
 // from disk) and an observed set of resolved values. Empty means
 // "no drift." Callers format these for warnings or fail-strict.
+//
+// observed and locked are populated by CompareImages and used by
+// Format to render an actionable per-row "locked vs current" view
+// (#82). They mirror the data already in NewImages/RemovedImages/
+// ChangedImages — the maps are kept around so Format doesn't have
+// to be re-threaded through callers' Lock + observed scope.
 type Drift struct {
 	NewImages     []string          // image refs in observed but not in lock
 	RemovedImages []string          // refs in lock but not observed
 	ChangedImages map[string]Change // refs whose digest moved
+
+	observed map[string]string // tag → observed digest
+	locked   map[string]string // tag → locked digest
 }
 
 // Change records the before/after digest pair for a single drifted
@@ -137,7 +146,11 @@ func (d Drift) Empty() bool {
 // (typically `runtime image-pull → digest`). Returns a Drift; empty
 // means everything matches.
 func (lk *Lock) CompareImages(observed map[string]string) Drift {
-	d := Drift{ChangedImages: map[string]Change{}}
+	d := Drift{
+		ChangedImages: map[string]Change{},
+		observed:      observed,
+		locked:        map[string]string{},
+	}
 	if lk == nil {
 		// No lock to compare against; everything is "new" vs nothing.
 		// Caller decides whether to treat that as drift.
@@ -146,6 +159,9 @@ func (lk *Lock) CompareImages(observed map[string]string) Drift {
 		}
 		sort.Strings(d.NewImages)
 		return d
+	}
+	for tag, dg := range lk.Images {
+		d.locked[tag] = dg
 	}
 	for tag, gotDigest := range observed {
 		want, ok := lk.Images[tag]
@@ -166,24 +182,86 @@ func (lk *Lock) CompareImages(observed map[string]string) Drift {
 	return d
 }
 
-// Format renders a Drift as a multi-line human-readable warning. One
-// line per affected entry; empty when Drift is empty so callers can
-// safely concat into log output.
+// Format renders a Drift as a multi-line human-readable warning. The
+// output is a per-row "locked vs current" table that names every
+// drifted entry — actionable from CI logs without needing to re-run
+// locally to figure out what changed (#82).
+//
+//	drift detected (3 entries):
+//	  mysql:8.0.32   locked sha256:abc123…   current sha256:def456…
+//	  redis:7        locked sha256:9876…     current <not found locally>
+//	  postgres:16    locked <not in lock>    current sha256:1111…
+//
+// Empty when Drift is empty so callers can safely concat into log
+// output.
 func (d Drift) Format() string {
 	if d.Empty() {
 		return ""
 	}
+
+	type row struct{ tag, locked, current string }
+	rows := make([]row, 0, len(d.NewImages)+len(d.RemovedImages)+len(d.ChangedImages))
+
+	for _, tag := range d.NewImages {
+		rows = append(rows, row{
+			tag:     tag,
+			locked:  "<not in lock>",
+			current: digestForDisplay(d.observed[tag]),
+		})
+	}
+	for _, tag := range d.RemovedImages {
+		rows = append(rows, row{
+			tag:     tag,
+			locked:  digestForDisplay(d.locked[tag]),
+			current: "<not found locally>",
+		})
+	}
+	// Stable ordering for changed entries — map iteration is otherwise
+	// non-deterministic and we want CI logs to diff cleanly.
+	changedTags := make([]string, 0, len(d.ChangedImages))
+	for tag := range d.ChangedImages {
+		changedTags = append(changedTags, tag)
+	}
+	sort.Strings(changedTags)
+	for _, tag := range changedTags {
+		ch := d.ChangedImages[tag]
+		rows = append(rows, row{
+			tag:     tag,
+			locked:  digestForDisplay(ch.From),
+			current: digestForDisplay(ch.To),
+		})
+	}
+
+	// Column widths so the locked / current columns line up visually.
+	tagW, lockedW := 0, 0
+	for _, r := range rows {
+		if len(r.tag) > tagW {
+			tagW = len(r.tag)
+		}
+		if len(r.locked) > lockedW {
+			lockedW = len(r.locked)
+		}
+	}
+
 	var b strings.Builder
-	if len(d.NewImages) > 0 {
-		fmt.Fprintf(&b, "  + new images (not in lock): %s\n", strings.Join(d.NewImages, ", "))
-	}
-	if len(d.RemovedImages) > 0 {
-		fmt.Fprintf(&b, "  - removed images (in lock, not in spec): %s\n", strings.Join(d.RemovedImages, ", "))
-	}
-	for tag, ch := range d.ChangedImages {
-		fmt.Fprintf(&b, "  ~ %s: %s → %s\n", tag, shortDigest(ch.From), shortDigest(ch.To))
+	fmt.Fprintf(&b, "drift detected (%d entries):\n", len(rows))
+	for _, r := range rows {
+		fmt.Fprintf(&b, "  %-*s   locked %-*s   current %s\n",
+			tagW, r.tag, lockedW, r.locked, r.current)
 	}
 	return b.String()
+}
+
+// digestForDisplay shortens sha256 digests for tabular output and
+// passes through "<…>" placeholder strings unchanged.
+func digestForDisplay(d string) string {
+	if d == "" {
+		return "<unknown>"
+	}
+	if strings.HasPrefix(d, "<") {
+		return d
+	}
+	return shortDigest(d)
 }
 
 // shortDigest trims the canonical sha256 prefix so log output isn't

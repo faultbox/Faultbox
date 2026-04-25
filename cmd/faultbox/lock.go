@@ -139,7 +139,9 @@ func runLockCheck(path string, resolved map[string]string) int {
 		fmt.Fprintln(os.Stderr, "Lock is up to date.")
 		return 0
 	}
-	fmt.Fprintf(os.Stderr, "Lock drift detected:\n%s", drift.Format())
+	// Format already prints its own "drift detected (N entries):"
+	// header per #82, so we don't duplicate it here.
+	fmt.Fprint(os.Stderr, drift.Format())
 	fmt.Fprintf(os.Stderr, "Run \"faultbox lock --update\" to refresh.\n")
 	return 2
 }
