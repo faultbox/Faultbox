@@ -775,6 +775,10 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
 .dd-assertion-value {
   font-size: 0.92rem;
   overflow-wrap: anywhere;
+  /* Keep long Recent / Expression rows inside the box. The grid
+   * column has 1fr; we bound the value via min-width:0 so flex/grid
+   * descendants honour text-overflow:ellipsis on the children. */
+  min-width: 0;
 }
 .dd-assertion-value.actual {
   color: var(--fail-fg);
@@ -809,6 +813,11 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Cap width to the assertion box so a long SQL line doesn't push
+   * the surrounding layout — the full text is still available via
+   * the title attribute on hover. */
+  max-width: 100%;
+  cursor: help;
 }
 .dd-assertion-context li.fail {
   border-left-color: var(--fail-fg);
@@ -1110,13 +1119,42 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
 .trace-log[open] summary::before { transform: rotate(90deg); }
 .trace-log summary:hover { color: var(--fg); background: var(--bg); }
 .trace-log-body { border-top: 1px solid var(--border); }
+.trace-log-filterbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
 .trace-log-filters {
   display: flex;
   gap: 0.4rem;
-  padding: 0.55rem 0.85rem;
+  padding: 0.4rem 0.85rem;
   flex-wrap: wrap;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  align-items: baseline;
+}
+.trace-log-filters + .trace-log-filters {
+  border-top: 1px dashed var(--border);
+}
+.trace-log-filter-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin-right: 0.45rem;
+  min-width: 4rem;
+}
+/* Clickable cell affordance — type / service tds become filter
+ * triggers on click. Underline on hover signals the action. */
+.trace-log-table td.clickable,
+.trace-log-table .clickable {
+  cursor: pointer;
+}
+.trace-log-table td.clickable:hover,
+.trace-log-table .clickable:hover {
+  text-decoration: underline;
+  text-decoration-style: dotted;
 }
 .trace-log-chip {
   font-family: var(--font-mono);

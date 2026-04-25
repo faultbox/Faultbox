@@ -990,7 +990,10 @@
   // renderAssertionContext renders the runtime-captured "what just
   // happened" trail next to Expected/Actual. Each row reads as a
   // mini step-event headline so the user sees the values that drove
-  // the assertion result (status_code, error, success).
+  // the assertion result (status_code, error, success). Long lines
+  // (e.g. SQL bodies, embedded comments) ellipsize and surface their
+  // full text via the native `title` tooltip so the row stays one
+  // line in the layout.
   function renderAssertionContext(ctx) {
     var host = el("div", { class: "dd-assertion-value mono" });
     var list = el("ul", { class: "dd-assertion-context" });
@@ -999,12 +1002,13 @@
       var arrow = c.type === "step_send" ? "→" : "←";
       var line = arrow + " " + (c.target || "?")
         + (c.method ? "." + c.method : "")
-        + (c.summary ? "  " + truncate(stripArrowFromSummary(c.summary), 90) : "");
+        + (c.summary ? "  " + stripArrowFromSummary(c.summary) : "");
       if (c.status_code) line += "  [" + c.status_code + "]";
-      if (c.success === "false" && c.error) line += "  ERR: " + truncate(c.error, 60);
-      var li = el("li", { class: c.success === "false" ? "fail" : "" }, [
-        document.createTextNode(line),
-      ]);
+      if (c.success === "false" && c.error) line += "  ERR: " + c.error;
+      var li = el("li", {
+        class: c.success === "false" ? "fail" : "",
+        title: line,
+      }, [document.createTextNode(line)]);
       list.appendChild(li);
     }
     host.appendChild(list);
@@ -1414,16 +1418,18 @@
       if (hi <= lo) continue;
       var slot = evs.slice(lo, hi);
 
-      // Pick representative for the slot. An anchor wins outright —
-      // its visual marker (red square for violation, etc.) communicates
-      // that something interesting happened in this region. Otherwise
-      // pick the head of the most populous fold-key bucket so a slot
-      // dominated by `db.exec SELECT 1` shows that label in the chip.
+      // Pick representative for the slot. v0.12.6 picks by *severity*
+      // rather than first-match: a slot containing one violation +
+      // 30 step events should show the violation marker, not the
+      // first step in seq order. Without this the user can't see
+      // where the failures are even though they're in the trace.
       var rep = null;
+      var bestScore = -1;
       for (var j = 0; j < slot.length; j++) {
-        if (isAnchorEvent(slot[j])) { rep = slot[j]; break; }
+        var sc = severityScore(slot[j]);
+        if (sc > bestScore) { bestScore = sc; rep = slot[j]; }
       }
-      if (!rep) {
+      if (!rep || bestScore <= 0) {
         var counts = {}, heads = {};
         for (var j = 0; j < slot.length; j++) {
           var k = laneFoldKey(slot[j]);
@@ -1447,6 +1453,28 @@
       kept.push(chip);
     }
     return { kept: kept, foldedCount: foldedCount };
+  }
+
+  // severityScore ranks events for slot-representative picking. Higher
+  // wins. Violations and faults are the strongest signals; failed
+  // step events come next; lifecycle and ordinary steps are quietest.
+  // Score 0 means "use the fold-head fallback" (no urgent signal).
+  function severityScore(ev) {
+    var t = ev.type || "";
+    if (t === "violation") return 100;
+    if (t === "fault_applied" || t === "fault_removed") return 90;
+    if (t === "fault_zero_traffic" || t === "fault_skipped_no_seccomp") return 85;
+    if (t === "step_send" || t === "step_recv") {
+      var f = ev.fields || {};
+      if (f.success === "false" || f.error) return 80;
+      var sc = parseInt(f.status_code || "0", 10);
+      if (sc >= 500) return 75;
+      if (sc >= 400) return 60;
+      return 0;
+    }
+    if (t === "service_started" || t === "service_ready" ||
+        t === "service_stopped" || t === "session_completed") return 30;
+    return 0;
   }
 
   // isAnchorEvent flags events that pin the surrounding window of
@@ -1523,7 +1551,18 @@
     if (t === "fault_applied" || t === "fault_removed") return "fault";
     if (t === "violation") return "violation";
     if (t === "syscall") return "syscall";
-    if (t === "step_send" || t === "step_recv") return "step";
+    if (t === "step_send" || t === "step_recv") {
+      // v0.12.6: failed steps render in the fault palette so the eye
+      // finds the DB invalid-connection and the truck-api 500 among
+      // a sea of yellow SELECT 1 markers. Without this every step
+      // looks identical and the user has to click each one.
+      var f = ev.fields || {};
+      if (f.success === "false" || f.error) return "fault";
+      var sc = parseInt(f.status_code || "0", 10);
+      if (sc >= 500) return "fault";
+      if (sc >= 400) return "violation";
+      return "step";
+    }
     if (t === "service_started" || t === "service_ready" ||
         t === "service_stopped" || t === "session_completed") return "lifecycle";
     return "syscall";
@@ -1826,21 +1865,24 @@
   // pages of EVENT_LOG_PAGE_SIZE — see comment above.
   function buildEventLog(events, order, onSelect) {
     var typesPresent = {};
+    var servicesPresent = {};
     for (var i = 0; i < events.length; i++) {
       var t = events[i].type || "other";
       typesPresent[t] = true;
+      var s = events[i].service || "—";
+      servicesPresent[s] = true;
     }
     var knownTypes = ["syscall", "fault_applied", "fault_removed",
       "service_started", "service_ready", "service_stopped",
       "step_send", "step_recv", "violation"];
-    var filterOpts = ["all"];
+    var typeOpts = [];
     for (var j = 0; j < knownTypes.length; j++) {
-      if (typesPresent[knownTypes[j]]) filterOpts.push(knownTypes[j]);
+      if (typesPresent[knownTypes[j]]) typeOpts.push(knownTypes[j]);
     }
-    // Append any unknown types so no events are unreachable by filter.
     for (var kt in typesPresent) {
-      if (knownTypes.indexOf(kt) < 0 && kt !== "other") filterOpts.push(kt);
+      if (knownTypes.indexOf(kt) < 0 && kt !== "other") typeOpts.push(kt);
     }
+    var serviceOpts = Object.keys(servicesPresent).sort();
 
     var wrap = document.createElement("details");
     wrap.className = "trace-log";
@@ -1864,20 +1906,49 @@
     wrap.appendChild(sum);
 
     var body = el("div", { class: "trace-log-body" });
-    var filters = el("div", { class: "trace-log-filters", role: "toolbar" });
-    var chips = {};
-    for (var f = 0; f < filterOpts.length; f++) {
+
+    // v0.12.6: two-axis filter (Service + Type). Each axis has its
+    // own chip toolbar. Both default empty (= "all"). Clicking a
+    // chip toggles its active state; the row predicate ANDs across
+    // axes. Service / Type cells in the table are clickable — click
+    // → set that axis to that single value. The active-chips bar
+    // shows what's selected with X buttons to remove.
+    var activeServices = {};
+    var activeTypes = {};
+
+    var filterBar = el("div", { class: "trace-log-filterbar" });
+    var serviceFilters = el("div", { class: "trace-log-filters", role: "toolbar", "aria-label": "Filter by service" });
+    serviceFilters.appendChild(el("span", { class: "trace-log-filter-label", text: "Service" }));
+    var typeFilters = el("div", { class: "trace-log-filters", role: "toolbar", "aria-label": "Filter by type" });
+    typeFilters.appendChild(el("span", { class: "trace-log-filter-label", text: "Type" }));
+
+    var serviceChips = {};
+    for (var sIdx = 0; sIdx < serviceOpts.length; sIdx++) {
+      (function (svc) {
+        var chip = el("button", {
+          class: "trace-log-chip", type: "button",
+          "data-filter": svc, text: svc,
+          onclick: function () { toggleService(svc); },
+        });
+        serviceChips[svc] = chip;
+        serviceFilters.appendChild(chip);
+      })(serviceOpts[sIdx]);
+    }
+    var typeChips = {};
+    for (var tIdx = 0; tIdx < typeOpts.length; tIdx++) {
       (function (type) {
         var chip = el("button", {
-          class: "trace-log-chip" + (type === "all" ? " active" : ""),
-          type: "button", "data-filter": type, text: type,
-          onclick: function () { applyFilter(type); },
+          class: "trace-log-chip", type: "button",
+          "data-filter": type, text: type,
+          onclick: function () { toggleType(type); },
         });
-        chips[type] = chip;
-        filters.appendChild(chip);
-      })(filterOpts[f]);
+        typeChips[type] = chip;
+        typeFilters.appendChild(chip);
+      })(typeOpts[tIdx]);
     }
-    body.appendChild(filters);
+    filterBar.appendChild(serviceFilters);
+    filterBar.appendChild(typeFilters);
+    body.appendChild(filterBar);
 
     var scroll = el("div", { class: "trace-log-scroll" });
     var table = el("table", { class: "trace-log-table" });
@@ -1895,7 +1966,7 @@
     function appendBatch(n) {
       var stop = Math.min(renderedCount + n, events.length);
       for (var r = renderedCount; r < stop; r++) {
-        var pair = logRow(events[r], onSelect);
+        var pair = logRow(events[r], onSelect, wrap);
         tbody.appendChild(pair[0]);
         tbody.appendChild(pair[1]);
       }
@@ -1950,29 +2021,66 @@
 
     wrap.appendChild(body);
 
-    var activeFilter = "all";
-    function applyFilter(type) {
-      activeFilter = type;
-      for (var k in chips) chips[k].classList.remove("active");
-      if (chips[type]) chips[type].classList.add("active");
-      // Each event now contributes two rows (header + expansion); we
-      // key on data-seq / data-seq-expand so a filter match hides
-      // or shows both in lockstep.
+    function toggleService(svc) {
+      if (activeServices[svc]) delete activeServices[svc];
+      else activeServices[svc] = true;
+      applyFilters();
+    }
+    function toggleType(type) {
+      if (activeTypes[type]) delete activeTypes[type];
+      else activeTypes[type] = true;
+      applyFilters();
+    }
+    // Compatibility shim — refreshLoadMore() and Show-all both call
+    // this after appending new rows so the filter still applies.
+    function applyFilter() { applyFilters(); }
+
+    function activeKeys(set) {
+      var out = [];
+      for (var k in set) out.push(k);
+      return out;
+    }
+
+    function applyFilters() {
+      var svcKeys = activeKeys(activeServices);
+      var typeKeys = activeKeys(activeTypes);
+      // Reflect chip active state.
+      for (var k in serviceChips) {
+        serviceChips[k].classList.toggle("active", !!activeServices[k]);
+      }
+      for (var k in typeChips) {
+        typeChips[k].classList.toggle("active", !!activeTypes[k]);
+      }
       var headers = tbody.querySelectorAll("tr[data-seq]");
       for (var i = 0; i < headers.length; i++) {
         var row = headers[i];
         var rType = row.getAttribute("data-type") || "";
+        var rSvc = row.getAttribute("data-service") || "";
         var seq = row.getAttribute("data-seq");
-        var matched = (type === "all" || rType === type);
+        var svcOk = svcKeys.length === 0 || activeServices[rSvc];
+        var typeOk = typeKeys.length === 0 || activeTypes[rType];
+        var matched = svcOk && typeOk;
         row.style.display = matched ? "" : "none";
         var expand = tbody.querySelector('tr[data-seq-expand="' + seq + '"]');
         if (expand) {
-          // Only the header row toggles visibility when filtered —
-          // the expansion's own `hidden` attribute controls open/close.
           expand.style.display = matched ? "" : "none";
         }
       }
     }
+
+    // Click-to-filter on table cells. Wired in logRow but the
+    // handlers live here so they can mutate the closure's
+    // activeServices / activeTypes sets directly.
+    wrap._addServiceFilter = function (svc) {
+      activeServices = {};
+      activeServices[svc] = true;
+      applyFilters();
+    };
+    wrap._addTypeFilter = function (type) {
+      activeTypes = {};
+      activeTypes[type] = true;
+      applyFilters();
+    };
 
     return wrap;
   }
@@ -1983,23 +2091,43 @@
   // per-event fields right where they clicked, without scrolling back
   // to the trace-viewer detail panel. Clicking the row also drives
   // onSelect — the standard "pin this event on the lanes" behaviour.
-  function logRow(ev, onSelect) {
+  function logRow(ev, onSelect, logWrap) {
     var caret = el("span", { class: "trace-log-caret", text: "▸" });
     var tr = el("tr", {
       "data-seq": String(ev.seq || 0),
       "data-type": ev.type || "",
+      "data-service": ev.service || "—",
     });
-    // The sequence number used to live in this first column alongside
-    // the caret, but the two competed for a 1%-wide column and wrapped
-    // on narrow viewports. The seq is still a useful anchor — moved
-    // into the expansion's Meta group below so it stays discoverable
-    // without cluttering the row.
     tr.appendChild(el("td", { class: "caret-col" }, [caret]));
-    tr.appendChild(el("td", { class: "type" }, [
-      el("span", { class: "trace-log-type type-" + markerKind(ev), text: ev.type || "" }),
-    ]));
-    tr.appendChild(el("td", { class: "service", text: ev.service || "" }));
-    tr.appendChild(el("td", { text: eventHeadline(ev) || "" }));
+    // v0.12.6: type + service cells are clickable. Click → set the
+    // filter for that axis to *only this value*. Chip toolbar above
+    // updates to reflect the selection. Lets a user say "show only
+    // step_recv events on truck-api" by clicking two cells, no
+    // chip-hunting required.
+    var typeCell = el("td", { class: "type" }, [
+      el("span", {
+        class: "trace-log-type type-" + markerKind(ev) + " clickable",
+        text: ev.type || "",
+        title: "Click to filter by type",
+        onclick: function (e) {
+          e.stopPropagation();
+          if (logWrap && logWrap._addTypeFilter) logWrap._addTypeFilter(ev.type || "");
+        },
+      }),
+    ]);
+    tr.appendChild(typeCell);
+    var svcCell = el("td", {
+      class: "service clickable",
+      text: ev.service || "",
+      title: "Click to filter by service",
+      onclick: function (e) {
+        e.stopPropagation();
+        if (logWrap && logWrap._addServiceFilter) logWrap._addServiceFilter(ev.service || "—");
+      },
+    });
+    tr.appendChild(svcCell);
+    var headlineText = eventHeadline(ev) || "";
+    tr.appendChild(el("td", { text: headlineText, title: headlineText }));
 
     // Expansion row sits directly beneath, same 4-column grid, spans
     // all columns with a single cell. Hidden until the user clicks.

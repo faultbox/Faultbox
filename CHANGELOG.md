@@ -13,6 +13,36 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.6] - 2026-04-25
+
+Three UX fixes from a customer read of the v0.12.5 report:
+
+### Changed
+
+- **Lane markers now color by severity, not just type.** A
+  `step_recv` with `success=false`, an `error` field, or
+  `status_code ≥ 500` paints with the fault palette (red);
+  `status_code` 4xx paints amber. Without this every step rendered
+  in the same yellow/warn colour and the eye couldn't find the DB
+  invalid-connection or the truck-api 500 among a sea of `SELECT 1`
+  markers.
+- **Slot picker prefers severity over first-anchor.** `severityScore`
+  ranks events: violation 100 → fault 90 → errored step 80 →
+  5xx 75 → 4xx 60 → lifecycle 30 → 0. The slot's representative is
+  the highest-scoring event in the bucket, so a slot containing 30
+  step events plus one violation always shows the violation marker.
+- **Recent trail ellipsizes long lines** with the full text in the
+  native `title` tooltip. Stops a 2 KB SQL preview from pushing the
+  drill-down off-screen; `cursor: help` signals the hover.
+
+### Added
+
+- **Two-axis event-log filter (Service + Type).** Replaces the
+  v0.11 single-select-by-type chip bar. Both axes multi-select.
+  Clicking a Type / Service cell in the table sets that axis to
+  the cell's value (`step_recv` only on `truck-api`: two clicks).
+  Active chips highlight; click again to deselect.
+
 ## [0.12.5] - 2026-04-25
 
 Hard per-lane marker budget. Walks back the v0.12.2/3 consecutive-runs
