@@ -731,6 +731,56 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   color: var(--fg-muted);
 }
 
+/* Structured assertion (assert_eq / assert_true) — Expected vs Actual.
+ * Two-column grid keeps the eye moving down the diff; the actual value
+ * is tinted with --fail-fg so the reader's gaze lands on the wrong
+ * value first instead of having to read both. */
+.dd-assertion {
+  border: 1px solid var(--fail-border);
+  background: var(--fail-bg);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.85rem;
+  margin-bottom: 0.6rem;
+}
+.dd-assertion-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+.dd-assertion-func {
+  font-size: 0.85rem;
+  color: var(--fail-fg);
+  font-weight: 600;
+}
+.dd-assertion-msg {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+.dd-assertion-pairs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 0.85rem;
+  row-gap: 0.25rem;
+  align-items: baseline;
+}
+.dd-assertion-label {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+.dd-assertion-value {
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+.dd-assertion-value.actual {
+  color: var(--fail-fg);
+  font-weight: 600;
+}
+
 .dd-replay code {
   display: block;
   padding: 0.65rem 0.85rem;

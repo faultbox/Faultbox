@@ -62,6 +62,14 @@ type TestResult struct {
 	// the runtime flagged as zero-traffic. Surfaced in the drill-down
 	// so users know exactly which fault dodged the scenario.
 	BypassedRules []BypassedRule `json:"-"`
+
+	// Assertion is the structured record of the most recent failing
+	// assert_* builtin, when one fired. nil when the test passed or
+	// when failure came from a non-comparison source (panic, timeout,
+	// monitor violation, expect predicate). Carried into the trace
+	// JSON and surfaced in the report drill-down's Expected vs Actual
+	// block.
+	Assertion *AssertionDetail `json:"assertion,omitempty"`
 }
 
 // BypassedRule describes one fault rule that was installed for this
@@ -72,6 +80,20 @@ type BypassedRule struct {
 	Syscall string `json:"syscall"`
 	Action  string `json:"action,omitempty"`
 	Label   string `json:"label,omitempty"`
+}
+
+// AssertionDetail captures the comparison that produced an assertion
+// failure: the calling builtin (assert_eq / assert_true), the expected
+// and actual values rendered the way Starlark would print them, and the
+// optional user message. The runtime fills it inside the assert_*
+// builtins; RunTest snapshots it into TestResult on failure so the
+// report drill-down can show Expected vs Actual without the user
+// jumping into the spec source.
+type AssertionDetail struct {
+	Func     string `json:"func"`
+	Expected string `json:"expected,omitempty"`
+	Actual   string `json:"actual,omitempty"`
+	Message  string `json:"message,omitempty"`
 }
 
 // SuiteResult captures the outcome of all test functions.
@@ -188,6 +210,15 @@ type Runtime struct {
 	// the event log for fault_zero_traffic events and demote the row
 	// to the fault_bypassed outcome. Reset at the top of RunTest.
 	requireFaultsFire bool
+
+	// lastAssertion captures the structured "expected vs actual" record
+	// of the most recent failing assert_* builtin in the running test.
+	// RunTest snapshots it into TestResult.Assertion when the test
+	// fails, so the report drill-down can render Expected/Actual rows
+	// instead of forcing the user to read the source. Reset at the top
+	// of RunTest. Only assertion builtins that produce a comparison
+	// (assert_eq, assert_true) populate it.
+	lastAssertion *AssertionDetail
 
 	// mockTLSImpl is lazy-initialized the first time a tls=True mock service
 	// starts. The whole runtime shares one CA so clients can trust every
@@ -678,6 +709,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	rt.expectationName = ""
 	rt.expectationViolated = false
 	rt.requireFaultsFire = false
+	rt.lastAssertion = nil
 
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
@@ -738,6 +770,7 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			Matrix:              matrixInfo,
 			ExpectationName:     expectName,
 			ExpectationViolated: expectViolated,
+			Assertion:           rt.lastAssertion,
 		}
 	}
 

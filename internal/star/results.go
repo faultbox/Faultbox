@@ -73,6 +73,7 @@ type TestTraceOutput struct {
 	Faults              []FaultInfo                     `json:"faults,omitempty"`
 	SyscallSummary      map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
 	Diagnostics         []Diagnostic                    `json:"diagnostics,omitempty"`
+	Assertion           *AssertionDetail                `json:"assertion,omitempty"`
 	Events              []Event                         `json:"events"`
 }
 
@@ -132,6 +133,7 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 			ExpectationViolated: tr.ExpectationViolated,
 			FaultBypassed:       tr.FaultBypassed,
 			BypassedRules:       tr.BypassedRules,
+			Assertion:           tr.Assertion,
 		}
 		if tr.ReturnValue != nil && tr.ReturnValue != starlark.None {
 			tto.ReturnValue = tr.ReturnValue.String()

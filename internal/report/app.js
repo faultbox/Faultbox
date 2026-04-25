@@ -483,8 +483,12 @@
 
     // Aggregate syscall_summary across all tests, grouped by service.
     // The shape each test already produces is per-service; we union
-    // the breakdowns and track tests touching each service.
+    // the breakdowns and track tests touching each service. Proxy-mode
+    // runs have no syscall events — in that case fall back to the
+    // event log so the section still lists the services that
+    // participated, with event-type breakdowns instead of syscalls.
     var byService = {};
+    var hasSyscalls = false;
     for (var i = 0; i < tests.length; i++) {
       var t = tests[i];
       var ss = t.syscall_summary || {};
@@ -499,13 +503,48 @@
         for (var sc in (s.breakdown || {})) {
           byService[svc].breakdown[sc] = (byService[svc].breakdown[sc] || 0) + s.breakdown[sc];
         }
+        hasSyscalls = true;
       }
     }
+    // Event-log fallback for services that never registered syscalls.
+    // We only fold in events for services not already covered by
+    // syscall_summary so binary-mode runs aren't disturbed.
+    var byServiceFromEvents = {};
+    for (var i2 = 0; i2 < tests.length; i2++) {
+      var t2 = tests[i2];
+      var events2 = t2.events || [];
+      for (var e2 = 0; e2 < events2.length; e2++) {
+        var ev2 = events2[e2];
+        var svc2 = ev2.service;
+        if (!svc2 || byService[svc2]) continue;
+        if (!byServiceFromEvents[svc2]) {
+          byServiceFromEvents[svc2] = { tests: {}, total: 0, faulted: 0, breakdown: {} };
+        }
+        var bag = byServiceFromEvents[svc2];
+        bag.tests[t2.name] = true;
+        bag.total++;
+        var kind2 = ev2.type || "event";
+        bag.breakdown[kind2] = (bag.breakdown[kind2] || 0) + 1;
+        if (ev2.type === "fault_applied" || ev2.type === "violation") bag.faulted++;
+      }
+    }
+    for (var svc3 in byServiceFromEvents) byService[svc3] = byServiceFromEvents[svc3];
 
     var services = Object.keys(byService);
     if (!services.length) return;
     services.sort();
     section.hidden = false;
+    var thAct = document.getElementById("coverage-th-activity");
+    var thTop = document.getElementById("coverage-th-top");
+    var hint = document.getElementById("coverage-hint");
+    if (!hasSyscalls) {
+      if (thAct) thAct.textContent = "Events";
+      if (thTop) thTop.textContent = "Top event kinds";
+      if (hint) {
+        hint.textContent = "What actually happened — per service, measured from the event log. "
+          + "This run captured no syscall events (proxy-only or non-instrumented mode).";
+      }
+    }
     tbody.innerHTML = "";
 
     for (var s = 0; s < services.length; s++) {
@@ -617,6 +656,14 @@
   }
 
   function populateDrillDown(body, test) {
+    // Structured assertion (when an assert_eq / assert_true fired):
+    // surfaces Expected vs Actual at the top of the body so the user
+    // doesn't need to read the spec to learn what the test compared.
+    if (test.assertion) {
+      body.appendChild(el("h4", { text: "Assertion" }));
+      body.appendChild(renderAssertion(test.assertion));
+    }
+
     // Reason / assertion message (shown whether or not the test failed
     // — a passing test with a reason is rare, but we want it visible).
     if (test.reason) {
@@ -870,6 +917,29 @@
     });
   }
 
+  // renderAssertion shows the structured "expected vs actual" block
+  // produced by failing assert_eq / assert_true builtins. Two columns
+  // (Expected | Actual) keep the eye on the diff; the optional message
+  // line carries the user-supplied custom text.
+  function renderAssertion(a) {
+    var grid = el("div", { class: "dd-assertion" });
+    var head = el("div", { class: "dd-assertion-head" }, [
+      el("span", { class: "dd-assertion-func mono", text: (a.func || "assert") + " failed" }),
+    ]);
+    if (a.message) {
+      head.appendChild(el("span", { class: "dd-assertion-msg", text: a.message }));
+    }
+    grid.appendChild(head);
+
+    var pairs = el("div", { class: "dd-assertion-pairs" });
+    pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Expected" }));
+    pairs.appendChild(el("div", { class: "dd-assertion-value mono", text: a.expected || "—" }));
+    pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Actual" }));
+    pairs.appendChild(el("div", { class: "dd-assertion-value mono actual", text: a.actual || "—" }));
+    grid.appendChild(pairs);
+    return grid;
+  }
+
   function renderDiag(d) {
     var cls = "dd-diag";
     if (d.level === "error") cls += " error";
@@ -923,18 +993,41 @@
         text: "No events captured for this test. (Trace collection is enabled by default; empty traces usually mean the test ran entirely in the harness — no service syscalls executed.)" });
     }
 
+    // The swim-lane is for *interesting* events only — faults, lifecycle,
+    // protocol steps, violations. Syscalls would dominate any non-trivial
+    // run (production traces routinely cross 80k+ events): rendered on a
+    // linear seq axis, two anchors at seq=1 and seq=83549 collapse the
+    // intervening 99% of the timeline into invisible whitespace. Keeping
+    // syscalls in the event-log table below gives forensic access without
+    // ruining the visual spacing. If a run is *only* syscalls (binary-mode
+    // tests that don't hit step boundaries), we fall back to all events
+    // so the lane isn't empty.
+    var laneEvents = events.filter(isLaneEvent);
+    if (!laneEvents.length) laneEvents = events.slice();
+    var hiddenCount = events.length - laneEvents.length;
+
     var lanes = {};
     var order = [];
-    for (var i = 0; i < events.length; i++) {
-      var svc = events[i].service || "test";
+    for (var i = 0; i < laneEvents.length; i++) {
+      var svc = laneEvents[i].service || "test";
       if (!lanes[svc]) { lanes[svc] = []; order.push(svc); }
-      lanes[svc].push(events[i]);
+      lanes[svc].push(laneEvents[i]);
     }
 
-    var seqs = events.map(function (e) { return e.seq || 0; });
-    var minSeq = Math.min.apply(null, seqs);
-    var maxSeq = Math.max.apply(null, seqs);
-    if (minSeq === maxSeq) maxSeq = minSeq + 1;
+    // Rank-based positioning: each kept event gets uniform spacing in
+    // its rank order across the global lane set, regardless of how many
+    // syscalls were issued between it and its neighbour. This is what
+    // makes a run with a fault at seq=1500 and a violation at seq=83549
+    // legible — the two land at proportional rank positions, not at 1.8%
+    // and 99.99% of a 83-thousand-step axis.
+    var sortedLane = laneEvents.slice().sort(function (a, b) {
+      return (a.seq || 0) - (b.seq || 0);
+    });
+    var seqRank = {};
+    for (var r = 0; r < sortedLane.length; r++) seqRank[sortedLane[r].seq] = r;
+    var laneCount = sortedLane.length;
+    var firstSeq = sortedLane[0].seq || 0;
+    var lastSeq = sortedLane[laneCount - 1].seq || 0;
 
     var host = el("div", { class: "trace-viewer" });
     var lanesWrap = el("div", { class: "trace-lanes" });
@@ -949,10 +1042,10 @@
       laneIndexFor[svc] = j;
       grid.appendChild(el("div", { class: "trace-lane-label", text: svc }));
       var lane = el("div", { class: "trace-lane" });
-      var laneEvents = lanes[svc];
-      for (var k = 0; k < laneEvents.length; k++) {
-        var ev = laneEvents[k];
-        var m = renderMarker(ev, minSeq, maxSeq);
+      var laneEv = lanes[svc];
+      for (var k = 0; k < laneEv.length; k++) {
+        var ev = laneEv[k];
+        var m = renderMarker(ev, seqRank, laneCount);
         markerNodes[ev.seq] = m;
         lane.appendChild(m);
       }
@@ -974,9 +1067,13 @@
     lanesWrap.appendChild(tooltip);
 
     host.appendChild(lanesWrap);
+    var axisRight = laneCount + " marker" + (laneCount === 1 ? "" : "s");
+    if (hiddenCount > 0) {
+      axisRight += " · " + hiddenCount + " syscall" + (hiddenCount === 1 ? "" : "s") + " in event log";
+    }
     host.appendChild(el("div", { class: "trace-axis" }, [
-      el("span", { text: "seq " + minSeq }),
-      el("span", { text: "seq " + maxSeq }),
+      el("span", { text: "seq " + firstSeq + " → " + lastSeq }),
+      el("span", { text: axisRight }),
     ]));
     host.appendChild(traceLegend());
 
@@ -1100,11 +1197,29 @@
     scope.classList && scope.classList.remove("causal-active");
   }
 
-  function renderMarker(ev, minSeq, maxSeq) {
-    var pct = ((ev.seq || 0) - minSeq) / (maxSeq - minSeq) * 100;
+  // isLaneEvent decides whether an event earns a marker on the swim
+  // lane. The visual lane is a coarse "what mattered" view — anything
+  // higher-cardinality than once-per-step lives in the event log
+  // table below. Anything not explicitly listed here also gets a
+  // marker (forward-compat for new event kinds).
+  function isLaneEvent(ev) {
+    var t = ev && ev.type;
+    if (!t) return true;
+    if (t === "syscall") return false;
+    return true;
+  }
+
+  function renderMarker(ev, seqRank, laneCount) {
+    // Rank-based positioning: each kept event gets the same horizontal
+    // spacing as its neighbour, regardless of how many syscalls were
+    // emitted in between. Without this an 80k-event run renders only
+    // its first and last markers at the lane edges — everything in the
+    // middle clamps to a few-pixel gap by linear seq scaling.
+    var rank = seqRank[ev.seq] || 0;
+    var denom = laneCount > 1 ? (laneCount - 1) : 1;
+    var pct = (rank / denom) * 100;
     // Clamp to a narrow inner band so the first and last markers don't
-    // overhang the lane's rounded corners. 2.5% ≈ enough clearance for
-    // the 14px violation square on an ~800px-wide lane.
+    // overhang the lane's rounded corners.
     if (pct < 2.5) pct = 2.5;
     if (pct > 97.5) pct = 97.5;
     var kind = markerKind(ev);

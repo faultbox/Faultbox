@@ -13,6 +13,59 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.1] - 2026-04-25
+
+Drill-down + report-shape polish driven by Boris's first read of a
+regenerated v0.12 report. Three pain points addressed in one patch:
+
+1. **Services section now shows up for proxy-mode runs.** The
+   "Observed coverage" section was hidden whenever `syscall_summary`
+   was empty — exactly the case for container/proxy tests that
+   capture step events but no syscalls. The section now derives
+   services from the event log as a fallback, relabelling its
+   activity column from "Syscalls" to "Events".
+2. **Failed tests carry an Expected vs Actual block.** A failing
+   `assert_eq` / `assert_true` now attaches a structured
+   `AssertionDetail` (`{func, expected, actual, message}`) to the
+   `TestResult`, surfaced at the top of the drill-down body. Users
+   no longer need to open the spec source to learn what the test
+   compared.
+3. **Swim-lane stays legible at 80k+ events.** The lane renders
+   only "interesting" events (faults, lifecycle, steps, violations,
+   anything non-syscall) on a *rank-based* axis — uniform spacing
+   instead of linear seq scaling. Syscalls remain in the event-log
+   table below for forensic access. Without this, a run with
+   `seq=1` and `seq=83549` anchors collapsed 99.9% of the timeline
+   into invisible whitespace.
+
+### Added
+
+- `AssertionDetail` (`{func, expected, actual, message}`) on
+  `TestResult` and trace-output rows; populated by `assert_eq`
+  and `assert_true` on failure, rendered in the report drill-down
+  as an "Assertion" block above the swim-lane.
+- Event-log fallback for `Observed coverage`: services that
+  emitted any event (proxy-mode `step_send` / `step_recv` /
+  faults) are now listed even when no syscall events were
+  captured. The activity column auto-relabels to "Events" /
+  "Top event kinds" in this mode.
+
+### Changed
+
+- **Swim-lane axis is now rank-based.** Markers for the kept
+  events get uniform horizontal spacing regardless of how many
+  syscalls were emitted between them. Linear-seq positioning
+  rendered usefully only when `maxSeq - minSeq` was small;
+  production runs above ~10k events became unreadable.
+- **Swim-lane filters syscalls out by default.** Lane markers are
+  reserved for fault, lifecycle, step, and violation events; the
+  syscall noise stays in the event-log table where filter chips
+  already live. If a run produces only syscalls, the lane falls
+  back to showing them so binary-mode tests still render.
+- Trace axis label updated from "seq X / seq Y" to
+  `seq A → B · N markers · M syscalls in event log` to make the
+  filtering visible at a glance.
+
 ## [0.12.0] - 2026-04-25
 
 The "23 MB report" release. The headline customer pain from the

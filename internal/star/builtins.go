@@ -38,8 +38,8 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"fault_all":   starlark.NewBuiltin("fault_all", rt.builtinFaultAll),
 		"fault_start": starlark.NewBuiltin("fault_start", rt.builtinFaultStart),
 		"fault_stop":  starlark.NewBuiltin("fault_stop", rt.builtinFaultStop),
-		"assert_true":       starlark.NewBuiltin("assert_true", builtinAssertTrue),
-		"assert_eq":         starlark.NewBuiltin("assert_eq", builtinAssertEq),
+		"assert_true":       starlark.NewBuiltin("assert_true", rt.builtinAssertTrue),
+		"assert_eq":         starlark.NewBuiltin("assert_eq", rt.builtinAssertEq),
 		"assert_eventually": starlark.NewBuiltin("assert_eventually", rt.builtinAssertEventually),
 		"assert_never":      starlark.NewBuiltin("assert_never", rt.builtinAssertNever),
 		"assert_before":     starlark.NewBuiltin("assert_before", rt.builtinAssertBefore),
@@ -792,7 +792,7 @@ func (rt *Runtime) builtinFaultStop(thread *starlark.Thread, fn *starlark.Builti
 }
 
 // assert_true(condition, msg=)
-func builtinAssertTrue(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (rt *Runtime) builtinAssertTrue(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 1 {
 		return nil, fmt.Errorf("assert_true() requires a condition")
 	}
@@ -801,13 +801,19 @@ func builtinAssertTrue(thread *starlark.Thread, fn *starlark.Builtin, args starl
 		if len(args) > 1 {
 			msg, _ = starlark.AsString(args[1])
 		}
+		rt.lastAssertion = &AssertionDetail{
+			Func:     "assert_true",
+			Expected: "True",
+			Actual:   args[0].String(),
+			Message:  msg,
+		}
 		return nil, fmt.Errorf("%s", msg)
 	}
 	return starlark.None, nil
 }
 
 // assert_eq(a, b, msg=)
-func builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (rt *Runtime) builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 2 {
 		return nil, fmt.Errorf("assert_eq() requires two arguments")
 	}
@@ -816,10 +822,24 @@ func builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin, args starlar
 		return nil, err
 	}
 	if !eq {
-		msg := fmt.Sprintf("assert_eq failed: %s != %s", args[0], args[1])
+		var custom string
 		if len(args) > 2 {
-			custom, _ := starlark.AsString(args[2])
-			msg = fmt.Sprintf("assert_eq failed: %s != %s (%s)", args[0], args[1], custom)
+			custom, _ = starlark.AsString(args[2])
+		}
+		// Convention: assert_eq(actual, expected, msg). Aligns with the
+		// drill-down rendering and matches what users naturally type
+		// when checking response codes / state values.
+		actual := args[0].String()
+		expected := args[1].String()
+		msg := fmt.Sprintf("assert_eq failed: %s != %s", actual, expected)
+		if custom != "" {
+			msg = fmt.Sprintf("assert_eq failed: %s != %s (%s)", actual, expected, custom)
+		}
+		rt.lastAssertion = &AssertionDetail{
+			Func:     "assert_eq",
+			Expected: expected,
+			Actual:   actual,
+			Message:  custom,
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
