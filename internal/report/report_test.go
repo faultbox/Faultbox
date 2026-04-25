@@ -314,6 +314,21 @@ func TestBuildSummaryModeDropsTrace(t *testing.T) {
 	}
 }
 
+// TestEventLogPagingConstantInJS guards the RFC-031 Phase 2 page-size
+// invariant: app.js must declare an EVENT_LOG_PAGE_SIZE constant so
+// drill-down event lists render in chunks rather than building tens
+// of thousands of <tr> nodes at first paint. A future refactor that
+// drops the constant or renames it would silently regress the lag
+// fix on bundles with large event streams.
+func TestEventLogPagingConstantInJS(t *testing.T) {
+	if !strings.Contains(appJS, "EVENT_LOG_PAGE_SIZE") {
+		t.Error("app.js missing EVENT_LOG_PAGE_SIZE constant — Phase 2 paging may be disabled")
+	}
+	if !strings.Contains(appJS, "trace-log-loadmore") {
+		t.Error("app.js missing Load-more button class — paged event log is not wired up")
+	}
+}
+
 // TestGzipBytesShrinksRedundantPayload asserts the headline RFC-031
 // promise on a payload that resembles real event data (highly
 // redundant JSON). On a 100 KB highly-repetitive blob, the encoded

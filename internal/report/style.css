@@ -1031,6 +1031,29 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   max-height: 260px;
   overflow-y: auto;
 }
+.trace-log-loadmore-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+.trace-log-loadmore {
+  background: var(--accent);
+  color: var(--bg-elev);
+  border: 1px solid var(--accent);
+  padding: 0.35rem 0.85rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+.trace-log-loadmore:hover { filter: brightness(1.1); }
+.trace-log-loadmore.secondary {
+  background: transparent;
+  color: var(--fg-muted);
+  border-color: var(--border-strong);
+}
+.trace-log-loadmore.secondary:hover { color: var(--fg); border-color: var(--accent); }
 .trace-log-table {
   width: 100%;
   border-collapse: collapse;

@@ -1381,9 +1381,20 @@
     return parts.join(" ");
   }
 
+  // EVENT_LOG_PAGE_SIZE caps how many event-log rows materialise into
+  // the DOM at first paint (RFC-031 Phase 2). Real bundles can carry
+  // tens of thousands of syscall events; rendering them all up-front
+  // cost first-paint seconds and made the modal lag on scroll. We
+  // append a "Load more" footer that adds the next page on demand.
+  // 200 was chosen empirically — fits comfortably above the fold of
+  // the drill-down dialog and keeps DOM under 2k nodes for the
+  // common case where the user never scrolls past the visible window.
+  var EVENT_LOG_PAGE_SIZE = 200;
+
   // buildEventLog returns a collapsible <details> containing the
   // event log table with type-filter chips. Clicking a row invokes
-  // onSelect — the same flow as clicking a marker.
+  // onSelect — the same flow as clicking a marker. Rows render in
+  // pages of EVENT_LOG_PAGE_SIZE — see comment above.
   function buildEventLog(events, order, onSelect) {
     var typesPresent = {};
     for (var i = 0; i < events.length; i++) {
@@ -1437,18 +1448,71 @@
       el("th", { text: "summary" }),
     ])]);
     var tbody = el("tbody");
-    for (var r = 0; r < events.length; r++) {
-      var pair = logRow(events[r], onSelect);
-      tbody.appendChild(pair[0]);
-      tbody.appendChild(pair[1]);
+
+    // `renderedCount` tracks how many events we've materialised so
+    // far. The Load-more button reads it to decide what to append.
+    var renderedCount = 0;
+    function appendBatch(n) {
+      var stop = Math.min(renderedCount + n, events.length);
+      for (var r = renderedCount; r < stop; r++) {
+        var pair = logRow(events[r], onSelect);
+        tbody.appendChild(pair[0]);
+        tbody.appendChild(pair[1]);
+      }
+      renderedCount = stop;
     }
+    appendBatch(EVENT_LOG_PAGE_SIZE);
+
     table.appendChild(thead);
     table.appendChild(tbody);
     scroll.appendChild(table);
     body.appendChild(scroll);
+
+    var loadMoreWrap = null;
+    function refreshLoadMore() {
+      if (loadMoreWrap) loadMoreWrap.parentNode.removeChild(loadMoreWrap);
+      loadMoreWrap = null;
+      if (renderedCount >= events.length) return;
+      var remaining = events.length - renderedCount;
+      var btn = el("button", {
+        class: "trace-log-loadmore", type: "button",
+        text: "Load next " + Math.min(EVENT_LOG_PAGE_SIZE, remaining) +
+              " (" + remaining + " remaining)",
+        onclick: function () {
+          appendBatch(EVENT_LOG_PAGE_SIZE);
+          // After a manual filter the new rows must respect it too.
+          applyFilter(activeFilter);
+          refreshLoadMore();
+        },
+      });
+      var allBtn = null;
+      if (remaining > EVENT_LOG_PAGE_SIZE) {
+        allBtn = el("button", {
+          class: "trace-log-loadmore secondary", type: "button",
+          text: "Show all " + events.length,
+          onclick: function () {
+            appendBatch(remaining);
+            applyFilter(activeFilter);
+            refreshLoadMore();
+          },
+        });
+      }
+      var kids = [btn];
+      if (allBtn) kids.push(allBtn);
+      loadMoreWrap = el("div", { class: "trace-log-loadmore-row" }, kids);
+      body.appendChild(loadMoreWrap);
+    }
+    refreshLoadMore();
+
+    body.appendChild(el("div", { class: "stat-caption",
+      text: "Showing first " + renderedCount + " of " + events.length +
+            " events. Filters apply across the loaded set." }));
+
     wrap.appendChild(body);
 
+    var activeFilter = "all";
     function applyFilter(type) {
+      activeFilter = type;
       for (var k in chips) chips[k].classList.remove("active");
       if (chips[type]) chips[type].classList.add("active");
       // Each event now contributes two rows (header + expansion); we
