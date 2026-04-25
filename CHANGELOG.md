@@ -10,8 +10,94 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
-Work targeting v0.11.3 and v0.12 is tracked in
+Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
+
+## [0.12.0] - 2026-04-25
+
+The "23 MB report" release. The headline customer pain from the
+inDrive Freight v0.11.1 report — that the HTML artifact was too
+big to attach and laggy to render — is closed by a three-layer
+report-architecture redesign (RFC-031). On a 120k-event simulated
+run, the v0.11 baseline of ~10 MB shrinks to ~137 KB by default,
+~75× smaller, with no loss of forensic value for the common case.
+`--full-events` recovers everything when needed.
+
+Plus six adjacent improvements driven by the same customer report:
+panic-safe bundle flush, binary-digest pinning, actionable lock
+drift output, the `grpc.retryable()` composite recipe, the
+`internal/proxy/` test-coverage CI gate, and the canonical
+"where Faultbox fits" positioning doc.
+
+### Added
+
+- **RFC-031 — Scalable HTML report architecture** ([#83](https://github.com/faultbox/Faultbox/issues/83))
+  - **Phase 1**: payload inlined as gzip + URL-safe base64 in a
+    `<script type="application/octet-stream">` tag and decompressed
+    in-browser via `DecompressionStream` (Chrome 80+, Safari
+    16.4+, Firefox 113+). New `--summary` flag drops the trace
+    entirely (KB-sized, CI-friendly). Header carries a "size
+    banner" telling readers the mode and inlined payload size.
+  - **Phase 2**: drill-down event-log table renders in pages of
+    200 rows with "Load next 200 (X remaining)" and "Show all"
+    buttons. Filter chips re-apply across loaded pages.
+  - **Phase 3**: events downsample at report-build time. Anchors
+    (faults / violations / lifecycle / steps) always survive;
+    first 50 + last 50 events per test survive; ±25 around each
+    anchor survives; everything else dropped. New `--full-events`
+    flag opts out for forensic deep-dives. Drill-down header
+    shows "downsampled from X events" when applicable.
+- **Panic-safe bundle flush** ([#76](https://github.com/faultbox/Faultbox/issues/76)) —
+  per-test recover wraps `RunTest`, so a Go runtime panic inside
+  a test becomes an `errored` row instead of taking the whole
+  suite — and the `.fb` bundle — down with it. The first captured
+  panic surfaces as `manifest.crash` so consumers know the run
+  is partial. Customer-reported v0.11.1 panic in `applyFaults`
+  would have produced a usable bundle under this fix.
+- **Binary-digest pinning in `faultbox.lock`** ([#77](https://github.com/faultbox/Faultbox/issues/77)) —
+  `faultbox lock` now hashes every binary-mode service's
+  executable and records `sha256:<hex>` in `lock.binaries`
+  alongside `lock.images`. CI gates close the supply-chain
+  drift gap for teams that ship volume-mounted binaries (the
+  inDrive Freight model). Schema unchanged — `Binaries` field
+  was reserved in v0.10.
+- **`grpc.retryable()` composite recipe** ([#79](https://github.com/faultbox/Faultbox/issues/79)) —
+  one-line "flapping upstream" mix replacing three hand-composed
+  status-code rules. Default 60% UNAVAILABLE / 25%
+  DEADLINE_EXCEEDED / 15% ABORTED, weights and overall
+  probability both overridable. Drive-by fix: `probability=`
+  kwargs on every fault builtin now accept Float values
+  (previously silently coerced to 0 via `starlark.AsString`).
+- **`docs/positioning.md` + homepage four-layer matrix** ([#85](https://github.com/faultbox/Faultbox/issues/85)) —
+  canonical "where Faultbox fits" doc covering complementarity
+  with integration tests, load testers, and production chaos.
+  3-minute read. Site homepage surfaces the four-layer
+  capability matrix above the fold with deep links into the
+  relevant tutorial chapters.
+- **CI coverage gate for `internal/proxy/`** ([#84](https://github.com/faultbox/Faultbox/issues/84)) —
+  `TestProxyPluginsHaveCoverage` fails the build if any
+  `internal/proxy/*.go` source file ships without a sibling
+  `_test.go`. Closes the process gap that let v0.11.1's gRPC
+  passthrough corruption ship — `internal/proxy/grpc.go` had
+  zero tests at the time. Eight existing untested plugins live
+  in `coverageExemptions` pending backfill.
+
+### Changed
+
+- **`faultbox lock --check` actionable drift output** ([#82](https://github.com/faultbox/Faultbox/issues/82)) —
+  output is now a per-row "locked vs current" table that names
+  every drifted entry with both digests, instead of the prior
+  category-summary view that forced a re-run to diagnose:
+  ```
+  drift detected (3 entries):
+    image   mysql:8           locked sha256:abc…   current sha256:def…
+    binary  /tmp/truck-api    locked sha256:111…   current sha256:222…
+    binary  /tmp/upstream     locked sha256:333…   current <not found on disk>
+  ```
+- **Default `faultbox report` is now downsampled.** Existing CI
+  pipelines that gate on report size will see dramatic shrink;
+  pipelines relying on every event being present should add
+  `--full-events`.
 
 ## [0.11.3] - 2026-04-25
 
@@ -208,7 +294,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.11.3...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.0...HEAD
+[0.12.0]: https://github.com/faultbox/Faultbox/compare/release-0.11.3...release-0.12.0
 [0.11.3]: https://github.com/faultbox/Faultbox/compare/release-0.11.2...release-0.11.3
 [0.11.2]: https://github.com/faultbox/Faultbox/compare/release-0.11.1...release-0.11.2
 [0.11.1]: https://github.com/faultbox/Faultbox/compare/release-0.11.0...release-0.11.1
