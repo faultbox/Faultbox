@@ -2085,6 +2085,13 @@ func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.S
 		Trace:           traceBytes,
 		Specs:           specs,
 	}
+	if result.Crash != nil {
+		in.Crash = &bundle.CrashInfo{
+			Panic:    result.Crash.Panic,
+			Stack:    result.Crash.Stack,
+			LastTest: result.Crash.LastTest,
+		}
+	}
 	w, filename, err := bundle.Build(in)
 	if err != nil {
 		return err

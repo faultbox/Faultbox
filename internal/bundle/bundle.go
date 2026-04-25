@@ -29,6 +29,21 @@ type Manifest struct {
 	SpecRoot        string    `json:"spec_root,omitempty"`
 	Tests           []TestRow `json:"tests"`
 	Summary         Summary   `json:"summary"`
+
+	// Crash, when present, indicates the bundle is partial — the
+	// suite was terminated by a Go runtime panic before all tests
+	// ran. Tools must NOT treat the absence of failed rows as
+	// "everything green". Issue #76. Additive — does not bump
+	// SchemaVersion.
+	Crash *CrashInfo `json:"crash,omitempty"`
+}
+
+// CrashInfo is the manifest's per-bundle crash record, mirroring
+// star.CrashInfo without importing the star package.
+type CrashInfo struct {
+	Panic    string `json:"panic"`
+	Stack    string `json:"stack,omitempty"`
+	LastTest string `json:"last_test,omitempty"`
 }
 
 // Summary is the headline pass/fail/errored count for the run, for

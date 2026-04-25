@@ -47,6 +47,11 @@ type BuildInput struct {
 	// in the archive so `faultbox replay` can rehydrate the exact
 	// source tree. RFC-025 Phase 4.
 	Specs map[string][]byte
+
+	// Crash is non-nil when the suite was terminated by a Go runtime
+	// panic. Issue #76: emit a partial bundle marked as such instead
+	// of losing every test result to the dying process.
+	Crash *CrashInfo
 }
 
 // Build assembles a Writer populated with manifest.json, env.json,
@@ -68,6 +73,7 @@ func Build(in BuildInput) (*Writer, string, error) {
 		SpecRoot:        in.SpecRoot,
 		Tests:           in.Tests,
 		Summary:         summaryFromTests(in.Tests),
+		Crash:           in.Crash,
 	}
 	env := GatherEnv(in.FaultboxVersion, in.FaultboxCommit)
 

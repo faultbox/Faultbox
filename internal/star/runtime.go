@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -79,6 +80,27 @@ type SuiteResult struct {
 	Tests      []TestResult `json:"tests"`
 	Pass       int          `json:"pass"`
 	Fail       int          `json:"fail"`
+
+	// Crash, if non-nil, indicates the suite was terminated by a Go
+	// runtime panic — typically inside RunTest. The bundle emitted on
+	// the way out is marked partial so downstream tools (and humans)
+	// know not to interpret silence as success. Issue #76.
+	Crash *CrashInfo `json:"crash,omitempty"`
+}
+
+// CrashInfo captures what was known at the moment a panic
+// short-circuited the suite. Populated by the per-test recover in
+// RunAll and surfaced in the bundle manifest as `crash:` so users
+// see the panic message and stack the moment they open the report.
+type CrashInfo struct {
+	// Panic is the value that was passed to panic(), formatted via
+	// fmt.Sprint. Always populated on a captured crash.
+	Panic string `json:"panic"`
+	// Stack is the runtime stack at the panic point.
+	Stack string `json:"stack,omitempty"`
+	// LastTest is the name of the test that was running when the
+	// panic fired — empty if the crash happened before any test.
+	LastTest string `json:"last_test,omitempty"`
 }
 
 // Runtime is the Starlark execution environment.
@@ -515,8 +537,16 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 			}
 			rt.log.Info("running test", slog.String("test", runLabel))
 
-			tr := rt.RunTest(ctx, name)
+			tr := rt.runTestSafely(ctx, name)
 			tr.Seed = seed
+			// Crashes are recorded once per suite — they're a
+			// process-level fault and dwarf any later test signal.
+			if tr.Result == "error" && suite.Crash == nil && tr.Reason != "" {
+				suite.Crash = &CrashInfo{
+					Panic:    tr.Reason,
+					LastTest: name,
+				}
+			}
 
 			// After first run with --explore=all (auto), calculate total permutations.
 			if autoExplore && run == 0 && rt.exploreHeldN > 0 {
@@ -596,6 +626,30 @@ func (rt *Runtime) cleanup() {
 	// Final socket cleanup.
 	socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
 	os.RemoveAll(socketBase)
+}
+
+// runTestSafely wraps RunTest in a defer/recover so a Go runtime
+// panic inside a test (or anything it transitively calls) becomes a
+// "errored" TestResult instead of taking the whole suite — and the
+// .fb bundle — down with it. Issue #76 was filed when an inDrive
+// Freight panic during applyFaults lost the bundle entirely;
+// partial bundle with N-1 tests is more useful than none.
+func (rt *Runtime) runTestSafely(ctx context.Context, name string) (tr TestResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			rt.log.Error("test panicked",
+				slog.String("test", name),
+				slog.Any("panic", r),
+			)
+			tr = TestResult{
+				Name:       name,
+				Result:     "error",
+				Reason:     fmt.Sprintf("panic: %v\n\n%s", r, debug.Stack()),
+				DurationMs: 0,
+			}
+		}
+	}()
+	return rt.RunTest(ctx, name)
 }
 
 // RunTest executes a single test function with fresh services.
