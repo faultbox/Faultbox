@@ -991,6 +991,10 @@
     var pinned = { ev: null };
 
     // Event log table (collapsible, default-open) — forensic companion.
+    // Stash a back-pointer to the test on the events array so
+    // buildEventLog can surface downsampling metadata in its header
+    // without changing its signature.
+    events._sourceTest = test;
     var eventLog = buildEventLog(events, order, function (ev) {
       pinSelection(ev, host, markerNodes, detail, events, svg,
         order, laneIndexFor, pinned);
@@ -1419,7 +1423,18 @@
     // prefer a compact modal can collapse it with one click.
     wrap.open = true;
     var sum = document.createElement("summary");
-    sum.innerHTML = "<span>Event log — " + events.length + " entries</span>"
+    // The Phase 3 downsampler attaches events_total / events_dropped
+    // on the test object so the user can see at a glance how much was
+    // shed and re-run with --full-events if they need every event.
+    var headerLabel = "Event log — " + events.length + " entries";
+    if (typeof onSelect === "function" && events._sourceTest) {
+      var t = events._sourceTest;
+      if (t && t.events_total && t.events_total > events.length) {
+        headerLabel += " (downsampled from " + t.events_total +
+          ", " + t.events_dropped + " dropped — re-run report with --full-events for all)";
+      }
+    }
+    sum.innerHTML = "<span>" + headerLabel + "</span>"
       + "<span>click to toggle</span>";
     wrap.appendChild(sum);
 

@@ -314,6 +314,185 @@ func TestBuildSummaryModeDropsTrace(t *testing.T) {
 	}
 }
 
+// TestDownsampleEventsKeepsAnchorsAndEdges pins the Phase 3
+// downsampling contract (RFC-031): anchors (faults / lifecycle /
+// violations) always survive, the first eventsHeadTail and last
+// eventsHeadTail events survive, and a ±eventsAnchorWindow window
+// around each anchor survives. Plain syscalls outside any window
+// are dropped.
+func TestDownsampleEventsKeepsAnchorsAndEdges(t *testing.T) {
+	// Build a 500-event sequence: mostly syscalls, with three
+	// anchors at well-known positions far from head/tail.
+	events := make([]any, 500)
+	for i := range events {
+		events[i] = map[string]any{"type": "syscall", "seq": i}
+	}
+	anchors := []int{200, 300, 450}
+	for _, idx := range anchors {
+		events[idx] = map[string]any{"type": "fault_applied", "seq": idx}
+	}
+
+	out := downsampleEvents(events)
+
+	// Build a quick set of kept seqs for assertions.
+	keptSeq := map[int]string{}
+	for _, e := range out {
+		m := e.(map[string]any)
+		keptSeq[m["seq"].(int)] = m["type"].(string)
+	}
+
+	// Every anchor must survive.
+	for _, idx := range anchors {
+		if _, ok := keptSeq[idx]; !ok {
+			t.Errorf("anchor at seq=%d was dropped", idx)
+		}
+	}
+	// First eventsHeadTail and last eventsHeadTail must survive.
+	for i := 0; i < eventsHeadTail; i++ {
+		if _, ok := keptSeq[i]; !ok {
+			t.Errorf("head event seq=%d was dropped", i)
+		}
+		j := 500 - 1 - i
+		if _, ok := keptSeq[j]; !ok {
+			t.Errorf("tail event seq=%d was dropped", j)
+		}
+	}
+	// A syscall well inside the dead-zone (say seq=150) must be
+	// dropped — confirms downsampling actually cuts something.
+	if _, ok := keptSeq[150]; ok {
+		t.Errorf("syscall at seq=150 (deep dead-zone) survived; downsampler is too permissive")
+	}
+	// Each anchor must drag its ±window with it.
+	for _, idx := range anchors {
+		for k := idx - eventsAnchorWindow; k <= idx+eventsAnchorWindow; k++ {
+			if k < 0 || k >= 500 {
+				continue
+			}
+			if _, ok := keptSeq[k]; !ok {
+				t.Errorf("event at seq=%d in ±window of anchor %d was dropped", k, idx)
+			}
+		}
+	}
+}
+
+// TestBuildDownsamplesByDefault is the end-to-end Phase 3 contract:
+// the inlined trace in a default-mode report carries fewer events
+// than the bundle's source trace, AND --full-events disables the
+// trim so every event makes it into the report.
+func TestBuildDownsamplesByDefault(t *testing.T) {
+	path := buildLargeEventBundle(t)
+
+	// Read source-of-truth event count from the bundle directly.
+	r0, err := bundle.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	srcRaw, _ := r0.File("trace.json")
+	var srcTrace map[string]any
+	if err := json.Unmarshal(srcRaw, &srcTrace); err != nil {
+		t.Fatalf("parse source trace: %v", err)
+	}
+	srcTests := srcTrace["tests"].([]any)
+	srcEvents := len(srcTests[0].(map[string]any)["events"].([]any))
+
+	// Default report — downsampling on.
+	r1, _ := bundle.Open(path)
+	var defBuf bytes.Buffer
+	if err := BuildWithOptions(&defBuf, r1, "0.12-test", Options{}); err != nil {
+		t.Fatalf("default build: %v", err)
+	}
+	defPayload := extractDataPayload(t, defBuf.String())
+	defKept := countTraceEvents(t, defPayload)
+	if defKept >= srcEvents {
+		t.Errorf("default mode kept %d/%d events; expected fewer (downsampling)", defKept, srcEvents)
+	}
+
+	// --full-events report — downsampling off.
+	r2, _ := bundle.Open(path)
+	var fullBuf bytes.Buffer
+	if err := BuildWithOptions(&fullBuf, r2, "0.12-test", Options{FullEvents: true}); err != nil {
+		t.Fatalf("full build: %v", err)
+	}
+	fullPayload := extractDataPayload(t, fullBuf.String())
+	fullKept := countTraceEvents(t, fullPayload)
+	if fullKept != srcEvents {
+		t.Errorf("--full-events kept %d/%d; expected all", fullKept, srcEvents)
+	}
+
+	// And the expected size ordering: default < full-events.
+	if defBuf.Len() >= fullBuf.Len() {
+		t.Errorf("default size (%d) not smaller than --full-events (%d)",
+			defBuf.Len(), fullBuf.Len())
+	}
+}
+
+// buildLargeEventBundle writes a bundle with one test carrying 800
+// events: a small handful of anchor types (fault_applied,
+// service_ready) interleaved with the rest as plain syscalls. It's
+// the cheapest stand-in for a real production trace with tens of
+// thousands of read/write syscalls dwarfing the meaningful ones.
+func buildLargeEventBundle(t *testing.T) string {
+	t.Helper()
+	w := bundle.NewWriter()
+
+	manifest := bundle.Manifest{
+		SchemaVersion:   bundle.SchemaVersion,
+		FaultboxVersion: "0.12-test",
+		RunID:           "downsample-test",
+		Summary:         bundle.Summary{Total: 1, Passed: 1},
+		Tests:           []bundle.TestRow{{Name: "test_big", Outcome: "passed"}},
+	}
+	if err := w.AddJSON("manifest.json", manifest); err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+
+	events := make([]any, 800)
+	for i := range events {
+		events[i] = map[string]any{"type": "syscall", "seq": i, "service": "svc-a"}
+	}
+	// A handful of anchors so the downsample window has work to do.
+	for _, idx := range []int{120, 350, 600} {
+		events[idx] = map[string]any{
+			"type": "fault_applied", "seq": idx, "service": "svc-a",
+		}
+	}
+	trace := map[string]any{
+		"tests": []any{
+			map[string]any{"name": "test_big", "events": events},
+		},
+	}
+	if err := w.AddJSON("trace.json", trace); err != nil {
+		t.Fatalf("trace: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "downsample.fb")
+	if err := w.WriteTo(dst); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return dst
+}
+
+// countTraceEvents totals the events surviving across all tests in a
+// rendered report's decompressed payload.
+func countTraceEvents(t *testing.T, payload []byte) int {
+	t.Helper()
+	var p struct {
+		Trace struct {
+			Tests []struct {
+				Events []any `json:"events"`
+			} `json:"tests"`
+		} `json:"trace"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	n := 0
+	for _, ts := range p.Trace.Tests {
+		n += len(ts.Events)
+	}
+	return n
+}
+
 // TestEventLogPagingConstantInJS guards the RFC-031 Phase 2 page-size
 // invariant: app.js must declare an EVENT_LOG_PAGE_SIZE constant so
 // drill-down event lists render in chunks rather than building tens

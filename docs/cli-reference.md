@@ -340,8 +340,13 @@ the encoded payload size and mode (`full` or `summary`).
 
 | Flag | Typical size | Contents |
 |------|--------------|----------|
-| (default) | 1-5 MB | manifest + env + trace, gzip+base64. Drill-down + swim-lane available. |
+| (default) | 0.5-2 MB | manifest + env + downsampled trace. Faults / violations / lifecycle events all kept; first 50 + last 50 syscalls per test kept; ±25 syscalls around each anchor kept. Everything else dropped. Drill-down + swim-lane available. |
+| `--full-events` | 1-5 MB+ | every event from the bundle. Use for forensic deep-dives. |
 | `--summary` | <100 KB | manifest + env only. Matrix + tests + coverage; drill-down shows a "re-run with full trace" hint. CI-friendly. |
+
+The drill-down event log header surfaces "downsampled from X events,
+Y dropped — re-run report with --full-events for all" when the
+default mode trimmed something.
 
 **What the report contains:**
 

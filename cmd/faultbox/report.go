@@ -41,6 +41,8 @@ func reportCmd(args []string) int {
 			args = args[1:]
 		case args[0] == "--summary":
 			opts.Summary = true
+		case args[0] == "--full-events":
+			opts.FullEvents = true
 		case args[0] == "-h", args[0] == "--help":
 			printReportUsage()
 			return 0
@@ -114,6 +116,7 @@ USAGE
   faultbox report <bundle.fb>                     # writes report.html next to the bundle
   faultbox report <bundle.fb> --output <path>     # custom output path
   faultbox report <bundle.fb> --summary           # drop trace; smallest output (CI-friendly)
+  faultbox report <bundle.fb> --full-events       # opt out of event downsampling
   faultbox report <bundle.fb> -o -                # write to stdout
 
 The output is a single HTML file with all CSS, JS and bundle data
@@ -122,16 +125,22 @@ gzip+base64 encoded inside the HTML and decompressed in-browser via
 DecompressionStream (Chrome 80+, Safari 16.4+, Firefox 113+).
 
 MODES
-  default    full manifest + env + trace, gzip+base64 encoded. Drill-down
-             and swim-lane trace viewer available.
-  --summary  drop the trace; matrix + tests table + coverage only.
-             Typical output <100 KB — right for attaching to CI runs,
-             Slack threads, or Jira tickets.
+  default        manifest + env + downsampled trace, gzip+base64.
+                 Faults / violations / lifecycle events all kept; the
+                 first 50 + last 50 syscalls per test kept; ±25
+                 syscalls around each anchor kept. Everything else
+                 dropped. Drill-down + swim-lane available.
+  --full-events  no downsampling — every event from the bundle.
+                 Use when you need full forensic detail.
+  --summary      drop the trace entirely; matrix + tests + coverage
+                 only. Typical output <100 KB — right for attaching
+                 to CI runs, Slack threads, or Jira tickets.
 
 EXAMPLES
   faultbox report run-2026-04-22-42.fb
   faultbox report run.fb --output report.html
   faultbox report run.fb --summary --output ci-summary.html
+  faultbox report run.fb --full-events --output forensic.html
   faultbox report run.fb -o - | less
 `
 	fmt.Fprint(os.Stderr, usage)

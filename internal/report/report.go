@@ -93,8 +93,42 @@ type templateContext struct {
 //     the manifest and env data the matrix/tests/coverage sections
 //     need. Typical output: <100 KB. The drill-down modal becomes a
 //     "re-run to see details" hint.
+//
+//   - FullEvents=true disables Phase 3 downsampling — the JSON
+//     payload carries every event from the bundle. Default behaviour
+//     keeps faults/violations/lifecycle anchors plus the first and
+//     last EventsHeadTail rows per test plus a ±EventsAnchorWindow
+//     window around each anchor; everything else is dropped. The
+//     trace.json blob in the bundle is never modified.
 type Options struct {
-	Summary bool
+	Summary    bool
+	FullEvents bool
+}
+
+// Downsampling defaults — Phase 3 (RFC-031). Tuned so the typical
+// PoC-scale run keeps every fault/violation event plus enough
+// surrounding context for forensic value, while shedding the
+// repetitive read/write tail that dominates real syscall logs.
+const (
+	eventsHeadTail     = 50 // first N + last N events per test always kept
+	eventsAnchorWindow = 25 // ±N events around each anchor always kept
+)
+
+// anchorTypes are event types whose context must always survive
+// downsampling: faults, lifecycle, scenario steps, and anything the
+// runtime flagged as an invariant violation. Syscalls are
+// deliberately absent — they're the bulk we shed.
+var anchorTypes = map[string]bool{
+	"fault_applied":          true,
+	"fault_removed":          true,
+	"fault_skipped_no_seccomp": true,
+	"fault_zero_traffic":     true,
+	"violation":              true,
+	"service_started":        true,
+	"service_ready":          true,
+	"service_stopped":        true,
+	"step_send":              true,
+	"step_recv":              true,
 }
 
 // Build reads a bundle and writes a single self-contained report.html
@@ -126,6 +160,16 @@ func BuildWithOptions(w io.Writer, r *bundle.Reader, faultboxVersion string, opt
 		// need it (matrix drill-down, swim-lane viewer) detect the
 		// absence and render a "re-run with full trace" hint.
 		data.Trace = nil
+	} else if !opts.FullEvents && len(data.Trace) > 0 {
+		// Phase 3 downsampling — keep only the events that carry
+		// forensic value (anchors + head/tail + ±window). Power
+		// users who want the full firehose pass --full-events.
+		downsampled, _, _, derr := downsampleTrace(data.Trace)
+		if derr == nil {
+			data.Trace = downsampled
+		}
+		// On error: fall through with the original trace. Worse
+		// to fail rendering a real report than to ship a bigger one.
 	}
 
 	payload, err := json.Marshal(data)
@@ -201,6 +245,105 @@ func BuildToFileWithOptions(path string, r *bundle.Reader, faultboxVersion strin
 		return fmt.Errorf("rename into place: %w", err)
 	}
 	return nil
+}
+
+// downsampleTrace walks a trace.json blob, downsamples each test's
+// event stream per the Phase 3 policy, and returns a modified blob
+// alongside the kept/dropped totals. Tests that have no events or
+// fewer events than (2*headTail) are left untouched — there's
+// nothing to gain from sampling a stream that's already small.
+//
+// The trace's other fields (matrix, version, summary) pass through
+// unchanged.
+func downsampleTrace(raw json.RawMessage) (json.RawMessage, int, int, error) {
+	var top map[string]any
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return raw, 0, 0, err
+	}
+	tests, ok := top["tests"].([]any)
+	if !ok {
+		return raw, 0, 0, nil
+	}
+	var totalKept, totalDropped int
+	for i, ti := range tests {
+		m, _ := ti.(map[string]any)
+		if m == nil {
+			continue
+		}
+		events, _ := m["events"].([]any)
+		original := len(events)
+		if original <= 2*eventsHeadTail {
+			totalKept += original
+			continue
+		}
+		kept := downsampleEvents(events)
+		dropped := original - len(kept)
+		m["events"] = kept
+		m["events_total"] = original
+		m["events_dropped"] = dropped
+		totalKept += len(kept)
+		totalDropped += dropped
+		tests[i] = m
+	}
+	if totalDropped > 0 {
+		top["events_downsampled"] = true
+	}
+	out, err := json.Marshal(top)
+	if err != nil {
+		return raw, 0, 0, err
+	}
+	return out, totalKept, totalDropped, nil
+}
+
+// downsampleEvents picks the subset to keep: anchors + head + tail
+// + ±anchorWindow around each anchor. Indexes are first computed as
+// a "keep" set, then the events are extracted in original order so
+// that the resulting slice still satisfies the "events are sorted
+// by seq" invariant the swim-lane renderer relies on.
+func downsampleEvents(events []any) []any {
+	n := len(events)
+	keep := make([]bool, n)
+
+	// Head + tail.
+	for i := 0; i < eventsHeadTail && i < n; i++ {
+		keep[i] = true
+	}
+	for i := n - eventsHeadTail; i < n; i++ {
+		if i >= 0 {
+			keep[i] = true
+		}
+	}
+
+	// Anchors + ±window.
+	for i := 0; i < n; i++ {
+		ev, _ := events[i].(map[string]any)
+		if ev == nil {
+			continue
+		}
+		t, _ := ev["type"].(string)
+		if !anchorTypes[t] {
+			continue
+		}
+		lo := i - eventsAnchorWindow
+		hi := i + eventsAnchorWindow
+		if lo < 0 {
+			lo = 0
+		}
+		if hi >= n {
+			hi = n - 1
+		}
+		for k := lo; k <= hi; k++ {
+			keep[k] = true
+		}
+	}
+
+	out := make([]any, 0, n)
+	for i, k := range keep {
+		if k {
+			out = append(out, events[i])
+		}
+	}
+	return out
 }
 
 // gzipBytes compresses b with gzip at default compression. Default
