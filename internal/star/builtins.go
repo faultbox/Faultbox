@@ -791,6 +791,20 @@ func (rt *Runtime) builtinFaultStop(thread *starlark.Thread, fn *starlark.Builti
 	return starlark.None, nil
 }
 
+// callerPosition returns the file path and 1-based line number of the
+// Starlark frame that called the current builtin. The 0th frame is
+// the builtin itself, so the caller lives at depth 1. Used by the
+// assert_* builtins to attach a source location to AssertionDetail so
+// the report renderer can lift the original assertion expression out
+// of the bundled spec.
+func callerPosition(thread *starlark.Thread) (string, int32) {
+	if thread.CallStackDepth() < 2 {
+		return "", 0
+	}
+	frame := thread.CallFrame(1)
+	return frame.Pos.Filename(), int32(frame.Pos.Line)
+}
+
 // assert_true(condition, msg=)
 func (rt *Runtime) builtinAssertTrue(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 1 {
@@ -801,11 +815,14 @@ func (rt *Runtime) builtinAssertTrue(thread *starlark.Thread, fn *starlark.Built
 		if len(args) > 1 {
 			msg, _ = starlark.AsString(args[1])
 		}
+		file, line := callerPosition(thread)
 		rt.lastAssertion = &AssertionDetail{
 			Func:     "assert_true",
 			Expected: "True",
 			Actual:   args[0].String(),
 			Message:  msg,
+			File:     file,
+			Line:     line,
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
@@ -835,11 +852,14 @@ func (rt *Runtime) builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin
 		if custom != "" {
 			msg = fmt.Sprintf("assert_eq failed: %s != %s (%s)", actual, expected, custom)
 		}
+		file, line := callerPosition(thread)
 		rt.lastAssertion = &AssertionDetail{
 			Func:     "assert_eq",
 			Expected: expected,
 			Actual:   actual,
 			Message:  custom,
+			File:     file,
+			Line:     line,
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}

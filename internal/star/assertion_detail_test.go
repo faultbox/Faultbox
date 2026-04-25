@@ -68,6 +68,40 @@ func TestAssertTruePopulatesAssertionDetail(t *testing.T) {
 	}
 }
 
+// TestAssertCapturesCallerPosition runs a real Starlark program so
+// the runtime threads accumulate a callstack — the source-line capture
+// (v0.12.3) only works when the assert builtin can read its caller's
+// frame, and a unit test that calls the builtin directly bypasses
+// that path. This is the regression test for the "Expression: …"
+// row in the report drill-down.
+func TestAssertCapturesCallerPosition(t *testing.T) {
+	rt := &Runtime{}
+	predeclared := starlark.StringDict{
+		"assert_true": starlark.NewBuiltin("assert_true", rt.builtinAssertTrue),
+		"assert_eq":   starlark.NewBuiltin("assert_eq", rt.builtinAssertEq),
+	}
+	src := "" +
+		"def go():\n" +
+		"    x = 5\n" +
+		"    assert_true(x == 7, \"x should be 7\")\n" +
+		"go()\n"
+	thread := &starlark.Thread{Name: "test"}
+	_, err := starlark.ExecFile(thread, "spec.star", src, predeclared)
+	if err == nil {
+		t.Fatal("ExecFile should fail because assert_true raised")
+	}
+	if rt.lastAssertion == nil {
+		t.Fatal("expected lastAssertion to be populated")
+	}
+	got := rt.lastAssertion
+	if got.File != "spec.star" {
+		t.Errorf("File: got %q, want spec.star", got.File)
+	}
+	if got.Line != 3 {
+		t.Errorf("Line: got %d, want 3 (assert_true line in src)", got.Line)
+	}
+}
+
 // TestAssertEqPassDoesNotPopulate guarantees we don't leave stale
 // AssertionDetail behind on a passing call — the runtime resets
 // lastAssertion at the top of RunTest, but a successful assert_eq in

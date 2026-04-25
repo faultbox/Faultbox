@@ -84,16 +84,24 @@ type BypassedRule struct {
 
 // AssertionDetail captures the comparison that produced an assertion
 // failure: the calling builtin (assert_eq / assert_true), the expected
-// and actual values rendered the way Starlark would print them, and the
-// optional user message. The runtime fills it inside the assert_*
-// builtins; RunTest snapshots it into TestResult on failure so the
-// report drill-down can show Expected vs Actual without the user
-// jumping into the spec source.
+// and actual values rendered the way Starlark would print them, the
+// optional user message, and — new in v0.12.3 — the call site so the
+// report can lift the original expression text out of the spec source
+// and render something semantically meaningful for assert_true (where
+// "Actual: False" alone is uninformative).
+//
+// File/Line refer to the spec file path inside the bundle (bundle-
+// relative if possible, absolute fallback) and the 1-based line number
+// of the assertion call. The renderer walks the bundle's spec/
+// directory and slices the assert_*(…) call's first argument out to
+// show the user what was being checked.
 type AssertionDetail struct {
 	Func     string `json:"func"`
 	Expected string `json:"expected,omitempty"`
 	Actual   string `json:"actual,omitempty"`
 	Message  string `json:"message,omitempty"`
+	File     string `json:"file,omitempty"`
+	Line     int32  `json:"line,omitempty"`
 }
 
 // SuiteResult captures the outcome of all test functions.

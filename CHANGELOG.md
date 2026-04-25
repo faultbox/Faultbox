@@ -13,6 +13,45 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.3] - 2026-04-25
+
+Three drill-down ergonomics fixes from a customer first-read of the
+v0.12.2 report:
+
+1. **Assertion drill-down lifts the original expression text out of
+   the spec.** `assert_true(resp.status in [200, 201], "msg")` no
+   longer shows only "Actual: False" — it shows the original
+   `resp.status in [200, 201]` expression and a clickable
+   `spec.star:42` location row alongside Expected/Actual.
+2. **Lane marker click no longer scrolls the page.** Highlight on
+   the matching event-log row stays; the disorienting page-jump
+   does not.
+3. **Lane dedup also keys on summary text.** A 1500-iteration
+   `db.exec` loop with mixed SQL no longer flattens into a single
+   chip — different SQL → different summary → different marker. A
+   monitor's `SELECT 1` polls still collapse cleanly.
+
+### Added
+
+- `AssertionDetail.File` and `AssertionDetail.Line` carry the
+  source location of the failing assert call. Populated from
+  Starlark's `thread.CallFrame(1).Pos`. The renderer pulls the
+  matching line out of the bundled spec, slices the assert call's
+  first argument with paren/bracket/string-aware parsing, and
+  surfaces both Expression and Location rows in the drill-down.
+- New CSS for `.dd-assertion-link` so the Location row reads as a
+  spec-anchor link, not a static label.
+
+### Changed
+
+- Lane dedup key (`laneRunKey`) now folds in the event's `summary`
+  / `sql` / `query` / `path` / `command` / `topic` field — only
+  events with *both* the same `(target, method)` *and* the same
+  preview text collapse into a `× N` marker.
+- `pinSelection` no longer calls `row.scrollIntoView()`. The
+  highlighted row remains visible if the user scrolls; the click
+  itself is now a pure no-jump operation.
+
 ## [0.12.2] - 2026-04-25
 
 Step-event readability pass. The v0.12.1 swim-lane fix solved syscall

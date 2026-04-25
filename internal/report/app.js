@@ -918,9 +918,12 @@
   }
 
   // renderAssertion shows the structured "expected vs actual" block
-  // produced by failing assert_eq / assert_true builtins. Two columns
-  // (Expected | Actual) keep the eye on the diff; the optional message
-  // line carries the user-supplied custom text.
+  // produced by failing assert_eq / assert_true builtins. v0.12.3
+  // also lifts the assertion expression directly out of the bundled
+  // spec source — for assert_true(resp.status in [200, 201], "…")
+  // showing only "Actual: False" was uninformative; the expression
+  // text answers "what was being checked" without forcing the user
+  // into the spec viewer.
   function renderAssertion(a) {
     var grid = el("div", { class: "dd-assertion" });
     var head = el("div", { class: "dd-assertion-head" }, [
@@ -932,12 +935,108 @@
     grid.appendChild(head);
 
     var pairs = el("div", { class: "dd-assertion-pairs" });
+
+    // Recover the original assertion expression from the spec source.
+    // Best-effort: if the bundle didn't carry the spec or the call is
+    // multi-line, the expression block is skipped silently and we
+    // fall back to the bare Expected/Actual rows.
+    var expr = lookupAssertionExpression(a);
+    if (expr) {
+      pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Expression" }));
+      pairs.appendChild(el("div", { class: "dd-assertion-value mono expression", text: expr }));
+    }
+
     pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Expected" }));
     pairs.appendChild(el("div", { class: "dd-assertion-value mono", text: a.expected || "—" }));
     pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Actual" }));
     pairs.appendChild(el("div", { class: "dd-assertion-value mono actual", text: a.actual || "—" }));
+
+    if (a.file && a.line) {
+      pairs.appendChild(el("div", { class: "dd-assertion-label", text: "Location" }));
+      var loc = el("div", { class: "dd-assertion-value mono" });
+      var path = resolveSpecPath(a.file);
+      var label = (path || a.file).replace(/^spec\//, "") + ":" + a.line;
+      if (path) {
+        var link = el("a", {
+          href: "#" + specAnchorId(path, a.line),
+          class: "dd-assertion-link",
+          text: label,
+          onclick: (function (p, l) {
+            return function (e) { e.preventDefault(); closeDrillDown(); setTimeout(function () { focusSpecLine(p, l); }, 120); };
+          })(path, a.line),
+        });
+        loc.appendChild(link);
+      } else {
+        loc.appendChild(document.createTextNode(label));
+      }
+      pairs.appendChild(loc);
+    }
     grid.appendChild(pairs);
     return grid;
+  }
+
+  // resolveSpecPath maps a Starlark-reported file path (could be
+  // absolute, relative, or a bundle-relative `spec/foo.star`) to a
+  // key inside specIndex.byPath. Without this we'd fail to find the
+  // assertion line whenever Starlark returned a path slightly
+  // different from the bundle's storage convention.
+  function resolveSpecPath(file) {
+    if (!file || !specIndex || !specIndex.byPath) return null;
+    if (specIndex.byPath[file]) return file;
+    var withSpec = "spec/" + file.replace(/^\.\//, "");
+    if (specIndex.byPath[withSpec]) return withSpec;
+    // Suffix match: handles absolute paths from a different machine.
+    var keys = Object.keys(specIndex.byPath);
+    for (var i = 0; i < keys.length; i++) {
+      if (file.indexOf(keys[i].replace(/^spec\//, "")) >= 0) return keys[i];
+      if (keys[i].indexOf(file) >= 0) return keys[i];
+    }
+    return null;
+  }
+
+  // lookupAssertionExpression slices the assert_*(…) call's first
+  // argument out of the bundled spec source. Returns "" when the
+  // bundle lacks the file or when the call spans multiple lines —
+  // keeps the renderer simple and silent on the unhappy paths.
+  function lookupAssertionExpression(a) {
+    if (!a || !a.file || !a.line) return "";
+    var path = resolveSpecPath(a.file);
+    if (!path) return "";
+    var body = (specIndex.byPath[path] && specIndex.byPath[path].body) || "";
+    var lines = body.split(/\r?\n/);
+    var line = lines[a.line - 1] || "";
+    return extractAssertionFirstArg(line, a.func || "assert_true");
+  }
+
+  // extractAssertionFirstArg walks the line character-by-character,
+  // tracking paren / bracket / brace depth and string state, so a
+  // first argument like `resp.status in [200, 201]` (which contains
+  // a comma!) doesn't get truncated at the bracket-internal comma.
+  function extractAssertionFirstArg(line, fnName) {
+    if (!line || !fnName) return "";
+    var open = fnName + "(";
+    var idx = line.indexOf(open);
+    if (idx < 0) return "";
+    var start = idx + open.length;
+    var depth = 0, inString = false, stringChar = 0, escape = false;
+    for (var i = start; i < line.length; i++) {
+      var c = line.charCodeAt(i);
+      if (inString) {
+        if (escape) { escape = false; continue; }
+        if (c === 92) { escape = true; continue; }
+        if (c === stringChar) inString = false;
+        continue;
+      }
+      if (c === 34 || c === 39) { inString = true; stringChar = c; continue; }
+      if (c === 40 || c === 91 || c === 123) { depth++; continue; }
+      if (c === 41 || c === 93 || c === 125) {
+        if (depth === 0) return line.substring(start, i).trim();
+        depth--;
+        continue;
+      }
+      if (c === 44 && depth === 0) return line.substring(start, i).trim();
+    }
+    return "";
   }
 
   function renderDiag(d) {
@@ -1183,12 +1282,12 @@
     var log = host.querySelector(".trace-log");
     if (log && !log.open) log.open = true;
 
-    // Highlight matching log row and scroll it into view.
+    // Highlight matching log row but DO NOT scroll. v0.12.3: customers
+    // reported that clicking a lane marker yanked the page down to the
+    // event log every time. The selection class still applies so the
+    // user finds the row when they manually scroll, but no jump.
     var row = host.querySelector('.trace-log-table tr[data-seq="' + ev.seq + '"]');
-    if (row) {
-      row.classList.add("selected");
-      row.scrollIntoView({ block: "nearest" });
-    }
+    if (row) row.classList.add("selected");
 
     // Persist causal overlay for the pinned event + ring the ancestors.
     var lanesWrap = host.querySelector(".trace-lanes");
@@ -1261,7 +1360,12 @@
     // violations stay atomic so each one keeps its own marker.
     if (t !== "step_send" && t !== "step_recv") return "_atomic_" + (ev.seq || 0);
     var f = ev.fields || {};
-    return "step:" + (f.target || "?") + "." + (f.method || "?");
+    // v0.12.3: include the summary in the key so a `db.exec SELECT 1`
+    // monitor loop folds separately from a `db.exec INSERT INTO …`
+    // user write. Without the summary axis a 1500-iter loop of mixed
+    // queries collapsed into one chip and lost all signal.
+    var summary = f.summary || (f.sql || f.query || f.path || f.command || f.topic || "");
+    return "step:" + (f.target || "?") + "." + (f.method || "?") + "::" + summary;
   }
 
   function finalizeRun(run) {
