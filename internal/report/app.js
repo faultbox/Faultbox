@@ -118,6 +118,21 @@
     return (s == null ? "" : String(s));
   }
 
+  // compactCount renders a fold count as a short, lane-friendly label
+  // (3983 → "3.9k", 86874 → "86k", 4_000_000 → "4M"). Values under
+  // 1000 stay as-is. Decimals truncate (not round) so the label
+  // never overstates magnitude — a "3.9k" disc always represents
+  // ≥ 3900 events.
+  function compactCount(n) {
+    if (n == null) return "";
+    if (n < 1000) return String(n);
+    if (n < 10000) return (Math.floor(n / 100) / 10).toFixed(1).replace(/\.0$/, "") + "k";
+    if (n < 1000000) return Math.floor(n / 1000) + "k";
+    if (n < 10000000) return (Math.floor(n / 100000) / 10).toFixed(1).replace(/\.0$/, "") + "M";
+    if (n < 1000000000) return Math.floor(n / 1000000) + "M";
+    return (Math.floor(n / 100000000) / 10).toFixed(1).replace(/\.0$/, "") + "B";
+  }
+
   // RFC-027 + issue #75: map the five manifest outcomes to pill /
   // matrix-cell classes. Unknown outcomes fall back to "warn" so a
   // future schema_version that adds a tag we haven't shipped still
@@ -1636,7 +1651,7 @@
       m.style.height = size + "px";
       m.appendChild(el("span", {
         class: "trace-marker-count",
-        text: "×" + ev._runCount,
+        text: "×" + compactCount(ev._runCount),
         title: ev._runCount + " " + (ev.fields ? ((ev.fields.target || "?") + "." + (ev.fields.method || "?")) : "step") + " events folded into this marker",
       }));
     }

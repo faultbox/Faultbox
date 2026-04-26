@@ -13,6 +13,17 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.11] - 2026-04-26
+
+### Changed
+
+- **Compact fold-count labels.** Run-marker badges now display as
+  `× 3.9k` / `× 86k` / `× 4M` instead of full numerals. The exact
+  count remains in the badge's `title` tooltip so the precise
+  value is one hover away. Decimals truncate rather than round, so
+  a `× 3.9k` chip always represents ≥ 3900 events — never an
+  overstatement.
+
 ## [0.12.10] - 2026-04-26
 
 Spec-anchored event highlighting — the user's own step calls
