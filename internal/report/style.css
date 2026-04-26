@@ -931,6 +931,20 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   box-shadow: 0 0 0 2px var(--accent);
   z-index: 2;
 }
+
+/* v0.12.10: spec-anchored markers (steps the user wrote directly in
+ * the test body) get a gold ring so they pop out from background
+ * noise. Wins over .run by being declared after; loses to
+ * .highlight-root / .highlight-ancestor so causal hover is still
+ * visually dominant.
+ *
+ * The colour is a warm gold rather than the warn/violation reds —
+ * the signal here is "this is what the user asked for", not an
+ * error indicator. */
+.trace-marker.spec {
+  box-shadow: 0 0 0 2px #d4af37, 0 0 0 4px var(--bg-elev);
+  z-index: 3;
+}
 .trace-viewer.causal-active .trace-marker:not(.highlight-root):not(.highlight-ancestor) {
   opacity: 0.35;
 }

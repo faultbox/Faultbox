@@ -246,6 +246,16 @@ type Runtime struct {
 	// (assert_eq, assert_true) populate it.
 	lastAssertion *AssertionDetail
 
+	// currentTestName is the Starlark function name of the test
+	// currently executing under RunTest. Used by executeStep() to
+	// detect "spec-anchored" steps — calls that originate inside a
+	// test function (possibly via user-written helpers), as opposed
+	// to monitor polls or recipe internals. The report renderer
+	// highlights these so the user finds their own intent at a
+	// glance against a sea of background traffic. Empty outside
+	// RunTest.
+	currentTestName string
+
 	// mockTLSImpl is lazy-initialized the first time a tls=True mock service
 	// starts. The whole runtime shares one CA so clients can trust every
 	// mock by trusting a single bundle.
@@ -736,6 +746,8 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	rt.expectationViolated = false
 	rt.requireFaultsFire = false
 	rt.lastAssertion = nil
+	rt.currentTestName = name
+	defer func() { rt.currentTestName = "" }()
 
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
@@ -2289,6 +2301,15 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	// Convert Starlark kwargs to map[string]any for the protocol plugin.
 	stepArgs := starlarkKwargsToMap(kwargs)
 
+	// v0.12.10: detect "spec-anchored" steps — calls whose Starlark
+	// callstack contains the currently-running test function. These
+	// are the events the user explicitly wrote in the test body
+	// (possibly via helpers); the report highlights them so familiar
+	// landmarks pop out against a sea of monitor / proxy / background
+	// traffic. Monitor evaluations run in their own thread frames so
+	// they correctly fail this check.
+	specCaller := rt.callerInTest(thread)
+
 	// Emit step_send event from test driver — shows request going out.
 	// We enrich the field bag with semantic context (sql, query, path,
 	// body, args, table…) when the user passed those kwargs, so the
@@ -2305,6 +2326,9 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	}
 	mergeStepKwargFields(sendFields, stepArgs)
 	sendFields["summary"] = stepSummary(targetSvc, method, stepArgs, nil, true)
+	if specCaller != "" {
+		sendFields["spec"] = specCaller
+	}
 	rt.events.Emit("step_send", "test", sendFields)
 
 	// Dispatch via protocol plugin registry.
@@ -2345,6 +2369,9 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 		}
 		recvFields["summary"] = stepSummary(targetSvc, method, stepArgs, stepResult, false)
 	}
+	if specCaller != "" {
+		recvFields["spec"] = specCaller
+	}
 	rt.events.Emit("step_recv", "test", recvFields)
 
 	// TCP send returns raw string for backward compatibility.
@@ -2362,6 +2389,29 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 		Ok:         stepResult.Success,
 		Error:      stepResult.Error,
 	}, nil
+}
+
+// callerInTest walks the Starlark call stack to determine whether the
+// current builtin invocation originated from inside the test function
+// currently running under RunTest. Returns the test name on a hit, ""
+// on a miss. Used by executeStep to tag spec-anchored events — the
+// ones the user explicitly wrote in the test body (possibly via
+// helpers), as opposed to monitor polls or recipe internals.
+//
+// Why a stack walk and not `rt.inTest`: monitors evaluate during the
+// test's lifetime so `inTest` is true for them too. Their thread
+// frames don't include the test function name, so this check
+// correctly excludes them.
+func (rt *Runtime) callerInTest(thread *starlark.Thread) string {
+	if rt.currentTestName == "" {
+		return ""
+	}
+	for d := 0; d < thread.CallStackDepth(); d++ {
+		if thread.CallFrame(d).Name == rt.currentTestName {
+			return rt.currentTestName
+		}
+	}
+	return ""
 }
 
 // stepKwargAllowlist is the set of kwarg names whose values we copy

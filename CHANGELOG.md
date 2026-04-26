@@ -13,6 +13,47 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.10] - 2026-04-26
+
+Spec-anchored event highlighting — the user's own step calls
+(`api.http.post`, `kafka.publish`, `db.exec` from the test body)
+visually pop out from background traffic so they read as familiar
+landmarks against monitor / proxy / syscall noise.
+
+### Added
+
+- **Runtime tagging.** `executeStep` walks the Starlark call stack
+  and sets `fields.spec = <test_name>` whenever the step originates
+  from inside the currently-running test function. Helper functions
+  written by the user (`def post_order(): api.http.post(...)`)
+  still register because the test_* frame remains on the stack.
+  Monitor evaluations, recipe internals, and background syscall
+  paths fail the check by construction — they don't have a
+  test_* frame above them.
+- **Renderer highlight.** Markers with `fields.spec` get:
+  - a warm gold ring (`#d4af37`) so the eye finds them in a busy
+    lane;
+  - a +50 severity bump so the slot picker prefers them over
+    monitor/error events at the same rank;
+  - **fold bypass** — spec-anchored events render individually
+    regardless of cardinality (typical tests have 1–10, and
+    folding them into a chip would defeat the highlight);
+  - a ★ prefix in the lane balloon and event-log headline.
+
+### Changed
+
+- `severityScore` adds the +50 spec bonus across all event types,
+  including happy-path step events that previously scored 0
+  (so a `→ call · api.http.post /orders [200]` from the test body
+  now beats a `← reply · monitor.poll` in the same slot).
+
+### Compatibility
+
+- Bundles produced before v0.12.10 don't carry `fields.spec`, so
+  the highlight is a no-op there. Re-render an old bundle and
+  nothing changes; re-run the suite on v0.12.10 to start
+  capturing the tag.
+
 ## [0.12.9] - 2026-04-26
 
 Three small UX polishes from a customer second-read of v0.12.8:

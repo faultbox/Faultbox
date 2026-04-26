@@ -1420,12 +1420,23 @@
   function applyLaneBudgetFilter(evs) {
     if (!evs.length) return { kept: [], foldedCount: 0 };
 
+    // v0.12.10: spec-anchored events (the user's own step calls)
+    // bypass the fold entirely — always render individually. They're
+    // rare by definition (a typical test has 1–10) and represent the
+    // user's mental model of the test, so they should never fold
+    // into a chip alongside background traffic.
+    var passthrough = []; // {pos, ev}
+
     // Pass 1: fold-by-key. Group by (target.method.summary). Groups
     // larger than LANE_FOLD_THRESHOLD collapse to one chip at their
     // median position; smaller groups stay as individual markers.
     var groups = {};
     var groupOrder = [];
     for (var i = 0; i < evs.length; i++) {
+      if (evs[i].fields && evs[i].fields.spec) {
+        passthrough.push({ pos: i, ev: evs[i] });
+        continue;
+      }
       var key = laneFoldKey(evs[i]);
       if (!groups[key]) {
         groups[key] = { positions: [], head: evs[i] };
@@ -1435,7 +1446,7 @@
     }
 
     var foldedCount = 0;
-    var emit = []; // {pos, ev}
+    var emit = passthrough.slice(); // {pos, ev}
     for (var k = 0; k < groupOrder.length; k++) {
       var g = groups[groupOrder[k]];
       if (g.positions.length > LANE_FOLD_THRESHOLD) {
@@ -1530,18 +1541,23 @@
   // wins. Violations and faults are the strongest signals; failed
   // step events come next; lifecycle and ordinary steps are quietest.
   // Score 0 means "use the fold-head fallback" (no urgent signal).
+  //
+  // v0.12.10: spec-anchored steps (events the user wrote directly in
+  // the test body) get a +50 bump — a slot containing both a monitor
+  // poll and a user-written step always shows the user's call.
   function severityScore(ev) {
     var t = ev.type || "";
-    if (t === "violation") return 100;
-    if (t === "fault_applied" || t === "fault_removed") return 90;
-    if (t === "fault_zero_traffic" || t === "fault_skipped_no_seccomp") return 85;
+    var bonus = (ev.fields && ev.fields.spec) ? 50 : 0;
+    if (t === "violation") return 100 + bonus;
+    if (t === "fault_applied" || t === "fault_removed") return 90 + bonus;
+    if (t === "fault_zero_traffic" || t === "fault_skipped_no_seccomp") return 85 + bonus;
     if (t === "step_send" || t === "step_recv") {
       var f = ev.fields || {};
-      if (f.success === "false" || f.error) return 80;
+      if (f.success === "false" || f.error) return 80 + bonus;
       var sc = parseInt(f.status_code || "0", 10);
-      if (sc >= 500) return 75;
-      if (sc >= 400) return 60;
-      return 0;
+      if (sc >= 500) return 75 + bonus;
+      if (sc >= 400) return 60 + bonus;
+      return bonus; // spec-anchored happy-path steps still beat zero
     }
     if (t === "service_started" || t === "service_ready" ||
         t === "service_stopped" || t === "session_completed") return 30;
@@ -1599,6 +1615,7 @@
     var label = markerShortLabel(ev);
     var cls = "trace-marker " + kind;
     if (ev._runCount && ev._runCount > 1) cls += " run";
+    if (ev.fields && ev.fields.spec) cls += " spec";
     var m = el("div", {
       class: cls,
       tabindex: "0",
@@ -1733,6 +1750,7 @@
     } else {
       headline = f.summary || ev.type || "event";
     }
+    if (f.spec) headline = "★ " + headline;
     var head = el("div", { class: "trace-tooltip-head", text: headline });
     var sub = el("div", { class: "trace-tooltip-sub" });
     var bits = [];
@@ -1920,10 +1938,14 @@
       // the direction is unambiguous on a first read. The arrow
       // still scans faster once learned.
       var label = t === "step_send" ? "→ call" : "← reply";
+      // v0.12.10: ★ prefix marks spec-anchored steps (calls the user
+      // wrote directly in the test body). Helps the eye skim past
+      // monitor / proxy noise to land on familiar landmarks.
+      var star = f.spec ? "★ " : "";
       if (f.summary) {
-        return label + " · " + stripArrowFromSummary(f.summary);
+        return star + label + " · " + stripArrowFromSummary(f.summary);
       }
-      var parts = [label, "·", (f.target || "?") + (f.method ? "." + f.method : "")];
+      var parts = [star + label, "·", (f.target || "?") + (f.method ? "." + f.method : "")];
       var preview = f.sql || f.query || f.path || f.command || f.topic || f.body;
       if (preview) parts.push(truncate(preview, 80));
       if (t === "step_recv" && f.status_code) parts.push("[" + f.status_code + "]");
