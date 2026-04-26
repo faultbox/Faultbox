@@ -999,8 +999,8 @@
     var list = el("ul", { class: "dd-assertion-context" });
     for (var i = 0; i < ctx.length; i++) {
       var c = ctx[i];
-      var arrow = c.type === "step_send" ? "→" : "←";
-      var line = arrow + " " + (c.target || "?")
+      var label = c.type === "step_send" ? "→ call" : "← reply";
+      var line = label + " · " + (c.target || "?")
         + (c.method ? "." + c.method : "")
         + (c.summary ? "  " + stripArrowFromSummary(c.summary) : "");
       if (c.status_code) line += "  [" + c.status_code + "]";
@@ -1607,7 +1607,16 @@
       "data-seq": String(ev.seq || 0),
     });
     m.style.left = pct.toFixed(2) + "%";
+    // v0.12.9: marker radius scales with log10(count + 1). When two
+    // chips' badges overlap (small lane, many folds) the badge text
+    // becomes unreadable — but the marker disc is always visible, so
+    // sizing it proportional to the fold count keeps magnitude
+    // legible even in dense regions. Base 8px → ~26px at count=10000.
     if (ev._runCount && ev._runCount > 1) {
+      var logN = Math.log10(ev._runCount + 1);
+      var size = Math.min(28, 8 + Math.round(logN * 6));
+      m.style.width = size + "px";
+      m.style.height = size + "px";
       m.appendChild(el("span", {
         class: "trace-marker-count",
         text: "×" + ev._runCount,
@@ -1712,11 +1721,18 @@
 
   function buildTooltipContent(ev) {
     // v0.12.4: prefer the runtime-emitted summary as the headline so
-    // a step balloon reads "← api.http.post  /api/v2/orders  [500]"
-    // instead of the bare type. The user can tell what happened
-    // without pinning + scrolling to read fields.
+    // a step balloon reads call/reply context instead of the bare
+    // type. v0.12.9: wrap the summary with explicit call/reply
+    // word so first-time readers don't have to interpret the
+    // arrow on its own.
     var f = ev.fields || {};
-    var headline = f.summary || ev.type || "event";
+    var headline;
+    if (ev.type === "step_send" || ev.type === "step_recv") {
+      var label = ev.type === "step_send" ? "→ call" : "← reply";
+      headline = f.summary ? (label + " · " + stripArrowFromSummary(f.summary)) : label;
+    } else {
+      headline = f.summary || ev.type || "event";
+    }
     var head = el("div", { class: "trace-tooltip-head", text: headline });
     var sub = el("div", { class: "trace-tooltip-sub" });
     var bits = [];
@@ -1809,9 +1825,21 @@
     ]);
   }
 
+  // detailExpansion tracks which collapsibles in the trace-detail
+  // panel the user opened. v0.12.9 restores the open state when
+  // pinSelection rebuilds the panel for a different event — without
+  // this, every new pin reset the panel to its compact default and
+  // the user had to re-expand "All fields" / "Vector clock" each
+  // time. Keyed by section title so the persistence survives
+  // re-renders and even cross-test drill-down opens.
+  var detailExpansion = {};
   function collapsible(title, children) {
     var det = document.createElement("details");
     det.className = "trace-detail-collapsible";
+    if (detailExpansion[title]) det.open = true;
+    det.addEventListener("toggle", function () {
+      detailExpansion[title] = det.open;
+    });
     var sum = document.createElement("summary");
     sum.textContent = title;
     det.appendChild(sum);
@@ -1886,14 +1914,16 @@
     }
 
     if (t === "step_send" || t === "step_recv") {
-      // v0.12.2 enriches step events with a runtime-emitted summary
-      // field that carries the protocol-aware preview (e.g. "← db.exec
-      // INSERT INTO orders…  [200]"). Prefer it whenever present —
-      // the reader doesn't need to scan three fields to learn what
-      // the step did.
-      if (f.summary) return f.summary;
-      var arrow = t === "step_send" ? "→" : "←";
-      var parts = [arrow, (f.target || "?") + (f.method ? "." + f.method : "")];
+      // v0.12.9: the runtime's `summary` field starts with a bare
+      // arrow (→ / ←) which several customers found ambiguous.
+      // Pair the arrow with an explicit "call" / "reply" word so
+      // the direction is unambiguous on a first read. The arrow
+      // still scans faster once learned.
+      var label = t === "step_send" ? "→ call" : "← reply";
+      if (f.summary) {
+        return label + " · " + stripArrowFromSummary(f.summary);
+      }
+      var parts = [label, "·", (f.target || "?") + (f.method ? "." + f.method : "")];
       var preview = f.sql || f.query || f.path || f.command || f.topic || f.body;
       if (preview) parts.push(truncate(preview, 80));
       if (t === "step_recv" && f.status_code) parts.push("[" + f.status_code + "]");

@@ -936,28 +936,43 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
 }
 .trace-viewer.causal-active .trace-lane { opacity: 0.6; }
 
-/* Run-count badge for collapsed step runs (v0.12.2). The badge sits
- * to the right of its marker so the hit-target stays clickable; a
- * darker variant of --warn keeps it readable on the step palette
- * without competing with violation markers. */
+/* v0.12.9: run markers scale by log(count) and host the count text
+ * INSIDE the disc rather than next to it. With folds at adjacent
+ * positions the side-mounted badges used to overlap and become
+ * unreadable; centring inside the marker means each chip is
+ * self-contained — overlap is reduced to the discs themselves
+ * (which the ring colours still distinguish).
+ *
+ * Width / height come from inline style (renderMarker) so each
+ * chip's size is proportional to its fold count. The text inside
+ * shrinks with the disc; for very small folds (count < 4) the
+ * marker stays compact and the badge clips slightly — that's the
+ * right trade since small folds are by definition not overwhelming. */
 .trace-marker.run {
-  width: 12px; height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  /* Bias toward warn palette for visibility without competing with
+   * violation markers; severity-coloured chips override via .fault. */
+  box-shadow: 0 0 0 2px var(--bg-elev);
 }
 .trace-marker-count {
-  position: absolute;
-  left: 14px;
-  top: 50%;
-  transform: translateY(-50%);
+  position: static;
+  transform: none;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--warn-fg);
-  background: var(--warn-bg);
-  border: 1px solid var(--warn-border);
-  border-radius: 999px;
-  padding: 0 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--bg-elev);
+  background: transparent;
+  border: none;
+  padding: 0;
   white-space: nowrap;
   pointer-events: none;
+  /* Allow long counts (× 80000) to overflow rather than being
+   * truncated by the disc. The user sees the number, the disc
+   * size still communicates rank-of-magnitude. */
+  overflow: visible;
 }
 
 /* SVG overlay — lines connect a hovered marker to its causal

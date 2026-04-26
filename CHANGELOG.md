@@ -13,6 +13,32 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.9] - 2026-04-26
+
+Three small UX polishes from a customer second-read of v0.12.8:
+
+### Changed
+
+- **Run-marker radius scales with log10(fold count).** Side-mounted
+  count badges (`× 434`) used to overlap and become unreadable when
+  several folded chips landed close together on the lane. Now the
+  marker disc itself grows proportional to its fold count (base 8 px
+  → ~26 px at 10k events) and the count text moves *inside* the
+  disc. Magnitude is legible at-a-glance regardless of horizontal
+  packing.
+- **Drill-down section open state persists across pin changes.**
+  Previously, expanding "All fields" / "Vector clock" on event A
+  collapsed back to the compact default when the user clicked event
+  B. The viewer now remembers per-section open state in a closure-
+  scoped map, keyed by section title, so a user who's "All fields"
+  oriented stays oriented across the whole drilling session.
+- **Step summaries pair arrows with `call` / `reply` words.** A
+  bare `→` / `←` was ambiguous to first-time readers — was the
+  arrow the request direction or the response direction? Headlines
+  now read `→ call · truck-api.get /orders` and
+  `← reply · truck-api.get /orders [500]`. Arrows still scan
+  faster once learned; the word is the disambiguator.
+
 ## [0.12.8] - 2026-04-26
 
 Three follow-ups from a customer second-read of v0.12.7:
