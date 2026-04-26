@@ -1395,49 +1395,91 @@
     return ev.service || "test";
   }
 
-  // applyLaneBudgetFilter is the v0.12.5 lane filter. Replaces both
-  // the consecutive-runs dedup (v0.12.2/3) and the anchor-window +
-  // cardinality fold (v0.12.4) — neither of which gave a hard upper
-  // bound on rendered DOM node count. With 86k events even the
-  // window approach kept everything (most step events were anchors)
-  // and crushed them visually into the same handful of pixels.
+  // applyLaneBudgetFilter shapes the lane down to a manageable
+  // marker count. Two passes:
   //
-  // New approach: bucket the lane's events into LANE_BUDGET visual
-  // *slots* in seq order. Each slot picks one representative —
-  // anchor first, else most-common fold-key head, else first event.
-  // The slot's `_runCount` / `_runMembers` carry the rest, so click
-  // expands to the full member list via the existing drill-down
-  // path.
+  // 1. Fold by key — a `db.exec SELECT 1 ERR` repeated 1737 times
+  //    collapses to a single `× 1737` chip at its median rank, no
+  //    matter where in the trace the events sit. This addresses the
+  //    "db lane is 50 identical red dots" symptom: identical-summary
+  //    events share one visual position so the user sees the chip
+  //    plus the count.
   //
-  // Hard guarantee: every lane renders ≤ LANE_BUDGET DOM markers
-  // regardless of event count. 86k → 50, 1M → 50, 50 → 50. Slot
-  // positions are uniformly spaced, so the user always sees
-  // distinct visual locations even when the underlying events
-  // would otherwise stack on top of each other.
+  // 2. Slot budget — if the post-fold list still exceeds LANE_BUDGET,
+  //    the remaining markers bucket into 50 visual slots in seq order
+  //    and each slot picks a representative (severity-weighted, with
+  //    a fold-key head fallback).
+  //
+  // Hard guarantee: ≤ LANE_BUDGET DOM markers per lane regardless of
+  // input. Per-lane counts are now usually well under the budget for
+  // typical proxy-mode traces because most lanes have only a few
+  // unique fold keys.
   var LANE_BUDGET = 50;
+  var LANE_FOLD_THRESHOLD = 10;
 
   function applyLaneBudgetFilter(evs) {
     if (!evs.length) return { kept: [], foldedCount: 0 };
-    if (evs.length <= LANE_BUDGET) {
-      return { kept: evs.slice(), foldedCount: 0 };
+
+    // Pass 1: fold-by-key. Group by (target.method.summary). Groups
+    // larger than LANE_FOLD_THRESHOLD collapse to one chip at their
+    // median position; smaller groups stay as individual markers.
+    var groups = {};
+    var groupOrder = [];
+    for (var i = 0; i < evs.length; i++) {
+      var key = laneFoldKey(evs[i]);
+      if (!groups[key]) {
+        groups[key] = { positions: [], head: evs[i] };
+        groupOrder.push(key);
+      }
+      groups[key].positions.push(i);
     }
 
-    var n = evs.length;
+    var foldedCount = 0;
+    var emit = []; // {pos, ev}
+    for (var k = 0; k < groupOrder.length; k++) {
+      var g = groups[groupOrder[k]];
+      if (g.positions.length > LANE_FOLD_THRESHOLD) {
+        // Pick the highest-severity event in the group as the head
+        // so the chip's color/shape signals the worst case (e.g. a
+        // group dominated by errored steps shows red, not yellow).
+        var head = g.head;
+        for (var hi = 0; hi < g.positions.length; hi++) {
+          if (severityScore(evs[g.positions[hi]]) > severityScore(head)) {
+            head = evs[g.positions[hi]];
+          }
+        }
+        var med = g.positions[Math.floor(g.positions.length / 2)];
+        var chip = {};
+        for (var f in head) chip[f] = head[f];
+        chip._runCount = g.positions.length;
+        chip._runMembers = g.positions.map(function (p) { return evs[p].seq; });
+        foldedCount += g.positions.length - 1;
+        emit.push({ pos: med, ev: chip });
+      } else {
+        for (var p = 0; p < g.positions.length; p++) {
+          emit.push({ pos: g.positions[p], ev: evs[g.positions[p]] });
+        }
+      }
+    }
+    emit.sort(function (a, b) { return a.pos - b.pos; });
+
+    if (emit.length <= LANE_BUDGET) {
+      return { kept: emit.map(function (x) { return x.ev; }), foldedCount: foldedCount };
+    }
+
+    // Pass 2: slot budget. The post-fold list is still over budget
+    // (lots of unique fold keys), so bucket into 50 visual slots
+    // and pick a severity-weighted representative per slot.
+    var n = emit.length;
     var step = n / LANE_BUDGET;
     var kept = [];
-    var foldedCount = 0;
 
     for (var s = 0; s < LANE_BUDGET; s++) {
       var lo = Math.floor(s * step);
       var hi = (s === LANE_BUDGET - 1) ? n : Math.floor((s + 1) * step);
       if (hi <= lo) continue;
-      var slot = evs.slice(lo, hi);
+      var slot = emit.slice(lo, hi).map(function (x) { return x.ev; });
 
-      // Pick representative for the slot. v0.12.6 picks by *severity*
-      // rather than first-match: a slot containing one violation +
-      // 30 step events should show the violation marker, not the
-      // first step in seq order. Without this the user can't see
-      // where the failures are even though they're in the trace.
       var rep = null;
       var bestScore = -1;
       for (var j = 0; j < slot.length; j++) {
@@ -1447,13 +1489,13 @@
       if (!rep || bestScore <= 0) {
         var counts = {}, heads = {};
         for (var j = 0; j < slot.length; j++) {
-          var k = laneFoldKey(slot[j]);
-          counts[k] = (counts[k] || 0) + 1;
-          if (!heads[k]) heads[k] = slot[j];
+          var lk = laneFoldKey(slot[j]);
+          counts[lk] = (counts[lk] || 0) + 1;
+          if (!heads[lk]) heads[lk] = slot[j];
         }
         var maxK = null, maxC = 0;
-        for (var k in counts) {
-          if (counts[k] > maxC) { maxC = counts[k]; maxK = k; }
+        for (var lk in counts) {
+          if (counts[lk] > maxC) { maxC = counts[lk]; maxK = lk; }
         }
         rep = heads[maxK] || slot[0];
       }
@@ -1461,8 +1503,22 @@
       var chip = {};
       for (var k in rep) chip[k] = rep[k];
       if (slot.length > 1) {
-        chip._runCount = slot.length;
-        chip._runMembers = slot.map(function (e) { return e.seq; });
+        // Aggregate counts and members from all slot occupants
+        // (some of which may already be folded chips).
+        var total = 0, members = [];
+        for (var j = 0; j < slot.length; j++) {
+          var c = slot[j]._runCount || 1;
+          total += c;
+          if (slot[j]._runMembers) {
+            for (var mIdx = 0; mIdx < slot[j]._runMembers.length; mIdx++) {
+              members.push(slot[j]._runMembers[mIdx]);
+            }
+          } else {
+            members.push(slot[j].seq);
+          }
+        }
+        chip._runCount = total;
+        chip._runMembers = members;
         foldedCount += slot.length - 1;
       }
       kept.push(chip);
@@ -1555,8 +1611,15 @@
       m.appendChild(el("span", {
         class: "trace-marker-count",
         text: "×" + ev._runCount,
-        title: ev._runCount + " consecutive " + (ev.fields ? ((ev.fields.target || "?") + "." + (ev.fields.method || "?")) : "step") + " events folded",
+        title: ev._runCount + " " + (ev.fields ? ((ev.fields.target || "?") + "." + (ev.fields.method || "?")) : "step") + " events folded into this marker",
       }));
+    }
+    // v0.12.8: stash folded member seqs on the DOM node so causal-
+    // line drawing can resolve an ancestor seq to its containing
+    // chip (otherwise folded ancestors silently fail the lookup
+    // and the line skips them).
+    if (ev._runMembers && ev._runMembers.length) {
+      m.dataset.members = ev._runMembers.join(",");
     }
     return m;
   }
@@ -1937,8 +2000,15 @@
     var filterBar = el("div", { class: "trace-log-filterbar" });
     var serviceFilters = el("div", { class: "trace-log-filters", role: "toolbar", "aria-label": "Filter by service" });
     serviceFilters.appendChild(el("span", { class: "trace-log-filter-label", text: "Service" }));
-    var typeFilters = el("div", { class: "trace-log-filters", role: "toolbar", "aria-label": "Filter by type" });
-    typeFilters.appendChild(el("span", { class: "trace-log-filter-label", text: "Type" }));
+    // v0.12.8: Type axis becomes click-to-add. The toolbar stays
+    // empty until the user clicks a Type cell in the table; chips
+    // appear with an inline X to remove. Cuts the at-a-glance UI
+    // weight when the user only cares about service filtering.
+    var typeFilters = el("div", { class: "trace-log-filters trace-log-filters-active", role: "toolbar", "aria-label": "Active type filters" });
+    var typeFiltersLabel = el("span", { class: "trace-log-filter-label", text: "Type" });
+    typeFilters.appendChild(typeFiltersLabel);
+    var typeFiltersHint = el("span", { class: "trace-log-filter-hint", text: "click a type cell below to filter" });
+    typeFilters.appendChild(typeFiltersHint);
 
     var serviceChips = {};
     for (var sIdx = 0; sIdx < serviceOpts.length; sIdx++) {
@@ -1952,17 +2022,33 @@
         serviceFilters.appendChild(chip);
       })(serviceOpts[sIdx]);
     }
+    // typeChips holds DOM nodes for *active* type filters only —
+    // entries are added on click-to-filter, removed on X.
     var typeChips = {};
-    for (var tIdx = 0; tIdx < typeOpts.length; tIdx++) {
-      (function (type) {
-        var chip = el("button", {
-          class: "trace-log-chip", type: "button",
-          "data-filter": type, text: type,
-          onclick: function () { toggleType(type); },
-        });
-        typeChips[type] = chip;
-        typeFilters.appendChild(chip);
-      })(typeOpts[tIdx]);
+    function addTypeChip(type) {
+      if (typeChips[type]) return;
+      var chip = el("span", { class: "trace-log-chip active removable", "data-filter": type });
+      chip.appendChild(document.createTextNode(type));
+      var x = el("button", {
+        class: "trace-log-chip-x", type: "button",
+        "aria-label": "Remove filter",
+        text: "×",
+        onclick: function (e) {
+          e.stopPropagation();
+          delete activeTypes[type];
+          chip.parentNode.removeChild(chip);
+          delete typeChips[type];
+          updateTypeHint();
+          applyFilters();
+        },
+      });
+      chip.appendChild(x);
+      typeChips[type] = chip;
+      typeFilters.appendChild(chip);
+      updateTypeHint();
+    }
+    function updateTypeHint() {
+      typeFiltersHint.style.display = Object.keys(typeChips).length ? "none" : "";
     }
     filterBar.appendChild(serviceFilters);
     filterBar.appendChild(typeFilters);
@@ -2061,8 +2147,17 @@
       applyFilters();
     }
     function toggleType(type) {
-      if (activeTypes[type]) delete activeTypes[type];
-      else activeTypes[type] = true;
+      if (activeTypes[type]) {
+        delete activeTypes[type];
+        if (typeChips[type] && typeChips[type].parentNode) {
+          typeChips[type].parentNode.removeChild(typeChips[type]);
+        }
+        delete typeChips[type];
+        updateTypeHint();
+      } else {
+        activeTypes[type] = true;
+        addTypeChip(type);
+      }
       applyFilters();
     }
 
@@ -2085,9 +2180,8 @@
       for (var k in serviceChips) {
         serviceChips[k].classList.toggle("active", !!activeServices[k]);
       }
-      for (var k in typeChips) {
-        typeChips[k].classList.toggle("active", !!activeTypes[k]);
-      }
+      // typeChips are dynamic — they only exist while active, so no
+      // per-key toggle pass needed.
       // Rebuild the filtered list from scratch and reset the page.
       filteredEvents = events.filter(matchesFilters);
       tbody.innerHTML = "";
@@ -2097,15 +2191,18 @@
       updateCaption();
     }
 
-    // Click-to-filter on table cells.
+    // Click-to-filter on table cells. Service: replace selection.
+    // Type: ADD to selection so click-multiple gradually accumulates
+    // a multi-type filter (X to remove individual chips).
     wrap._addServiceFilter = function (svc) {
       activeServices = {};
       activeServices[svc] = true;
       applyFilters();
     };
     wrap._addTypeFilter = function (type) {
-      activeTypes = {};
+      if (activeTypes[type]) return; // already active
       activeTypes[type] = true;
+      addTypeChip(type);
       applyFilters();
     };
 
@@ -2296,24 +2393,56 @@
   }
 
   // findCausalAncestors returns, for each other lane, the latest
-  // event Y such that Y happens-before target. This keeps the
-  // visualisation legible: at most (N-1) lines per hovered marker,
-  // not the full transitive set.
+  // event Y such that Y happens-before target. v0.12.8 keys on
+  // laneFor() not raw service so step events folded onto the target
+  // service's lane (rather than the test driver lane) draw lines
+  // back to other services correctly.
   function findCausalAncestors(target, allEvents) {
-    var perService = {};
-    var targetSvc = target.service || "test";
+    var perLane = {};
+    var targetLane = laneFor(target);
     for (var i = 0; i < allEvents.length; i++) {
       var e = allEvents[i];
       if (e === target) continue;
-      var svc = e.service || "test";
-      if (svc === targetSvc) continue;
+      var lane = laneFor(e);
+      if (lane === targetLane) continue;
       if (!happensBefore(e, target)) continue;
-      var existing = perService[svc];
-      if (!existing || (e.seq || 0) > (existing.seq || 0)) perService[svc] = e;
+      var existing = perLane[lane];
+      if (!existing || (e.seq || 0) > (existing.seq || 0)) perLane[lane] = e;
     }
     var out = [];
-    for (var s in perService) out.push(perService[s]);
+    for (var s in perLane) out.push(perLane[s]);
     return out;
+  }
+
+  // resolveMarkerForSeq finds the visible marker for a given seq.
+  // After v0.12.8's fold-by-key + slot bucketing, an ancestor seq
+  // may be hidden inside a chip's `_runMembers` list rather than
+  // mapped 1:1 in markerNodes. Walk the chips' member lists once
+  // (cached per call site) so causal lines still draw to the
+  // representative marker. Without this, every folded ancestor
+  // produced a no-op `if (!ancNode) continue;` and the user saw
+  // no lines.
+  function resolveMarkerForSeq(seq, markerNodes, seqToMarker) {
+    var direct = markerNodes[seq];
+    if (direct) return direct;
+    return seqToMarker[seq] || null;
+  }
+
+  function buildSeqToMarkerIndex(markerNodes) {
+    var idx = {};
+    for (var s in markerNodes) {
+      var node = markerNodes[s];
+      idx[s] = node;
+      // Walk _runMembers stored on the marker via dataset.
+      var members = node.dataset && node.dataset.members;
+      if (members) {
+        var parts = members.split(",");
+        for (var p = 0; p < parts.length; p++) {
+          if (!idx[parts[p]]) idx[parts[p]] = node;
+        }
+      }
+    }
+    return idx;
   }
 
   function drawCausalLines(svg, rootNode, ancestors, host, markerNodes) {
@@ -2324,9 +2453,11 @@
     var rx = rootRect.left - hostRect.left + rootRect.width / 2;
     var ry = rootRect.top - hostRect.top + rootRect.height / 2;
 
+    var seqToMarker = buildSeqToMarkerIndex(markerNodes);
+
     for (var i = 0; i < ancestors.length; i++) {
       var a = ancestors[i];
-      var ancNode = markerNodes[a.seq];
+      var ancNode = resolveMarkerForSeq(a.seq, markerNodes, seqToMarker);
       if (!ancNode) continue;
       ancNode.classList.add("highlight-ancestor");
       var aRect = ancNode.getBoundingClientRect();

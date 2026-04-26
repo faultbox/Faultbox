@@ -1174,6 +1174,33 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   color: var(--bg-elev);
   border-color: var(--accent);
 }
+/* Removable chip — type-axis chips that appear on click-to-filter,
+ * X button on the right detaches them. */
+.trace-log-chip.removable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding-right: 0.2rem;
+}
+.trace-log-chip-x {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.95em;
+  line-height: 1;
+  padding: 0 0.25rem;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.trace-log-chip-x:hover { opacity: 1; }
+.trace-log-filter-hint {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--fg-subtle);
+  font-style: italic;
+}
 .trace-log-scroll {
   max-height: 260px;
   overflow-y: auto;

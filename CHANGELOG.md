@@ -13,6 +13,42 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.8] - 2026-04-26
+
+Three follow-ups from a customer second-read of v0.12.7:
+
+### Changed
+
+- **Lane filter folds by key before budgeting.** v0.12.5 bucketed
+  blindly into 50 visual slots, so a lane with 1737 identical
+  `db.exec SELECT 1 ERR` events still rendered ~50 markers (one
+  per slot) all visually indistinguishable. New two-pass:
+  - Pass 1: group by `(target.method.summary)`. Groups with > 10
+    members collapse to a single chip at the median rank, with
+    `_runCount` / `_runMembers` carrying the rest.
+  - Pass 2: if the post-fold list still exceeds `LANE_BUDGET=50`,
+    fall back to slot bucketing on the post-fold events.
+  Net effect on the customer's db lane: 1787 events → 1 chip
+  (`× 1787`), no longer 50 identical red dots.
+- **Causal hover lines restored** for the v0.12.7 lane routing.
+  `findCausalAncestors` now keys on `laneFor()` not raw service —
+  step events folded onto their target service's lane no longer
+  count as same-lane and so cross-lane lines draw again.
+  `drawCausalLines` resolves an ancestor seq to its containing
+  chip via `_runMembers` (stashed on the marker DOM via
+  `data-members`), so folded ancestors no longer silently miss
+  the lookup.
+
+### Added
+
+- **Click-to-add Type filter chips** in the event log. The Type
+  axis no longer pre-renders every option as a chip; a hint
+  ("click a type cell below to filter") sits in the empty toolbar
+  until the user clicks a Type cell in the table, at which point
+  a removable chip appears with an inline X. Cuts the at-a-glance
+  filter-bar weight; Service stays pre-rendered (small, useful
+  set).
+
 ## [0.12.7] - 2026-04-25
 
 Two fixes from a customer second-read of v0.12.6:
