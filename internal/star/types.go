@@ -196,6 +196,17 @@ func (r *InterfaceRef) Attr(name string) (starlark.Value, error) {
 		return starlark.String("localhost"), nil
 	case "port":
 		return starlark.MakeInt(r.Interface.Port), nil
+	case "proxy_addr", "proxy_host", "proxy_port":
+		// RFC-033: late-bound proxy address. The proxy doesn't exist at
+		// spec-load time, so we hand back a unique placeholder string that
+		// buildEnv resolves later. Use this to wire host-binary SUTs to
+		// proxied upstreams without rsplit() games — the placeholder
+		// survives string concat and gets the right value at runtime.
+		if r.runtime == nil {
+			return nil, fmt.Errorf("interface_ref.%s requires a runtime context", name)
+		}
+		kind := strings.TrimPrefix(name, "proxy_")
+		return starlark.String(r.runtime.registerProxyPlaceholder(r.Service.Name, r.Interface.Name, kind)), nil
 	}
 
 	// Check if this is a step method from the protocol plugin.
@@ -211,7 +222,7 @@ func (r *InterfaceRef) Attr(name string) (starlark.Value, error) {
 }
 
 func (r *InterfaceRef) AttrNames() []string {
-	base := []string{"addr", "internal_addr", "host", "port"}
+	base := []string{"addr", "internal_addr", "host", "port", "proxy_addr", "proxy_host", "proxy_port"}
 	if p, ok := protocol.Get(r.Interface.Protocol); ok {
 		base = append(base, p.Methods()...)
 	}

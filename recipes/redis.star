@@ -12,6 +12,18 @@
 #         rules  = [redis.oom()],
 #     )
 #
+# Wiring SUTs to the proxy (RFC-033): for host-binary SUTs talking to a
+# Docker Redis upstream, use cache.main.proxy_addr / proxy_host /
+# proxy_port in the SUT's env. Don't use cache.main.internal_addr —
+# it returns the container DNS name (cache:6379) which the host process
+# can't resolve.
+#
+#     api = service("api", "/usr/local/bin/api", ...,
+#         env = {
+#             "REDIS_ADDR": cache.main.proxy_addr,
+#         },
+#     )
+#
 # Scope: RESP error strings Redis emits under operational failure. The
 # Redis plugin matches rules by key pattern (or wildcards); the message
 # is what go-redis / redigo / raw RESP clients see verbatim as an

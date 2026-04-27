@@ -13,6 +13,20 @@
 #         rules  = [mysql.deadlock()],
 #     )
 #
+# Wiring SUTs to the proxy (RFC-033): for host-binary SUTs talking to a
+# Docker MySQL upstream, use db.main.proxy_addr / proxy_host / proxy_port
+# in the SUT's env. Don't use db.main.internal_addr — it returns the
+# container DNS name (db:3306) which the host process can't resolve, and
+# manual rsplit() decomposition breaks the late-bound substitution.
+#
+#     api = service("truck-api", "/usr/local/bin/truck-api", ...,
+#         env = {
+#             "MYSQL_HOST": db.main.proxy_host,
+#             "MYSQL_PORT": db.main.proxy_port,
+#             "MYSQL_DSN":  "user:pass@tcp(" + db.main.proxy_addr + ")/appdb",
+#         },
+#     )
+#
 # Scope: MySQL 5.7 / 8.0 error packets. The proxy's MySQL plugin matches
 # rules by SQL query pattern; the error message below is what drivers
 # surface up to application code.

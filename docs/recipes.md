@@ -99,6 +99,40 @@ $ faultbox recipes show mongodb
 # prints the full mongodb.star source
 ```
 
+## Wiring SUTs to the proxy
+
+Recipes apply rules at the proxy layer. For a fault to fire, the SUT must
+actually dial the proxy — not the real upstream. For a **host-binary SUT
+talking to a Docker upstream**, this means using `iface.proxy_addr` (or
+`proxy_host` / `proxy_port`) in the SUT's env, *not* `internal_addr`:
+
+```python
+db = service("db",
+    interface("main", "mysql", 3306),
+    image = "mysql:8",
+    reuse = True,
+)
+
+api = service("truck-api", "/usr/local/bin/truck-api",
+    interface("public", "http", 9000),
+    env = {
+        "MYSQL_HOST": db.main.proxy_host,                       # → "127.0.0.1"
+        "MYSQL_PORT": db.main.proxy_port,                       # → "36643" (auto-assigned)
+        "MYSQL_DSN":  "user:pass@tcp(" + db.main.proxy_addr + ")/appdb",
+    },
+)
+```
+
+Why not `internal_addr`? It returns `db:3306` (the Docker DNS name), which
+the host-binary SUT can't resolve. Manual `rsplit(":")` decomposition
+breaks the late-bound substitution and silently produces an unroutable
+address. See [spec-language.md → InterfaceRef](spec-language.md#type-interfaceref)
+for the full attribute reference.
+
+For container-to-container topologies (every service runs in Docker),
+`internal_addr` is still the right choice — Docker's internal DNS handles
+resolution and the proxy substitution catches the literal addr in env values.
+
 ## Shipped recipes
 
 All recipes shipped in the current release. Each bullet describes what

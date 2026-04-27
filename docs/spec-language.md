@@ -351,6 +351,9 @@ ref = db.main  # ← this is an InterfaceRef
 | `.host` | `string` | `"localhost"` |
 | `.port` | `int` | Port number |
 | `.internal_addr` | `string` | Container-to-container address (`"servicename:<port>"` in Docker, same as `.addr` for binaries) |
+| `.proxy_addr` | `string` | Host-side proxy listener for the SUT to dial (RFC-033). Late-bound — returns a placeholder at spec-load that the runtime resolves to e.g. `"127.0.0.1:36643"` once the proxy is up. |
+| `.proxy_host` | `string` | Host part of `.proxy_addr` — `"127.0.0.1"` for binary SUTs, `"host.docker.internal"` for container SUTs. |
+| `.proxy_port` | `string` | Port part of `.proxy_addr` (string, not int — see note below). |
 
 **Step methods:** determined by the protocol plugin. Accessing a method name
 returns a callable `StepMethod`:
@@ -361,15 +364,43 @@ api.public.post(path="/data")    # http protocol → post()
 pg.main.query(sql="SELECT 1")   # postgres protocol → query()
 ```
 
-**`.addr` vs `.internal_addr`:**
+**`.addr` vs `.internal_addr` vs `.proxy_addr`:**
 
 | | Binary mode | Container mode |
 |---|---|---|
 | `.addr` | `localhost:5432` | `localhost:<mapped_port>` |
 | `.internal_addr` | `localhost:5432` | `db:5432` (Docker DNS) |
+| `.proxy_addr` | `127.0.0.1:<auto>` | `host.docker.internal:<auto>` |
 
 Use `.addr` for healthchecks and test steps (from the host).
-Use `.internal_addr` in container `env` (service-to-service).
+Use `.internal_addr` in container `env` for service-to-service traffic on the Docker network.
+Use `.proxy_addr` / `.proxy_host` / `.proxy_port` to wire a SUT's connection through the
+fault-injection proxy. **This is the right choice for any host-binary SUT connecting to a
+Docker upstream** — the upstream's auto-mapped host port and the proxy's auto-assigned
+listener port are both unknown at spec-load time, so a literal value would never work.
+
+```python
+truck = service("truck-api", "/usr/local/bin/truck-api",
+    interface("main", "http", 9000),
+    env = {
+        "MYSQL_HOST": db.mysql.proxy_host,                      # → "127.0.0.1"
+        "MYSQL_PORT": db.mysql.proxy_port,                      # → "36643" (string)
+        "MYSQL_DSN":  "user:pass@tcp(" + db.mysql.proxy_addr + ")/appdb",
+    },
+)
+```
+
+**Late-binding mechanics:** at spec-load time `.proxy_addr` returns a placeholder string
+(e.g. `__FB_PROXY_ADDR_db__mysql__`). The placeholder survives any string concatenation
+the spec does. `buildEnv` replaces it with the real proxy address once the proxy starts.
+**Don't `.split()` or `.rsplit()` the value** — operations on the placeholder run at
+spec-load time and produce nonsense. Use `.proxy_host` / `.proxy_port` instead, which
+are resolved separately.
+
+**`.proxy_port` is a string, not an int.** Late-bound resolution can only substitute
+into env strings, so the attribute returns a placeholder string at spec-load. Most
+clients accept string ports; if your spec needs an int (rare), use the auto-injected
+`FAULTBOX_<SVC>_<IFACE>_PORT` env var on the SUT process instead.
 
 ---
 

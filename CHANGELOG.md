@@ -13,6 +13,75 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.12] - 2026-04-27
+
+Proxy-address surface for host-binary SUT + Docker upstream
+([RFC-033](https://github.com/faultbox/Faultbox/issues/87)). Two layered
+fixes, one P0 trace correctness issue and one P1 connectivity bug, both
+surfaced by a customer running the recipe-based `mysql.deadlock()` /
+`redis.timeout()` matrix against `truck-api` (host binary) connecting to a
+Docker `db` (mysql:8) — 18/18 cells failed for these reasons, not for any
+fault-injection-relevant reason.
+
+### Added
+
+- **`iface.proxy_addr` / `proxy_host` / `proxy_port`.** Late-bound
+  interface-ref attributes that resolve to the host-side proxy listener at
+  `buildEnv` time. Use them to wire host-binary SUTs through the
+  fault-injection proxy without `rsplit()` games or guessing
+  Docker-auto-mapped ports. The values survive string concat (e.g.
+  `"tcp(" + db.main.proxy_addr + ")/appdb"`) and resolve to the right
+  thing once proxies are running.
+- **`proxy_active` event in the reuse path.** When `startServices` skips a
+  service because its session was kept alive from a previous test
+  (`reuse=True`), the runtime now re-emits one `proxy_active` event per
+  running interface proxy. Per-cell trace partitions become
+  self-describing — fault_matrix cell 5 looking at its own trace can see
+  which proxies are wired up at cell start, instead of inferring "no
+  proxy started" from a missing `proxy_started` event the renderer never
+  saw because emission only fires on fresh starts.
+
+### Fixed
+
+- **Trace looked like proxy lifecycle was broken under reuse.** Before:
+  cell 1 emits `proxy_started` for `db.mysql` (fresh start), cells 2..N
+  show no proxy events because `startServices` skips `preStartProxies`
+  for reused services. Customers reasonably concluded "the proxy didn't
+  run in cell 2." Proxy was running fine — the trace was lying. Now
+  `proxy_active` fires per cell with `mode: "reused"` so the per-cell
+  partition tells the truth.
+- **Host-binary SUT couldn't reach the proxy of a Docker upstream.**
+  Documentation pointed users at `iface.internal_addr` for env wiring.
+  For a Docker service `db.main.internal_addr` returns `"db:3306"` (the
+  Docker DNS name, useless to host processes). The runtime's
+  `buildEnv` substitution catches a literal `db:3306` substring in env
+  values and rewrites it to the proxy addr — but customers commonly
+  decompose with `internal_addr.rsplit(":")` to feed separate `MYSQL_HOST`
+  / `MYSQL_PORT` env vars, which silently breaks the substitution. SUT
+  ends up dialing an unroutable address; healthcheck times out.
+  `proxy_addr` / `proxy_host` / `proxy_port` are the supported path:
+  resolved at runtime, no decomposition tricks needed.
+
+### Changed
+
+- **`proxyTargetAddr(iface)` helper.** The four call sites that hardcoded
+  `127.0.0.1:<port>` (preStartProxies, fault_scenario rule application,
+  fault() builtin, fault_assumption proxy-rule loop) now share a single
+  function. Behavior is unchanged today; future RFC-024 follow-ups (e.g.
+  proxy-side container-network targeting) have one site to edit.
+
+### Documentation
+
+- New "Wiring SUTs to the proxy" section in [`docs/recipes.md`](docs/recipes.md)
+  with the canonical host-binary-SUT-against-Docker-upstream pattern.
+- `iface.proxy_addr` / `proxy_host` / `proxy_port` documented in
+  [`docs/spec-language.md`](docs/spec-language.md) as the preferred path
+  for host SUTs; `internal_addr` re-scoped to container-to-container.
+- New troubleshooting entry "Host-binary SUT can't connect to a Docker
+  DB upstream" in [`docs/troubleshooting.md`](docs/troubleshooting.md).
+- Recipe headers for `mysql.star`, `redis.star`, `postgres.star` updated
+  with the `proxy_addr` wiring pattern.
+
 ## [0.12.11] - 2026-04-26
 
 ### Changed
