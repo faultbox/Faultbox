@@ -11,8 +11,7 @@
 //	go test ./testops/... -run mock_demo -v
 //
 // Phase 0 ships the harness and registry only; goldens are seeded in a
-// follow-up once product-level determinism in NormalizeTrace is stable
-// (see testops/FINDINGS.md).
+// follow-up once product-level determinism in NormalizeTrace is stable.
 package testops
 
 import "time"

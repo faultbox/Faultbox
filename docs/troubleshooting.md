@@ -211,6 +211,41 @@ Use `.internal_addr` for service-to-service references in container
 mode. `.addr` returns the host-port form, which only the test
 driver can reach.
 
+## 11. "Host-binary SUT can't connect to a Docker DB upstream"
+
+Symptom: `truck-api` (a host binary) times out at the healthcheck stage
+while trying to connect to a Docker `db` service. Trace shows the proxy
+started cleanly. Spec wires SUT env from `db.main.internal_addr.rsplit(":")`.
+
+Cause: `internal_addr` returns the container DNS name (`"db:3306"`) which
+the host-binary process can't resolve. Worse, the auto-substitution that
+rewrites real addrs to proxy addrs only matches the literal substring
+`db:3306` in env values — so `rsplit(":")` decomposition silently breaks
+it. The SUT ends up dialing `db:3306` or `127.0.0.1:3306` (the unmapped
+container-internal port) and times out.
+
+Fix: use `iface.proxy_addr` / `proxy_host` / `proxy_port` instead. These
+are late-bound — they return placeholders at spec-load and resolve to the
+real proxy listener at test-execution:
+
+```python
+api = service("truck-api", "/usr/local/bin/truck-api",
+    interface("public", "http", 9000),
+    env = {
+        "MYSQL_HOST": db.main.proxy_host,
+        "MYSQL_PORT": db.main.proxy_port,
+        "MYSQL_DSN":  "user:pass@tcp(" + db.main.proxy_addr + ")/appdb",
+    },
+)
+```
+
+Don't `.split()` or `.rsplit()` `proxy_addr` — operations run at spec-load
+where it's still a placeholder. Use the separate `proxy_host` /
+`proxy_port` attributes when you need the parts.
+
+See [recipes.md → Wiring SUTs to the proxy](recipes.md#wiring-suts-to-the-proxy)
+for more context. Fixed in v0.12.12 (RFC-033).
+
 ## See also
 
 - [bundles.md](bundles.md) — bundle inspection (`faultbox inspect`)

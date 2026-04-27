@@ -13,6 +13,19 @@
 #         rules  = [postgres.deadlock()],
 #     )
 #
+# Wiring SUTs to the proxy (RFC-033): for host-binary SUTs talking to a
+# Docker Postgres upstream, use db.main.proxy_addr / proxy_host /
+# proxy_port in the SUT's env. Don't use db.main.internal_addr —
+# the container DNS name (db:5432) doesn't resolve from the host.
+#
+#     api = service("api", "/usr/local/bin/api", ...,
+#         env = {
+#             "PGHOST": db.main.proxy_host,
+#             "PGPORT": db.main.proxy_port,
+#             "DATABASE_URL": "postgres://u:p@" + db.main.proxy_addr + "/appdb",
+#         },
+#     )
+#
 # Scope: Postgres SQLSTATE error classes. The proxy's Postgres plugin
 # matches rules by SQL query pattern; the error message below is what
 # pq / pgx surface up to application code. SQLSTATE codes embedded in

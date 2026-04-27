@@ -69,6 +69,7 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | Stdlib recipes (embedded .star) | 2 | 13 shipped, tested via protocol unit tests | 🟡 | No regression against recipe contents |
 | `monitor()` / `partition()` / `nondet()` / `events()` | 2 | No dedicated coverage | 🔴 | Covered only if a corpus spec uses them |
 | Named operations `op()` | 2 | Unit tests | 🟡 | |
+| `iface.proxy_addr` / `proxy_host` / `proxy_port` (RFC-033) | 2 | `internal/star/runtime_rfc033_test.go` (6 tests) | 🟢 | Late-bound proxy address attrs for host-binary SUTs talking to Docker upstreams; placeholder + buildEnv-time substitution covered |
 | `--explore=all` exhaustive | 2 | No dedicated coverage | 🔴 | |
 | `--virtual-time` | 2 | No dedicated coverage | 🔴 | |
 | `--runs N` counterexample search | 2 | No dedicated coverage | 🔴 | |

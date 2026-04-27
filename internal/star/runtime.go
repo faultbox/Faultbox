@@ -169,6 +169,14 @@ type Runtime struct {
 	faultsMu sync.Mutex
 	faults   map[string]map[string]*FaultDef // service -> syscall -> fault
 
+	// RFC-033: late-bound proxy_addr / proxy_host / proxy_port references.
+	// Populated when a Starlark spec evaluates iface.proxy_addr (etc.) at
+	// load time — the proxy doesn't exist yet, so we hand back a unique
+	// placeholder string and remember what to substitute it with later.
+	// Resolved at buildEnv time when proxies are actually running.
+	proxyPlaceholdersMu sync.Mutex
+	proxyPlaceholders   map[string]proxyPlaceholderRef
+
 	// Starlark globals — test functions discovered after load.
 	globals starlark.StringDict
 
@@ -276,10 +284,11 @@ func New(logger *slog.Logger) *Runtime {
 		log:           logging.WithComponent(logger, "starlark"),
 		events:        NewEventLog(),
 		eng:           engine.New(logger),
-		services:      make(map[string]*ServiceDef),
-		sessions:      make(map[string]*runningSession),
-		faults:        make(map[string]map[string]*FaultDef),
-		ServiceStdout: os.Stdout,
+		services:          make(map[string]*ServiceDef),
+		sessions:          make(map[string]*runningSession),
+		faults:            make(map[string]map[string]*FaultDef),
+		proxyPlaceholders: make(map[string]proxyPlaceholderRef),
+		ServiceStdout:     os.Stdout,
 	}
 	rt.proxyMgr = proxy.NewManager(func(evt proxy.ProxyEvent) {
 		rt.events.Emit("proxy", evt.To, evt.Fields)
@@ -923,6 +932,25 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			rt.events.Emit("service_started", svcName, nil)
 			rt.events.Emit("service_ready", svcName, nil)
 
+			// RFC-033: re-emit one proxy_active event per running interface
+			// proxy so the per-cell trace partition reflects what's wired
+			// up at cell start. Without this, fault_matrix cells after the
+			// first show no proxy events at all (preStartProxies' proxy_started
+			// emission only fires on fresh starts) and customers reasonably
+			// conclude the proxy lifecycle is broken.
+			for ifaceName, iface := range svc.Interfaces {
+				addr := rt.proxyMgr.GetProxyAddr(svcName, ifaceName)
+				if addr == "" {
+					continue
+				}
+				rt.events.Emit("proxy_active", svcName, map[string]string{
+					"interface": ifaceName,
+					"protocol":  iface.Protocol,
+					"listen":    addr,
+					"mode":      "reused",
+				})
+			}
+
 			// Run reset (or seed as fallback) to re-initialize state between tests.
 			if err := rt.runResetCallback(svcName, svc); err != nil {
 				return fmt.Errorf("reset service %q: %w", svcName, err)
@@ -983,11 +1011,7 @@ func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *Ser
 		if rt.proxyMgr.GetProxyAddr(svcName, ifaceName) != "" {
 			continue // already running (container reuse across tests)
 		}
-		port := iface.Port
-		if iface.HostPort > 0 {
-			port = iface.HostPort
-		}
-		targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+		targetAddr := proxyTargetAddr(iface)
 		proxyAddr, err := rt.proxyMgr.EnsureProxy(ctx, svcName, ifaceName, iface.Protocol, targetAddr)
 		if err != nil {
 			return fmt.Errorf("proxy %s.%s: %w", svcName, ifaceName, err)
@@ -1412,7 +1436,16 @@ func (rt *Runtime) buildContainerEnv(svc *ServiceDef) []string {
 	// container follow-up.
 	subs := rt.proxyAddrSubstitutionsFor(containerConsumer)
 	for k, v := range svc.Env {
-		env = append(env, k+"="+applyAddrSubstitutions(v, subs))
+		v = applyAddrSubstitutions(v, subs)
+		v = rt.resolveProxyPlaceholders(v, containerConsumer)
+		if placeholder, ok := rt.hasUnresolvedProxyPlaceholder(v); ok {
+			rt.log.Warn("env var references a proxy that did not start",
+				slog.String("service", svc.Name),
+				slog.String("var", k),
+				slog.String("placeholder", placeholder),
+			)
+		}
+		env = append(env, k+"="+v)
 	}
 	return env
 }
@@ -1599,7 +1632,18 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 	// pair across every interface that has a running proxy.
 	substitutions := rt.proxyAddrSubstitutions()
 	for k, v := range svc.Env {
-		env[k] = applyAddrSubstitutions(v, substitutions)
+		v = applyAddrSubstitutions(v, substitutions)
+		// RFC-033: resolve any iface.proxy_addr / proxy_host / proxy_port
+		// placeholders the spec embedded at load time.
+		v = rt.resolveProxyPlaceholders(v, binaryConsumer)
+		if placeholder, ok := rt.hasUnresolvedProxyPlaceholder(v); ok {
+			rt.log.Warn("env var references a proxy that did not start",
+				slog.String("service", svc.Name),
+				slog.String("var", k),
+				slog.String("placeholder", placeholder),
+			)
+		}
+		env[k] = v
 	}
 
 	result := make([]string, 0, len(env))
@@ -1655,6 +1699,20 @@ func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]strin
 	return out
 }
 
+// proxyTargetAddr returns the address an interface's transparent proxy
+// should dial to reach the real upstream. Single source of truth for what
+// "127.0.0.1:<port>" means — used by preStartProxies and by the fault rule
+// application paths in builtins.go and the fault_scenario body. Lives here
+// so any future change (e.g., container-network targets, RFC-024 follow-up)
+// has one site to edit.
+func proxyTargetAddr(iface *InterfaceDef) string {
+	port := iface.Port
+	if iface.HostPort > 0 {
+		port = iface.HostPort
+	}
+	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
 // applyAddrSubstitutions rewrites any real-upstream-addr substring in v to
 // the corresponding proxy addr. No-op when subs is empty.
 func applyAddrSubstitutions(v string, subs map[string]string) string {
@@ -1665,6 +1723,103 @@ func applyAddrSubstitutions(v string, subs map[string]string) string {
 		v = strings.ReplaceAll(v, real, proxy)
 	}
 	return v
+}
+
+// RFC-033: proxy_addr / proxy_host / proxy_port placeholders.
+//
+// At spec-load time, `iface.proxy_addr` returns a sentinel string registered
+// in rt.proxyPlaceholders. The proxy doesn't exist yet — pre_start runs after
+// load — so we can't return a real address. The sentinel survives any string
+// concatenation the spec does and gets replaced at buildEnv time, by which
+// point proxyMgr.GetProxyAddr returns the real listener.
+//
+// Compared to applyAddrSubstitutions (which rewrites known real upstream
+// addresses to proxy addresses by literal substring match), placeholders are
+// the supported path for host-binary SUTs talking to Docker upstreams: the
+// SUT can never know the auto-assigned host port, so the spec should never
+// be writing it down literally.
+
+type proxyPlaceholderRef struct {
+	Service   string
+	Interface string
+	Kind      string // "addr", "host", "port"
+}
+
+// registerProxyPlaceholder mints a unique sentinel string for one
+// proxy_addr / proxy_host / proxy_port reference and remembers what to
+// substitute it with later. Idempotent per (svc, iface, kind) tuple — a
+// spec can reference the same attribute many times without bloating the
+// registry.
+func (rt *Runtime) registerProxyPlaceholder(svcName, ifaceName, kind string) string {
+	rt.proxyPlaceholdersMu.Lock()
+	defer rt.proxyPlaceholdersMu.Unlock()
+	placeholder := fmt.Sprintf("__FB_PROXY_%s_%s__%s__", strings.ToUpper(kind), svcName, ifaceName)
+	rt.proxyPlaceholders[placeholder] = proxyPlaceholderRef{
+		Service:   svcName,
+		Interface: ifaceName,
+		Kind:      kind,
+	}
+	return placeholder
+}
+
+// resolveProxyPlaceholders walks every registered placeholder and replaces
+// occurrences in v with the resolved value. Container consumers get the
+// host.docker.internal:port form for ADDR/HOST so the SUT, isolated in its
+// network namespace, can still reach the host-side listener.
+//
+// Any placeholder remaining in the output (proxy not running for that
+// interface) is returned unchanged — the caller can decide whether to log
+// or fail. buildEnv treats unresolved placeholders as a misconfiguration
+// and surfaces them via the runtime warning path.
+func (rt *Runtime) resolveProxyPlaceholders(v string, mode consumerMode) string {
+	rt.proxyPlaceholdersMu.Lock()
+	defer rt.proxyPlaceholdersMu.Unlock()
+	if len(rt.proxyPlaceholders) == 0 {
+		return v
+	}
+	for placeholder, ref := range rt.proxyPlaceholders {
+		if !strings.Contains(v, placeholder) {
+			continue
+		}
+		proxyAddr := rt.proxyMgr.GetProxyAddr(ref.Service, ref.Interface)
+		if proxyAddr == "" {
+			continue // unresolved — left in place for the caller to detect
+		}
+		host, port, err := splitHostPort(proxyAddr)
+		if err != nil {
+			continue
+		}
+		if mode == containerConsumer {
+			host = "host.docker.internal"
+		}
+		var replacement string
+		switch ref.Kind {
+		case "addr":
+			replacement = fmt.Sprintf("%s:%d", host, port)
+		case "host":
+			replacement = host
+		case "port":
+			replacement = strconv.Itoa(port)
+		default:
+			continue
+		}
+		v = strings.ReplaceAll(v, placeholder, replacement)
+	}
+	return v
+}
+
+// hasUnresolvedProxyPlaceholder reports whether v still contains any
+// registered placeholder. Used by buildEnv to warn loudly when an env value
+// references a proxy that didn't come up.
+func (rt *Runtime) hasUnresolvedProxyPlaceholder(v string) (string, bool) {
+	rt.proxyPlaceholdersMu.Lock()
+	defer rt.proxyPlaceholdersMu.Unlock()
+	for placeholder := range rt.proxyPlaceholders {
+		if strings.Contains(v, placeholder) {
+			return placeholder, true
+		}
+	}
+	return "", false
 }
 
 // splitHostPort parses "host:port" into its parts with port as int. Wraps
@@ -1752,11 +1907,7 @@ func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callab
 				svcName := pr.Target.Service.Name
 				ifaceName := pr.Target.Interface.Name
 				proto := pr.Target.Interface.Protocol
-				port := pr.Target.Interface.Port
-				if pr.Target.Interface.HostPort > 0 {
-					port = pr.Target.Interface.HostPort
-				}
-				targetAddr := fmt.Sprintf("127.0.0.1:%d", port)
+				targetAddr := proxyTargetAddr(pr.Target.Interface)
 				if _, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr); err != nil {
 					return nil, fmt.Errorf("fault_scenario %q: proxy start for %s.%s: %w", fs.Name, svcName, ifaceName, err)
 				}
