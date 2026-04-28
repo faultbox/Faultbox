@@ -13,6 +13,42 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.13] - 2026-04-28
+
+Hotfix on top of v0.12.12. Customer's dbmatrix bundle made visible a
+pre-existing bug (RFC-015 vintage) that v0.12.12's `proxy_active` event
+couldn't help with: **container services without seccomp filters
+weren't tracked in `rt.sessions`**, so `reuse=True` was silently
+ignored for proxy-only Docker upstreams.
+
+### Fixed
+
+- **`reuse=True` now honoured for no-seccomp container services.**
+  The no-seccomp branch of `startContainerService` populates
+  `rt.sessions[svcName]` with a no-engine entry, mirroring the
+  mock-service pattern. Without this, `stopServices` built its
+  `reused` set by iterating `rt.sessions` (which didn't include
+  no-seccomp containers) and destroyed the container every test —
+  while leaving the proxy in `proxyMgr` pointing at a dead host
+  port. Symptom in the v0.12.12 dbmatrix bundle: matrix cells
+  emitted no `proxy_started` or `proxy_active` events for proxy-only
+  DB upstreams, and host-binary SUTs failed healthcheck because the
+  stale proxy couldn't reach the new container's auto-assigned host
+  port.
+- **Nil-session guard in `stopServices` reuse path.**
+  `rs.session.ClearDynamicFaultRules()` now nil-checks `rs.session`
+  before dereferencing — mock services and no-seccomp container
+  services don't carry an `engine.Session`, so cleanup must not
+  panic on them. Mirrors existing nil guards in `removeTrace` /
+  `removeFaults`.
+
+### Compatibility
+
+No spec or API changes. Bundles produced by v0.12.12 and earlier
+remain readable. Re-run a suite on v0.12.13 to benefit — the
+`proxy_active` events that were supposed to fire in v0.12.12's
+reuse path will actually fire now.
+
 ## [0.12.12] - 2026-04-27
 
 Proxy-address surface for host-binary SUT + Docker upstream
