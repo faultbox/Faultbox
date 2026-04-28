@@ -1258,10 +1258,28 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		)
 	}
 
-	// If no seccomp filter (no fault rules), skip session — just wait for healthcheck.
+	// If no seccomp filter (no fault rules), there's no engine.Session to
+	// create — but we still need an entry in rt.sessions so reuse=True is
+	// honoured by stopServices (which builds its `reused` set by iterating
+	// rt.sessions). Without this, no-seccomp container services bypass the
+	// reuse path entirely: stopServices destroys the container, the proxy
+	// in proxyMgr is left pointing at a dead host port, and the next test
+	// gets a fresh container with a different auto-assigned port that the
+	// stale proxy can't reach. Found in v0.12.12 dbmatrix bundle — RFC-033
+	// follow-up.
 	if result.ListenerFd < 0 {
 		rt.log.Info("container running (no seccomp)", slog.String("service", svcName))
 		rt.events.Emit("service_started", svcName, nil)
+
+		// Populate sessions with a no-engine entry so reuse mechanics fire.
+		// Mirrors the mock-service pattern (mock_runtime.go).
+		doneCh := make(chan *engine.Result, 1)
+		close(doneCh)
+		rt.sessions[svcName] = &runningSession{
+			session: nil,
+			cancel:  func() {}, // container teardown handled via rt.containerIDs path
+			done:    doneCh,
+		}
 
 		if svc.Healthcheck != nil {
 			timeout := svc.Healthcheck.Timeout
@@ -1508,8 +1526,12 @@ func (rt *Runtime) stopServices() {
 	// timeout fires (see #61).
 	for name, rs := range rt.sessions {
 		if reused[name] {
-			// Keep session alive; just clear dynamic fault rules.
-			rs.session.ClearDynamicFaultRules()
+			// Keep session alive; just clear dynamic fault rules. Mock
+			// services and no-seccomp container services don't carry an
+			// engine.Session — there's nothing to clear.
+			if rs.session != nil {
+				rs.session.ClearDynamicFaultRules()
+			}
 			continue
 		}
 		rs.cancel()

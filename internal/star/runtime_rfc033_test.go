@@ -111,6 +111,89 @@ api = service("api", "/tmp/mock",
 	}
 }
 
+// TestNoSeccompContainerReuseTracksSession is the regression test for the
+// v0.12.13 fix: container services without seccomp filters (the typical
+// proxy-only setup, e.g. a Postgres or MySQL upstream with no syscall
+// faults) must populate rt.sessions so reuse=True is honoured by
+// stopServices. Before the fix, stopServices destroyed the container
+// every test, but proxyMgr kept the proxy entry — leading to a stale
+// proxy pointing at a dead host port across matrix cells.
+//
+// We can't drive a real Docker container in a unit test, so we directly
+// poke the state stopServices reads and verify reuse semantics fire.
+func TestNoSeccompContainerReuseTracksSession(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `
+db = service("db",
+    interface("mysql", "tcp", 3306),
+    image = "mysql:8",
+    reuse = True,
+)
+`); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Simulate the state startContainerService's no-seccomp branch leaves
+	// behind after a successful first cell: proxy registered, container ID
+	// tracked, AND (post-fix) sessions populated with a no-engine entry.
+	if _, err := rt.proxyMgr.EnsureProxy(context.Background(), "db", "mysql", "tcp", "127.0.0.1:13306"); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	defer rt.proxyMgr.StopAll()
+	rt.containerIDs = map[string]string{"db": "fake-container-id"}
+	doneCh := make(chan interface{}, 1)
+	close(doneCh)
+	rt.sessions["db"] = &runningSession{} // matches what the no-seccomp branch creates
+
+	// Capture container-id state before stopServices to assert reuse kept it.
+	gotID := rt.containerIDs["db"]
+	if gotID != "fake-container-id" {
+		t.Fatalf("setup: containerIDs[db] = %q, want fake-container-id", gotID)
+	}
+
+	rt.stopServices()
+
+	// Post-fix expectations: reuse=True with a session entry → container
+	// kept, session kept, proxy kept.
+	if _, ok := rt.sessions["db"]; !ok {
+		t.Errorf("sessions[db] dropped after stopServices — reuse=True not honoured")
+	}
+	if rt.containerIDs["db"] != "fake-container-id" {
+		t.Errorf("containerIDs[db] = %q, want fake-container-id (reused)",
+			rt.containerIDs["db"])
+	}
+	if addr := rt.proxyMgr.GetProxyAddr("db", "mysql"); addr == "" {
+		t.Errorf("proxy for db.mysql was torn down — reuse=True should preserve it")
+	}
+}
+
+// TestStopServicesNilSessionGuard guards the second half of the v0.12.13
+// fix: ClearDynamicFaultRules on a reused session whose engine is nil
+// (no-seccomp container or mock) must not NPE.
+func TestStopServicesNilSessionGuard(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `
+api = service("api",
+    interface("main", "http", 8080),
+    image = "nginx:alpine",
+    reuse = True,
+)
+`); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Insert a reuse=True session with nil engine — what the no-seccomp
+	// branch and mock_runtime both produce.
+	rt.sessions["api"] = &runningSession{session: nil}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("stopServices panicked on nil session: %v", r)
+		}
+	}()
+	rt.stopServices()
+}
+
 func eventTypes(evs []Event) []string {
 	out := make([]string, 0, len(evs))
 	for _, ev := range evs {
