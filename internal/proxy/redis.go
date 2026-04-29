@@ -282,28 +282,53 @@ func readRESPRaw(r *bufio.Reader) ([]byte, error) {
 	}
 
 	switch line[0] {
-	case '+', '-', ':':
-		// Simple string, error, integer — single line.
+	case '+', '-', ':',
+		'_', // RESP3 null
+		'#', // RESP3 boolean
+		',', // RESP3 double
+		'(': // RESP3 big number
 		return line, nil
-	case '$':
-		// Bulk string.
+	case '$', '=', '!':
+		// Bulk string ($), verbatim string (=), blob error (!) — <type><len>\r\n<bytes>\r\n.
 		sizeStr := strings.TrimRight(string(line[1:]), "\r\n")
 		size, _ := strconv.Atoi(sizeStr)
 		if size < 0 {
-			return line, nil // null bulk
+			return line, nil
 		}
 		data := make([]byte, size+2)
 		if _, err := io.ReadFull(r, data); err != nil {
 			return nil, err
 		}
 		return append(line, data...), nil
-	case '*':
-		// Array — read recursively.
+	case '*', '~', '>':
+		// Array (*), RESP3 set (~), RESP3 push (>) — N elements follow.
 		result := make([]byte, 0, len(line)+64)
 		result = append(result, line...)
 		sizeStr := strings.TrimRight(string(line[1:]), "\r\n")
 		n, _ := strconv.Atoi(sizeStr)
 		for i := 0; i < n; i++ {
+			elem, err := readRESPRaw(r)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, elem...)
+		}
+		return result, nil
+	case '%', '|':
+		// RESP3 map (%) / attribute (|) — N pairs (2N elements) follow.
+		// Attribute additionally precedes a regular reply that the caller treats as one logical value.
+		result := make([]byte, 0, len(line)+64)
+		result = append(result, line...)
+		sizeStr := strings.TrimRight(string(line[1:]), "\r\n")
+		n, _ := strconv.Atoi(sizeStr)
+		for i := 0; i < 2*n; i++ {
+			elem, err := readRESPRaw(r)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, elem...)
+		}
+		if line[0] == '|' {
 			elem, err := readRESPRaw(r)
 			if err != nil {
 				return nil, err
