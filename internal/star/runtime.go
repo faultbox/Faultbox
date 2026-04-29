@@ -2652,7 +2652,12 @@ func stepSummary(target, method string, stepArgs map[string]any, result *protoco
 	} else if v, ok := stepArgs["body"].(string); ok && v != "" {
 		preview = v
 	}
-	preview = truncate(strings.TrimSpace(preview), 80)
+	// Cap kept generous so the drill-down's Summary row reads the full
+	// statement for typical DDL/DML, while still bounding pathological
+	// blob payloads. Lane tooltips line-clamp visually; drill-down has
+	// room. Pre-v0.12.14 cap was 80, which cut typical multi-statement
+	// DELETE/INSERT chains right where users needed to read them.
+	preview = truncate(strings.TrimSpace(preview), 500)
 	if preview != "" {
 		head += " " + preview
 	}

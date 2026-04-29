@@ -13,6 +13,43 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.14] - 2026-04-29
+
+Hotfix on top of v0.12.13. Customer (inDrive Freight) confirmed the
+v0.12.13 reuse-path fix landed cleanly, then surfaced **Finding H**:
+the MySQL proxy deadlocks on `caching_sha2_password` full-auth (the
+default for MySQL 8). Server greeting reaches the client; client's
+auth response goes into the proxy and never reaches the upstream
+MySQL backend; driver hangs 60s and the cell fails.
+
+### Fixed
+
+- **MySQL proxy handshake loops until OK / ERR.** Pre-v0.12.14
+  `forwardHandshake` assumed a strict 3-packet exchange (server
+  greeting, client auth, server OK). That's correct for
+  `mysql_native_password` but wrong for `caching_sha2_password` —
+  full-auth is 6+ alternating packets (`AuthMoreData` "perform full
+  auth", client `request_pubkey`, server pubkey, client encrypted
+  password, server OK). The proxy returned after packet 3, entered
+  the command loop expecting `COM_QUERY`, and the auth state machine
+  drifted off until the read deadline fired.
+
+  v0.12.14 reads the first byte of every server-side packet, returns
+  on `0x00` (OK) or `0xFF` (ERR), and continues alternating
+  client→server / server→client through `AuthMoreData` (`0x01`) and
+  `AuthSwitchRequest` (`0xFE`). Bounded at 16 rounds so a malformed
+  peer can't stall the goroutine. Three regression tests cover
+  native_password, caching_sha2 full-auth, and ERR termination.
+
+### Changed
+
+- **Step `summary` field cap raised 80 → 500 chars.** Drill-down's
+  Summary row now reads the full statement for typical multi-statement
+  DDL/DML — pre-v0.12.14 a `DELETE FROM \`order\`; DELETE FROM offer;
+  DELETE FROM purchase; ...` reset hook was cut at the second
+  statement. Lane tooltips line-clamp visually so the longer summary
+  doesn't bloat the UI.
+
 ## [0.12.13] - 2026-04-28
 
 Hotfix on top of v0.12.12. Customer's dbmatrix bundle made visible a
