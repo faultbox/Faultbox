@@ -296,6 +296,71 @@ func TestMySQLProxy_Handshake_CachingSha2FullAuth(t *testing.T) {
 	}
 }
 
+// TestMySQLProxy_Handshake_CachingSha2FastAuthSuccess is the regression
+// test for the v0.12.15 fix. caching_sha2_password's fast-auth-success
+// path (taken when the user IS in the server's auth cache — including
+// from any prior connection in the same MySQL session) sends TWO
+// server-side packets back-to-back with NO client packet between:
+//
+//	S→C  AuthMoreData(0x01, 0x03 = "fast_auth_success")
+//	S→C  OK(0x00)
+//
+// Pre-v0.12.15 the loop in forwardHandshake assumed strict alternation:
+// after any non-OK/ERR server packet it tried to read from the client.
+// Client had nothing to send → deadlock until the connect-timeout fired.
+// Customer Finding H follow-up, inDrive Freight 2026-04-29 — manifested
+// when seed_db's direct MySQL connections populated the auth cache
+// before truck-api ever connected through the proxy.
+func TestMySQLProxy_Handshake_CachingSha2FastAuthSuccess(t *testing.T) {
+	p := newMySQLProxy(nil, "test-svc")
+	clientToProxy, proxyFromClient := net.Pipe()
+	serverFromProxy, proxyToServer := net.Pipe()
+	defer clientToProxy.Close()
+	defer serverFromProxy.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- p.forwardHandshake(proxyFromClient, proxyToServer) }()
+
+	// Server-side script — fast-auth-success (cached user). Two
+	// server-side packets in a row, no client packet between.
+	go func() {
+		_, _ = serverFromProxy.Write(makeMySQLPacket(0, []byte("greeting-sha2")))
+		_, authResp := readMySQLPacket(t, serverFromProxy)
+		if string(authResp) != "client-auth-hash" {
+			t.Errorf("server expected client-auth-hash, got %q", authResp)
+		}
+		// Fast-auth-success: server says "you're cached, here's OK incoming".
+		_, _ = serverFromProxy.Write(makeMySQLPacket(2, []byte{mysqlPktAuthMoreData, mysqlSha2FastAuthSuccess}))
+		// Immediately followed by OK — the client expects this without sending anything.
+		_, _ = serverFromProxy.Write(makeMySQLPacket(3, []byte{mysqlPktOK, 0x00, 0x00, 0x02, 0x00}))
+	}()
+
+	// Client-side: greeting, send auth, receive AuthMoreData(fast_auth),
+	// then receive OK without ever sending another packet.
+	_, greeting := readMySQLPacket(t, clientToProxy)
+	if string(greeting) != "greeting-sha2" {
+		t.Errorf("greeting = %q", greeting)
+	}
+	_, _ = clientToProxy.Write(makeMySQLPacket(1, []byte("client-auth-hash")))
+	_, authMore := readMySQLPacket(t, clientToProxy)
+	if authMore[0] != mysqlPktAuthMoreData || authMore[1] != mysqlSha2FastAuthSuccess {
+		t.Errorf("expected fast_auth_success (0x01,0x03), got %v", authMore)
+	}
+	_, ok := readMySQLPacket(t, clientToProxy)
+	if ok[0] != mysqlPktOK {
+		t.Errorf("expected OK, got 0x%02x", ok[0])
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("forwardHandshake: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("forwardHandshake hung — Finding H regression (fast_auth_success deadlock)")
+	}
+}
+
 // TestMySQLProxy_Handshake_ServerErr verifies forwardHandshake terminates
 // cleanly when the server rejects auth. Customer-side fault scenarios
 // (bad credentials, IP whitelist) must surface as an ERR packet to the

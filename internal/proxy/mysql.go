@@ -193,14 +193,24 @@ func (p *mysqlProxy) checkRules(clientConn net.Conn, seqID byte, query string) b
 // 0x01 AuthMoreData (server-side prefix for caching_sha2_password's
 // "perform full authentication" + public-key payloads).
 //
+// AuthMoreData second byte (caching_sha2_password):
+// 0x03 fast_auth_success — server immediately sends OK after, NO
+//      client packet between, so the proxy must keep reading server.
+// 0x04 perform_full_authentication — client must respond with either
+//      a public-key request (0x02) or, under TLS, the cleartext
+//      password.
+// (other) — typically a public-key payload during full-auth; client
+//      replies with the encrypted password.
+//
 // Sources:
 // - https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_response_packets.html
 // - https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase_authentication_methods_authentication_caching_sha2_password.html
 const (
-	mysqlPktOK            = 0x00
-	mysqlPktAuthMoreData  = 0x01
-	mysqlPktAuthSwitchReq = 0xFE
-	mysqlPktERR           = 0xFF
+	mysqlPktOK              = 0x00
+	mysqlPktAuthMoreData    = 0x01
+	mysqlPktAuthSwitchReq   = 0xFE
+	mysqlPktERR             = 0xFF
+	mysqlSha2FastAuthSuccess = 0x03
 )
 
 // forwardHandshake relays packets between client and server until the
@@ -231,21 +241,38 @@ func (p *mysqlProxy) forwardHandshake(client, server net.Conn) error {
 		return fmt.Errorf("client handshake response: %w", err)
 	}
 
-	// 3..N. Loop server→client / client→server until OK or ERR. caching_sha2_password
-	// full-auth is 5 alternating packets after the initial pair (auth_more_data,
-	// pubkey_request, pubkey, encrypted_password, OK). 16 rounds gives us
-	// generous headroom for any future plugin while staying bounded.
+	// 3..N. Loop server→client, expecting an alternating client→server
+	// reply for any packet the protocol genuinely needs one for. The
+	// non-obvious case is caching_sha2_password's "fast_auth_success"
+	// path: when the user is already in the server's auth cache (e.g.
+	// because seed_db just connected directly), the server sends two
+	// server-side packets BACK-TO-BACK — `AuthMoreData(0x01, 0x03)`
+	// followed by `OK(0x00)` — with NO client packet in between.
+	// Pre-v0.12.15 this looped after the AuthMoreData expecting a
+	// client reply that never came, deadlocking until the client's
+	// connect timeout fired (Finding H, Freight 2026-04-29).
+	//
+	// 16 rounds gives generous headroom for any future plugin while
+	// staying bounded against a malformed peer.
 	const maxRounds = 16
 	for i := 0; i < maxRounds; i++ {
-		// Server → client. Peek the first byte to detect terminal markers.
-		first, err := forwardMySQLPacketReturningFirstByte(server, client)
+		first, second, err := forwardMySQLPacketReturningFirstTwoBytes(server, client)
 		if err != nil {
 			return fmt.Errorf("server auth response (round %d): %w", i+1, err)
 		}
 		if first == mysqlPktOK || first == mysqlPktERR {
 			return nil
 		}
-		// AuthMoreData (0x01) or AuthSwitchRequest (0xFE) → client must reply.
+		// caching_sha2_password fast_auth_success: server emits
+		// AuthMoreData(0x01, 0x03) immediately followed by OK(0x00)
+		// — both server-side, no client packet between. Skip the
+		// client read and let the next loop iteration pick up the OK.
+		if first == mysqlPktAuthMoreData && second == mysqlSha2FastAuthSuccess {
+			continue
+		}
+		// AuthSwitchRequest (0xFE), AuthMoreData(0x01, 0x04 = "perform
+		// full authentication"), and AuthMoreData with a public-key
+		// payload all require a client reply.
 		if err := forwardMySQLPacket(client, server); err != nil {
 			return fmt.Errorf("client auth continuation (round %d): %w", i+1, err)
 		}
@@ -311,36 +338,42 @@ func (p *mysqlProxy) forwardResponse(server, client net.Conn) error {
 }
 
 func forwardMySQLPacket(src, dst net.Conn) error {
-	_, err := forwardMySQLPacketReturningFirstByte(src, dst)
+	_, _, err := forwardMySQLPacketReturningFirstTwoBytes(src, dst)
 	return err
 }
 
-// forwardMySQLPacketReturningFirstByte forwards one MySQL packet from src
-// to dst and returns the first payload byte (or 0 if the payload is
-// empty). The caller uses this to drive the handshake state machine —
-// the first byte of a server-side packet distinguishes OK/ERR/Auth*
-// terminals from AuthMoreData/AuthSwitchRequest continuations without
-// having to re-read the packet.
-func forwardMySQLPacketReturningFirstByte(src, dst net.Conn) (byte, error) {
+// forwardMySQLPacketReturningFirstTwoBytes forwards one MySQL packet from
+// src to dst and returns the first two payload bytes (or zero values
+// when the payload has fewer). The caller uses this to drive the
+// handshake state machine: the first byte distinguishes
+// OK/ERR/AuthSwitch/AuthMoreData; the second byte is needed to
+// distinguish caching_sha2_password's `fast_auth_success` (0x01, 0x03)
+// — which is followed by another server-side OK with no client reply
+// between — from `perform_full_authentication` (0x01, 0x04) and
+// public-key payloads, which all expect a client response.
+func forwardMySQLPacketReturningFirstTwoBytes(src, dst net.Conn) (byte, byte, error) {
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(src, header); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	payloadLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
 	if _, err := dst.Write(header); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if payloadLen == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	payload := make([]byte, payloadLen)
 	if _, err := io.ReadFull(src, payload); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err := dst.Write(payload); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return payload[0], nil
+	if payloadLen == 1 {
+		return payload[0], 0, nil
+	}
+	return payload[0], payload[1], nil
 }
 
 // sendMySQLError sends a MySQL ERR_Packet.

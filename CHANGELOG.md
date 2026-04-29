@@ -13,6 +13,55 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.15] - 2026-04-29
+
+Hotfix on top of v0.12.14. Customer (inDrive Freight) verified that
+v0.12.14 didn't unblock Finding H — both `caching_sha2_password` and
+`mysql_native_password --default-auth` still hung. Independent
+`mysql -P $PROXY_PORT` probe through the proxy reproduced it without
+touching the SUT, ruling out spec or driver concerns.
+
+### Fixed
+
+- **MySQL handshake handles `caching_sha2_password` fast-auth-success.**
+  v0.12.14's loop assumed strict client/server alternation after the
+  initial handshake-response pair. That broke the fast-auth-success
+  path (server already has the user in its auth cache), where the
+  server emits **two server-side packets back-to-back** with no
+  client packet between:
+
+  ```
+  S→C  AuthMoreData(0x01, 0x03 = "fast_auth_success")
+  S→C  OK(0x00)
+  ```
+
+  v0.12.14 read the AuthMoreData, didn't recognize the `0x03` status,
+  tried to read from the client, and deadlocked until the client's
+  connect timeout fired. v0.12.15 peeks the **second byte** of every
+  AuthMoreData packet — `0x03` (fast_auth_success) skips the client
+  read and continues to the next server packet (the OK). Other
+  AuthMoreData states (`0x04` perform_full_authentication, public-key
+  payloads) and AuthSwitchRequest still expect a client reply.
+
+  How Freight hit it: their `seed_db` Starlark hook polls MySQL via
+  `db.mysql.exec(sql="SELECT 1", dsn=DB_DSN_POLL)` — `dsn=` overrides
+  the proxy address, so seed connects directly to MySQL and populates
+  the server's auth cache. By the time `truck-api` connected through
+  the proxy, every connection took the fast-auth-success path that
+  v0.12.14 deadlocked on. The same happened to a manual
+  `mysql -P $PROXY_PORT` probe (any cached user → fast-auth path).
+
+  New regression test: `TestMySQLProxy_Handshake_CachingSha2FastAuthSuccess`
+  hangs on v0.12.14 binaries, passes on v0.12.15.
+
+### Note on the underlying design
+
+The protocol-aware turn-taking model in `internal/proxy/mysql.go` keeps
+producing edge cases. v0.12.14 missed full-auth-but-cold-cache; v0.12.15
+catches fast-auth-success. A bidirectional `io.Copy` refactor (with
+out-of-band SQL parsing for rule matching) would close the whole class.
+Filed as a follow-up — not in v0.12.15 scope.
+
 ## [0.12.14] - 2026-04-29
 
 Hotfix on top of v0.12.13. Customer (inDrive Freight) confirmed the
