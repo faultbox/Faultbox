@@ -13,6 +13,68 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.15.1] - 2026-04-29
+
+Hotfix on top of v0.12.15. Customer (inDrive Freight) verified the
+MySQL `caching_sha2_password` fast-auth-success fix landed clean
+(Finding H closed, smoke test progressed past the MySQL stage). The
+failure point moved one step forward to Redis: `truck-api` now hangs
+6 s on its first `Ping()` because **go-redis v9 unconditionally sends
+`HELLO 3` from `initConn`**, which forces the server into RESP3 and
+returns a map (`%N`) reply that v0.12.15's redis proxy didn't know
+how to parse.
+
+### Fixed
+
+- **Redis proxy parses RESP3 aggregate types.** `readRESPRaw` only
+  recognised RESP2 framing (`+`, `-`, `:`, `$`, `*`); on a RESP3 map
+  header (`%`) it fell through to the default branch, returned just
+  the header line, and left the map body unread on the upstream
+  socket. Subsequent reads stalled until the client's read deadline
+  fired. Wire-level evidence from the customer:
+
+  ```
+  redis-cli -p $PROXY    PING       (RESP2)        → PONG in 7 ms ✓
+  redis-cli -p $PROXY -3 PING       (RESP3, HELLO) → timeout 6 s ✗
+  redis-cli -p 16379  -3 PING       (direct)       → PONG in 8 ms ✓
+  ```
+
+  v0.12.15.1 widens the parser to cover RESP3 aggregates and scalars:
+
+  | Type | Marker | Framing |
+  |------|--------|---------|
+  | Map | `%N` | 2N elements follow |
+  | Set | `~N` | N elements follow |
+  | Push | `>N` | N elements follow |
+  | Attribute | `\|N` | 2N elements + a regular reply |
+  | Verbatim string | `=N` | bulk-string framing |
+  | Blob error | `!N` | bulk-string framing |
+  | Null / boolean / double / big number | `_` `#` `,` `(` | single-line scalar |
+
+  Maps and sets re-use the existing array recursion. Attribute
+  additionally consumes the trailing real reply so callers see one
+  logical value.
+
+  New regression tests in `internal/proxy/redis_test.go`:
+  - `TestRedisProxy_RESP3_HelloMap` — round-trips the customer's
+    `%7` map (server / version / proto / id / mode / role / modules
+    with a nested `*0`). Hangs on v0.12.15 binaries, passes on
+    v0.12.15.1.
+  - `TestRedisProxy_RESP3_Set` — `~3` SMEMBERS reply.
+  - `TestRedisProxy_RESP3_Attribute` — `|1` attribute followed by
+    `+OK`.
+  - `TestRedisProxy_RESP2_Ping` — no-regression guard on the
+    classic `+PONG` path.
+
+### Note on the underlying design
+
+This is the second protocol where structural read-and-forward has
+bitten us in 48 hours (MySQL handshake → RESP3 framing). The
+bidirectional `io.Copy` passthrough refactor flagged alongside
+RFC-034 moves up the priority list — once handshake-aware framing
+recognises end-of-handshake, the post-handshake path should be a
+plain pump rather than a per-protocol parser.
+
 ## [0.12.15] - 2026-04-29
 
 Hotfix on top of v0.12.14. Customer (inDrive Freight) verified that
