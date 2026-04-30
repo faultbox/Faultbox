@@ -13,6 +13,66 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.15.2] - 2026-04-30
+
+Hotfix on top of v0.12.15.1. Customer (inDrive Freight) verified the
+v0.12.15.1 Redis RESP3 fix landed clean — cold-start path went green
+end-to-end for the first time (smoke `test_health_check` PASS in
+16.3 s, both MySQL and Redis handshakes traverse the proxy). The
+failure point then moved to the **reuse path**: in the dbmatrix run,
+cell 1 (cold) passes; cells 2–18 (reused proxy) all fail identically
+with `error connect to db: invalid connection` /
+`connection reset by peer` from the redis reset hook. **Finding K.**
+
+### Fixed
+
+- **Proxy lifetime is the Manager's lifetime, not the caller's.**
+  `Manager.EnsureProxy` was rooting each proxy's `Start` context at
+  the caller's ctx. `preStartProxies` is called from `RunTest` under
+  a per-test `testCtx` that cancels via `defer cancel()` at end of
+  test ([runtime.go:767](https://github.com/faultbox/Faultbox/blob/main/internal/star/runtime.go#L767)).
+  At end of cell 1, that cancellation propagated into the proxy's
+  Accept goroutine — which exited cleanly. **The listener fd stayed
+  bound** (only `Stop()` closes it), and the cached `m.proxies[key]`
+  entry stayed in place. Cells 2..N hit `EnsureProxy` → cache hit →
+  `proxy_active(reused)` event fired → but no userspace `Accept` was
+  pulling connections off the queue. Clients saw TCP-level reset
+  (kernel SYN/ACK + queue overflow) or refused (post-RST), surfacing
+  as `driver.ErrBadConn` from go-sql-driver and
+  `read: connection reset by peer` from go-redis.
+
+  v0.12.15.2 roots the proxy's `pCtx` at `context.Background()` so
+  the goroutine's lifetime is bound to `Manager.StopAll` /
+  `StopService` (which already cancel and close per-proxy explicitly)
+  instead of any per-call ctx. Single `EnsureProxy` line change
+  ([proxy.go:165](https://github.com/faultbox/Faultbox/blob/main/internal/proxy/proxy.go#L165));
+  no per-protocol churn.
+
+  Why this latched onto v0.12.13's reuse work: pre-v0.12.13,
+  no-seccomp containers (recipe-based MySQL / Redis upstreams) were
+  destroyed and recreated every cell, which forced fresh proxies via
+  the cold path. v0.12.13 fixed reuse so the runtime kept containers
+  AND proxies alive across cells — exposing this latent ctx-rooting
+  bug.
+
+  New regression test
+  `TestManagerEnsureProxy_SurvivesCallerCtxCancel`: cancels the
+  caller's ctx after a successful first round-trip, then verifies a
+  fresh client can still complete a request through the listener.
+  Hangs / `connection refused` on v0.12.15.1, passes on v0.12.15.2.
+
+### Note on what landed in 48 hours
+
+Three hotfixes in the same arc:
+- v0.12.15 — MySQL caching_sha2 fast-auth-success (Finding H, handshake)
+- v0.12.15.1 — Redis RESP3 HELLO map (Finding J, post-handshake parsing)
+- v0.12.15.2 — proxy goroutine ctx-rooting (Finding K, reuse path)
+
+Each release moved the failure deeper into the boot/test sequence.
+Cold-start and reuse are now both unblocked; the bidirectional
+`io.Copy` passthrough refactor flagged alongside RFC-034 remains the
+right durable fix for the per-protocol parsing class.
+
 ## [0.12.15.1] - 2026-04-29
 
 Hotfix on top of v0.12.15. Customer (inDrive Freight) verified the
