@@ -919,6 +919,53 @@ monitor(lambda e: fail("unexpected error") if e.type == "stdout" and "ERROR" in 
 msgs = events(where=lambda e: e.type == "topic" and e.data["topic"] == "orders.events")
 ```
 
+### Diagnosing SUT failures via `stdout`
+
+When a containerized or binary SUT silently hangs at startup or fails
+behind a proxy, attach `observe=[stdout(decoder=...)]` so the SUT's own
+log lines become **first-class trace events** in the bundle. The bundle
+becomes self-diagnosing — you can see the last function the SUT
+reached without redeploying a debug build.
+
+```python
+api = service("truck-api",
+    interface("http", "http", 8080),
+    binary="/usr/local/bin/truck-api",
+    env={
+        "DATABASE_HOST": db.mysql.proxy_host,
+        "DATABASE_PORT": db.mysql.proxy_port,
+        "FB_LOG_TO_STDOUT": "1",  # SUT-side env-gate to route logs to stdout
+    },
+    observe=[stdout(decoder=json_decoder())],
+    healthcheck=http("localhost:8080/health", timeout="60s"),
+)
+```
+
+Combined with structured logging in the SUT (zap, slog, logrus, etc.),
+this turns "the SUT hangs and nobody knows why" into "seq 33: 'done
+init config' → seq 34: 'FATAL: connect to db: invalid connection'."
+The latter is actionable from the bundle alone — no SUT
+re-instrumentation needed across debug iterations.
+
+This pattern was load-bearing for the v0.12.15.x diagnostic arc — three
+proxy bugs (handshake, RESP3 framing, goroutine ctx-rooting) each
+diagnosed from a customer bundle on the first attempt because the SUT's
+fatal log was already in the trace. If you author specs that go to
+customers, default to including `observe=[stdout(decoder=...)]` on the
+SUT — it's cheap to keep on, expensive to add later when something
+breaks.
+
+**Decoder choice:**
+
+- `json_decoder()` — structured loggers (zap, zerolog, slog default)
+- `logfmt_decoder()` — `key=value` style (logrus, klog)
+- `regex_decoder(pattern=...)` — unstructured logs; capture the fields you need
+
+If your SUT defaults to a non-stdout sink (file, syslog, proprietary
+format), gate the stdout output behind an env var so production behavior
+is unaffected — the spec sets the env var, the SUT honors it only under
+test.
+
 ---
 
 ## Scenarios & Generation
