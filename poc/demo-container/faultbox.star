@@ -1,8 +1,21 @@
-# faultbox.star — Container Demo: Go API + Postgres + Redis
+# faultbox.star — Container Demo: host-binary Go API + Postgres + Redis
+# (containers).
 #
 # Run:  faultbox test faultbox.star
 #
-# Prerequisites: Docker running, faultbox-shim built
+# Prerequisites:
+#   - Docker running, faultbox-shim built
+#   - api-svc built and staged at /tmp/api-svc (make demo-build does this)
+#
+# Why host-binary api: when the api lived inside a container, its env
+# `DATABASE_URL` substring `postgres:5432` was rewritten by the proxy
+# substitution layer to `host.docker.internal:<host-port>` so faults
+# could be injected. On Linux Docker (Lima) `host.docker.internal`
+# resolves to the docker0 bridge gateway (172.17.0.1), and proxies
+# bind to 127.0.0.1 only — so the api couldn't reach them. Running
+# the api on the host fixes the path: it dials 127.0.0.1:<host-port>
+# directly. Tracked as a follow-up RFC for the conditional-rewrite
+# code fix.
 
 postgres = service("postgres",
     interface("main", "tcp", 5432),
@@ -18,10 +31,13 @@ redis = service("redis",
 )
 
 api = service("api",
+    "/tmp/api-svc",
     interface("public", "http", 8080),
-    build = "./api",
     env = {
         "PORT": "8080",
+        # internal_addr (= "postgres:5432") gets rewritten to the host-side
+        # proxy listener (127.0.0.1:<proxy-port>) by the binary-consumer
+        # substitution table, so fault rules on `postgres` actually fire.
         "DATABASE_URL": "postgres://postgres:test@" + postgres.main.internal_addr + "/testdb?sslmode=disable",
         "REDIS_URL": "redis://" + redis.main.internal_addr,
     },

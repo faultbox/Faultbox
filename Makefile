@@ -45,6 +45,7 @@ demo-build:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/mock-db        ./poc/mock-db/
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/mock-api       ./poc/mock-api/
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/target         ./poc/target/
+	cd poc/demo-container/api && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ../../../$(LINUX_BIN)/api-svc .
 	@echo "Binaries: $(LINUX_BIN)/"
 
 demo: demo-build
