@@ -147,6 +147,18 @@ func NewManager(onEvent OnProxyEvent) *Manager {
 
 // EnsureProxy starts a proxy for the given service interface if not already
 // running. Returns the proxy's listen address (to rewrite in env).
+//
+// The caller's ctx is intentionally NOT used as the parent of the proxy's
+// own context. preStartProxies is called from RunTest under a per-test
+// context that cancels at end-of-test (defer cancel()) — if the proxy
+// goroutine were rooted under that, the Accept loop would exit at end of
+// cell 1 while the listener fd stayed bound, leaving the cached proxy
+// entry pointing at a zombie listener. Cells 2..N would then `Accept` no
+// new connections, and clients would see TCP-level connection-reset
+// (Finding K, Freight 2026-04-30).
+//
+// The proxy's lifetime is the Manager's lifetime: explicit teardown
+// happens via StopAll / StopService.
 func (m *Manager) EnsureProxy(ctx context.Context, svcName, ifaceName, protocol, targetAddr string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -161,7 +173,7 @@ func (m *Manager) EnsureProxy(ctx context.Context, svcName, ifaceName, protocol,
 		return "", fmt.Errorf("create %s proxy for %s: %w", protocol, key, err)
 	}
 
-	pCtx, cancel := context.WithCancel(ctx)
+	pCtx, cancel := context.WithCancel(context.Background())
 	listenAddr, err := p.Start(pCtx, targetAddr)
 	if err != nil {
 		cancel()

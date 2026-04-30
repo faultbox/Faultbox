@@ -219,6 +219,65 @@ func TestManagerLifecycle(t *testing.T) {
 	resp2.Body.Close()
 }
 
+// TestManagerEnsureProxy_SurvivesCallerCtxCancel is the Finding K regression:
+// preStartProxies runs under RunTest's per-cell `testCtx` which cancels via
+// `defer cancel()` at end-of-test. Pre-v0.12.15.2, that cancellation took
+// down the proxy's Accept goroutine while the listener fd stayed bound and
+// the cached `m.proxies[key]` entry stayed in place — so cells 2..N would
+// `proxy_active(reused)` against a zombie listener and clients saw TCP
+// connection-reset (no userspace Accept means the kernel queues SYN/ACK and
+// then RSTs).
+//
+// This test cancels the caller's ctx after a successful first connection
+// and verifies a fresh client can still complete a round-trip through the
+// listener. Hangs / fails on v0.12.15.1, passes on v0.12.15.2.
+func TestManagerEnsureProxy_SurvivesCallerCtxCancel(t *testing.T) {
+	mock := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		fmt.Fprint(w, "ok")
+	})}
+	mockLn, _ := net.Listen("tcp", "127.0.0.1:0")
+	go mock.Serve(mockLn)
+	defer mock.Close()
+
+	mgr := NewManager(nil)
+	defer mgr.StopAll()
+
+	// Cell 1: caller passes a per-test ctx that it will cancel.
+	cellCtx, cancelCell := context.WithCancel(context.Background())
+	addr, err := mgr.EnsureProxy(cellCtx, "gateway", "public", "http", mockLn.Addr().String())
+	if err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+
+	// Cell 1 traffic — confirms the proxy is wired up.
+	resp, err := http.Get("http://" + addr + "/cell1")
+	if err != nil {
+		t.Fatalf("cell 1 GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("cell 1 status = %d, want 200", resp.StatusCode)
+	}
+
+	// End of cell 1: caller cancels its ctx (mirrors RunTest's defer cancel).
+	cancelCell()
+	// Give any goroutine that watches cellCtx a beat to react.
+	time.Sleep(100 * time.Millisecond)
+
+	// Cell 2: a fresh client must still round-trip through the listener.
+	// On v0.12.15.1 this hangs or returns "connection reset by peer".
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp2, err := client.Get("http://" + addr + "/cell2")
+	if err != nil {
+		t.Fatalf("cell 2 GET after caller-ctx cancel (proxy goroutine died?): %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("cell 2 status = %d, want 200", resp2.StatusCode)
+	}
+}
+
 func TestRuleMatchGlob(t *testing.T) {
 	rule := Rule{Path: "/api/*", Method: "POST"}
 
