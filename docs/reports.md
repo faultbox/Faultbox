@@ -68,8 +68,29 @@ tests table opens a drill-down panel for that test:
   command, ready to paste into terminal.
 - **Event trace** — a swim-lane visualisation: one lane per service,
   markers per syscall / fault / lifecycle / violation. Hover a
-  marker to see its syscall and decision; jumping to vector-clock
-  causal arrows is on the v0.11.x roadmap.
+  marker to see its syscall and decision; hovering a *cause-relevant*
+  event (fault, violation, errored step) draws causal arrows to the
+  closest cause on each other lane.
+
+### Timeline filter bar
+
+Above every Event Trace block (v0.12.16+) sits a filter bar with
+three presets and a search input:
+
+- **Compact** *(default)* — hides framework lifecycle chatter
+  (`proxy_started`, `proxy_active`, `service_*`, `mock.*`,
+  `service_seed/_reset`, `session_completed`). Keeps faults,
+  steps, syscalls, stdout, violations.
+- **Anchors only** — strips everything except cause-relevant
+  events: faults, violations, errored steps. Same predicate the
+  causal-link logic uses.
+- **All events** — historical default, no filtering.
+
+The search input live-matches event type, headline text, and field
+values — typing `mysql_slow` jumps straight to the proxy fault rows;
+typing `127.0.0.1:42999` highlights the failed HTTP request. The
+filter applies to both the swim-lane markers and the event-log
+table; pinned-event state survives filter rebuilds.
 
 ### Direct-link drill-down
 

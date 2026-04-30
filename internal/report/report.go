@@ -119,16 +119,18 @@ const (
 // runtime flagged as an invariant violation. Syscalls are
 // deliberately absent — they're the bulk we shed.
 var anchorTypes = map[string]bool{
-	"fault_applied":          true,
-	"fault_removed":          true,
+	"fault_applied":            true,
+	"fault_removed":            true,
+	"proxy_fault_applied":      true,
+	"proxy_fault_removed":      true,
 	"fault_skipped_no_seccomp": true,
-	"fault_zero_traffic":     true,
-	"violation":              true,
-	"service_started":        true,
-	"service_ready":          true,
-	"service_stopped":        true,
-	"step_send":              true,
-	"step_recv":              true,
+	"fault_zero_traffic":       true,
+	"violation":                true,
+	"service_started":          true,
+	"service_ready":            true,
+	"service_stopped":          true,
+	"step_send":                true,
+	"step_recv":                true,
 }
 
 // Build reads a bundle and writes a single self-contained report.html

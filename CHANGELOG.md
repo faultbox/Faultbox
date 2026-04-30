@@ -13,6 +13,120 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.16] - 2026-04-30
+
+Report UX overhaul. The HTML report (`faultbox report <bundle.fb>`)
+was the customer's working window during the v0.12.15.x triage and
+the timeline view turned out to be the bottleneck — too much
+chrome, fault markers buried under framework chatter, causal
+arrows that connected service-ready events to errors instead of
+the actual fault. v0.12.16 reshapes the timeline + drill-down
+without changing the bundle format or any spec-language surface.
+
+### Changed
+
+- **Causal links now follow cause, not chronology.** `findCausalAncestors`
+  switched from vector-clock partial order to seq-based strict
+  precedence and restricted both the target and candidate sets to
+  *cause* events (faults, violations, errored steps). Lifecycle
+  events (`service_started`, `service_ready`, etc.) are no longer
+  drawn as ancestors; in real bundles their vector clocks were the
+  only complete ones, which left the spaghetti pointing at
+  `service_ready` instead of the actual `proxy_fault_applied`.
+  Hovering an ordinary success step now draws zero lines.
+
+- **Timeline filter bar** above every Event Trace block. Three
+  presets — **Compact** (default; hides `proxy_started`,
+  `proxy_active`, `service_*`, `mock.*`, `service_seed/_reset`,
+  `session_completed`), **Anchors only** (faults / violations /
+  errored steps only), **All events** (historical default) — plus
+  a free-text search input that live-matches on event type,
+  headline, and field values. The filter applies to both the
+  swim-lane markers and the event-log table; pinned-event state
+  survives filter rebuilds.
+
+- **`proxy_fault_applied` / `proxy_fault_removed` are now
+  first-class fault markers** (red, not the default-syscall blue)
+  in `markerKind`, `severityScore`, `isAnchorEvent`, and
+  `eventHeadline`. Added to `report.go`'s `anchorTypes` so they
+  survive Phase 3 downsampling. The proxy fault headline now
+  reads `+ proxy fault [mysql_deadlock] · mysql/main` end-to-end.
+
+### Added
+
+- **Per-test "Faults applied" section** in the drill-down dialog
+  pairs each `proxy_fault_applied` with its matching
+  `proxy_fault_removed` and renders one row per assumption
+  (service · protocol · interface · assumption · seq window).
+  Reflects both seccomp and proxy-level fault mechanisms; if the
+  test had neither, the section explicitly says so.
+
+- **Recent block in the Assertion drill-down interleaves fault
+  events** between captured step rows by seq, so a failed
+  `assert_eq` reads as `→ call → + proxy fault [redis_oom] →
+  ← reply ERR: read EOF` instead of just call/reply pairs.
+  Fault rows render in the fail tint with a small seq-numbered
+  pill prefix; step rows get a neutral pill.
+
+- **Fade-and-expand on the Assertion block.** Long Recent lists +
+  big Actual reprs were dominating the dialog. The pairs grid now
+  caps at 220px with a CSS `mask-image` gradient that fades the
+  bottom of the content to transparent and a "Show full
+  assertion ▾" pill below; click expands the cap to full size with
+  a 320ms transition. Compact assertions auto-detect and skip the
+  affordance.
+
+- **Group-members table on folded markers.** Clicking a `×N` chip
+  on the timeline shows the underlying member events as a
+  scrollable, paginated table (`seq · type · summary`, 100 rows
+  per page, sticky header) — the runs that hide a 5xx among 99
+  successes are now legible. Replaces the old "collapsed run"
+  one-liner that listed only the first/last seq.
+
+- **Fullscreen toggle on the test details modal** (⤢ ↔ ⤡ next to
+  the close button) — the dialog is the main working surface
+  during triage, and a single 95%-width column was tight when
+  paired with a big spec source listing.
+
+- **STDOUT JSON renders as a 2-column key/value table.** `data`
+  fields containing JSON-encoded log lines flatten via dot-paths
+  (`req.method`, `items[0].id`) so every leaf has its own row in
+  the event log expansion drawer.
+
+- **Source block falls back to `fault_matrix(...)` for
+  generated test names.** Matrix-generated tests (e.g.
+  `test_matrix_get_order_feed_mysql_slow`) have no literal `def`
+  in the spec; the Source drill-down now anchors on the matrix
+  call site and surfaces three jump links — scenario
+  (`def get_order_feed()`), fault (`mysql_slow =
+  fault_assumption(...)`), matrix (`fault_matrix(...)`). Was
+  previously "Could not locate def..." for every matrix cell.
+
+### Fixed
+
+- **Timeline tooltips no longer overflow off-screen.** The
+  absolute-positioned tooltip was shrink-fitting against the
+  remaining space-to-edge when `word-break: break-word` was
+  enabled, which produced a vertical strip of one character per
+  line on narrow gaps. Switched to `width: max-content` +
+  `max-width: min(520px, calc(100vw - 24px))` and added
+  four-side viewport clamping.
+
+- **Detail panel summary no longer truncates.** `eventHeadline()`
+  takes an `opts.full` flag that callers in the drill-down detail
+  view set, so the SUMMARY row shows full SQL queries, full error
+  messages, full HTTP paths. The event-log table headlines stay
+  truncated to keep the table layout intact. The Recent context
+  list also dropped its `text-overflow: ellipsis` — long lines
+  wrap inside the assertion box now.
+
+- **Folded marker click routes to the chip, not the underlying
+  singleton.** `markerEvBySeq` keeps a parallel map from seq to
+  the chip object (carrying `_runMembers`); the click handler
+  prefers it before falling back to the raw event lookup. Without
+  this, clicking a `×120` chip resolved to one of the 120
+  underlying events and the Group-members table never rendered.
+
 ## [0.12.15.2] - 2026-04-30
 
 Hotfix on top of v0.12.15.1. Customer (inDrive Freight) verified the
@@ -1027,7 +1141,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.0...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...HEAD
+[0.12.16]: https://github.com/faultbox/Faultbox/compare/release-0.12.15.2...release-0.12.16
 [0.12.0]: https://github.com/faultbox/Faultbox/compare/release-0.11.3...release-0.12.0
 [0.11.3]: https://github.com/faultbox/Faultbox/compare/release-0.11.2...release-0.11.3
 [0.11.2]: https://github.com/faultbox/Faultbox/compare/release-0.11.1...release-0.11.2

@@ -90,7 +90,11 @@ The drill-down answers _"why did this test go this way?"_:
 - **Replay** — single command, ready to paste.
 - **Event trace** — a swim-lane view. Each service is a lane;
   markers show syscalls, faults, lifecycle, violations. Hover a
-  marker for its syscall and decision.
+  marker for its syscall and decision; hovering a fault, violation,
+  or errored step draws causal arrows to the closest cause on
+  each other lane. A filter bar above the lanes lets you switch
+  between **Compact** (default; framework chatter hidden),
+  **Anchors only**, and **All events**, plus a free-text search.
 
 ## Sharing a report
 
@@ -115,9 +119,9 @@ retry loop: see
 
 ## What's next
 
-The v0.11.0 report is the single-run baseline. Multi-run
-comparisons, causal-arrow overlays on the trace viewer, and a
-"publish to hosted bundle viewer" path are on the v0.11.x and
-v0.12.x roadmaps.
+The single-run report has matured through v0.12.x — causal-arrow
+overlays scoped to faults/violations and a configurable timeline
+filter shipped in v0.12.16. Multi-run aggregation and a "publish
+to hosted bundle viewer" path are on the v0.13.x roadmap.
 
 For the full reference, see [docs/reports.md](../../reports.md).

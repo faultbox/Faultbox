@@ -634,7 +634,13 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
      Space them directly. */
   margin-top: 0.75rem;
 }
-.drill-down-close {
+.drill-down-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.drill-down-close,
+.drill-down-expand {
   background: none;
   border: 1px solid var(--border);
   color: var(--fg-muted);
@@ -644,8 +650,21 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   height: 30px;
   border-radius: 4px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.drill-down-close:hover { color: var(--fg); background: var(--bg-code); }
+.drill-down-close:hover,
+.drill-down-expand:hover { color: var(--fg); background: var(--bg-code); }
+
+/* Fullscreen variant: drop the centered max-width, fill viewport.
+   Toggled by the expand button — restores via the same click. */
+.drill-down.fullscreen { max-width: none; width: 100%; }
+.drill-down.fullscreen .drill-down-surface {
+  max-height: 100vh;
+  height: 100vh;
+  border-radius: 0;
+}
 
 .drill-down-body {
   padding: 1rem 1.25rem 1.5rem;
@@ -677,6 +696,43 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   background: var(--pass-bg);
   border-color: var(--pass-border);
 }
+
+/* Group-members table inside a folded marker's detail panel.
+   Wrapper is vertically scrollable so a 22k-event fold renders at
+   most GROUP_MEMBERS_MAX rows without ballooning the detail panel. */
+.dd-group-members-wrap {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.dd-group-members {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.dd-group-members thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-elev);
+  z-index: 1;
+}
+.dd-group-members th, .dd-group-members td {
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.dd-group-members th {
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: var(--bg);
+}
+.dd-group-members tbody tr.fail td {
+  color: var(--fail-fg);
+}
+.dd-group-members tbody tr:last-child td { border-bottom: none; }
 
 .dd-faults {
   width: 100%;
@@ -810,19 +866,118 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   padding-left: 0.5rem;
   margin-bottom: 0.15rem;
   color: var(--fg);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* Cap width to the assertion box so a long SQL line doesn't push
-   * the surrounding layout — the full text is still available via
-   * the title attribute on hover. */
+  /* Long SQL / errors wrap inside the assertion box rather than
+   * being clipped — readers told us the trailing "…" hid the
+   * useful end of the string (e.g. the WHERE clause). Wrap mode
+   * keeps the line bounded by the box and shows everything. */
+  word-break: break-word;
+  overflow-wrap: anywhere;
   max-width: 100%;
-  cursor: help;
 }
 .dd-assertion-context li.fail {
   border-left-color: var(--fail-fg);
   color: var(--fail-fg);
   font-weight: 500;
+}
+.dd-assertion-context li.fault {
+  border-left-color: var(--fail-fg);
+  background: color-mix(in srgb, var(--fail-fg) 10%, transparent);
+  color: var(--fail-fg);
+  font-weight: 600;
+}
+
+/* Per-row seq pill in the Recent block. Small, mono, lightly tinted
+   to match the row's tone. Inline so it sits on the same line as the
+   step/fault headline without pushing layout. */
+.dd-seq-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.2;
+  padding: 0.05rem 0.42rem;
+  margin-right: 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
+  color: var(--fg-muted);
+  border: 1px solid color-mix(in srgb, var(--fg-muted) 28%, transparent);
+  vertical-align: baseline;
+  letter-spacing: 0.02em;
+}
+.dd-seq-badge.fail,
+.dd-seq-badge.fault {
+  background: color-mix(in srgb, var(--fail-fg) 14%, transparent);
+  color: var(--fail-fg);
+  border-color: color-mix(in srgb, var(--fail-fg) 35%, transparent);
+}
+
+/* Generated-test source header. Surfaces the matrix-call site plus
+   the scenario + fault assumption defs that compose the test name,
+   so the user gets useful jump-targets even though no literal
+   `def test_matrix_<...>():` exists in the spec. */
+.dd-source-generated {
+  margin-bottom: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-code);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  font-size: 0.82rem;
+}
+.dd-source-generated-lead {
+  color: var(--fg);
+  margin-bottom: 0.4rem;
+}
+.dd-source-generated-bits {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 0.7rem;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.dd-source-bit-label {
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+}
+
+/* Fade-and-expand container around the assertion pairs grid.
+   `mask-image` fades the bottom of the content to transparent — works
+   regardless of the assertion box's pink fail-bg, no overlay div
+   required. Toggle sits below the clamp, never atop the text. */
+.dd-assertion-clamp {
+  position: relative;
+  max-height: 1400px;
+  overflow: hidden;
+  transition: max-height 320ms ease-out, mask-position 320ms ease-out;
+}
+.dd-assertion-clamp.clamped {
+  max-height: 220px;
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 55%, transparent 100%);
+          mask-image: linear-gradient(to bottom, black 0%, black 55%, transparent 100%);
+}
+.dd-assertion-toggle-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 0.4rem;
+}
+.dd-assertion-toggle {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  padding: 0.32rem 0.9rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out;
+}
+.dd-assertion-toggle:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
 }
 
 .dd-replay code {
@@ -842,6 +997,67 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   gap: 0.5rem;
   margin-bottom: 0.3rem;
 }
+
+/* Trace-level filter bar — sits above the swim lanes and the event
+   log. Preset buttons drive the global filter (Compact / Anchors /
+   All), search input live-filters by event type / headline / fields. */
+.trace-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px dashed var(--border);
+}
+.trace-filter-presets {
+  display: inline-flex;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+.trace-filter-preset {
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  padding: 0.32rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 120ms ease-out, color 120ms ease-out;
+}
+.trace-filter-preset:hover { color: var(--fg); background: var(--bg-code); }
+.trace-filter-preset.active {
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 500;
+}
+.trace-filter-search {
+  flex: 1;
+  min-width: 220px;
+  max-width: 480px;
+}
+.trace-filter-search-input {
+  width: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  padding: 0.36rem 0.7rem;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+.trace-filter-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.trace-lanes-host { /* swap target for filter rebuilds */ }
 
 /* ── Swim-lane trace viewer ────────────────────────────────────── */
 .trace-viewer {
@@ -1024,7 +1240,13 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   line-height: 1.3;
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.16);
   pointer-events: none;
-  white-space: nowrap;
+  /* width:max-content makes the box size to its content (single-line
+   * for short labels), then max-width caps it for long queries which
+   * then wrap. Without max-content, an absolutely-positioned box near
+   * the viewport edge shrinks to the gap and wraps every character. */
+  width: max-content;
+  max-width: min(520px, calc(100vw - 24px));
+  overflow-wrap: anywhere;
   display: none;
 }
 .trace-tooltip.active { display: block; }
@@ -1355,6 +1577,37 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   word-break: break-word;
   white-space: pre-wrap;
 }
+
+/* JSON-decoded value flattened into a 2-column key/value table.
+   Renders stdout `data` fields and any other JSON-string value. */
+.json-kv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  table-layout: auto;
+}
+.json-kv-table td {
+  padding: 0.18rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.json-kv-table tr:last-child td { border-bottom: none; }
+.json-kv-key {
+  color: var(--fg-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  width: 1%;
+}
+.json-kv-val {
+  color: var(--fg);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.json-kv-val.json-str { color: var(--accent); }
+.json-kv-val.json-num { color: var(--ok-fg, var(--accent)); }
+.json-kv-val.json-bool { color: var(--warn-fg, var(--accent)); font-weight: 500; }
+.json-kv-val.json-null { color: var(--fg-muted); font-style: italic; }
 .log-expand-empty {
   color: var(--fg-subtle);
   font-style: italic;
