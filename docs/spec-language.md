@@ -876,6 +876,7 @@ Events from sources have a type (`"stdout"`, `"wal"`, `"topic"`, `"tail"`,
 | Source | Constructor | What it captures |
 |--------|------------|-----------------|
 | stdout | `stdout(decoder=)` | Service stdout lines, decoded per line |
+| stderr | `stderr(decoder=)` | Service stderr lines, decoded per line (zap/logrus default) |
 | wal_stream | `wal_stream(slot=)` | Postgres logical replication (INSERT/UPDATE/DELETE) |
 | topic | `topic(broker=, topic=, group=)` | Kafka/NATS topic messages |
 | tail | `tail(path=)` | New lines appended to a file (inotify) |
@@ -919,27 +920,53 @@ monitor(lambda e: fail("unexpected error") if e.type == "stdout" and "ERROR" in 
 msgs = events(where=lambda e: e.type == "topic" and e.data["topic"] == "orders.events")
 ```
 
-### Diagnosing SUT failures via `stdout`
+### Diagnosing SUT failures via `stdout` / `stderr`
 
 When a containerized or binary SUT silently hangs at startup or fails
-behind a proxy, attach `observe=[stdout(decoder=...)]` so the SUT's own
-log lines become **first-class trace events** in the bundle. The bundle
+behind a proxy, attach `observe=[stdout(decoder=...)]` (or `stderr(...)`
+if your service writes logs to fd 2) so the SUT's own log lines
+become **first-class trace events** in the bundle. The bundle
 becomes self-diagnosing — you can see the last function the SUT
 reached without redeploying a debug build.
 
 ```python
+# zap, logrus, slog (default) all write to stderr — capture via stderr().
 api = service("truck-api",
     interface("http", "http", 8080),
     binary="/usr/local/bin/truck-api",
     env={
         "DATABASE_HOST": db.mysql.proxy_host,
         "DATABASE_PORT": db.mysql.proxy_port,
-        "FB_LOG_TO_STDOUT": "1",  # SUT-side env-gate to route logs to stdout
     },
-    observe=[stdout(decoder=json_decoder())],
+    observe=[stderr(decoder=json_decoder())],
     healthcheck=http("localhost:8080/health", timeout="60s"),
 )
+
+# Services that route logs to stdout explicitly (Python defaults,
+# many CLIs) use stdout() — same surface, different fd.
+worker = service("worker",
+    interface("rpc", "tcp", 9000),
+    binary="/usr/local/bin/worker",
+    observe=[stdout(decoder=logfmt_decoder())],
+)
+
+# Capture both — the SUT writes errors to stderr, business events to
+# stdout. Each emits with its own event type so you can filter the
+# timeline and event log independently.
+mixed = service("mixed",
+    interface("api", "http", 8080),
+    binary="/usr/local/bin/mixed",
+    observe=[
+        stdout(decoder=json_decoder()),
+        stderr(decoder=json_decoder()),
+    ],
+)
 ```
+
+Pre-v0.12.17 only `stdout()` existed; capturing zap/logrus output
+required a SUT-side env-gate (e.g. `FB_LOG_TO_STDOUT=1`) to redirect
+logs to fd 1. With `stderr()` you can capture default-configured Go
+services without touching their code.
 
 Combined with structured logging in the SUT (zap, slog, logrus, etc.),
 this turns "the SUT hangs and nobody knows why" into "seq 33: 'done

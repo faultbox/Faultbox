@@ -61,6 +61,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"drop":              starlark.NewBuiltin("drop", builtinProxyDrop),
 		"duplicate":         starlark.NewBuiltin("duplicate", builtinProxyDuplicate),
 		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutSource),
+		"stderr":            starlark.NewBuiltin("stderr", builtinStderrSource),
 		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoder),
 		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoder),
 		"regex_decoder":     starlark.NewBuiltin("regex_decoder", builtinRegexDecoder),
@@ -2308,6 +2309,29 @@ func builtinOp(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tupl
 func builtinStdoutSource(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	cfg := ObserveConfig{
 		SourceName: "stdout",
+		Params:     make(map[string]string),
+	}
+	for _, kv := range kwargs {
+		key, _ := starlark.AsString(kv[0])
+		if key == "decoder" {
+			if dv, ok := kv[1].(*DecoderVal); ok {
+				cfg.DecoderName = dv.Name
+				for k, v := range dv.Params {
+					cfg.Params["decoder_"+k] = v
+				}
+			}
+		}
+	}
+	return &ObserveSourceVal{Config: cfg}, nil
+}
+
+// builtinStderrSource is the stderr-stream twin of builtinStdoutSource.
+// Customer ask (inDrive Freight, 2026-04-30): zap/logrus default to
+// stderr, so observing stdout alone misses every default-configured Go
+// service. Same kwargs surface as stdout(decoder=...).
+func builtinStderrSource(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	cfg := ObserveConfig{
+		SourceName: "stderr",
 		Params:     make(map[string]string),
 	}
 	for _, kv := range kwargs {

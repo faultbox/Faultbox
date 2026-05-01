@@ -1089,24 +1089,33 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 	ns := engine.NamespaceConfig{PID: true, Mount: true, User: true}
 	onSyscall := rt.makeSyscallCallback(svcName)
 
-	// Set up stdout: if observe includes stdout source, create an OS pipe
-	// so the child process writes directly to it. We tee from the read-end
-	// to both the decoder and the configured output.
+	// Set up stdout / stderr observation: if observe includes the
+	// matching source, create an OS pipe per stream so the child
+	// writes directly to it; tee from the read-end to both the
+	// decoder and the configured console output.
+	//
+	// Customer ask (Freight, 2026-04-30): stderr was added as a
+	// counterpart to stdout because zap/logrus default to fd 2,
+	// and the v0.12.15.x arc had to ship an FB_LOG_TO_STDOUT
+	// env-gate workaround to capture them. The two branches are
+	// near-identical — only the source factory and the underlying
+	// fd they wire to differ.
 	svcStdout := rt.ServiceStdout
-	var stdoutFile *os.File // if set, overrides child's fd 1
+	svcStderr := rt.ServiceStdout
+	var stdoutFile *os.File
+	var stderrFile *os.File
 	var stdoutSources []*eventsource.StdoutSourceHandle
+	var stderrSources []*eventsource.StderrSourceHandle
 
 	for _, obs := range svc.Observe {
-		if obs.SourceName == "stdout" {
-			// Create a real OS pipe — the child writes to pipeW (fd),
-			// we read from pipeR in a goroutine.
+		switch obs.SourceName {
+		case "stdout":
 			pipeR, pipeW, err := os.Pipe()
 			if err != nil {
 				return fmt.Errorf("os.Pipe for stdout observe: %w", err)
 			}
 			stdoutFile = pipeW
 
-			// Create and start the stdout event source.
 			var dec eventsource.Decoder
 			if obs.DecoderName != "" {
 				if factory, ok := eventsource.GetDecoder(obs.DecoderName); ok {
@@ -1120,7 +1129,6 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 				}
 			}
 
-			// Tee: copy pipe output to both the decoder and the console.
 			decoderPR, decoderPW := io.Pipe()
 			go func() {
 				defer decoderPW.Close()
@@ -1139,14 +1147,58 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 				Source:    src,
 				PipeWrite: decoderPW,
 			})
+
+		case "stderr":
+			pipeR, pipeW, err := os.Pipe()
+			if err != nil {
+				return fmt.Errorf("os.Pipe for stderr observe: %w", err)
+			}
+			stderrFile = pipeW
+
+			var dec eventsource.Decoder
+			if obs.DecoderName != "" {
+				if factory, ok := eventsource.GetDecoder(obs.DecoderName); ok {
+					d, err := factory(obs.Params)
+					if err != nil {
+						pipeR.Close()
+						pipeW.Close()
+						return fmt.Errorf("decoder %q: %w", obs.DecoderName, err)
+					}
+					dec = d
+				}
+			}
+
+			decoderPR, decoderPW := io.Pipe()
+			go func() {
+				defer decoderPW.Close()
+				defer pipeR.Close()
+				io.Copy(io.MultiWriter(svcStderr, decoderPW), pipeR)
+			}()
+
+			src := eventsource.StderrSource(dec)
+			src.StartWithReader(ctx, eventsource.SourceConfig{
+				ServiceName: svcName,
+				Emit: func(typ string, fields map[string]string) {
+					rt.events.Emit(typ, svcName, fields)
+				},
+			}, decoderPR)
+			stderrSources = append(stderrSources, &eventsource.StderrSourceHandle{
+				Source:    src,
+				PipeWrite: decoderPW,
+			})
 		}
 	}
 
-	// Build session stdout: use the OS pipe file if observe is active,
-	// otherwise use the configured writer.
+	// Build session stdout/stderr: use the OS pipe file if observe is
+	// active for that stream, otherwise fall back to the configured
+	// console writer.
 	var sessStdout io.Writer = svcStdout
 	if stdoutFile != nil {
 		sessStdout = stdoutFile
+	}
+	var sessStderr io.Writer = svcStderr
+	if stderrFile != nil {
+		sessStderr = stderrFile
 	}
 
 	sessCfg := engine.SessionConfig{
@@ -1154,7 +1206,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 		Args:               svc.Args,
 		Env:                envVars,
 		Stdout:             sessStdout,
-		Stderr:             rt.ServiceStdout,
+		Stderr:             sessStderr,
 		Namespaces:         ns,
 		FaultRules:         faultRules,
 		OnSyscall:          onSyscall,
@@ -1164,6 +1216,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 	}
 
 	_ = stdoutSources // TODO: store for cleanup in stopServices
+	_ = stderrSources // TODO: store for cleanup in stopServices
 	return rt.launchSession(ctx, svcName, svc, sessCfg)
 }
 
