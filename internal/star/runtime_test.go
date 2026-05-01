@@ -2779,6 +2779,13 @@ app = service("app", "/tmp/mock",
 // as host.docker.internal:<port>, not 127.0.0.1:<port>. Without this
 // rewrite the SUT inside its container network namespace has no route
 // to the host-side proxy and the whole data-path story falls apart.
+//
+// RFC-035 update: substitution is now gated on a proxy-level fault
+// being registered against the interface. Without a fault, the SUT
+// dials the upstream directly via container DNS — see
+// TestBuildContainerEnv_NoFault_SkipsSubstitution. This test sets up
+// a fault_scenario that targets db.main so the substitution stays
+// active.
 func TestBuildContainerEnvRewritesViaHostDockerInternal(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `
@@ -2796,6 +2803,26 @@ api = service("api",
 `)
 	if err != nil {
 		t.Fatalf("LoadString: %v", err)
+	}
+
+	// RFC-035: substitution is gated on a proxy-level fault being
+	// registered against the interface. Inject one here so the test
+	// covers the rewrite path; TestBuildContainerEnv_NoFault_*
+	// covers the gate's other branch.
+	rt.faultScenarios = map[string]*FaultScenarioDef{
+		"test_db_fault": {
+			Name: "test_db_fault",
+			Faults: []*FaultAssumptionDef{{
+				Name: "db_fault",
+				ProxyRules: []FaultAssumptionProxyRule{{
+					Target: &InterfaceRef{
+						Service:   rt.services["db"],
+						Interface: rt.services["db"].Interfaces["main"],
+					},
+					ProxyFault: &ProxyFaultDef{},
+				}},
+			}},
+		},
 	}
 
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
@@ -2822,6 +2849,55 @@ api = service("api",
 	wantDB := "postgres://u:p@" + wantAddr + "/appdb"
 	if got := envMap["DATABASE_URL"]; got != wantDB {
 		t.Errorf("DATABASE_URL = %q, want %q", got, wantDB)
+	}
+}
+
+// TestBuildContainerEnv_NoFault_SkipsSubstitution — RFC-035 fix 1.
+//
+// When no test in the suite faults an interface, the SUT's env vars
+// must keep referencing the real upstream (container DNS), not the
+// host-side proxy. The pre-RFC-035 behavior unconditionally rewrote
+// every interface's address, which on Linux Docker hard-failed
+// because the proxy bound on 127.0.0.1 (loopback) is unreachable
+// from the docker0 bridge gateway containers use as
+// host.docker.internal.
+func TestBuildContainerEnv_NoFault_SkipsSubstitution(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+db = service("db",
+    interface("main", "postgres", 5432),
+    image = "postgres:16",
+)
+api = service("api",
+    interface("public", "http", 8080),
+    image = "alpine",
+    env = {
+        "DATABASE_URL": "postgres://u:p@db:5432/appdb",
+    },
+)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	// Register a proxy listenAddr — pre-RFC-035 this alone was
+	// enough to trigger substitution. With RFC-035 the substitution
+	// also requires a fault rule, so the env should still spell
+	// db:5432 untouched.
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer ln.Close()
+	rt.proxyMgr.RegisterListenAddr("db", "main", ln.Addr().String())
+
+	env := rt.buildContainerEnv(rt.services["api"])
+	envMap := map[string]string{}
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		envMap[k] = v
+	}
+
+	if got := envMap["DATABASE_URL"]; got != "postgres://u:p@db:5432/appdb" {
+		t.Errorf("DATABASE_URL = %q, want unchanged (no proxy fault registered, "+
+			"substitution must skip)", got)
 	}
 }
 

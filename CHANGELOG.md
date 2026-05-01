@@ -13,6 +13,68 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.17] - 2026-05-01
+
+RFC-035: container-consumer fault paths on Linux Docker. Closes the
+silent breakage that has been hiding in `poc/demo-container` since
+v0.9.6 — when a container SUT dials an upstream through the
+fault-injection proxy on Lima/Linux Docker, `host.docker.internal`
+resolves to the docker0 bridge gateway (`172.17.0.1`), but every
+proxy plugin bound on `127.0.0.1` only — so the connection RST'd
+before the SUT's first byte. Two independent fixes; together they
+close the design hole.
+
+### Changed
+
+- **Proxy listeners now bind on `0.0.0.0` on Linux** (or
+  `FAULTBOX_PROXY_BIND` if set). New `proxy.Listen()` /
+  `proxy.ListenUDP()` helpers in [internal/proxy/listen.go](https://github.com/faultbox/Faultbox/blob/main/internal/proxy/listen.go)
+  centralise the bind decision and normalise the dial address to
+  `127.0.0.1:<port>` regardless of bind interface, so host-binary
+  consumers keep their loopback dial unchanged. All 13 protocol
+  plugins (amqp, cassandra, clickhouse, grpc, http, http2, kafka,
+  memcached, mongodb, mysql, nats, postgres, redis, tcp, udp)
+  migrated to the helper. Defaults: `0.0.0.0` on Linux,
+  `127.0.0.1` everywhere else (Mac/Windows Docker Desktop already
+  tunnels `host.docker.internal` to host loopback). Override with
+  `FAULTBOX_PROXY_BIND=127.0.0.1` for shared CI runners on public
+  NICs where LAN exposure is unwanted.
+
+- **Container-consumer address substitution gated on registered
+  proxy faults.** `proxyAddrSubstitutionsFor` now only emits
+  rewrites for `containerConsumer` mode when at least one
+  `fault_scenario` in the suite registers a proxy-level rule
+  against the interface. Without a fault, container SUTs use
+  Docker's container DNS directly — no proxy round-trip, no
+  reachability dependency on the bridge bind. New
+  `Runtime.faultedInterfaces()` helper does static-analysis at
+  spec-load over `rt.faultScenarios`. Binary consumers are not
+  gated: substitution doubles as DNS translation for them
+  (`postgres:5432` is unresolvable on the host), so they always
+  rewrite to the proxy listener — same as pre-RFC-035 behavior.
+
+### Fixed
+
+- **`poc/demo-container` no longer silently broken on Lima.**
+  Was hidden because `TestGoldens` doesn't run container-to-container
+  faults, the demo passed on Mac Docker Desktop (loopback tunneling),
+  and a pre-RFC-035 hotfix had already reverted the `api` service
+  to a host binary. With RFC-035 the underlying bug is gone, so
+  future container SUTs reaching containerised upstreams via
+  `host.docker.internal` work on Linux Docker.
+
+### Internal
+
+- New `internal/proxy/listen.go` + `listen_test.go` (covers
+  default platform behavior, FAULTBOX_PROXY_BIND override, UDP,
+  byte-identity passthrough) — satisfies the #84 proxy-coverage
+  gate.
+
+- `cmd/faultbox/replay_test.go::TestEnforceReplayVersionPolicySame`
+  now reads the binary's compiled-in version dynamically rather
+  than hard-coding `"dev"` — was a latent test-brittleness that
+  fired on the v0.12.16 → v0.12.17 bump.
+
 ## [0.12.16] - 2026-04-30
 
 Report UX overhaul. The HTML report (`faultbox report <bundle.fb>`)
@@ -1141,7 +1203,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.17...HEAD
+[0.12.17]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.17
 [0.12.16]: https://github.com/faultbox/Faultbox/compare/release-0.12.15.2...release-0.12.16
 [0.12.0]: https://github.com/faultbox/Faultbox/compare/release-0.11.3...release-0.12.0
 [0.11.3]: https://github.com/faultbox/Faultbox/compare/release-0.11.2...release-0.11.3

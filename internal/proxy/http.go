@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -35,7 +34,7 @@ func (p *httpProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 
 	// Listen on random port.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, listenAddr, err := Listen()
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
@@ -62,7 +61,7 @@ func (p *httpProxy) Start(ctx context.Context, target string) (string, error) {
 		p.server.Close()
 	}()
 
-	return ln.Addr().String(), nil
+	return listenAddr, nil
 }
 
 func (p *httpProxy) handleRequest(w http.ResponseWriter, r *http.Request, rp *httputil.ReverseProxy) {

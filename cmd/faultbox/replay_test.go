@@ -77,7 +77,9 @@ func TestExtractSpecOnlyPreservesTree(t *testing.T) {
 }
 
 func TestEnforceReplayVersionPolicySame(t *testing.T) {
-	r, _ := bundle.Open(writeReplayBundle(t, "dev"))
+	// Use the binary's compiled-in version so the test stays correct
+	// across release bumps (was hard-coded to "dev" before v0.12.16).
+	r, _ := bundle.Open(writeReplayBundle(t, faultboxVersion()))
 	// Capture stderr.
 	old := os.Stderr
 	r2, w, _ := os.Pipe()

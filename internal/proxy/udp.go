@@ -40,11 +40,7 @@ func (p *udpProxy) Protocol() string { return "udp" }
 func (p *udpProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 
-	laddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	if err != nil {
-		return "", fmt.Errorf("resolve local: %w", err)
-	}
-	conn, err := net.ListenUDP("udp", laddr)
+	conn, listenAddr, err := ListenUDP()
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
@@ -60,7 +56,7 @@ func (p *udpProxy) Start(ctx context.Context, target string) (string, error) {
 	p.wg.Add(1)
 	go p.relay(ctx, targetAddr)
 
-	return conn.LocalAddr().String(), nil
+	return listenAddr, nil
 }
 
 func (p *udpProxy) relay(ctx context.Context, targetAddr *net.UDPAddr) {

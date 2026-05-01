@@ -46,7 +46,7 @@ func (p *tcpProxy) Protocol() string { return "tcp" }
 
 func (p *tcpProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, listenAddr, err := Listen()
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
@@ -56,7 +56,7 @@ func (p *tcpProxy) Start(ctx context.Context, target string) (string, error) {
 	p.wg.Add(1)
 	go p.acceptLoop(ctx)
 
-	return ln.Addr().String(), nil
+	return listenAddr, nil
 }
 
 func (p *tcpProxy) acceptLoop(ctx context.Context) {
