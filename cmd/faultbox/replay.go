@@ -81,6 +81,10 @@ func replayCmd(args []string) int {
 		return rc
 	}
 
+	if remotes := r.Env().Remotes; len(remotes) > 0 {
+		warnRemoteBundle(os.Stderr, remotes)
+	}
+
 	man := r.Manifest()
 	if man.SpecRoot == "" {
 		fmt.Fprintln(os.Stderr, "error: bundle manifest has no spec_root — can't determine which spec to replay")
@@ -204,6 +208,23 @@ func extractSpecOnly(r *bundle.Reader, dst string) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// warnRemoteBundle prints a multi-line notice when a bundle's env.json
+// declares one or more `service(remote=...)` interfaces (RFC-036).
+// Replay will re-dial those remotes — the run is therefore not
+// deterministic without cluster access, and the user should know.
+// RFC-037 tracks the long-term determinism story.
+func warnRemoteBundle(w *os.File, remotes []bundle.RemoteRecord) {
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "WARNING: this bundle used %d remote service interface(s) — replay will re-dial them:\n", len(remotes))
+	for _, r := range remotes {
+		fmt.Fprintf(w, "  - %s.%s -> %s (%s)\n", r.Service, r.Interface, r.Host, r.Protocol)
+	}
+	fmt.Fprintf(w, "\nReplay is not deterministic against remote services. The remote pods may have\n")
+	fmt.Fprintf(w, "drifted (responses, schemas, availability) since the original run. Verify cluster\n")
+	fmt.Fprintf(w, "connectivity (e.g. `telepresence connect`) before re-running, or expect failures.\n")
+	fmt.Fprintf(w, "\nOffline replay against recorded remote responses is tracked in RFC-037.\n\n")
 }
 
 func printReplayUsage() {

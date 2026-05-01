@@ -777,7 +777,7 @@ func (rt *Runtime) builtinFaultFromAssumption(thread *starlark.Thread, assumptio
 		svcName := pr.Target.Service.Name
 		ifaceName := pr.Target.Interface.Name
 		proto := pr.Target.Interface.Protocol
-		targetAddr := proxyTargetAddr(pr.Target.Interface)
+		targetAddr := proxyTargetAddr(pr.Target.Service, pr.Target.Interface)
 		if _, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr); err != nil {
 			return nil, fmt.Errorf("fault() proxy start for %s.%s: %w", svcName, ifaceName, err)
 		}
@@ -2247,8 +2247,9 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 		return nil, fmt.Errorf("fault(interface_ref, ...) requires at least one protocol fault (response, error, drop, etc.)")
 	}
 
-	// Resolve target address.
-	targetAddr := proxyTargetAddr(ifRef.Interface)
+	// Resolve target address (RFC-036 aware: remote services dial the
+	// declared remote upstream rather than 127.0.0.1).
+	targetAddr := proxyTargetAddr(ifRef.Service, ifRef.Interface)
 
 	// Ensure proxy is running for this interface.
 	proxyAddr, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr)

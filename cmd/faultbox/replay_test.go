@@ -49,6 +49,57 @@ def test_passes():
 	return path
 }
 
+// TestWarnRemoteBundle prints the documented multi-line warning when
+// env.json declares remotes (RFC-036 Phase 2). Test scoped to the
+// pure printer; the surrounding replay flow is covered separately.
+func TestWarnRemoteBundle(t *testing.T) {
+	tmp, err := os.CreateTemp(t.TempDir(), "warn-*.txt")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer tmp.Close()
+
+	warnRemoteBundle(tmp, []bundle.RemoteRecord{
+		{Service: "geo", Interface: "public", Host: "geo.staging:8080", Protocol: "http"},
+		{Service: "auth", Interface: "rpc", Host: "auth.staging:50051", Protocol: "grpc"},
+	})
+	if _, err := tmp.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(tmp.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+
+	for _, frag := range []string{
+		"WARNING",
+		"2 remote service interface",
+		"geo.public -> geo.staging:8080 (http)",
+		"auth.rpc -> auth.staging:50051 (grpc)",
+		"telepresence connect",
+		"RFC-037",
+		"not deterministic",
+	} {
+		if !strings.Contains(got, frag) {
+			t.Errorf("warning missing fragment %q\nfull text:\n%s", frag, got)
+		}
+	}
+}
+
+// TestEnforceReplayVersionPolicySame_NoRemoteWarn — sanity: a bundle
+// with no remotes recorded does not trigger any "WARNING" output beyond
+// the version policy.
+func TestReplayBundleNoRemotes_NoSpuriousWarn(t *testing.T) {
+	r, err := bundle.Open(writeReplayBundle(t, "0.10.0"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if len(r.Env().Remotes) != 0 {
+		t.Errorf("expected zero remotes in default test bundle, got %+v", r.Env().Remotes)
+	}
+}
+
 func TestExtractSpecOnlyPreservesTree(t *testing.T) {
 	r, err := bundle.Open(writeReplayBundle(t, "0.10.0"))
 	if err != nil {
