@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -292,6 +293,54 @@ func (c *Client) ContainerHostPort(ctx context.Context, id string, containerPort
 
 // BuildImage builds a Docker image from a Dockerfile in the given context directory.
 // The image is tagged with the given tag.
+// StreamLogs opens a follow-mode log stream against a running container
+// and demultiplexes it into the supplied stdout / stderr writers. The
+// Docker daemon multiplexes both streams over a single read channel
+// (8-byte frame header tags each frame as fd 1 or fd 2); stdcopy.StdCopy
+// is the canonical demuxer.
+//
+// Either writer may be nil to discard that stream — callers that only
+// observe stdout pass nil for stderr, and vice versa. The function
+// blocks until the stream closes (container exit, context cancel) and
+// returns the underlying error from the demux.
+//
+// Used by the runtime's container-mode observe= wiring (RFC-???? /
+// stderr() follow-up) so SUTs running as Docker containers get the same
+// first-class log-line trace events binary services have had since
+// v0.12.18.
+func (c *Client) StreamLogs(ctx context.Context, containerID string, stdout, stderr io.Writer) error {
+	opts := container.LogsOptions{
+		ShowStdout: stdout != nil,
+		ShowStderr: stderr != nil,
+		Follow:     true,
+	}
+	if !opts.ShowStdout && !opts.ShowStderr {
+		return nil
+	}
+	rc, err := c.cli.ContainerLogs(ctx, containerID, opts)
+	if err != nil {
+		return fmt.Errorf("container logs %s: %w", containerID, err)
+	}
+	defer rc.Close()
+
+	// Discard via io.Discard rather than nil so stdcopy doesn't panic
+	// on the half the caller didn't ask for. Docker's log driver still
+	// emits both halves when the TTY is allocated; the multiplex header
+	// distinguishes them and Discard is the cheapest sink.
+	out := stdout
+	if out == nil {
+		out = io.Discard
+	}
+	errW := stderr
+	if errW == nil {
+		errW = io.Discard
+	}
+	if _, err := stdcopy.StdCopy(out, errW, rc); err != nil && ctx.Err() == nil {
+		return fmt.Errorf("stdcopy demux: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) BuildImage(ctx context.Context, contextDir, tag string) error {
 	c.log.Info("building image", slog.String("context", contextDir), slog.String("tag", tag))
 
