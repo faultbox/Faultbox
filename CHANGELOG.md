@@ -13,6 +13,49 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.18] - 2026-05-01
+
+`stderr()` event source. Counterpart to the existing `stdout()` source
+— captures the service's stderr stream and emits each line as a
+first-class trace event. Customer-driven (inDrive Freight,
+2026-04-30): every default-configured Go service using zap, slog, or
+logrus writes to fd 2; pre-v0.12.18 the only way to observe those
+logs through Faultbox was to inject an env-gate (e.g.
+`FB_LOG_TO_STDOUT=1`) into the SUT and rebuild it. With `stderr()`
+the SUT stays unchanged.
+
+### Added
+
+- **`stderr(decoder=...)` event source.** Same kwargs surface as
+  `stdout()`; same decoder catalog (`json_decoder`, `logfmt_decoder`,
+  `regex_decoder`). Emits events with type `"stderr"` so the
+  report timeline filters and the event-log table can distinguish
+  the two streams. Use both simultaneously when the SUT splits
+  log streams (e.g. business events on stdout, errors on stderr).
+
+  ```python
+  observe=[
+      stdout(decoder=json_decoder()),
+      stderr(decoder=json_decoder()),
+  ]
+  ```
+
+### Internal
+
+- New `internal/eventsource/stderr.go` + `stderr_test.go` mirror
+  the stdout source byte-for-byte; only the registered name and
+  emission type differ. Decoder interface is source-agnostic so
+  existing decoders apply unchanged.
+
+- `internal/star/runtime.go` binary-mode launch path now branches
+  on `obs.SourceName ∈ {"stdout", "stderr"}` and wires a
+  separate OS pipe per stream. The two flow into the engine
+  session config's `Stdout` / `Stderr` fields independently;
+  console output is preserved via `io.MultiWriter` tee.
+
+- Container-mode launch path is unchanged — neither stdout nor
+  stderr observation is wired there yet, tracked separately.
+
 ## [0.12.17] - 2026-05-01
 
 RFC-035: container-consumer fault paths on Linux Docker. Closes the
@@ -1203,7 +1246,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.17...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.18...HEAD
+[0.12.18]: https://github.com/faultbox/Faultbox/compare/release-0.12.17...release-0.12.18
 [0.12.17]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.17
 [0.12.16]: https://github.com/faultbox/Faultbox/compare/release-0.12.15.2...release-0.12.16
 [0.12.0]: https://github.com/faultbox/Faultbox/compare/release-0.11.3...release-0.12.0
