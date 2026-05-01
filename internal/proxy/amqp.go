@@ -85,36 +85,59 @@ func (p *amqpProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	// RFC-034: per-connection lifecycle tracker. AMQP has a protocol
+	// header "AMQP\x00\x00\x09\x01" then bidirectional frame flow;
+	// the header serves as the handshake boundary marker. Byte
+	// counters update inside forwardFrames per direction.
+	tracker := newConnTracker(p.onEvent, p.svcName, "main", "amqp",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+
 	// AMQP starts with protocol header: "AMQP\x00\x00\x09\x01"
 	// Forward the handshake bidirectionally until both sides are ready.
 	// Simplified: forward the protocol header from client to server.
 	protoHeader := make([]byte, 8)
 	if _, err := io.ReadFull(clientConn, protoHeader); err != nil {
+		closeReason = classifyCloseReason(err, "client")
 		return
 	}
+	tracker.AddBytesC2S(8)
 	if _, err := serverConn.Write(protoHeader); err != nil {
+		closeReason = classifyCloseReason(err, "server")
 		return
 	}
+	tracker.EmitHandshakeComplete("amqp_proto_header", 1)
 
-	// Bidirectional frame forwarding with interception.
+	// Bidirectional frame forwarding with interception. Wait for
+	// first errCh only — second goroutine drains naturally when
+	// deferred conn closes propagate (same lesson as tcp.go's
+	// single-`<-done` semantic).
 	errCh := make(chan error, 2)
 
 	// Server → client (delivery path).
 	go func() {
-		errCh <- p.forwardFrames(ctx, serverConn, clientConn, "deliver")
+		errCh <- p.forwardFrames(ctx, serverConn, clientConn, "deliver", tracker.AddBytesS2C)
 	}()
 
 	// Client → server (publish path).
 	go func() {
-		errCh <- p.forwardFrames(ctx, clientConn, serverConn, "publish")
+		errCh <- p.forwardFrames(ctx, clientConn, serverConn, "publish", tracker.AddBytesC2S)
 	}()
 
-	<-errCh
+	if err := <-errCh; err != nil {
+		closeReason = classifyCloseReason(err, "client")
+	}
 }
 
 // forwardFrames reads AMQP frames from src and writes to dst.
 // Intercepts Basic.Publish frames for fault injection.
-func (p *amqpProxy) forwardFrames(ctx context.Context, src, dst net.Conn, direction string) error {
+//
+// addBytes records bytes read from `src` so the connection-lifecycle
+// tracker can report bytes_c2s / bytes_s2c on proxy_conn_close. nil
+// is fine — counter call is conditional.
+func (p *amqpProxy) forwardFrames(ctx context.Context, src, dst net.Conn, direction string, addBytes func(int)) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -129,6 +152,9 @@ func (p *amqpProxy) forwardFrames(ctx context.Context, src, dst net.Conn, direct
 		if _, err := io.ReadFull(src, frameHeader); err != nil {
 			return err
 		}
+		if addBytes != nil {
+			addBytes(7)
+		}
 
 		frameType := frameHeader[0]
 		frameSize := int(binary.BigEndian.Uint32(frameHeader[3:7]))
@@ -136,6 +162,9 @@ func (p *amqpProxy) forwardFrames(ctx context.Context, src, dst net.Conn, direct
 		payload := make([]byte, frameSize+1) // +1 for frame-end byte (0xCE)
 		if _, err := io.ReadFull(src, payload); err != nil {
 			return err
+		}
+		if addBytes != nil {
+			addBytes(len(payload))
 		}
 
 		// Check for Basic.Publish method frame.

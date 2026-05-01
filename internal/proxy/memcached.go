@@ -74,12 +74,24 @@ func (p *memcachedProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	// RFC-034: per-connection lifecycle tracker. Memcached has no
+	// handshake — commands flow immediately. Mark
+	// handshake_complete after the first successful round-trip as
+	// the "connection ready" beat.
+	tracker := newConnTracker(p.onEvent, p.svcName, "main", "memcached",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+
 	clientReader := bufio.NewReader(clientConn)
 	serverReader := bufio.NewReader(serverConn)
+	requestsSeen := 0
 
 	for {
 		select {
 		case <-ctx.Done():
+			closeReason = "context_cancel"
 			return
 		default:
 		}
@@ -89,8 +101,10 @@ func (p *memcachedProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		// Read command line from client.
 		line, err := clientReader.ReadString('\n')
 		if err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
+		tracker.AddBytesC2S(len(line))
 		line = strings.TrimRight(line, "\r\n")
 		parts := strings.Fields(line)
 		if len(parts) == 0 {
@@ -109,8 +123,10 @@ func (p *memcachedProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 			bytes, _ := strconv.Atoi(parts[4])
 			dataBlock = make([]byte, bytes+2) // +2 for \r\n
 			if _, err := io.ReadFull(clientReader, dataBlock); err != nil {
+				closeReason = classifyCloseReason(err, "client")
 				return
 			}
+			tracker.AddBytesC2S(len(dataBlock))
 		}
 
 		// Check rules.
@@ -127,8 +143,10 @@ func (p *memcachedProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		// Forward response back.
 		resp, err := serverReader.ReadString('\n')
 		if err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
+		tracker.AddBytesS2C(len(resp))
 		fmt.Fprint(clientConn, resp)
 
 		// For get commands, forward VALUE lines + END.
@@ -136,8 +154,10 @@ func (p *memcachedProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 			for !strings.HasPrefix(resp, "END") {
 				resp, err = serverReader.ReadString('\n')
 				if err != nil {
+					closeReason = classifyCloseReason(err, "server")
 					return
 				}
+				tracker.AddBytesS2C(len(resp))
 				fmt.Fprint(clientConn, resp)
 				// If VALUE line, also forward the data block.
 				if strings.HasPrefix(resp, "VALUE") {
@@ -146,10 +166,16 @@ func (p *memcachedProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 						bytes, _ := strconv.Atoi(valParts[3])
 						data := make([]byte, bytes+2)
 						io.ReadFull(serverReader, data)
+						tracker.AddBytesS2C(len(data))
 						clientConn.Write(data)
 					}
 				}
 			}
+		}
+
+		requestsSeen++
+		if requestsSeen == 1 {
+			tracker.EmitHandshakeComplete("", 1)
 		}
 	}
 }

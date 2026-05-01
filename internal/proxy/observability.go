@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -285,4 +287,78 @@ func classifyCloseReason(err error, side string) string {
 		}
 	}
 	return "io_error"
+}
+
+// HTTPConnStateTracker wires RFC-034 connection-lifecycle events into
+// any net/http.Server-based proxy plugin (http, http2, clickhouse).
+// Standard library exposes a ConnState callback firing on
+// StateNew / StateActive / StateIdle / StateClosed transitions; we map
+// StateNew → proxy_conn_open and StateClosed → proxy_conn_close.
+// First StateActive is the connection-ready beat (HTTP has no auth
+// handshake; first byte of first request is the closest analogue).
+//
+// Byte counting at the http.Server layer is not exposed cleanly — the
+// standard library reads/writes through the listener for us. v1 wires
+// lifecycle + handshake only; bytes_c2s / bytes_s2c report 0 for
+// HTTP-family plugins. Follow-up: wrap the underlying net.Conn via a
+// custom Listener that returns counting Conns.
+type HTTPConnStateTracker struct {
+	mu       sync.Mutex
+	trackers map[net.Conn]*connTracker
+	onEvent  OnProxyEvent
+	service  string
+	iface    string
+	protocol string
+	target   string
+}
+
+// NewHTTPConnStateTracker constructs the tracker map. Plugins call
+// `tracker.ConnState` and assign it to `http.Server.ConnState`.
+func NewHTTPConnStateTracker(onEvent OnProxyEvent, service, iface, protocol, target string) *HTTPConnStateTracker {
+	return &HTTPConnStateTracker{
+		trackers: make(map[net.Conn]*connTracker),
+		onEvent:  onEvent,
+		service:  service,
+		iface:    iface,
+		protocol: protocol,
+		target:   target,
+	}
+}
+
+// ConnState is the http.Server.ConnState handler. Hook it on the
+// server before Serve(): `srv.ConnState = tracker.ConnState`.
+func (h *HTTPConnStateTracker) ConnState(c net.Conn, state http.ConnState) {
+	if h == nil || h.onEvent == nil {
+		return
+	}
+	switch state {
+	case http.StateNew:
+		t := newConnTracker(h.onEvent, h.service, h.iface, h.protocol,
+			c.RemoteAddr().String(), h.target)
+		t.EmitOpen()
+		h.mu.Lock()
+		h.trackers[c] = t
+		h.mu.Unlock()
+	case http.StateActive:
+		h.mu.Lock()
+		t := h.trackers[c]
+		h.mu.Unlock()
+		if t != nil {
+			// Idempotent — handshakeDone CAS makes subsequent
+			// StateActive transitions on keep-alive connections no-ops.
+			t.EmitHandshakeComplete("", 1)
+		}
+	case http.StateClosed, http.StateHijacked:
+		h.mu.Lock()
+		t := h.trackers[c]
+		delete(h.trackers, c)
+		h.mu.Unlock()
+		if t != nil {
+			reason := "client_eof"
+			if state == http.StateHijacked {
+				reason = "context_cancel"
+			}
+			t.EmitClose(reason)
+		}
+	}
 }

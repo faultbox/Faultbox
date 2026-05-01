@@ -95,14 +95,31 @@ func (p *cassandraProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	// RFC-034: per-connection lifecycle tracker. Cassandra is
+	// asymmetric — frame-aware on client→server, raw io.Copy on
+	// server→client. Wrap the server reader to count S2C bytes;
+	// count C2S bytes inline at the framed-read sites. CQL has a
+	// STARTUP/READY exchange but it flows through the same loop;
+	// we mark handshake_complete after the first request-response
+	// round-trip (approximation — captures the post-startup state).
+	tracker := newConnTracker(p.onEvent, p.svcName, "main", "cassandra",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+
 	// Upstream → client (responses). Forwarded without inspection.
-	go io.Copy(clientConn, serverConn)
+	// Wrap the server reader so byte counts land in the tracker.
+	go io.Copy(clientConn, tracker.WrapServerReader(serverConn))
+
+	requestsSeen := 0
 
 	// Client → upstream (requests). Frame-aware to support fault injection
 	// on QUERY / EXECUTE opcodes.
 	for {
 		select {
 		case <-ctx.Done():
+			closeReason = "context_cancel"
 			return
 		default:
 		}
@@ -111,8 +128,10 @@ func (p *cassandraProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 		header := make([]byte, 9)
 		if _, err := io.ReadFull(clientConn, header); err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
+		tracker.AddBytesC2S(9)
 
 		version := header[0]
 		streamID := binary.BigEndian.Uint16(header[2:4])
@@ -120,14 +139,17 @@ func (p *cassandraProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		bodyLen := binary.BigEndian.Uint32(header[5:9])
 
 		if bodyLen > 256*1024*1024 {
+			closeReason = "io_error"
 			return
 		}
 
 		body := make([]byte, bodyLen)
 		if bodyLen > 0 {
 			if _, err := io.ReadFull(clientConn, body); err != nil {
+				closeReason = classifyCloseReason(err, "client")
 				return
 			}
+			tracker.AddBytesC2S(int(bodyLen))
 		}
 
 		if opcode == cqlOpQuery || opcode == cqlOpExecute || opcode == cqlOpBatch {
@@ -139,12 +161,22 @@ func (p *cassandraProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 		// Forward to upstream.
 		if _, err := serverConn.Write(header); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 		if bodyLen > 0 {
 			if _, err := serverConn.Write(body); err != nil {
+				closeReason = classifyCloseReason(err, "server")
 				return
 			}
+		}
+
+		requestsSeen++
+		if requestsSeen == 1 {
+			// First successful request marks the handshake (STARTUP/
+			// READY exchange completed before this point in any
+			// well-behaved Cassandra session).
+			tracker.EmitHandshakeComplete("", 1)
 		}
 	}
 }

@@ -47,10 +47,16 @@ func (p *httpProxy) Start(ctx context.Context, target string) (string, error) {
 
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 
+	// RFC-034: connection-lifecycle events via http.Server.ConnState.
+	// Per-conn open/close + first-request handshake_complete; byte
+	// counts not yet wired (follow-up — needs Listener wrapper).
+	connTracker := NewHTTPConnStateTracker(p.onEvent, p.svcName, "main", "http", target)
+
 	p.server = &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p.handleRequest(w, r, reverseProxy)
 		}),
+		ConnState: connTracker.ConnState,
 	}
 
 	go func() {

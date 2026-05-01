@@ -79,9 +79,22 @@ func (p *mongodbProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	// RFC-034: per-connection lifecycle tracker. MongoDB has no
+	// distinct handshake at the wire level — the first OP_MSG (often
+	// `hello` or `isMaster`) negotiates connection state but flows
+	// through the same loop. Mark handshake_complete after the first
+	// successful round-trip.
+	tracker := newConnTracker(p.onEvent, p.svcName, "main", "mongodb",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+	requestsSeen := 0
+
 	for {
 		select {
 		case <-ctx.Done():
+			closeReason = "context_cancel"
 			return
 		default:
 		}
@@ -91,22 +104,27 @@ func (p *mongodbProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		// MongoDB message header: length(4) + requestID(4) + responseTo(4) + opCode(4)
 		header := make([]byte, 16)
 		if _, err := io.ReadFull(clientConn, header); err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
+		tracker.AddBytesC2S(16)
 
 		msgLen := int(binary.LittleEndian.Uint32(header[0:4]))
 		requestID := binary.LittleEndian.Uint32(header[4:8])
 		opCode := int32(binary.LittleEndian.Uint32(header[12:16]))
 
 		if msgLen < 16 || msgLen > 48*1024*1024 {
+			closeReason = "io_error"
 			return
 		}
 
 		body := make([]byte, msgLen-16)
 		if len(body) > 0 {
 			if _, err := io.ReadFull(clientConn, body); err != nil {
+				closeReason = classifyCloseReason(err, "client")
 				return
 			}
+			tracker.AddBytesC2S(len(body))
 		}
 
 		// Only intercept OP_MSG (modern protocol).
@@ -121,10 +139,12 @@ func (p *mongodbProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 		// Forward to server.
 		if _, err := serverConn.Write(header); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 		if len(body) > 0 {
 			if _, err := serverConn.Write(body); err != nil {
+				closeReason = classifyCloseReason(err, "server")
 				return
 			}
 		}
@@ -132,17 +152,26 @@ func (p *mongodbProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		// Forward response back.
 		respHeader := make([]byte, 16)
 		if _, err := io.ReadFull(serverConn, respHeader); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
+		tracker.AddBytesS2C(16)
 		respLen := int(binary.LittleEndian.Uint32(respHeader[0:4]))
 		respBody := make([]byte, respLen-16)
 		if len(respBody) > 0 {
 			if _, err := io.ReadFull(serverConn, respBody); err != nil {
+				closeReason = classifyCloseReason(err, "server")
 				return
 			}
+			tracker.AddBytesS2C(len(respBody))
 		}
 		clientConn.Write(respHeader)
 		clientConn.Write(respBody)
+
+		requestsSeen++
+		if requestsSeen == 1 {
+			tracker.EmitHandshakeComplete("", 1)
+		}
 	}
 }
 
