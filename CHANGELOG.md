@@ -13,6 +13,57 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.19] - 2026-05-01
+
+Container-mode `observe=` wiring + regex decoder bugfix.
+
+v0.12.18 added `stderr()` but only wired it for binary-mode services.
+This release closes the gap for container services: `observe=[stdout(...),
+stderr(...)]` now works against any Docker image, with logs captured
+via Docker's multiplexed log stream and demuxed inside Faultbox.
+
+### Added
+
+- **Container-mode `observe=` capture.** Service services launched
+  via `image=` / `build=` now stream their stdout and stderr through
+  Faultbox's event log, same as binary services. Implementation
+  reads the Docker multiplexed log channel via
+  `client.ContainerLogs(ctx, id, LogsOptions{ShowStdout, ShowStderr,
+  Follow})` and demultiplexes with `stdcopy.StdCopy`. Console output
+  preserved via `io.MultiWriter` tee — `docker logs` watchers and
+  Faultbox's bundle both see the same lines.
+
+  Lima smoke (`redis:7-alpine` with `observe=[stdout(decoder=regex_decoder(...))]`)
+  produced 14 decoded `stdout` events with `pid` / `role` / `rest`
+  capture-group fields populated end-to-end.
+
+### Fixed
+
+- **`regex_decoder(pattern=...)` was silently failing on every
+  observation site.** The Starlark builtin stored decoder kwargs
+  in `ObserveConfig.Params` with a `decoder_` prefix to avoid
+  collisions with source-level params, but the runtime called
+  decoder factories with that map unstripped — so the regex
+  factory's lookup of `params["pattern"]` always missed and
+  returned the "regex decoder requires 'pattern' parameter"
+  error. Cosmetic for `json_decoder`/`logfmt_decoder` (zero
+  params), load-bearing for `regex_decoder`. New helper
+  `decoderParams()` strips the prefix at all three factory call
+  sites (binary stdout, binary stderr, container stdout/stderr).
+
+### Internal
+
+- New `Client.StreamLogs(ctx, containerID, stdoutW, stderrW)` in
+  `internal/container/docker.go` — thin wrapper around
+  `cli.ContainerLogs` with stdcopy demux. Either writer may be nil
+  to discard that stream.
+- New `Runtime.setupContainerObservation(ctx, svcName, svc, containerID)`
+  in `internal/star/runtime.go`. Mirrors the binary-mode wiring
+  pattern; spawns one goroutine per container that pulls from the
+  log stream until container exit or context cancel.
+- `internal/star/runtime.go` factory call sites at lines 1122,
+  1161, 1523 all routed through `decoderParams()`.
+
 ## [0.12.18] - 2026-05-01
 
 `stderr()` event source. Counterpart to the existing `stdout()` source
@@ -1246,7 +1297,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.18...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.19...HEAD
+[0.12.19]: https://github.com/faultbox/Faultbox/compare/release-0.12.18...release-0.12.19
 [0.12.18]: https://github.com/faultbox/Faultbox/compare/release-0.12.17...release-0.12.18
 [0.12.17]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.17
 [0.12.16]: https://github.com/faultbox/Faultbox/compare/release-0.12.15.2...release-0.12.16

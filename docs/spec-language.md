@@ -968,6 +968,12 @@ required a SUT-side env-gate (e.g. `FB_LOG_TO_STDOUT=1`) to redirect
 logs to fd 1. With `stderr()` you can capture default-configured Go
 services without touching their code.
 
+Pre-v0.12.19 both sources only worked against binary-mode services;
+from v0.12.19 they apply to container services too. Faultbox reads
+Docker's multiplexed log stream (`client.ContainerLogs(...)`) and
+demultiplexes internally, so a containerised SUT becomes self-
+diagnosing without any image change.
+
 Combined with structured logging in the SUT (zap, slog, logrus, etc.),
 this turns "the SUT hangs and nobody knows why" into "seq 33: 'done
 init config' → seq 34: 'FATAL: connect to db: invalid connection'."

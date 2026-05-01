@@ -1119,7 +1119,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 			var dec eventsource.Decoder
 			if obs.DecoderName != "" {
 				if factory, ok := eventsource.GetDecoder(obs.DecoderName); ok {
-					d, err := factory(obs.Params)
+					d, err := factory(decoderParams(obs.Params))
 					if err != nil {
 						pipeR.Close()
 						pipeW.Close()
@@ -1158,7 +1158,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 			var dec eventsource.Decoder
 			if obs.DecoderName != "" {
 				if factory, ok := eventsource.GetDecoder(obs.DecoderName); ok {
-					d, err := factory(obs.Params)
+					d, err := factory(decoderParams(obs.Params))
 					if err != nil {
 						pipeR.Close()
 						pipeW.Close()
@@ -1294,6 +1294,16 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		return fmt.Errorf("launch container %q: %w", svcName, err)
 	}
 	rt.containerIDs[svcName] = result.ContainerID
+
+	// Set up stdout / stderr observation for container services. Same
+	// surface as the binary path (svc.Observe with stdout()/stderr()
+	// sources) — under the hood it pulls Docker's multiplexed log
+	// stream and demuxes to the configured sources. Pre-this-change,
+	// container services were a black box: zap/logrus output stayed in
+	// `docker logs` and never reached the bundle. With this wiring,
+	// container SUTs get the same self-diagnosing trace-event treatment
+	// as binary SUTs.
+	rt.setupContainerObservation(ctx, svcName, svc, result.ContainerID)
 
 	// Update interface ports to actual host-mapped ports (for healthchecks + steps).
 	for _, iface := range svc.Interfaces {
@@ -1461,6 +1471,123 @@ func (rt *Runtime) resolveHealthcheck(svc *ServiceDef) string {
 		}
 	}
 	return test
+}
+
+// decoderParams strips the `decoder_` prefix from observation
+// parameters so a decoder factory sees the keys it actually expects
+// (`pattern` instead of `decoder_pattern`). The prefix exists in
+// ObserveConfig.Params to avoid collisions with source-level params,
+// but the factory contract is unprefixed.
+//
+// Pre-this-change, regex_decoder(pattern=...) silently failed at
+// runtime: the decoder factory looked for `pattern` and didn't find
+// it because the builtin had stored it as `decoder_pattern`. Affected
+// every observation site (binary stdout, binary stderr, container
+// stdout/stderr); cosmetic for json/logfmt (zero params) but
+// load-bearing for regex.
+func decoderParams(all map[string]string) map[string]string {
+	out := make(map[string]string)
+	for k, v := range all {
+		if rest, ok := strings.CutPrefix(k, "decoder_"); ok {
+			out[rest] = v
+		}
+	}
+	return out
+}
+
+// setupContainerObservation wires svc.Observe stdout/stderr sources to
+// the container's log stream. Mirrors the binary-mode wiring in
+// startBinaryService except the byte source is Docker's multiplexed
+// log channel (demuxed via stdcopy) rather than direct fd-1 / fd-2
+// pipes.
+//
+// Lifecycle: a single goroutine pulls from `dc.StreamLogs` for the
+// lifetime of the container; it exits naturally when the container
+// stops (stream EOF) or when the runtime context cancels. We don't
+// retry on container restart — reuse=True keeps the container alive
+// across tests so a single follow stream covers the whole session.
+//
+// No-op when svc.Observe contains no stdout/stderr sources, so this
+// can be called unconditionally for every container service.
+func (rt *Runtime) setupContainerObservation(ctx context.Context, svcName string, svc *ServiceDef, containerID string) {
+	var stdoutPipeW io.WriteCloser
+	var stderrPipeW io.WriteCloser
+
+	for _, obs := range svc.Observe {
+		if obs.SourceName != "stdout" && obs.SourceName != "stderr" {
+			continue
+		}
+		var dec eventsource.Decoder
+		if obs.DecoderName != "" {
+			if factory, ok := eventsource.GetDecoder(obs.DecoderName); ok {
+				if d, err := factory(decoderParams(obs.Params)); err == nil {
+					dec = d
+				} else {
+					rt.log.Warn("decoder factory failed",
+						slog.String("service", svcName),
+						slog.String("source", obs.SourceName),
+						slog.String("decoder", obs.DecoderName),
+						slog.Any("err", err))
+					continue
+				}
+			}
+		}
+
+		decoderPR, decoderPW := io.Pipe()
+		emitter := func(typ string, fields map[string]string) {
+			rt.events.Emit(typ, svcName, fields)
+		}
+
+		switch obs.SourceName {
+		case "stdout":
+			src := eventsource.StdoutSource(dec)
+			src.StartWithReader(ctx, eventsource.SourceConfig{
+				ServiceName: svcName,
+				Emit:        emitter,
+			}, decoderPR)
+			stdoutPipeW = decoderPW
+		case "stderr":
+			src := eventsource.StderrSource(dec)
+			src.StartWithReader(ctx, eventsource.SourceConfig{
+				ServiceName: svcName,
+				Emit:        emitter,
+			}, decoderPR)
+			stderrPipeW = decoderPW
+		}
+	}
+
+	if stdoutPipeW == nil && stderrPipeW == nil {
+		return
+	}
+
+	// Tee to console too so users still see container output in their
+	// terminal — same UX as `docker logs -f` running alongside.
+	consoleW := rt.ServiceStdout
+	var stdoutW io.Writer
+	if stdoutPipeW != nil {
+		stdoutW = io.MultiWriter(consoleW, stdoutPipeW)
+	}
+	var stderrW io.Writer
+	if stderrPipeW != nil {
+		stderrW = io.MultiWriter(consoleW, stderrPipeW)
+	}
+
+	go func() {
+		defer func() {
+			if stdoutPipeW != nil {
+				stdoutPipeW.Close()
+			}
+			if stderrPipeW != nil {
+				stderrPipeW.Close()
+			}
+		}()
+		if err := rt.dockerClient.StreamLogs(ctx, containerID, stdoutW, stderrW); err != nil {
+			rt.log.Warn("container log stream ended with error",
+				slog.String("service", svcName),
+				slog.String("container_id", containerID),
+				slog.Any("err", err))
+		}
+	}()
 }
 
 // buildContainerEnv builds environment variables for a container service.
