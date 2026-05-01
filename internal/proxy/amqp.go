@@ -47,7 +47,7 @@ func (p *amqpProxy) Protocol() string { return "amqp" }
 func (p *amqpProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, listenAddr, err := Listen()
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
@@ -73,7 +73,7 @@ func (p *amqpProxy) Start(ctx context.Context, target string) (string, error) {
 		}
 	}()
 
-	return ln.Addr().String(), nil
+	return listenAddr, nil
 }
 
 func (p *amqpProxy) handleConn(ctx context.Context, clientConn net.Conn) {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -35,7 +34,7 @@ func (p *clickhouseProxy) Protocol() string { return "clickhouse" }
 
 func (p *clickhouseProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, listenAddr, err := Listen()
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
@@ -57,7 +56,7 @@ func (p *clickhouseProxy) Start(ctx context.Context, target string) (string, err
 		<-ctx.Done()
 		p.server.Close()
 	}()
-	return ln.Addr().String(), nil
+	return listenAddr, nil
 }
 
 func (p *clickhouseProxy) handle(w http.ResponseWriter, r *http.Request, rp *httputil.ReverseProxy) {

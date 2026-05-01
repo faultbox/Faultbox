@@ -1695,14 +1695,82 @@ func (rt *Runtime) proxyAddrSubstitutions() map[string]string {
 	return rt.proxyAddrSubstitutionsFor(binaryConsumer)
 }
 
+// faultedInterfaces walks every registered fault_scenario / fault_matrix
+// cell and returns the set of (service, interface) pairs that some test
+// in the suite injects a *proxy-level* fault against. Used by
+// proxyAddrSubstitutionsFor to gate address rewriting: an interface
+// nothing faults gets no env substitution, the SUT dials the upstream
+// directly via its real DNS name (Docker container DNS, host loopback,
+// etc.), and the listener-reachability bug RFC-035 documents simply
+// doesn't apply.
+//
+// Syscall-level faults (FaultAssumptionRule) do *not* contribute here:
+// seccomp intercepts inside the SUT process and needs no proxy address
+// rewrite. Only ProxyRules — which install protocol-level rewrite
+// rules on the transparent proxy — require the substitution to be
+// active.
+//
+// Static analysis at suite scope, not per-test: container reuse means
+// the SUT's env is built once at first launch, so per-test gating
+// would race with cells that fault interfaces a prior cell didn't.
+// Coarser but stable.
+func (rt *Runtime) faultedInterfaces() map[string]map[string]bool {
+	out := make(map[string]map[string]bool)
+	for _, fs := range rt.faultScenarios {
+		for _, fa := range fs.Faults {
+			if fa == nil {
+				continue
+			}
+			for _, pr := range fa.ProxyRules {
+				if pr.Target == nil || pr.Target.Service == nil || pr.Target.Interface == nil {
+					continue
+				}
+				svc := pr.Target.Service.Name
+				ifn := pr.Target.Interface.Name
+				if out[svc] == nil {
+					out[svc] = make(map[string]bool)
+				}
+				out[svc][ifn] = true
+			}
+		}
+	}
+	return out
+}
+
 // proxyAddrSubstitutionsFor builds the rewrite table targeting either
 // binary or container consumers. For container consumers, proxy addrs
 // are re-spelled with host.docker.internal so the SUT, isolated in its
 // network namespace, can still reach the host-side listener.
 func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]string {
 	out := make(map[string]string)
+	// RFC-035: gate container-consumer substitutions on a registered
+	// proxy fault.
+	//
+	// Two consumer modes serve different purposes:
+	//
+	//   - binaryConsumer (host-binary SUT): substitution is *also*
+	//     a DNS-translation primitive. The SUT's
+	//     `postgres.main.internal_addr` evaluates to "postgres:5432"
+	//     which is unresolvable on the host. Substitution rewrites
+	//     that to the host-reachable proxy listener (always loopback
+	//     after RFC-035 fix 2). Without substitution, the SUT can't
+	//     reach the upstream at all. So we never gate this branch.
+	//
+	//   - containerConsumer: the SUT is itself in a container, which
+	//     can resolve "postgres:5432" via Docker's container DNS.
+	//     Pre-RFC-035 substitution rewrote that to host.docker.internal,
+	//     which on Linux Docker resolves to the docker0 bridge gateway
+	//     (172.17.0.1) and hits a 127.0.0.1-only proxy listener — RST.
+	//     Now: gate on a registered proxy-level fault. No fault →
+	//     skip rewrite → SUT uses container DNS directly. Fault → rewrite
+	//     to host.docker.internal (reachable thanks to Fix 2's
+	//     bridge-bind).
+	faulted := rt.faultedInterfaces()
 	for name, s := range rt.services {
 		for ifName, iface := range s.Interfaces {
+			if mode == containerConsumer && !faulted[name][ifName] {
+				continue
+			}
 			proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName)
 			if proxyAddr == "" {
 				continue

@@ -7,15 +7,17 @@
 #   - Docker running, faultbox-shim built
 #   - api-svc built and staged at /tmp/api-svc (make demo-build does this)
 #
-# Why host-binary api: when the api lived inside a container, its env
-# `DATABASE_URL` substring `postgres:5432` was rewritten by the proxy
-# substitution layer to `host.docker.internal:<host-port>` so faults
-# could be injected. On Linux Docker (Lima) `host.docker.internal`
-# resolves to the docker0 bridge gateway (172.17.0.1), and proxies
-# bind to 127.0.0.1 only — so the api couldn't reach them. Running
-# the api on the host fixes the path: it dials 127.0.0.1:<host-port>
-# directly. Tracked as a follow-up RFC for the conditional-rewrite
-# code fix.
+# Why host-binary api: historical workaround for the bug RFC-035
+# fixed in v0.12.17. Pre-RFC-035 the substitution layer rewrote
+# `postgres:5432` to `host.docker.internal:<host-port>` for
+# container consumers; on Linux Docker (Lima) `host.docker.internal`
+# resolves to the docker0 bridge gateway (172.17.0.1) but proxies
+# bound on `127.0.0.1` only, so the api couldn't reach them.
+# RFC-035 binds proxies on `0.0.0.0` on Linux + gates substitution
+# on a registered proxy-level fault, so container SUTs reaching
+# containerised upstreams now work end-to-end. The host-binary api
+# stays as the simpler topology for this demo, but a fully
+# container-to-container variant also works post-v0.12.17.
 
 postgres = service("postgres",
     interface("main", "tcp", 5432),
