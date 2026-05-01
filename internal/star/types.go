@@ -40,6 +40,23 @@ type ObserveConfig struct {
 	Params      map[string]string // source-specific params
 }
 
+// RemotesVal is the typed value returned by the remotes() builtin. It
+// carries a per-interface upstream-host map for use as
+// `service(..., remote = remotes({"public": "host.example", ...}))`.
+// Validation that keys match declared interfaces happens in
+// builtinService — the remotes() value itself is just a typed dict.
+type RemotesVal struct {
+	Hosts map[string]string
+}
+
+var _ starlark.Value = (*RemotesVal)(nil)
+
+func (r *RemotesVal) String() string        { return fmt.Sprintf("<remotes %v>", r.Hosts) }
+func (r *RemotesVal) Type() string          { return "remotes" }
+func (r *RemotesVal) Freeze()               {}
+func (r *RemotesVal) Truth() starlark.Bool  { return starlark.Bool(len(r.Hosts) > 0) }
+func (r *RemotesVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: remotes") }
+
 type ServiceDef struct {
 	Name       string
 	Binary     string            // local binary path (binary mode)
@@ -73,6 +90,19 @@ type ServiceDef struct {
 	// launching a binary or container.
 	Mock *MockConfig
 
+	// Remote service support (RFC-036). When non-empty, this ServiceDef
+	// points at an externally-running endpoint — typically a k8s Service
+	// hostname, a port-forwarded address, or an IP. Faultbox does not
+	// launch the service; instead, the proxy manager pre-starts a
+	// listener per interface and forwards to the remote upstream.
+	//
+	// Remote is the default host applied to every interface unless
+	// overridden in RemotePerInterface. RemotePerInterface keys are
+	// interface names (must match declared interfaces); values are
+	// "host" (interface port appended) or "host:port" (explicit).
+	Remote             string
+	RemotePerInterface map[string]string
+
 	rt         *Runtime // set by runtime after registration
 }
 
@@ -84,6 +114,24 @@ func (s *ServiceDef) IsContainer() bool {
 // IsMock returns true if this service is a mock (RFC-017).
 func (s *ServiceDef) IsMock() bool {
 	return s.Mock != nil
+}
+
+// IsRemote returns true if this service points at an externally-running
+// endpoint (RFC-036). Remote services are not launched; their interfaces
+// are proxied to the configured upstream host(s).
+func (s *ServiceDef) IsRemote() bool {
+	return s.Remote != "" || len(s.RemotePerInterface) > 0
+}
+
+// RemoteHostFor returns the upstream host (without port) configured for
+// the given interface. The per-interface override wins; otherwise the
+// service-level Remote is used. The returned string may already contain
+// a ":port" suffix when explicitly set in RemotePerInterface.
+func (s *ServiceDef) RemoteHostFor(ifaceName string) string {
+	if h, ok := s.RemotePerInterface[ifaceName]; ok {
+		return h
+	}
+	return s.Remote
 }
 
 var _ starlark.Value = (*ServiceDef)(nil)

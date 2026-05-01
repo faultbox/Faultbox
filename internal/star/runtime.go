@@ -2600,6 +2600,21 @@ func (rt *Runtime) requiredFaultRules() []engine.FaultRule {
 // the enclosing fault_matrix row continues without aborting the
 // whole suite.
 func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) error {
+	// Reject syscall-level faults on remote services (RFC-036). Faultbox does
+	// not own a remote service's process, so seccomp-notify cannot intercept
+	// its syscalls. Surface this as a hard error rather than the silent
+	// no-seccomp-session skip used for seccomp=False, because remote services
+	// imply a deliberate user choice and "I tried X, it silently did nothing"
+	// is the failure mode this RFC is built to prevent.
+	if svc, ok := rt.services[svcName]; ok && svc.IsRemote() && len(faults) > 0 {
+		keys := make([]string, 0, len(faults))
+		for k := range faults {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return fmt.Errorf("service %q is remote (remote=%q); syscall-level faults (%s) are not available on remote services because Faultbox does not own the process. Use a protocol fault (response=, error=, slow=) at the interface layer (e.g. fault(%s.<iface>, response(status=503), run=...)) or replace remote= with mock_service() if you need full control", svcName, anyHostFor(svc), strings.Join(keys, ", "), svcName)
+	}
+
 	rt.faultsMu.Lock()
 	rt.faults[svcName] = faults
 	rt.faultsMu.Unlock()
