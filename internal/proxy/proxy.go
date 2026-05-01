@@ -111,11 +111,23 @@ func matchGlob(actual, pattern string) bool {
 	return strings.EqualFold(actual, pattern)
 }
 
-// OnProxyEvent is called when the proxy intercepts and acts on a request.
+// OnProxyEvent is called when the proxy intercepts and acts on a request,
+// and (RFC-034) for connection lifecycle / stall observability.
 type OnProxyEvent func(evt ProxyEvent)
 
 // ProxyEvent describes a proxy interception for trace emission.
+//
+// Type discriminates the event family — empty defaults to "proxy" (the
+// historical fault-rule-fired event) for backward compatibility with
+// every emit site that doesn't set it. RFC-034 events set Type
+// explicitly to one of:
+//
+//   - "proxy_conn_open"          — accepted client connection + dialed upstream
+//   - "proxy_conn_close"         — connection terminated; carries duration + byte counts
+//   - "proxy_handshake_complete" — protocol-aware proxies only; auth phase done
+//   - "proxy_stall"              — read direction blocked on pending bytes for ≥ threshold
 type ProxyEvent struct {
+	Type     string            // "" → "proxy" (legacy); RFC-034 emit sites set explicitly
 	Protocol string
 	Action   string // "error", "delay", "drop", "respond", "forward"
 	From     string // source service

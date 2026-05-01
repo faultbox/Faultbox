@@ -13,6 +13,91 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.20] - 2026-05-01
+
+RFC-034: proxy traffic observability. The Faultbox transparent
+proxy emits four new event families through the existing
+`OnProxyEvent` hook so the bundle's report shows connection
+lifecycle, byte flow, and stall conditions at the proxy layer:
+
+- `proxy_conn_open` — accepted client + dialed upstream
+- `proxy_conn_close` — connection done; carries `duration_ms`,
+  `bytes_c2s`, `bytes_s2c`, `reason` (`client_eof` / `server_eof`
+  / `context_cancel` / `io_error` / `stall_timeout` / `rule_drop`)
+- `proxy_handshake_complete` — protocol-aware proxies only;
+  emitted after auth phase completes (mysql, postgres, redis)
+- `proxy_stall` — read direction blocked on pending bytes for
+  ≥ stall threshold (default 5s warn, 30s extend; one stall event
+  per direction per tier per connection)
+
+Customer-driven (inDrive Freight, 2026-04-28). The v0.12.15.x
+arc spent multi-day debug cycles on every proxy-forwarding bug
+because the report timeline showed `proxy_started → 60s of
+silence → exit_code=2` with no hint that the proxy was the
+issue. Diagnosis required SUT-side instrumentation. With these
+events, a stalled MySQL handshake or a half-duplex deadlock
+shows up directly in the bundle.
+
+### Added
+
+- **New `ProxyEvent.Type` field** on `internal/proxy.ProxyEvent`.
+  Empty defaults to `"proxy"` for backward compatibility with
+  every existing rule-fired emit site that doesn't set it; new
+  RFC-034 emit sites set it explicitly to one of the four event
+  type constants. Runtime callback dispatches on Type.
+
+- **`internal/proxy/observability.go`** — `connTracker` per
+  connection, `EmitOpen` / `EmitHandshakeComplete` / `EmitClose`
+  / `EmitStall` methods, `WrapClientReader` / `WrapServerReader`
+  helpers for io.Copy byte counting, `AddBytesC2S` / `AddBytesS2C`
+  for per-packet plugins, `classifyCloseReason` shared error
+  mapping. Short-hex `conn_id` correlates open/close/stall
+  events for the same connection in the bundle.
+
+- **Wired in 4 plugins**: `tcp.go` (open/close + stall watcher),
+  `mysql.go` (open/close + handshake + per-packet bytes),
+  `postgres.go` (open/close + handshake + per-message bytes),
+  `redis.go` (open/close + first-command handshake + per-RESP
+  bytes). The remaining 9 plugins (http, http2, grpc, kafka,
+  mongodb, cassandra, clickhouse, amqp, nats, memcached, udp)
+  follow in a separate PR — same pattern, no schema changes.
+
+- **`docs/spec-language.md`** event-types table extended with
+  the four new types so spec authors can write monitors and
+  assertions against them (`assert_eventually(where=lambda e:
+  e.type == "proxy_stall")`).
+
+### Internal
+
+- New `internal/proxy/observability_test.go` covers
+  open/close/handshake-once/nil-onEvent/byte-flow/close-reason
+  classification — satisfies #84 proxy-coverage gate for the
+  new file.
+
+- **Subtle bug avoided in tcp.go**: the splice block was
+  rewritten to use wrapped readers for byte counting, but the
+  initial draft also added a second `<-done` wait after the
+  first to ensure byte counts settled before EmitClose. That
+  hung healthy long-lived connections (redis pipelining,
+  keepalives) — neither io.Copy returns until peer closes, so
+  waiting on the second drain blocked forever. Reverted to
+  single `<-done` semantics; byte counts at EmitClose may be
+  slightly under-final (last io.Copy buffer in flight) but the
+  conn lifecycle stays unblocked. Caught in Lima sweep before
+  commit.
+
+### Out of scope (follow-up PRs)
+
+- 9 remaining protocol plugins (http, http2, grpc, kafka,
+  mongodb, cassandra, clickhouse, amqp, nats, memcached, udp)
+  still need conn_open/close emits.
+- Renderer-side rich rendering of the new event types in the
+  swim-lane (proxy_stall ring, proxy_handshake_complete tick).
+  Currently they fall through the report's generic event-display
+  path; readable but not specially styled.
+- CLI flags `--max-proxy-events` and `--proxy-stall-threshold`
+  for ops/CI tuning. Defaults work today.
+
 ## [0.12.19] - 2026-05-01
 
 Container-mode `observe=` wiring + regex decoder bugfix.
@@ -1297,7 +1382,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.19...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.20...HEAD
+[0.12.20]: https://github.com/faultbox/Faultbox/compare/release-0.12.19...release-0.12.20
 [0.12.19]: https://github.com/faultbox/Faultbox/compare/release-0.12.18...release-0.12.19
 [0.12.18]: https://github.com/faultbox/Faultbox/compare/release-0.12.17...release-0.12.18
 [0.12.17]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.17

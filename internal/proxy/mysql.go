@@ -74,15 +74,29 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
-	// Forward handshake: server greeting → client auth → server OK.
+	// RFC-034: per-connection lifecycle tracker. Emits proxy_conn_open
+	// now, proxy_handshake_complete after auth succeeds, and
+	// proxy_conn_close in deferred cleanup with byte counts +
+	// termination reason. Byte counters update inside the
+	// command-phase loop (handshake bytes are small relative to
+	// command-phase traffic; v1 reports command-phase bytes only).
+	tracker := newConnTracker(p.onEvent, p.svcName, "mysql", "mysql",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+
 	if err := p.forwardHandshake(clientConn, serverConn); err != nil {
+		closeReason = classifyCloseReason(err, "client")
 		return
 	}
+	tracker.EmitHandshakeComplete("", 0)
 
 	// Proxy command packets.
 	for {
 		select {
 		case <-ctx.Done():
+			closeReason = "context_cancel"
 			return
 		default:
 		}
@@ -92,8 +106,10 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		// MySQL packet: 3-byte length (little-endian) + 1-byte sequence + payload.
 		header := make([]byte, 4)
 		if _, err := io.ReadFull(clientConn, header); err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
+		tracker.AddBytesC2S(4)
 
 		payloadLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
 		if payloadLen == 0 {
@@ -102,8 +118,10 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 		payload := make([]byte, payloadLen)
 		if _, err := io.ReadFull(clientConn, payload); err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
+		tracker.AddBytesC2S(payloadLen)
 
 		// COM_QUERY = 0x03, COM_STMT_PREPARE = 0x16
 		if len(payload) > 0 && (payload[0] == 0x03 || payload[0] == 0x16) {
@@ -115,16 +133,21 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 		// Forward to server.
 		if _, err := serverConn.Write(header); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 		if _, err := serverConn.Write(payload); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 
 		// Forward server response(s) back to client.
-		if err := p.forwardResponse(serverConn, clientConn); err != nil {
+		respBytes, err := p.forwardResponse(serverConn, clientConn)
+		if err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
+		tracker.AddBytesS2C(respBytes)
 	}
 }
 
@@ -282,39 +305,51 @@ func (p *mysqlProxy) forwardHandshake(client, server net.Conn) error {
 
 // forwardResponse forwards MySQL response packets from server to client.
 // MySQL responses can be multi-packet (result sets, etc.).
-func (p *mysqlProxy) forwardResponse(server, client net.Conn) error {
+//
+// Returns total bytes read from the server side so the
+// connection-lifecycle tracker can update bytes_s2c for
+// proxy_conn_close. Includes packet headers + payloads.
+func (p *mysqlProxy) forwardResponse(server, client net.Conn) (int, error) {
+	bytesRead := 0
 	// Read first packet to determine response type.
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(server, header); err != nil {
-		return err
+		return bytesRead, err
 	}
+	bytesRead += 4
 	payloadLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
 	payload := make([]byte, payloadLen)
 	if payloadLen > 0 {
 		if _, err := io.ReadFull(server, payload); err != nil {
-			return err
+			return bytesRead, err
 		}
+		bytesRead += payloadLen
 	}
 
 	// Forward to client.
 	if _, err := client.Write(header); err != nil {
-		return err
+		return bytesRead, err
 	}
 	if _, err := client.Write(payload); err != nil {
-		return err
+		return bytesRead, err
 	}
 
 	// If OK (0x00), EOF (0xFE), or Error (0xFF) — done.
 	if payloadLen > 0 && (payload[0] == 0x00 || payload[0] == 0xFE || payload[0] == 0xFF) {
-		return nil
+		return bytesRead, nil
 	}
 
 	// Otherwise it's a result set — forward until EOF marker.
 	// Column definitions + rows + EOF.
 	for {
 		if err := forwardMySQLPacket(server, client); err != nil {
-			return err
+			return bytesRead, err
 		}
+		// Approximate: forwardMySQLPacket reads 4-byte header + payload
+		// and forwards both, but doesn't return the byte count. v1
+		// over-approximates by adding the header (4) per iteration; the
+		// peek-and-continue path below adds the actual payload size.
+		bytesRead += 4
 		// Check for EOF — simplified, just forward a bounded number.
 		// In practice we'd parse the column count and track state.
 		// For the proxy, forwarding all packets until server stops is sufficient.
@@ -324,14 +359,16 @@ func (p *mysqlProxy) forwardResponse(server, client net.Conn) error {
 		n, err := server.Read(peek)
 		server.SetReadDeadline(time.Time{}) // reset
 		if err != nil || n == 0 {
-			return nil // response complete
+			return bytesRead, nil // response complete
 		}
+		bytesRead += n
 		// Got more data — forward it.
 		payloadLen = int(peek[0]) | int(peek[1])<<8 | int(peek[2])<<16
 		client.Write(peek[:n])
 		if payloadLen > 0 {
 			remaining := make([]byte, payloadLen)
 			io.ReadFull(server, remaining)
+			bytesRead += payloadLen
 			client.Write(remaining)
 		}
 	}

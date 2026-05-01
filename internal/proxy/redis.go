@@ -76,11 +76,24 @@ func (p *redisProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	// RFC-034: per-connection lifecycle tracker. Redis has a thin
+	// "handshake" — first command is typically HELLO (RESP3) or AUTH;
+	// after the response returns we mark handshake_complete so stall
+	// events distinguish handshake-phase from command-phase. Byte
+	// counters update inline at each RESP read/write.
+	tracker := newConnTracker(p.onEvent, p.svcName, "main", "redis",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+
 	clientReader := bufio.NewReader(clientConn)
+	commandsServed := 0
 
 	for {
 		select {
 		case <-ctx.Done():
+			closeReason = "context_cancel"
 			return
 		default:
 		}
@@ -90,6 +103,7 @@ func (p *redisProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		// Read RESP command from client.
 		args, err := readRESPArray(clientReader)
 		if err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
 		if len(args) == 0 {
@@ -185,7 +199,9 @@ func (p *redisProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 		// Forward to real Redis.
 		raw := encodeRESPArray(args)
+		tracker.AddBytesC2S(len(raw))
 		if _, err := serverConn.Write([]byte(raw)); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 
@@ -193,10 +209,28 @@ func (p *redisProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		serverReader := bufio.NewReader(serverConn)
 		resp, err := readRESPRaw(serverReader)
 		if err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
+		tracker.AddBytesS2C(len(resp))
 		if _, err := clientConn.Write(resp); err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
+		}
+
+		// First successful command round-trip marks handshake as
+		// complete. Redis doesn't have a strict handshake boundary
+		// (HELLO is optional, AUTH is conditional) so we treat the
+		// first round-trip as the proxy's handshake-complete moment.
+		commandsServed++
+		if commandsServed == 1 {
+			authMethod := ""
+			if command == "HELLO" {
+				authMethod = "hello"
+			} else if command == "AUTH" {
+				authMethod = "auth"
+			}
+			tracker.EmitHandshakeComplete(authMethod, 1)
 		}
 	}
 }

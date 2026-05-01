@@ -2528,6 +2528,12 @@ Events use dotted `event_type` for PObserve compatibility:
 | `step_recv.<service>` | Test driver received response from service |
 | `fault_applied` | Fault rules activated on a service |
 | `fault_removed` | Fault rules deactivated |
+| `proxy_conn_open` | Transparent proxy accepted client + dialed upstream (RFC-034) |
+| `proxy_conn_close` | Proxy connection terminated; carries `bytes_c2s` / `bytes_s2c` / `duration_ms` / `reason` |
+| `proxy_handshake_complete` | Protocol-aware proxy finished its auth/handshake phase (mysql, postgres, redis) |
+| `proxy_stall` | Proxy direction blocked on pending bytes for ≥ stall threshold (default 5s warn, 30s extend) |
+| `stdout` | Service stdout line (when `observe=[stdout(...)]`) |
+| `stderr` | Service stderr line (when `observe=[stderr(...)]`) |
 
 The `partition_key` field (default: service name) enables routing events to
 per-service PObserve monitor instances.
