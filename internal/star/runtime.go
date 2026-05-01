@@ -291,7 +291,18 @@ func New(logger *slog.Logger) *Runtime {
 		ServiceStdout:     os.Stdout,
 	}
 	rt.proxyMgr = proxy.NewManager(func(evt proxy.ProxyEvent) {
-		rt.events.Emit("proxy", evt.To, evt.Fields)
+		// RFC-034: ProxyEvent.Type discriminates the event family.
+		// Legacy emit sites (rule-fired faults from per-protocol
+		// plugins) leave Type empty, falling through to the historical
+		// "proxy" type. New connection-lifecycle / stall emissions set
+		// Type explicitly (proxy_conn_open / _close /
+		// _handshake_complete / proxy_stall) so the report can render
+		// them distinctly.
+		eventType := evt.Type
+		if eventType == "" {
+			eventType = "proxy"
+		}
+		rt.events.Emit(eventType, evt.To, evt.Fields)
 	})
 	return rt
 }

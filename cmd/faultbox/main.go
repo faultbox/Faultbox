@@ -46,7 +46,7 @@ func main() {
 }
 
 // version is set via -ldflags at build time.
-var version = "0.12.19"
+var version = "0.12.20"
 
 func run() int {
 	args := os.Args[1:]

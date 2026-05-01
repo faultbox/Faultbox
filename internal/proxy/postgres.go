@@ -75,22 +75,37 @@ func (p *postgresProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	// RFC-034: per-connection lifecycle tracker. Postgres has a fixed
+	// 3-phase handshake (startup → server response loop → ready); we
+	// mark handshake_complete once forwardUntilReady returns the first
+	// ReadyForQuery byte. Byte counters update inline in the
+	// command-phase loop.
+	tracker := newConnTracker(p.onEvent, p.svcName, "postgres", "postgres",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+
 	// Phase 1: Forward the startup handshake transparently.
 	// Client sends startup message (no type byte, just length + payload).
 	if err := p.forwardStartup(clientConn, serverConn); err != nil {
+		closeReason = classifyCloseReason(err, "client")
 		return
 	}
 
 	// Forward server's response to startup (AuthenticationOk, ParameterStatus, etc.)
 	// until we see ReadyForQuery ('Z').
 	if err := p.forwardUntilReady(serverConn, clientConn); err != nil {
+		closeReason = classifyCloseReason(err, "server")
 		return
 	}
+	tracker.EmitHandshakeComplete("", 0)
 
 	// Phase 2: Proxy query messages.
 	for {
 		select {
 		case <-ctx.Done():
+			closeReason = "context_cancel"
 			return
 		default:
 		}
@@ -100,12 +115,15 @@ func (p *postgresProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		// Read message type (1 byte) + length (4 bytes).
 		header := make([]byte, 5)
 		if _, err := io.ReadFull(clientConn, header); err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
+		tracker.AddBytesC2S(5)
 
 		msgType := header[0]
 		msgLen := int(binary.BigEndian.Uint32(header[1:5]))
 		if msgLen < 4 {
+			closeReason = "io_error"
 			return
 		}
 
@@ -113,8 +131,10 @@ func (p *postgresProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		body := make([]byte, msgLen-4)
 		if len(body) > 0 {
 			if _, err := io.ReadFull(clientConn, body); err != nil {
+				closeReason = classifyCloseReason(err, "client")
 				return
 			}
+			tracker.AddBytesC2S(len(body))
 		}
 
 		// Check if this is a Query ('Q') or Parse ('P') message.
@@ -129,16 +149,23 @@ func (p *postgresProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 		// Forward to server.
 		if _, err := serverConn.Write(header); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 		if len(body) > 0 {
 			if _, err := serverConn.Write(body); err != nil {
+				closeReason = classifyCloseReason(err, "server")
 				return
 			}
 		}
 
 		// Forward server response back to client until ReadyForQuery.
+		// Server response bytes aren't counted at this level — the
+		// helper doesn't expose its byte count and parsing it
+		// inline would duplicate the logic. v1 of RFC-034 reports
+		// client→server bytes only for postgres; mysql is similar.
 		if err := p.forwardUntilReady(serverConn, clientConn); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 	}

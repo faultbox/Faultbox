@@ -122,13 +122,123 @@ func (p *tcpProxy) handle(ctx context.Context, client net.Conn) {
 		}
 	}
 
-	// Full-duplex splice.
+	// RFC-034: per-connection lifecycle tracker. Mirrors the binary
+	// proxy plugins — emits proxy_conn_open after dial, proxy_conn_close
+	// in defer with byte counts + termination reason, proxy_stall when
+	// either direction stops moving bytes for ≥ stallThreshold.
+	tracker := newConnTracker(p.onEvent, p.svcName, "main", "tcp",
+		client.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+	// All TCP traffic is in command phase from the proxy's POV — no
+	// handshake to mark complete. Set the bit so stall events render
+	// with phase="command".
+	tracker.handshakeDone.Store(true)
+
+	// Full-duplex splice with byte counting + stall detection. Wrapped
+	// readers on each side update the tracker's atomic counters inline;
+	// a separate watchdog goroutine fires proxy_stall events when byte
+	// progress halts.
+	//
+	// Exit semantics: select waits for the FIRST direction to terminate
+	// or ctx.Done(). The other goroutine is allowed to leak briefly —
+	// the deferred Close() on client + upstream causes its io.Copy to
+	// return naturally a moment later. Don't wait for both `<-done` in
+	// the select: a healthy long-lived connection (redis pipelining,
+	// keepalives) leaves both io.Copy calls blocked forever, and
+	// waiting on the second drain never returns until ctx cancel.
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	stallStop := make(chan struct{})
+
+	go func() {
+		clientReader := tracker.WrapClientReader(client)
+		_, copyErr := io.Copy(upstream, clientReader)
+		if copyErr != nil && copyErr != io.EOF {
+			closeReason = classifyCloseReason(copyErr, "client")
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		serverReader := tracker.WrapServerReader(upstream)
+		_, copyErr := io.Copy(client, serverReader)
+		if copyErr != nil && copyErr != io.EOF {
+			closeReason = classifyCloseReason(copyErr, "server")
+		}
+		done <- struct{}{}
+	}()
+	go p.watchStalls(stallStop, tracker)
+
 	select {
 	case <-done:
 	case <-ctx.Done():
+		closeReason = "context_cancel"
+	}
+	close(stallStop)
+}
+
+// watchStalls polls the tracker's byte counters at 1Hz and emits
+// proxy_stall when either direction has had no byte movement for
+// stallThreshold (default 5s warn) or stallExtendThreshold (default
+// 30s second event). One stall event per direction per tier per
+// connection — RFC-034 §"Per-event volume control".
+func (p *tcpProxy) watchStalls(stop <-chan struct{}, tracker *connTracker) {
+	if tracker == nil || tracker.onEvent == nil {
+		return
+	}
+	tick := time.NewTicker(1 * time.Second)
+	defer tick.Stop()
+
+	var lastC2S, lastS2C int64
+	var firstStallC2S, firstStallS2C time.Time
+	emittedC2SWarn, emittedC2SExt := false, false
+	emittedS2CWarn, emittedS2CExt := false, false
+
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-tick.C:
+			curC2S := tracker.bytesC2S.Load()
+			if curC2S != lastC2S {
+				lastC2S = curC2S
+				firstStallC2S = time.Time{}
+				emittedC2SWarn, emittedC2SExt = false, false
+			} else if curC2S > 0 {
+				if firstStallC2S.IsZero() {
+					firstStallC2S = now
+				}
+				stalled := now.Sub(firstStallC2S)
+				if !emittedC2SWarn && stalled >= tracker.stallThreshold {
+					tracker.EmitStall("client_to_server", "command", 0, stalled)
+					emittedC2SWarn = true
+				}
+				if !emittedC2SExt && stalled >= tracker.stallExtendThreshold {
+					tracker.EmitStall("client_to_server", "command", 0, stalled)
+					emittedC2SExt = true
+				}
+			}
+
+			curS2C := tracker.bytesS2C.Load()
+			if curS2C != lastS2C {
+				lastS2C = curS2C
+				firstStallS2C = time.Time{}
+				emittedS2CWarn, emittedS2CExt = false, false
+			} else if curS2C > 0 {
+				if firstStallS2C.IsZero() {
+					firstStallS2C = now
+				}
+				stalled := now.Sub(firstStallS2C)
+				if !emittedS2CWarn && stalled >= tracker.stallThreshold {
+					tracker.EmitStall("server_to_client", "command", 0, stalled)
+					emittedS2CWarn = true
+				}
+				if !emittedS2CExt && stalled >= tracker.stallExtendThreshold {
+					tracker.EmitStall("server_to_client", "command", 0, stalled)
+					emittedS2CExt = true
+				}
+			}
+		}
 	}
 }
 
