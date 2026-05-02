@@ -13,6 +13,64 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.27] - 2026-05-02
+
+RFC-038 Phase 3 (4 of 4) — Redis plugin TLS migration. **Phase 3
+is now complete** for the four customer-priority plugins (http,
+http2, gRPC, Kafka, Redis). The remaining 10 plugins —
+postgres, mysql, mongodb, cassandra, clickhouse, memcached, nats,
+amqp, tcp, udp — are deferred to RFC-039 (separate follow-up RFC
+covering the SSLRequest-upgrade design and the protocols that
+need it).
+
+### Changed
+
+- **`redis` plugin migrated to TLSAware.** Redis 6+ supports TLS
+  via a separate `tls-port` config entry — no in-band SSL upgrade,
+  just "TLS from byte 1" on the configured port. Same wrap-and-dial
+  pattern as Kafka:
+  - Listener: `proxy.ListenTLS(serverTLS)` when set; plain
+    `Listen()` otherwise.
+  - Upstream: `proxy.Dial(ctx, target, clientTLS, 5s)` replaces
+    `net.DialTimeout`.
+  - Plaintext path runs unchanged — `redis_test.go`'s RESP3 corpus
+    keeps green.
+- **Coverage gate exemption dropped** for `redis.go`. The existing
+  `redis_test.go` (RESP3 HELLO map / set / attribute regression
+  suite from v0.12.15.x) already satisfied the #84 requirement;
+  the exemption was stale. Removed.
+
+### Tests
+
+4 new tests in `internal/proxy/redis_tls_test.go`:
+
+| Test | Covers |
+|---|---|
+| `TestRedisProxy_TLSEndToEnd` | RESP-over-TLS at both legs |
+| `TestRedisProxy_TLSRuleInjection` | key-glob error rule fires inside TLS tunnel |
+| `TestRedisProxy_PlaintextStillWorks` | plaintext regression |
+| `TestRedisProxy_ImplementsTLSAware` | type-assertion contract |
+
+### Phase 3 wrap-up
+
+Five plugins now terminate TLS at the proxy and / or dial upstream
+over TLS, covering the customer's three explicit gaps:
+- ✅ HTTPS responses (#2): http plugin
+- ✅ gRPC-TLS (#1): gRPC plugin (and http2 for HTTPS HTTP/2)
+- ✅ Kafka TLS: Kafka plugin (broker SSL listener)
+- ✅ Redis TLS: Redis plugin (`tls-port`)
+
+The customer's fourth implicit ask — TLS-Postgres / TLS-MySQL
+(#3) — remains gated on the SSLRequest-upgrade design and
+follows in RFC-039. Until then, declarations like
+`interface("db", "postgres", 5432, tls=...)` continue to emit
+the `proxy_tls_pending` warning.
+
+Full repo `go test ./... -race` green; cross-compile + Lima
+demo-container 4/4 PASS.
+
+Version 0.12.26 → 0.12.27.
+
 ## [0.12.26] - 2026-05-02
 
 RFC-038 Phase 3 (3 of 4) — Kafka plugin TLS migration. Brokers

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math/rand"
@@ -22,6 +23,13 @@ type redisProxy struct {
 	svcName  string
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+
+	// RFC-038 Phase 3: TLS material. Redis 6+ supports TLS via a
+	// separate `tls-port` config entry — no in-band SSL upgrade,
+	// just "TLS from byte 1" on the configured port. So the
+	// wrap-and-dial pattern from http.go applies cleanly.
+	serverTLS *tls.Config
+	clientTLS *tls.Config
 }
 
 func newRedisProxy(onEvent OnProxyEvent, svcName string) *redisProxy {
@@ -33,10 +41,23 @@ func newRedisProxy(onEvent OnProxyEvent, svcName string) *redisProxy {
 
 func (p *redisProxy) Protocol() string { return "redis" }
 
+// SetTLS implements TLSAware. Must be called before Start.
+func (p *redisProxy) SetTLS(server, client *tls.Config) {
+	p.serverTLS = server
+	p.clientTLS = client
+}
+
 func (p *redisProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 
-	ln, listenAddr, err := Listen()
+	var ln net.Listener
+	var listenAddr string
+	var err error
+	if p.serverTLS != nil {
+		ln, listenAddr, err = ListenTLS(p.serverTLS)
+	} else {
+		ln, listenAddr, err = Listen()
+	}
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
@@ -69,8 +90,10 @@ func (p *redisProxy) Start(ctx context.Context, target string) (string, error) {
 func (p *redisProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	defer clientConn.Close()
 
-	// Connect to real Redis.
-	serverConn, err := net.DialTimeout("tcp", p.target, 5*time.Second)
+	// proxy.Dial routes through tls.Client + HandshakeContext when
+	// clientTLS is set; otherwise it's net.DialTimeout. The 5s
+	// budget covers both the TCP connect and the TLS handshake.
+	serverConn, err := Dial(ctx, p.target, p.clientTLS, 5*time.Second)
 	if err != nil {
 		return
 	}

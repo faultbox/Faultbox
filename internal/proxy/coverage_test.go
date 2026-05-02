@@ -77,7 +77,6 @@ var coverageExemptions = map[string]bool{
 	"http2.go":     true, // ditto
 	"memcached.go": true,
 	"nats.go":      true,
-	"redis.go":     true,
 	"udp.go":       true, // covered by clickhouse/cassandra adjacency tests; no dedicated udp passthrough yet
 }
 
