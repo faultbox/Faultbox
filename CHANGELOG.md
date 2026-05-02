@@ -13,6 +13,72 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.24] - 2026-05-02
+
+RFC-038 Phase 3 (1 of 4) — first plugin migrations. The `http` and
+`http2` proxies now terminate TLS at their listener and / or dial the
+upstream over TLS when the spec declares `tls=tls_cert(...)`. The
+plaintext path is unchanged: tests written before RFC-038 keep
+running bit-identical to v0.12.21. Per the customer's gap list, this
+ships items #2 (HTTPS) and partially #1 (gRPC-TLS — Phase 3 PR 2
+wires the gRPC plugin specifically).
+
+### Added
+
+- **`TLSAware` interface** in `internal/proxy/proxy.go` —
+  `SetTLS(server, client *tls.Config)`. Plugins implement this to
+  opt into Phase 3 TLS handling. Plugins that don't implement it
+  stay plain-TCP only and `proxy_tls_pending` is emitted.
+- **`Manager.EnsureProxyTLS(ctx, …, server, client)`** — TLS-aware
+  variant of `EnsureProxy`. Returns a `tlsApplied bool` so the
+  runtime can detect plugins that haven't migrated yet and warn
+  the customer. Existing `EnsureProxy` is unchanged for callers
+  that don't pass TLS material.
+- **`http` plugin migrated** — wraps the listener via `ListenTLS`
+  when `serverTLS` is set; reverse-proxy `Transport.TLSClientConfig`
+  hooks the customer's CA / mTLS material when `clientTLS` is set.
+  Plaintext path runs unchanged.
+- **`http2` plugin migrated** — same pattern, with ALPN `h2`
+  forced on both legs and `http2.ConfigureServer` installed when
+  the listener side speaks TLS so HTTP/2 dispatch works at the
+  http.Server layer. Plaintext h2c upgrade keeps working.
+
+### Wiring
+
+- `preStartProxies` resolves `iface.TLS.ResolveServerConfig` /
+  `ResolveClientConfig` against the spec directory and routes
+  through `EnsureProxyTLS`. The `proxy_started` event's `mode`
+  field is now `"tls"` when the migration applied (formerly
+  always `"passthrough"`); the `proxy_tls_pending` warning only
+  fires when `tlsApplied=false`.
+- Auto self-signed cert path includes the upstream host portion
+  in its SAN list so customers pointing at
+  `interface("main", "http", 8080)` against
+  `target=truck-api.svc.cluster.local:443` get a proxy cert that
+  covers the hostname without spelling out a SAN list.
+
+### Tests
+
+9 new tests in `internal/proxy/http_tls_test.go`:
+
+| Test | Covers |
+|---|---|
+| `TestHTTPProxy_TLSEndToEnd` | client HTTPS → proxy → upstream HTTPS |
+| `TestHTTPProxy_TLSRuleInjection` | path-glob fault rule fires inside the TLS tunnel |
+| `TestHTTPProxy_PlaintextStillWorks` | regression — no SetTLS = pre-RFC-038 behaviour |
+| `TestHTTPProxy_ImplementsTLSAware` | type-assertion contract |
+| `TestHTTP2Proxy_TLSEndToEnd` | h2-over-TLS at both legs, ALPN negotiation |
+| `TestHTTP2Proxy_TLSRuleInjection` | rule fires through h2 + TLS |
+| `TestHTTP2Proxy_PlaintextStillWorks` | h2c regression |
+| `TestHTTP2Proxy_ImplementsTLSAware` | type-assertion contract |
+| `TestEnsureProxyTLS_AppliedFlag` | manager flags TLS-aware vs plain plugins |
+
+Full repo `go test ./...` green; Lima `demo-container` 4/4 PASS
+(no TLS in demo yet — regression check on the http path that the
+demo uses).
+
+Version 0.12.23 → 0.12.24.
+
 ## [0.12.23] - 2026-05-02
 
 RFC-038 Phase 2 — Starlark spec-language surface for TLS. Customers

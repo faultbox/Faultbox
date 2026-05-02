@@ -9,6 +9,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,20 @@ type Proxy interface {
 
 	// Stop shuts down the proxy.
 	Stop() error
+}
+
+// TLSAware is implemented by protocol plugins that can terminate TLS at
+// their listener and / or dial the upstream over TLS. RFC-038 Phase 3
+// migrates plugins to this interface incrementally — plugins that don't
+// implement it stay plain-TCP only and EnsureProxyTLS falls back to the
+// existing behavior with a pending-tls warning.
+//
+// SetTLS must be called BEFORE Start. server is the cfg the proxy
+// presents to clients on its listener; client is the cfg the proxy
+// uses when dialing the upstream. Either may be nil (e.g. only the
+// listener side is encrypted).
+type TLSAware interface {
+	SetTLS(server, client *tls.Config)
 }
 
 // Rule describes a protocol-level fault to inject.
@@ -200,6 +215,55 @@ func (m *Manager) EnsureProxy(ctx context.Context, svcName, ifaceName, protocol,
 	}
 
 	return listenAddr, nil
+}
+
+// EnsureProxyTLS is the TLS-aware variant of EnsureProxy. It follows
+// the same lifecycle but, after constructing the plugin, attempts a
+// TLSAware type assertion and calls SetTLS(server, client) before
+// Start. Plugins that don't implement TLSAware run in plain-TCP mode
+// and the caller can detect this via the returned tlsApplied flag —
+// the runtime emits a proxy_tls_pending event in that case so users
+// know their tls=tls_cert(...) declaration is currently a no-op for
+// that protocol.
+//
+// Either of server or client may be nil:
+//   - server=nil: the proxy listens plaintext but dials upstream TLS
+//   - client=nil: the proxy listens TLS but dials upstream plaintext
+//   - both non-nil: end-to-end TLS termination at the proxy
+func (m *Manager) EnsureProxyTLS(ctx context.Context, svcName, ifaceName, protocol, targetAddr string, server, client *tls.Config) (listenAddr string, tlsApplied bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := svcName + ":" + ifaceName
+	if rp, ok := m.proxies[key]; ok {
+		return rp.listenAddr, false, nil // already running
+	}
+
+	p, err := newProxy(protocol, m.onEvent, svcName)
+	if err != nil {
+		return "", false, fmt.Errorf("create %s proxy for %s: %w", protocol, key, err)
+	}
+
+	if t, ok := p.(TLSAware); ok {
+		t.SetTLS(server, client)
+		tlsApplied = true
+	}
+
+	pCtx, cancel := context.WithCancel(context.Background())
+	addr, err := p.Start(pCtx, targetAddr)
+	if err != nil {
+		cancel()
+		return "", false, fmt.Errorf("start %s proxy for %s: %w", protocol, key, err)
+	}
+
+	m.proxies[key] = &runningProxy{
+		proxy:      p,
+		listenAddr: addr,
+		target:     targetAddr,
+		cancel:     cancel,
+	}
+
+	return addr, tlsApplied, nil
 }
 
 // AddRule adds a fault rule to the proxy for the given service interface.
