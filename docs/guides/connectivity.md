@@ -155,6 +155,39 @@ Faultbox.
 
 ---
 
+## TLS upstreams (RFC-038)
+
+Most production-shaped cluster services speak TLS — Postgres-with-`sslmode=require`,
+HTTPS REST, gRPC-over-TLS. `remote=` composes with `interface(..., tls=tls_cert(...))`
+so the proxy terminates TLS at the listener and dials the upstream over TLS:
+
+```python
+geo = service("geo-config",
+    interface("public", "http", 8080,
+        tls = tls_cert(insecure = True),  # accept self-signed cluster certs
+    ),
+    remote      = "geo-config.staging.svc.cluster.local",
+    healthcheck = tcp("geo-config.staging.svc.cluster.local:8080"),
+)
+```
+
+Practicalities:
+
+- Six protocols terminate TLS today: http, http2, grpc, kafka,
+  redis, tcp. Postgres / MySQL / MongoDB / Cassandra / ClickHouse /
+  memcached / NATS / amqp ship in RFC-039 — declaring `tls=` on
+  those produces a `proxy_tls_pending` event so the gap is visible.
+- The auto-generated proxy cert covers `127.0.0.1` and `localhost`
+  by default, so SUT-side TLS verification works without supplying
+  your own cert. Supply `tls_cert(cert=..., key=...)` if you need
+  a stable fingerprint.
+- Use `tcp()` healthchecks for TLS upstreams. The runtime's `http()`
+  healthcheck client verifies certs and doesn't accept a CA / insecure
+  flag yet.
+- For mTLS to the upstream, use `tls_cert(cert=..., key=..., ca=...)`
+  — the same value drives both legs (server config the SUT sees;
+  client config the proxy presents to the upstream).
+
 ## Reproducibility
 
 Bundles from runs that used `remote=` are flagged in `env.json` under

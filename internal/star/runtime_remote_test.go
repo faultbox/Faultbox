@@ -2,10 +2,12 @@ package star
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -481,6 +483,79 @@ geo = service("geo",
 	}
 	if respA.StatusCode != respB.StatusCode {
 		t.Errorf("status divergence: remote=%d local=%d", respA.StatusCode, respB.StatusCode)
+	}
+}
+
+// TestRemote_TLSUpstream_EndToEnd — RFC-036 × RFC-038 interop. A fake
+// HTTPS upstream stands in for a real TLS-required cluster service.
+// The spec combines `remote=` with `interface(..., tls=tls_cert(...))`;
+// Faultbox's proxy terminates TLS at the listener (auto-generated
+// self-signed cert) and dials the remote upstream over TLS using the
+// resolved client config. End-to-end: SUT → HTTPS proxy → TLS upstream.
+//
+// Locks in the contract that `remote=` works against TLS-required
+// upstreams, the most common shape in production-tier dev clusters.
+func TestRemote_TLSUpstream_EndToEnd(t *testing.T) {
+	upstreamSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"from":"tls-upstream"}`))
+	}))
+	defer upstreamSrv.Close()
+
+	// upstreamSrv.URL is "https://127.0.0.1:NNN" — split into host:port.
+	addr := strings.TrimPrefix(upstreamSrv.URL, "https://")
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split upstream addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+geo = service("geo",
+    interface("public", "http", %d, tls = tls_cert(insecure = True)),
+    remote      = "%s",
+    # Use tcp() — http() healthcheck against a self-signed httptest.NewTLSServer
+    # would need cert-trust plumbing the test doesn't care about. tcp() proves
+    # the listener is up; the TLS handshake/dial path is what we're testing.
+    healthcheck = tcp("%s:%d", timeout = "2s"),
+)
+`, port, host, host, port)
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	t.Cleanup(func() { rt.proxyMgr.StopAll() })
+
+	proxyAddr := rt.proxyMgr.GetProxyAddr("geo", "public")
+	if proxyAddr == "" {
+		t.Fatalf("no proxy addr for geo.public")
+	}
+
+	// SUT speaks HTTPS to the proxy. The proxy's auto-generated cert
+	// covers 127.0.0.1 (the loopback default), so a real client can
+	// negotiate TLS without skipping verification — but we use
+	// InsecureSkipVerify here to keep the test focused on the
+	// proxy-dials-tls-upstream leg rather than chain handling.
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+	resp, err := client.Get("https://" + proxyAddr + "/v1/regions/EU")
+	if err != nil {
+		t.Fatalf("GET via tls proxy: %v", err)
+	}
+	body := readAll(t, resp)
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d; want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "tls-upstream") {
+		t.Errorf("body = %q; want substring tls-upstream", body)
 	}
 }
 

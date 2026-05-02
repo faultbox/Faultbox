@@ -283,6 +283,42 @@ and assertions don't care that the upstream is a remote pod.
   Matrix runs are unchanged.
 - **`expect_*()` and `events().where(...)`** see the same proxy events.
 
+### TLS upstreams (RFC-038 interop)
+
+`interface(..., tls=tls_cert(...))` (RFC-038, v0.12.22+) composes
+cleanly with `remote=`. The proxy dials the remote upstream over
+TLS using the resolved client config, and the SUT speaks TLS to the
+proxy listener using the resolved server config. Auto-generated
+self-signed certs cover `127.0.0.1` and `localhost` by default, so
+the SUT-side TLS handshake works out of the box even when env
+substitution rewrites the user's `https://geo.staging:8080/...` to
+the proxy's loopback address.
+
+```python
+load("@faultbox/discovery/k8s.star", "k8s")
+
+geo = service("geo-config",
+    interface("public", "http", 8080,
+        tls = tls_cert(insecure = True),  # accept self-signed cluster certs
+    ),
+    remote      = k8s.service("geo-config", namespace = "staging"),
+    healthcheck = tcp(k8s.endpoint("geo-config", 8080, namespace = "staging")),
+)
+```
+
+Notes:
+
+- `tls_cert(insecure=True)` skips cert verification on the
+  upstream-dial leg — useful for dev clusters with self-signed
+  certs. For production-shaped trust, supply `ca=` instead.
+- Use a `tcp()` healthcheck for TLS upstreams unless you've wired
+  the runtime's HTTP healthcheck client to trust your CA — `http()`
+  against an `https://` upstream verifies certs by default.
+- Six protocols terminate TLS today (http, http2, grpc, kafka,
+  redis, tcp); the rest ship in RFC-039. A `proxy_tls_pending`
+  event surfaces when `tls=` is declared on a not-yet-migrated
+  protocol so the no-op is visible.
+
 ## Reproducibility — deferred to RFC-037
 
 Remote services break the `.fb` bundle reproducibility contract from
