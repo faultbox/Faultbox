@@ -56,6 +56,7 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | Redis proxy faults | 1 | `internal/proxy/redis_test.go` + corpus (redis_fault_basic) | 🟢 | Key-pattern matched error rules via stdlib recipes (oom/loading/readonly) |
 | MySQL proxy faults | 2 | unit + `sqlmatch` canonicalizer | 🟢 | Strong unit coverage |
 | Other protocols (HTTP2, UDP, Mongo, Cassandra, ClickHouse, Kafka, NATS, gRPC) | 2 | unit tests | 🟢 | 13 protocols, all have parse/proxy unit tests |
+| TLS-aware proxy (RFC-038) | 2 | `internal/proxy/{http,grpc,kafka,redis,tcp}_tls_test.go` + Phase 1/2 unit tests | 🟡 | 6 of 14 plugins migrated (http/http2/gRPC/Kafka/Redis/TCP). Postgres/MySQL/Mongo/Cassandra/ClickHouse/memcached/NATS/AMQP deferred to [RFC-039](https://github.com/faultbox/Faultbox/issues/106); UDP has no TLS story. Declarations against unmigrated plugins emit `proxy_tls_pending` event. |
 
 ### Spec-language surface — Supported (proposed)
 

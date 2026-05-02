@@ -32,6 +32,12 @@ Faultbox automatically expands families (`write` covers `write`, `writev`, `pwri
 Postgres, MySQL, Redis, Kafka, NATS, MongoDB, Cassandra, ClickHouse, AMQP,
 Memcached, UDP, and TCP protocol level via transparent proxy.
 
+**TLS-aware proxy** (RFC-038) -- declare `tls=tls_cert(...)` on an interface and
+the proxy terminates TLS at its listener and re-establishes it dialing upstream.
+All fault rules continue to fire on the plaintext between the two TLS legs. Six
+plugins ship today (http, http2, gRPC, Kafka, Redis, TCP); the rest are tracked
+in [RFC-039](https://github.com/faultbox/Faultbox/issues/106).
+
 **Recipe library** -- curated failure wrappers ship embedded in the binary.
 `load("@faultbox/recipes/mongodb.star", "mongodb")` gets you `mongodb.disk_full()`,
 `mongodb.replica_unavailable()`, and more — no filesystem setup needed.

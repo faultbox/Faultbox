@@ -23,7 +23,8 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 **Topology** —
 [`service`](#service-topology),
 [`mock_service`](#mock_service),
-[`interface`](#interface).
+[`interface`](#interface),
+[`tls_cert`](#tls-support) (RFC-038).
 
 **Healthchecks** —
 [`tcp`](#healthchecks),
@@ -236,7 +237,7 @@ first start. This creates your schema and test data before tests run.
 Services must be declared in dependency order — define `db` before `api` if
 `api` depends on `db`.
 
-### `interface(name, protocol, port, spec=)`
+### `interface(name, protocol, port, spec=, tls=)`
 
 Declares a communication interface for a service.
 
@@ -245,6 +246,10 @@ interface("public", "http", 8080)
 interface("main", "tcp", 5432)
 interface("internal", "grpc", 9090)
 interface("events", "kafka", 9092, spec="./events.avsc")
+
+# TLS upstream — proxy terminates and re-establishes TLS at both legs:
+interface("api", "https", 443, tls=tls_cert())
+interface("geo", "grpc", 443, tls=tls_cert(ca="certs/upstream-ca.pem"))
 ```
 
 | Parameter | Type | Required | Description |
@@ -253,6 +258,7 @@ interface("events", "kafka", 9092, spec="./events.avsc")
 | `protocol` | string | **yes** | Protocol type (`"http"`, `"tcp"`, `"grpc"`, etc.) |
 | `port` | int | **yes** | Port number |
 | `spec` | string | no | Path to protocol spec file (OpenAPI, protobuf, Avro, etc.) |
+| `tls` | `tls_cert(...)` | no | TLS material; the proxy terminates TLS at the listener and re-establishes it dialing upstream. See [TLS Support](#tls-support). |
 
 Protocols are provided by **plugins** — Go implementations registered at
 compile time. Each protocol defines its own step methods, healthcheck,
@@ -575,6 +581,120 @@ ch.main.exec(sql="INSERT INTO events (date, type) VALUES (today(), 'order')")
 resp = ch.main.query(sql="SELECT count() as n FROM events")
 # resp.data = [{"n": 1000000}]
 ```
+
+### TLS Support
+
+When `interface(..., tls=tls_cert(...))` is set, the Faultbox proxy
+**terminates TLS at its listener** and **re-establishes TLS dialing the
+upstream**. Between the two TLS legs the proxy sees plaintext, so all
+the protocol-aware fault rules (`http.error(path=...)`,
+`postgres.error(query=...)`, `redis.error(key=...)`, etc.) continue to
+fire exactly the same as on plaintext upstreams.
+
+This is the **opt-in TLS path** — without `tls=`, the proxy stays in
+plain-TCP mode (the pre-RFC-038 behavior). Existing specs are
+unchanged.
+
+#### `tls_cert(...)` — TLS material for an interface
+
+```python
+tls_cert(
+    proxy_cert = "certs/proxy-server.crt",   # cert proxy presents to clients
+    proxy_key  = "certs/proxy-server.key",
+    client_cert = "certs/proxy-client.crt",  # mTLS cert proxy uses upstream
+    client_key  = "certs/proxy-client.key",
+    ca = "certs/upstream-ca.pem",            # CA proxy trusts for upstream
+    insecure = False,                        # InsecureSkipVerify on upstream
+)
+```
+
+All kwargs are optional. `tls_cert()` (no args) is the dev/test
+default — the proxy auto-generates a self-signed server cert in
+memory, and trusts the system CA pool when verifying the upstream.
+
+| Kwarg | Type | Default | Purpose |
+|---|---|---|---|
+| `proxy_cert` | string | auto-generated self-signed | Server cert the proxy presents to clients connecting to its listener. |
+| `proxy_key` | string | (paired with `proxy_cert`) | Server key. Must be set if and only if `proxy_cert` is set. |
+| `client_cert` | string | none | mTLS client cert the proxy presents when dialing the upstream. |
+| `client_key` | string | (paired with `client_cert`) | mTLS client key. Must be set if and only if `client_cert` is set. |
+| `ca` | string | system CA pool | PEM bundle the proxy trusts when verifying the upstream's cert. |
+| `insecure` | bool | `False` | `InsecureSkipVerify` on the upstream side — dev escape hatch for self-signed upstreams. Mutually exclusive with `ca`. |
+
+**Validation runs at spec-load time.** Half-set cert/key pairs,
+missing files, garbage CA PEM, and `insecure=True` + `ca=`
+collisions all fail with clear errors before the proxy starts.
+
+**Relative paths resolve against the spec's directory.** Customers
+usually keep cert material in a `certs/` subfolder next to the spec.
+
+**`tls_cert()` is kwargs-only** — positional args are refused so a
+typo can't silently swap server / client material.
+
+#### Per-plugin TLS support matrix
+
+The proxy has 14 plugins. As of v0.12.28, six terminate TLS; the
+rest stay plain-TCP and emit a `proxy_tls_pending` warning when an
+interface declares `tls=`. The deferred plugins are tracked in
+[RFC-039](https://github.com/faultbox/Faultbox/issues/106).
+
+| Protocol | TLS support | Pattern | Notes |
+|---|---|---|---|
+| `http` | ✅ v0.12.24 | wrap-and-dial | HTTPS; `Transport.TLSClientConfig` upstream. |
+| `http2` | ✅ v0.12.24 | wrap-and-dial | ALPN `h2` forced; `http2.ConfigureServer` for dispatch. |
+| `grpc` | ✅ v0.12.25 | framework creds | `grpc.Creds(credentials.NewTLS(...))` rather than listener-wrap (gRPC owns its handshake). |
+| `kafka` | ✅ v0.12.26 | wrap-and-dial | Brokers expose plain + TLS on separate ports. |
+| `redis` | ✅ v0.12.27 | wrap-and-dial | Redis 6+ `tls-port`. RESP3 corpus unchanged. |
+| `tcp` | ✅ v0.12.28 | wrap-and-dial | Generic escape hatch for any "TLS from byte 1" service. Prefix-peek rules still fire on plaintext. |
+| `postgres` | 🟡 deferred | upgrade-in-band | SSLRequest preamble. RFC-039 PR 1. |
+| `mysql` | 🟡 deferred | upgrade-in-band | `CLIENT_SSL` capability. RFC-039 PR 2. |
+| `mongodb` | 🟡 deferred | wrap-and-dial | RFC-039 PR 3. |
+| `cassandra` | 🟡 deferred | wrap-and-dial | RFC-039 PR 4. |
+| `clickhouse` | 🟡 deferred | wrap-and-dial | RFC-039 PR 4. |
+| `nats` | 🟡 deferred | wrap-and-dial | RFC-039 PR 5. |
+| `amqp` | 🟡 deferred | wrap-and-dial | RFC-039 PR 5. |
+| `memcached` | 🟡 deferred | wrap-and-dial | RFC-039 PR 5. |
+| `udp` | ❌ no TLS | — | UDP has no TLS in the kernel sense. DTLS would be a separate RFC. |
+
+When an interface declares `tls=` against a 🟡 deferred plugin, the
+proxy still starts but the listener stays plaintext. The runtime
+emits a `proxy_tls_pending` event (visible in the bundle) and a
+warning to stderr so the discrepancy is visible — silence here would
+let "TLS handshake fails against proxy" debugging burn an hour.
+
+#### Common patterns
+
+**Dev / test against a TLS upstream with no cert management:**
+```python
+api = service("api", remote="api-prod.example.com",
+    interface("public", "http", 443, tls=tls_cert()),
+)
+```
+The proxy auto-generates its server cert; the upstream is verified
+against the system CA pool.
+
+**mTLS upstream (the inDrive Freight pattern):**
+```python
+geo = service("geo", remote="geo-config.svc.cluster.local",
+    interface("api", "grpc", 443,
+        tls = tls_cert(
+            client_cert = "certs/proxy-client.crt",
+            client_key  = "certs/proxy-client.key",
+            ca = "certs/upstream-ca.pem",
+        ),
+    ),
+)
+```
+The proxy presents its auto-cert to the SUT and `client_cert` to
+the upstream.
+
+**TLS-terminated upstream that uses a self-signed cert:**
+```python
+cache = service("cache", remote="redis-staging.local",
+    interface("main", "redis", 6380, tls=tls_cert(insecure=True)),
+)
+```
+`insecure=True` is logged at spec-load — use only for dev.
 
 ### Healthchecks
 
