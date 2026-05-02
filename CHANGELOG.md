@@ -13,6 +13,47 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.26] - 2026-05-02
+
+RFC-038 Phase 3 (3 of 4) — Kafka plugin TLS migration. Brokers
+configured with SSL listeners (the prod-shaped Kafka deployment) can
+now sit behind the proxy with topic-glob fault rules still firing.
+
+### Changed
+
+- **`kafka` plugin migrated to TLSAware.** Kafka has no in-band
+  SSL upgrade — brokers expose plain and TLS on separate ports —
+  so the wrap-and-dial pattern from http.go applies cleanly:
+  - Listener: `proxy.ListenTLS(serverTLS)` when set, plain
+    `Listen()` otherwise.
+  - Upstream: `proxy.Dial(ctx, target, clientTLS, 5s)` replaces
+    the bare `net.DialTimeout` call so TLS handshake honours
+    both ctx cancellation and the 5s budget.
+  - Plaintext path runs unchanged.
+- **Coverage gate exemption dropped** for `kafka.go`. The new
+  `kafka_test.go` (5 tests, including a byte-identity passthrough)
+  satisfies the #84 coverage requirement; the exemption that
+  predated this PR was the last "backfill candidate" tagged in the
+  list.
+
+### Tests
+
+5 new tests in `internal/proxy/kafka_test.go` (file did not exist
+before this PR — kafka was on the #84 backfill list):
+
+| Test | Covers |
+|---|---|
+| `TestKafkaProxy_Passthrough` | byte-identity round trip (#84 baseline) |
+| `TestKafkaProxy_TLSEndToEnd` | Kafka-over-TLS at both legs |
+| `TestKafkaProxy_TLSRuleInjection` | topic-glob drop fires inside TLS tunnel |
+| `TestKafkaProxy_PlaintextStillWorks` | plaintext regression |
+| `TestKafkaProxy_ImplementsTLSAware` | type-assertion contract |
+
+Full repo `go test ./... -race` green; cross-compile + Lima
+demo-container 4/4 PASS.
+
+Version 0.12.25 → 0.12.26.
+
 ## [0.12.25] - 2026-05-02
 
 RFC-038 Phase 3 (2 of 4) — gRPC plugin TLS migration. Closes the

@@ -75,7 +75,6 @@ var coverageExemptions = map[string]bool{
 	"amqp.go":      true, // no protocol round-trip test yet — backfill in v0.12.x
 	"http.go":      true, // covered by integration via poc/, but no unit-level passthrough
 	"http2.go":     true, // ditto
-	"kafka.go":     true, // backfill candidate
 	"memcached.go": true,
 	"nats.go":      true,
 	"redis.go":     true,
