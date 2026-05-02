@@ -402,12 +402,16 @@ func TestEnsureProxyTLS_AppliedFlag(t *testing.T) {
 		t.Errorf("http: expected tlsApplied=true")
 	}
 
-	// tcp: does NOT implement TLSAware → applied=false.
-	_, applied, err = mgr.EnsureProxyTLS(context.Background(), "svc", "tcp-iface", "tcp", mockLn.Addr().String(), serverCfg, nil)
+	// amqp: does NOT implement TLSAware → applied=false. (tcp is
+	// now migrated as of v0.12.28; pick an unmigrated plugin from
+	// the RFC-039 deferred set so the false-path of the assertion
+	// stays exercised. amqp will outlive http/http2/grpc/kafka/
+	// redis/tcp until its own TLS PR lands.)
+	_, applied, err = mgr.EnsureProxyTLS(context.Background(), "svc", "amqp-iface", "amqp", mockLn.Addr().String(), serverCfg, nil)
 	if err != nil {
-		t.Fatalf("tcp EnsureProxyTLS: %v", err)
+		t.Fatalf("amqp EnsureProxyTLS: %v", err)
 	}
 	if applied {
-		t.Errorf("tcp: expected tlsApplied=false (plugin not migrated yet)")
+		t.Errorf("amqp: expected tlsApplied=false (plugin not migrated yet)")
 	}
 }

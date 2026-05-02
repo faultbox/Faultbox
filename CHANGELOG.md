@@ -13,6 +13,61 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.28] - 2026-05-02
+
+RFC-038 Phase 3 (5 of 4) — generic TCP plugin TLS migration.
+A late addition: TCP is the long-tail escape hatch for any custom-
+protocol service that uses TLS but doesn't have a dedicated
+Faultbox plugin. Same wrap-and-dial pattern as kafka / redis;
+prefix-peek rule predicate (Rule.Method) still fires against the
+plaintext bytes between the two TLS legs.
+
+### Changed
+
+- **`tcp` plugin migrated to TLSAware.** `SetTLS(server, client)`:
+  - Listener: `proxy.ListenTLS(serverTLS)` when set; plain
+    `Listen()` otherwise.
+  - Upstream: `proxy.Dial(ctx, target, clientTLS, 5s)` replaces
+    `net.DialTimeout`.
+  - Plaintext path runs unchanged (existing TestTCPProxyPassThrough,
+    TestTCPProxyDropRule, TestTCPProxyRespondRule, TestTCPProxyPrefixMatch
+    keep green).
+- Added a small ctx-watcher goroutine that closes the listener on
+  ctx cancel. The pre-existing `*net.TCPListener` SetDeadline
+  trick in `acceptLoop` doesn't apply to the wrapped TLS listener
+  (`*tls.listener` is a private type), so without explicit close
+  Accept could leak past ctx cancellation. The watcher unblocks
+  Accept the moment ctx fires regardless of whether Stop() is also
+  called — matches the behavior of the SetDeadline polling loop.
+
+### Tests
+
+4 new tests in `internal/proxy/tcp_tls_test.go`:
+
+| Test | Covers |
+|---|---|
+| `TestTCPProxy_TLSEndToEnd` | client TLS → proxy → upstream TLS, byte-identity round trip |
+| `TestTCPProxy_TLSPrefixRuleStillFires` | prefix-match rule fires on plaintext between the two TLS legs |
+| `TestTCPProxy_PlaintextStillWorks` | plaintext regression (parallel guard to existing TestTCPProxyPassThrough) |
+| `TestTCPProxy_ImplementsTLSAware` | type-assertion contract |
+
+`TestEnsureProxyTLS_AppliedFlag` (added in #101) was probing
+`tcp` as the "plugin not migrated yet" exemplar; updated to use
+`amqp` instead so the false-path of the assertion stays exercised.
+
+### RFC-039 deferred set is now smaller
+
+Phase 3 deferred protocols left after this PR: postgres, mysql,
+mongodb, cassandra, clickhouse, memcached, nats, amqp, udp.
+Postgres/mysql still need the SSLRequest-upgrade design; the rest
+cluster around either the wrap-and-dial pattern (we know how) or
+no-meaningful-TLS (udp).
+
+Full repo `go test ./... -race` green; cross-compile + Lima
+demo-container 4/4 PASS.
+
+Version 0.12.27 → 0.12.28.
+
 ## [0.12.27] - 2026-05-02
 
 RFC-038 Phase 3 (4 of 4) — Redis plugin TLS migration. **Phase 3
