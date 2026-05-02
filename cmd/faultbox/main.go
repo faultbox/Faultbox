@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	faultbox "github.com/faultbox/Faultbox"
 	"github.com/faultbox/Faultbox/internal/bundle"
@@ -46,7 +47,7 @@ func main() {
 }
 
 // version is set via -ldflags at build time.
-var version = "0.12.28"
+var version = "0.12.29"
 
 func run() int {
 	args := os.Args[1:]
@@ -443,7 +444,7 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		if rcfg.Seed != nil {
 			seedVal = int64(*rcfg.Seed)
 		}
-		if err := emitBundle(logger, starFile, seedVal, result, bundlePath, rt.LoadedSpecs()); err != nil {
+		if err := emitBundle(logger, starFile, seedVal, result, bundlePath, rt.LoadedSpecs(), collectRemoteRecords(rt)); err != nil {
 			logger.Error("bundle emit failed", slog.String("error", err.Error()))
 			// Non-fatal: we still want pass/fail status to flow out.
 		}
@@ -2053,13 +2054,53 @@ func replaceFile(src, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
+// collectRemoteRecords walks the runtime's services and emits one
+// bundle.RemoteRecord per interface on each remote service. The output
+// is alphabetically sorted by (service, interface) so bundle env.json
+// produces stable diffs across runs. RFC-036.
+func collectRemoteRecords(rt *star.Runtime) []bundle.RemoteRecord {
+	var rows []bundle.RemoteRecord
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, svc := range rt.Services() {
+		if !svc.IsRemote() {
+			continue
+		}
+		ifaceNames := make([]string, 0, len(svc.Interfaces))
+		for n := range svc.Interfaces {
+			ifaceNames = append(ifaceNames, n)
+		}
+		sort.Strings(ifaceNames)
+		for _, ifaceName := range ifaceNames {
+			iface := svc.Interfaces[ifaceName]
+			host := svc.RemoteHostFor(ifaceName)
+			if !strings.Contains(host, ":") {
+				host = fmt.Sprintf("%s:%d", host, iface.Port)
+			}
+			rows = append(rows, bundle.RemoteRecord{
+				Service:    svc.Name,
+				Interface:  ifaceName,
+				Host:       host,
+				Protocol:   iface.Protocol,
+				ResolvedAt: now,
+			})
+		}
+	}
+	return rows
+}
+
 // emitBundle writes a `.fb` archive bundle capturing this run. The
 // bundle contains manifest.json (test summary), env.json (environment
 // fingerprint), trace.json (existing --output shape), and replay.sh
 // (one-liner reproduction script). Default path is
 // `run-<ts>-<seed>.fb` in cwd; override via --bundle or the
 // $FAULTBOX_BUNDLE_DIR env var. RFC-025.
-func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.SuiteResult, explicitPath string, specs map[string][]byte) error {
+//
+// `remotes` carries one record per (service, interface) pair on a
+// `service(remote=...)` declaration that was active during the run
+// (RFC-036). Empty when no remote services were used. Threaded through
+// to env.json so `faultbox replay` can detect non-deterministic bundles
+// and warn the user (see RFC-037 for the determinism story).
+func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.SuiteResult, explicitPath string, specs map[string][]byte, remotes []bundle.RemoteRecord) error {
 	if result == nil {
 		return nil
 	}
@@ -2084,6 +2125,7 @@ func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.S
 		Tests:           testRowsFromResult(result),
 		Trace:           traceBytes,
 		Specs:           specs,
+		Remotes:         remotes,
 	}
 	if result.Crash != nil {
 		in.Crash = &bundle.CrashInfo{

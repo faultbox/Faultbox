@@ -13,6 +13,155 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.29] - 2026-05-02
+
+RFC-036 — **remote services**. The single-keyword path from a local
+SUT to a real cluster pod. `service(remote=...)` declares a service
+whose process lives in a customer's k8s dev cluster (or any
+externally-reachable endpoint); Faultbox stands up its existing
+protocol proxy in front of each interface and dials the remote
+upstream. Every protocol-level fault — `response()`, `error()`,
+`slow()`, gRPC method targeting, SQL matchers — fires unchanged.
+The configurations that can't possibly work on a remote (syscall
+faults, `seed=`, `reset=`, `volumes=`, etc.) are rejected at spec
+load with explicit messages pointing at protocol faults or
+`mock_service()`.
+
+Closes the gap that the [2026-04-22 customer-feedback
+analysis](docs/design/2026-04-22-customer-feedback-analysis.md)
+explicitly deferred ("DevPlatform integration → 1.x"). The
+companion design RFC-037 (#94) frames the determinism question
+that remote services raise; this release ships the primitive with
+a documented best-effort reproducibility caveat and `faultbox
+replay` warning, leaving the offline-replay design open.
+
+### Added
+
+- **`service(remote=...)`** kwarg as a fourth source alongside
+  `binary` / `image` / `build`. Plain-string form
+  (`remote = "geo.staging.svc.cluster.local"`) applies the host to
+  every interface; per-interface override via the typed
+  `remotes({"public": "h1", "internal": "h2:9090"})` value.
+- **`remotes(dict)`** Starlark builtin returning the typed
+  per-interface map. Keys must match declared interface names;
+  values are `host` (interface port appended) or `host:port`.
+- **`@faultbox/discovery/k8s.star`** stdlib helper exposing
+  `k8s.service(name, namespace="default")`,
+  `k8s.endpoint(name, port, namespace="default")`, and
+  `k8s.local(name, port, namespace="default")` — pure string
+  sugar over `<name>.<namespace>.svc.cluster.local`. No runtime
+  k8s client; cluster connectivity stays the user's responsibility
+  via Telepresence connect / kubectl port-forward / in-cluster
+  execution / VPN.
+- **`startRemoteService`** runtime path mirrors `startMockService`:
+  no process, no seccomp, host-side healthcheck against the
+  user-declared remote address. On failure: explicit multi-line
+  hint pointing at the supported connectivity workflows.
+- **`service_started` event** for remote services carries
+  `kind="remote"` plus per-interface upstream addrs in the
+  payload — visible in trace and `.fb` bundle.
+- **`env.json` `remotes: [...]`** array records every
+  (service, interface, host, protocol, resolved_at) tuple from a
+  remote-using run. Present means: this bundle is not
+  deterministically replayable offline (RFC-037 territory).
+  Omitted entirely when no remote services were used.
+- **`faultbox replay`** prints a multi-line warning when a bundle's
+  `env.json` declares remotes, naming each
+  (service, interface) → (host, protocol) pair and pointing at
+  RFC-037 for the offline-replay story.
+- **`docs/guides/connectivity.md`** new guide covering the four
+  supported setups (Telepresence / in-cluster / port-forward /
+  VPN) with quick decision tree, walkthroughs, healthcheck
+  failure hint, and the TLS-upstream interop notes for RFC-038.
+- **`docs/spec-language.md`** new "Remote Services" subsection +
+  Primitive Index entries for `remotes()` and the discovery/
+  helpers.
+
+### Interop with RFC-038 (TLS-aware proxy)
+
+`interface(..., tls=tls_cert(...))` composes cleanly with
+`remote=` — the proxy dials the remote upstream over TLS using
+the resolved client config, the SUT speaks TLS to the proxy
+listener using the resolved server config. Auto-generated
+self-signed certs cover `127.0.0.1`/`localhost` so SUT-side
+verification works against the env-rewritten proxy loopback
+without extra cert plumbing. Six protocols terminate TLS today
+(http, http2, grpc, kafka, redis, tcp); the rest surface
+`proxy_tls_pending` until RFC-039 lands them.
+
+### Changed
+
+- **`proxyTargetAddr`** signature is now `(svc, iface)`. For
+  remote services the function returns the user-declared upstream
+  addr (`<remote>:<iface.port>` for plain-string form,
+  `<host:port>` for the per-interface override) instead of
+  `127.0.0.1:<port>`. Local services unchanged. All four call
+  sites updated (`preStartProxies`,
+  `builtinFaultProtocol`, `builtinFaultFromAssumption`,
+  `fault_scenario` body).
+- **`proxyAddrSubstitutionsFor`** adds substitutions for the
+  remote upstream addr so user env values like
+  `{"GEO_URL": "http://geo.staging:8080/"}` get rewritten to the
+  proxy listener. Without this the SUT would dial the remote pod
+  directly and protocol faults would never fire.
+- **Spec-load validation** rejects every kwarg that requires
+  process control on a remote service: `seed=`, `reset=`,
+  `reuse=`, `volumes=`, `ports=`, `args=`, `seccomp=`,
+  `observe=`, `ops=`, the launch sources (`binary`/`image`/
+  `build`). `healthcheck=` is **required**. Error messages name
+  the offending kwarg and suggest the right alternative.
+- **Fault rule registration** rejects syscall-level faults on
+  remote services at both `fault_assumption()` time (early
+  signal) and `applyFaults()` runtime (safety net). Protocol
+  faults route through unchanged.
+
+### Tests
+
+| File | Tests | Surface |
+|---|---|---|
+| `internal/star/builtins_remote_test.go` | 32 | Spec-load validation, every kwarg accept/reject, `remotes()` typed value, k8s discovery helper, fault rule routing |
+| `internal/star/runtime_remote_test.go` | 10 | `startRemoteService` session registration, healthcheck-gated startup with hint, `kind=remote` event payload, `proxyTargetAddr` resolution (3 cases), env-host substitution, full HTTP loop, fault rewrite, local-vs-remote parity, mid-run upstream death, **TLS×remote end-to-end (RFC-038 interop)** |
+| `internal/bundle/bundle_test.go` | 2 | `env.json` remotes round-trip + omitempty when unused |
+| `cmd/faultbox/replay_test.go` | 2 | Warning printer + no-spurious-warn for non-remote bundles |
+| `docs/docs_remote_test.go` | 3 | String-grep gates for spec-language section, connectivity guide, feature-manifest entries |
+
+49 new tests in total. Full repo `go test ./...` green; `go vet
+./...` clean; cross-compile linux/arm64 OK; `make demo-container`
+4/4 pass on Lima against postgres/redis container demos
+(non-regression for the proxy datapath refactor).
+
+### Customer ergonomics
+
+A spec like:
+
+```python
+load("@faultbox/discovery/k8s.star", "k8s")
+
+geo = service("geo-config",
+    interface("public", "http", 8080),
+    remote      = k8s.service("geo-config", namespace = "staging"),
+    healthcheck = http(k8s.endpoint("geo-config", 8080, namespace = "staging") + "/healthz"),
+)
+
+api = service("truck-api",
+    interface("main", "http", 8000),
+    image       = "truck-api:dev",
+    depends_on  = [geo],
+    env         = {"GEO_URL": "http://%s/" % geo.public.addr},
+)
+
+fault_assumption("geo_unavailable",
+    target = geo.public,
+    rules  = [error(path = "/v1/regions/**", status = 503)],
+)
+```
+
+with one `telepresence connect` on the host fires real 503s into
+the SUT's calls to a real `geo-config` pod, no image distribution,
+no mock authoring.
+
+Version 0.12.28 → 0.12.29.
+
 ## [0.12.28] - 2026-05-02
 
 RFC-038 Phase 3 (5 of 4) — generic TCP plugin TLS migration.
@@ -1853,7 +2002,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.28...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.29...HEAD
+[0.12.29]: https://github.com/faultbox/Faultbox/compare/release-0.12.28...release-0.12.29
 [0.12.28]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
 [0.12.27]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
 [0.12.26]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28

@@ -12,8 +12,9 @@ import "embed"
 
 // Stdlib is the embedded standard library. It contains:
 //
-//   - recipes/<protocol>.star — curated fault recipes (RFC-018)
-//   - mocks/<protocol>.star — mock service constructors (RFC-017)
+//   - recipes/<protocol>.star    — curated fault recipes (RFC-018)
+//   - mocks/<protocol>.star      — mock service constructors (RFC-017)
+//   - discovery/<system>.star    — endpoint discovery helpers (RFC-036)
 //
 // Access is mediated by the runtime's load() resolver: specs reference
 // stdlib modules as "@faultbox/<area>/<name>.star", not by raw path.
@@ -22,7 +23,7 @@ import "embed"
 // call sites that predate the mock library and will be removed once those
 // are updated.
 //
-//go:embed recipes/*.star recipes/README.md mocks/*.star
+//go:embed recipes/*.star recipes/README.md mocks/*.star discovery/*.star
 var Stdlib embed.FS
 
 // Recipes is a backward-compatible alias for Stdlib. Same FS, same paths.

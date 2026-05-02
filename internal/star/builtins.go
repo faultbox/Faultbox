@@ -105,11 +105,55 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// plugin migration is when individual proxies actually
 		// terminate TLS using the resolved cfg.
 		"tls_cert": starlark.NewBuiltin("tls_cert", rt.builtinTLSCert),
+		// Remote services (RFC-036) — typed per-interface upstream-host
+		// override for `service(remote=...)`. The plain-string form is
+		// handled inline; remotes() exists for the rare case where
+		// interfaces of one logical service live on different hosts.
+		"remotes": starlark.NewBuiltin("remotes", builtinRemotes),
 	}
 }
 
-// service(name, [binary], *interfaces, image=, build=, healthcheck=, env=, depends_on=, volumes=)
+// remotes({"public": "host", "internal": "host:port"}) — returns a typed
+// per-interface upstream-host map for use as `service(..., remote=...)`.
+// Validation that keys match declared interfaces happens in service().
+func builtinRemotes(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("remotes() takes exactly one positional argument (a dict {iface: host}); got %d", len(args))
+	}
+	if len(kwargs) != 0 {
+		return nil, fmt.Errorf("remotes() does not accept keyword arguments")
+	}
+	dict, ok := args[0].(*starlark.Dict)
+	if !ok {
+		return nil, fmt.Errorf("remotes() argument must be a dict {iface: host}, got %s", args[0].Type())
+	}
+	hosts := make(map[string]string, dict.Len())
+	for _, item := range dict.Items() {
+		k, ok := starlark.AsString(item[0])
+		if !ok {
+			return nil, fmt.Errorf("remotes() keys must be strings (interface names), got %s", item[0].Type())
+		}
+		v, ok := starlark.AsString(item[1])
+		if !ok {
+			return nil, fmt.Errorf("remotes() values must be strings (host or host:port), got %s for key %q", item[1].Type(), k)
+		}
+		if k == "" {
+			return nil, fmt.Errorf("remotes() keys must be non-empty interface names")
+		}
+		if v == "" {
+			return nil, fmt.Errorf("remotes() values must be non-empty hosts (got empty for interface %q)", k)
+		}
+		hosts[k] = v
+	}
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("remotes() requires at least one entry")
+	}
+	return &RemotesVal{Hosts: hosts}, nil
+}
+
+// service(name, [binary], *interfaces, image=, build=, remote=, healthcheck=, env=, depends_on=, volumes=)
 // Binary can be positional (2nd arg) or keyword. For containers, use image= or build= instead.
+// For remote services (RFC-036), use remote= and provide a healthcheck=.
 func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 1 {
 		return nil, fmt.Errorf("service() requires at least a name")
@@ -126,12 +170,18 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 		Env:        make(map[string]string),
 	}
 
+	// Track which kwargs the user explicitly provided so the validator can
+	// emit specific errors when remote= is combined with kwargs that don't
+	// apply to remote services.
+	present := make(map[string]bool)
+
 	// Positional args after name: binary (string) or interfaces.
 	for i := 1; i < len(args); i++ {
 		switch v := args[i].(type) {
 		case starlark.String:
 			// Second positional string = binary path.
 			svc.Binary = string(v)
+			present["binary"] = true
 		case *InterfaceDef:
 			svc.Interfaces[v.Name] = v
 		default:
@@ -142,6 +192,7 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 	// Keyword args.
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
+		present[key] = true
 		switch key {
 		case "binary":
 			s, _ := starlark.AsString(kv[1])
@@ -152,6 +203,22 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 		case "build":
 			s, _ := starlark.AsString(kv[1])
 			svc.Build = s
+		case "remote":
+			// Accept either a plain string (host applied to every interface)
+			// or a remotes({"iface": "host"}) typed value for per-interface
+			// overrides. RFC-036.
+			switch v := kv[1].(type) {
+			case starlark.String:
+				s := string(v)
+				if s == "" {
+					return nil, fmt.Errorf("service() remote must be a non-empty string or remotes({...}); got empty string")
+				}
+				svc.Remote = s
+			case *RemotesVal:
+				svc.RemotePerInterface = v.Hosts
+			default:
+				return nil, fmt.Errorf("service() remote must be a string (host) or remotes({...}), got %s", kv[1].Type())
+			}
 		case "healthcheck":
 			hc, ok := kv[1].(*HealthcheckDef)
 			if !ok {
@@ -295,7 +362,7 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 		}
 	}
 
-	// Validate: exactly one of binary, image, or build must be set.
+	// Validate: exactly one of binary, image, build, or remote must be set.
 	sources := 0
 	if svc.Binary != "" {
 		sources++
@@ -306,22 +373,73 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 	if svc.Build != "" {
 		sources++
 	}
+	if svc.IsRemote() {
+		sources++
+	}
 	if sources == 0 {
-		return nil, fmt.Errorf("service() requires one of: binary (positional or keyword), image=, or build=")
+		return nil, fmt.Errorf("service() requires one of: binary (positional or keyword), image=, build=, or remote=")
 	}
 	if sources > 1 {
-		return nil, fmt.Errorf("service() accepts only one of: binary, image=, or build= (got %d)", sources)
+		return nil, fmt.Errorf("service() accepts only one of: binary, image=, build=, or remote= (got %d)", sources)
 	}
 
-	// Warn about potential state leaks with reuse but no lifecycle handlers.
-	if svc.Reuse && svc.Seed == nil && svc.Reset == nil {
-		rt.log.Warn("service has reuse=True but no seed or reset — state may leak between tests",
-			slog.String("service", svc.Name),
-		)
+	// Remote-service-specific validation (RFC-036). Remote services have no
+	// process Faultbox controls, so kwargs that depend on owning the
+	// lifecycle (seed/reset/reuse), the filesystem (volumes), the network
+	// namespace (ports), the argv (args), or the syscall surface (seccomp)
+	// are rejected at spec load with explicit errors. Healthcheck is
+	// required because we can't infer "ready" for a pod we don't own.
+	if svc.IsRemote() {
+		if svc.Healthcheck == nil {
+			return nil, fmt.Errorf("service() %q is remote (remote=...) and requires healthcheck= so Faultbox can verify the upstream is reachable before tests run; declare e.g. healthcheck = http(\"%s:<port>/healthz\") or tcp(\"%s:<port>\")", svc.Name, anyHostFor(svc), anyHostFor(svc))
+		}
+		incompatible := []string{"seed", "reset", "reuse", "volumes", "ports", "args", "seccomp", "observe"}
+		for _, k := range incompatible {
+			if present[k] {
+				return nil, fmt.Errorf("service() %q is remote (remote=...); %s= is not supported on remote services because Faultbox does not own their lifecycle. Use mock_service() if you need full control, or remove %s= and apply protocol-level faults instead", svc.Name, k, k)
+			}
+		}
+		if len(svc.Ops) > 0 {
+			return nil, fmt.Errorf("service() %q is remote (remote=...); ops= is not supported because syscall-level operations require process control. Apply protocol-level faults (response/error/slow) at the interface instead", svc.Name)
+		}
+		// Per-interface remotes() keys must match declared interfaces.
+		for k := range svc.RemotePerInterface {
+			if _, ok := svc.Interfaces[k]; !ok {
+				declared := make([]string, 0, len(svc.Interfaces))
+				for n := range svc.Interfaces {
+					declared = append(declared, n)
+				}
+				return nil, fmt.Errorf("service() %q remotes({...}) references interface %q which is not declared on this service; declared interfaces: %v", svc.Name, k, declared)
+			}
+		}
+		if len(svc.Interfaces) == 0 {
+			return nil, fmt.Errorf("service() %q is remote (remote=...) and requires at least one interface()", svc.Name)
+		}
+	} else {
+		// Warn about potential state leaks with reuse but no lifecycle handlers.
+		if svc.Reuse && svc.Seed == nil && svc.Reset == nil {
+			rt.log.Warn("service has reuse=True but no seed or reset — state may leak between tests",
+				slog.String("service", svc.Name),
+			)
+		}
 	}
 
 	rt.registerService(svc)
 	return svc, nil
+}
+
+// anyHostFor returns any one host string set on the service, used for
+// composing helpful error messages. Returns the service-level Remote if
+// set, otherwise the first per-interface override, otherwise an empty
+// placeholder.
+func anyHostFor(svc *ServiceDef) string {
+	if svc.Remote != "" {
+		return svc.Remote
+	}
+	for _, h := range svc.RemotePerInterface {
+		return h
+	}
+	return "<remote>"
 }
 
 // interface(name, protocol, port, spec=, tls=)
@@ -659,7 +777,7 @@ func (rt *Runtime) builtinFaultFromAssumption(thread *starlark.Thread, assumptio
 		svcName := pr.Target.Service.Name
 		ifaceName := pr.Target.Interface.Name
 		proto := pr.Target.Interface.Protocol
-		targetAddr := proxyTargetAddr(pr.Target.Interface)
+		targetAddr := proxyTargetAddr(pr.Target.Service, pr.Target.Interface)
 		if _, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr); err != nil {
 			return nil, fmt.Errorf("fault() proxy start for %s.%s: %w", svcName, ifaceName, err)
 		}
@@ -1289,6 +1407,19 @@ func (rt *Runtime) builtinFaultAssumption(thread *starlark.Thread, fn *starlark.
 		}
 		if !isSvc && !isIfRef {
 			return nil, fmt.Errorf("fault_assumption() target= must be a service or interface_ref, got %s", target.Type())
+		}
+
+		// Reject syscall-level rules on remote services at spec-load time
+		// (RFC-036). Earlier surface than the runtime gate in applyFaults
+		// because fault_assumption() is essentially a declaration; we want
+		// the error before any test runs.
+		if svc.IsRemote() {
+			keys := make([]string, 0, len(syscallFaults))
+			for k := range syscallFaults {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			return nil, fmt.Errorf("fault_assumption(%q): target service %q is remote (remote=%q); syscall-level faults (%s) are not available on remote services. Move these into rules=[response(...), error(...), slow(...)] at the interface layer, or replace remote= with mock_service() if you need full control", name, svc.Name, anyHostFor(svc), strings.Join(keys, ", "))
 		}
 
 		for key, fd := range syscallFaults {
@@ -2116,8 +2247,9 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 		return nil, fmt.Errorf("fault(interface_ref, ...) requires at least one protocol fault (response, error, drop, etc.)")
 	}
 
-	// Resolve target address.
-	targetAddr := proxyTargetAddr(ifRef.Interface)
+	// Resolve target address (RFC-036 aware: remote services dial the
+	// declared remote upstream rather than 127.0.0.1).
+	targetAddr := proxyTargetAddr(ifRef.Service, ifRef.Interface)
 
 	// Ensure proxy is running for this interface.
 	proxyAddr, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr)

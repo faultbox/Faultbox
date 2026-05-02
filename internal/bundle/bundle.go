@@ -119,4 +119,24 @@ type Env struct {
 	DockerVersion   string            `json:"docker_version,omitempty"`
 	RuntimeHints    []string          `json:"runtime_hints,omitempty"` // e.g. ["lima"], ["wsl"]
 	Images          map[string]string `json:"images,omitempty"`        // "mysql:8.0.32" -> "sha256:..."
+
+	// Remotes records every remote-service interface used during the run
+	// (RFC-036). Present means: this bundle is *not* deterministically
+	// replayable offline — `faultbox replay` warns and references RFC-037
+	// for the determinism story. Older bundles omit the field; readers
+	// that don't know about it parse fine because of omitempty.
+	Remotes []RemoteRecord `json:"remotes,omitempty"`
+}
+
+// RemoteRecord is one row in env.json's `remotes` array — one entry per
+// (service, interface) pair on a `service(remote=...)` declaration that
+// was active during the run. The host string is exactly what the
+// proxy dialled, so a reader can tell at a glance whether a bundle
+// depended on a real cluster pod and what the upstream addr was.
+type RemoteRecord struct {
+	Service    string `json:"service"`
+	Interface  string `json:"interface"`
+	Host       string `json:"host"`           // resolved upstream addr ("host" or "host:port")
+	Protocol   string `json:"protocol"`       // "http", "grpc", "postgres", ...
+	ResolvedAt string `json:"resolved_at"`    // RFC3339 timestamp
 }

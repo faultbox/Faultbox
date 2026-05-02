@@ -71,6 +71,9 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | `monitor()` / `partition()` / `nondet()` / `events()` | 2 | No dedicated coverage | 🔴 | Covered only if a corpus spec uses them |
 | Named operations `op()` | 2 | Unit tests | 🟡 | |
 | `iface.proxy_addr` / `proxy_host` / `proxy_port` (RFC-033) | 2 | `internal/star/runtime_rfc033_test.go` (6 tests) | 🟢 | Late-bound proxy address attrs for host-binary SUTs talking to Docker upstreams; placeholder + buildEnv-time substitution covered |
+| `service(remote=...)` (RFC-036) | 2 | `internal/star/builtins_remote_test.go` (32 spec-load tests) + `internal/star/runtime_remote_test.go` (10 runtime/proxy tests incl. TLS×remote interop) + `internal/bundle/bundle_test.go` (env.json round-trip + omitempty) + `cmd/faultbox/replay_test.go` (warning printer) | 🟢 | Remote services point at externally-running endpoints (k8s pods, port-forwards). Healthcheck required; syscall faults rejected at spec load; protocol faults work as usual via the existing proxy datapath; combines with RFC-038 `tls=tls_cert(...)` for TLS upstreams; `env.json` records remotes used and `faultbox replay` warns. RFC-037 tracks deterministic offline replay. |
+| `remotes()` typed per-interface override (RFC-036) | 2 | covered in `builtins_remote_test.go` | 🟢 | Per-interface upstream-host map for services whose interfaces live on different hosts |
+| `@faultbox/discovery/k8s.star` (RFC-036) | 2 | `builtins_remote_test.go` (3 helper tests: cluster-DNS, default namespace, local short form) | 🟢 | String-only sugar for `<name>.<namespace>.svc.cluster.local`; no runtime k8s client |
 | `--explore=all` exhaustive | 2 | No dedicated coverage | 🔴 | |
 | `--virtual-time` | 2 | No dedicated coverage | 🔴 | |
 | `--runs N` counterexample search | 2 | No dedicated coverage | 🔴 | |

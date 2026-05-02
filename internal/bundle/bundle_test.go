@@ -268,6 +268,73 @@ func TestBuildPopulatesAllCoreFiles(t *testing.T) {
 	}
 }
 
+// TestBuildRecordsRemotesInEnvJSON checks that BuildInput.Remotes lands
+// in env.json under the `remotes` field (RFC-036). Empty Remotes omits
+// the field entirely (older readers don't even know it exists).
+func TestBuildRecordsRemotesInEnvJSON(t *testing.T) {
+	in := BuildInput{
+		FaultboxVersion: "0.13.0-test",
+		Seed:            1,
+		SpecRoot:        "faultbox.star",
+		CreatedAt:       time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+		Tests:           []TestRow{{Name: "t", Outcome: "passed", DurationMs: 1}},
+		Trace:           []byte(`{}`),
+		Remotes: []RemoteRecord{
+			{Service: "geo", Interface: "public", Host: "geo.staging:8080", Protocol: "http", ResolvedAt: "2026-05-01T10:00:00Z"},
+			{Service: "auth", Interface: "rpc", Host: "auth.staging:50051", Protocol: "grpc", ResolvedAt: "2026-05-01T10:00:00Z"},
+		},
+	}
+	w, _, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buf, err := w.encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	contents := readBundleBytes(t, buf.Bytes())
+	var env Env
+	if err := json.Unmarshal(contents["env.json"], &env); err != nil {
+		t.Fatalf("env parse: %v", err)
+	}
+	if len(env.Remotes) != 2 {
+		t.Fatalf("env.Remotes = %d entries, want 2 (%+v)", len(env.Remotes), env.Remotes)
+	}
+	if env.Remotes[0].Service != "geo" || env.Remotes[0].Host != "geo.staging:8080" {
+		t.Errorf("first remote unexpected: %+v", env.Remotes[0])
+	}
+	if env.Remotes[1].Service != "auth" || env.Remotes[1].Protocol != "grpc" {
+		t.Errorf("second remote unexpected: %+v", env.Remotes[1])
+	}
+	// And: the JSON literal has the `remotes` key.
+	if !bytes.Contains(contents["env.json"], []byte(`"remotes"`)) {
+		t.Errorf("env.json should contain `remotes` key; got: %s", contents["env.json"])
+	}
+}
+
+func TestBuildOmitsRemotesWhenEmpty(t *testing.T) {
+	in := BuildInput{
+		FaultboxVersion: "0.13.0-test",
+		Seed:            1,
+		SpecRoot:        "faultbox.star",
+		CreatedAt:       time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+		Tests:           []TestRow{{Name: "t", Outcome: "passed", DurationMs: 1}},
+		Trace:           []byte(`{}`),
+	}
+	w, _, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buf, err := w.encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	contents := readBundleBytes(t, buf.Bytes())
+	if bytes.Contains(contents["env.json"], []byte(`"remotes"`)) {
+		t.Errorf("env.json should NOT contain `remotes` key when input is empty (omitempty); got: %s", contents["env.json"])
+	}
+}
+
 // TestBuildRFC027ExpectationOutcome exercises the Phase 2 additive
 // manifest fields: a row whose expect predicate rejected the scenario
 // result ships as outcome="expectation_violated", and the Summary

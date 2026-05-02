@@ -971,6 +971,8 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 
 		var err error
 		switch {
+		case svc.IsRemote():
+			err = rt.startRemoteService(ctx, svcName, svc)
 		case svc.IsMock():
 			err = rt.startMockService(ctx, svcName, svc)
 		case svc.IsContainer():
@@ -982,7 +984,9 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			return err
 		}
 
-		// Run seed callback for newly started services.
+		// Run seed callback for newly started services. Remote services
+		// reject seed= at spec load (RFC-036), so this is unreachable for
+		// them; left unguarded here for clarity.
 		if svc.Seed != nil {
 			if err := rt.runSeedCallback(svcName, svc); err != nil {
 				return fmt.Errorf("seed service %q: %w", svcName, err)
@@ -995,7 +999,9 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		// any later fault(iface_ref, rule) call dispatches rules against
 		// the proxy the SUT is already talking to — closing the gap where
 		// protocol-level faults were cosmetic because the app bypassed the
-		// proxy. Mock services have no upstream and are skipped.
+		// proxy. Mock services have no upstream and are skipped. Remote
+		// services (RFC-036) DO get proxies — that is how protocol faults
+		// reach a real pod the SUT thinks it's calling directly.
 		if !svc.IsMock() {
 			if err := rt.preStartProxies(ctx, svcName, svc); err != nil {
 				rt.log.Warn("pre-start proxy failed (faults may bypass app traffic)",
@@ -1006,6 +1012,70 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// startRemoteService registers a service that points at an externally
+// running endpoint (RFC-036). No process is launched; healthcheck is run
+// against the user-declared remote address; a no-op session is registered
+// so the rest of the runtime sees the service as "running" and the proxy
+// pre-start path treats this service like any other.
+func (rt *Runtime) startRemoteService(ctx context.Context, svcName string, svc *ServiceDef) error {
+	// Healthcheck is required for remote services (validated at spec
+	// load); the test string already encodes the remote address since
+	// the user wrote it explicitly.
+	if svc.Healthcheck == nil {
+		return fmt.Errorf("startRemoteService: %q missing healthcheck (should have been caught at spec load)", svcName)
+	}
+	timeout := svc.Healthcheck.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	hcTest := svc.Healthcheck.Test
+	hcCtx, hcCancel := context.WithTimeout(ctx, timeout)
+	defer hcCancel()
+	if err := waitReady(hcCtx, hcTest, timeout); err != nil {
+		return fmt.Errorf("remote service %q not reachable at %s: %w\n\nFaultbox does not manage cluster connectivity. Verify one of:\n  - `telepresence connect` is running and the namespace is in scope\n  - `kubectl port-forward` covers this service\n  - You are running faultbox from inside the target cluster\n  - The host is reachable from your network (VPN, direct route)\n\nThe remote= value was %q.", svcName, hcTest, err, anyHostFor(svc))
+	}
+
+	// Register a no-op session so reuse checks, fault rule application,
+	// and stop paths all see the service as "running" — same shape as
+	// startMockService uses for the same reason.
+	rt.sessions[svcName] = &runningSession{
+		session: nil,
+		cancel:  func() {}, // no process to cancel
+		done:    closedDoneChan(),
+	}
+
+	// Build the "what's the upstream addr per interface" payload up front
+	// so the event log and the bundle's env.json carry consistent data.
+	upstreams := make(map[string]string, len(svc.Interfaces))
+	for ifaceName, iface := range svc.Interfaces {
+		upstreams[ifaceName] = remoteUpstreamAddr(svc, iface)
+	}
+
+	startedFields := map[string]string{"kind": "remote"}
+	if svc.Remote != "" {
+		startedFields["remote"] = svc.Remote
+	}
+	for ifaceName, addr := range upstreams {
+		startedFields["upstream."+ifaceName] = addr
+	}
+	rt.events.Emit("service_started", svcName, startedFields)
+	rt.events.Emit("service_ready", svcName, map[string]string{"kind": "remote"})
+
+	rt.log.Info("remote service ready",
+		slog.String("service", svcName),
+		slog.String("healthcheck", hcTest),
+	)
+	return nil
+}
+
+// closedDoneChan returns a pre-closed channel typed as *engine.Result so
+// remote/mock-style sessions don't block teardown waiters.
+func closedDoneChan() chan *engine.Result {
+	ch := make(chan *engine.Result, 1)
+	close(ch)
+	return ch
 }
 
 // preStartProxies spins up a pass-through proxy per supported interface on a
@@ -1022,7 +1092,7 @@ func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *Ser
 		if rt.proxyMgr.GetProxyAddr(svcName, ifaceName) != "" {
 			continue // already running (container reuse across tests)
 		}
-		targetAddr := proxyTargetAddr(iface)
+		targetAddr := proxyTargetAddr(svc, iface)
 
 		// RFC-038 Phase 3: when iface.TLS is set, resolve the cert
 		// material and route through EnsureProxyTLS so plugins
@@ -2033,6 +2103,27 @@ func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]strin
 			out[fmt.Sprintf("localhost:%d", iface.Port)] = target
 			out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = target
 			out[fmt.Sprintf("%s:%d", name, iface.Port)] = target
+			// RFC-036: also rewrite the remote upstream addr so user env
+			// values like {"GEO_URL": "http://geo.staging.svc.cluster.local:8080/"}
+			// flow through the proxy. Without this substitution the SUT
+			// would dial the remote pod directly and protocol faults would
+			// never fire.
+			if s.IsRemote() {
+				host := s.RemoteHostFor(ifName)
+				if host != "" {
+					if strings.Contains(host, ":") {
+						// host:port — substitute the literal user-provided
+						// "host:port" string and bare host (best-effort —
+						// can't know which port the user typed inline).
+						out[host] = target
+						if h, _, err := splitHostPort(host); err == nil {
+							out[fmt.Sprintf("%s:%d", h, iface.Port)] = target
+						}
+					} else {
+						out[fmt.Sprintf("%s:%d", host, iface.Port)] = target
+					}
+				}
+			}
 		}
 	}
 	return out
@@ -2040,16 +2131,43 @@ func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]strin
 
 // proxyTargetAddr returns the address an interface's transparent proxy
 // should dial to reach the real upstream. Single source of truth for what
-// "127.0.0.1:<port>" means — used by preStartProxies and by the fault rule
+// the upstream means — used by preStartProxies and by the fault rule
 // application paths in builtins.go and the fault_scenario body. Lives here
 // so any future change (e.g., container-network targets, RFC-024 follow-up)
 // has one site to edit.
-func proxyTargetAddr(iface *InterfaceDef) string {
+//
+// For remote services (RFC-036), `svc` is non-nil and IsRemote() is true:
+// the upstream is the user-declared remote host(s) rather than the local
+// loopback. svc may be nil for legacy callers — the function then falls
+// back to local-loopback semantics, equivalent to the pre-RFC-036
+// behaviour.
+func proxyTargetAddr(svc *ServiceDef, iface *InterfaceDef) string {
 	port := iface.Port
 	if iface.HostPort > 0 {
 		port = iface.HostPort
 	}
+	if svc != nil && svc.IsRemote() {
+		return remoteUpstreamAddr(svc, iface)
+	}
 	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
+// remoteUpstreamAddr resolves a remote service's interface to its upstream
+// host:port. Honours per-interface remotes({...}) overrides over the
+// service-level Remote, and accepts either bare "host" (interface port
+// appended) or "host:port" (used as-is) in either form.
+func remoteUpstreamAddr(svc *ServiceDef, iface *InterfaceDef) string {
+	host := svc.RemoteHostFor(iface.Name)
+	if host == "" {
+		// Should not happen — IsRemote() gates entry, and validation
+		// requires either Remote or non-empty per-interface map. Fall
+		// back to a clearly invalid addr so failures surface fast.
+		return "127.0.0.1:0"
+	}
+	if strings.Contains(host, ":") {
+		return host
+	}
+	return fmt.Sprintf("%s:%d", host, iface.Port)
 }
 
 // applyAddrSubstitutions rewrites any real-upstream-addr substring in v to
@@ -2246,7 +2364,7 @@ func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callab
 				svcName := pr.Target.Service.Name
 				ifaceName := pr.Target.Interface.Name
 				proto := pr.Target.Interface.Protocol
-				targetAddr := proxyTargetAddr(pr.Target.Interface)
+				targetAddr := proxyTargetAddr(pr.Target.Service, pr.Target.Interface)
 				if _, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr); err != nil {
 					return nil, fmt.Errorf("fault_scenario %q: proxy start for %s.%s: %w", fs.Name, svcName, ifaceName, err)
 				}
@@ -2600,6 +2718,21 @@ func (rt *Runtime) requiredFaultRules() []engine.FaultRule {
 // the enclosing fault_matrix row continues without aborting the
 // whole suite.
 func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) error {
+	// Reject syscall-level faults on remote services (RFC-036). Faultbox does
+	// not own a remote service's process, so seccomp-notify cannot intercept
+	// its syscalls. Surface this as a hard error rather than the silent
+	// no-seccomp-session skip used for seccomp=False, because remote services
+	// imply a deliberate user choice and "I tried X, it silently did nothing"
+	// is the failure mode this RFC is built to prevent.
+	if svc, ok := rt.services[svcName]; ok && svc.IsRemote() && len(faults) > 0 {
+		keys := make([]string, 0, len(faults))
+		for k := range faults {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return fmt.Errorf("service %q is remote (remote=%q); syscall-level faults (%s) are not available on remote services because Faultbox does not own the process. Use a protocol fault (response=, error=, slow=) at the interface layer (e.g. fault(%s.<iface>, response(status=503), run=...)) or replace remote= with mock_service() if you need full control", svcName, anyHostFor(svc), strings.Join(keys, ", "), svcName)
+	}
+
 	rt.faultsMu.Lock()
 	rt.faults[svcName] = faults
 	rt.faultsMu.Unlock()

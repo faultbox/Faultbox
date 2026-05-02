@@ -52,6 +52,11 @@ type BuildInput struct {
 	// panic. Issue #76: emit a partial bundle marked as such instead
 	// of losing every test result to the dying process.
 	Crash *CrashInfo
+
+	// Remotes lists every remote-service interface active during the
+	// run (RFC-036). Threaded through to env.json. Empty for bundles
+	// that didn't use any `service(remote=...)`.
+	Remotes []RemoteRecord
 }
 
 // Build assembles a Writer populated with manifest.json, env.json,
@@ -76,6 +81,9 @@ func Build(in BuildInput) (*Writer, string, error) {
 		Crash:           in.Crash,
 	}
 	env := GatherEnv(in.FaultboxVersion, in.FaultboxCommit)
+	if len(in.Remotes) > 0 {
+		env.Remotes = in.Remotes
+	}
 
 	filename := DefaultFilename(in.CreatedAt, in.Seed)
 
