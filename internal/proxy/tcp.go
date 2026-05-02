@@ -148,29 +148,38 @@ func (p *tcpProxy) handle(ctx context.Context, client net.Conn) {
 	// the select: a healthy long-lived connection (redis pipelining,
 	// keepalives) leaves both io.Copy calls blocked forever, and
 	// waiting on the second drain never returns until ctx cancel.
-	done := make(chan struct{}, 2)
+	//
+	// done carries the closeReason from each direction. Routing the
+	// reason through the channel rather than a shared variable avoids
+	// the data race the -race builder flagged in v0.12.25 — both
+	// io.Copy goroutines were writing closeReason concurrently, and
+	// only the first one's value survives the select read anyway.
+	done := make(chan string, 2)
 	stallStop := make(chan struct{})
 
 	go func() {
 		clientReader := tracker.WrapClientReader(client)
 		_, copyErr := io.Copy(upstream, clientReader)
+		reason := "client_eof"
 		if copyErr != nil && copyErr != io.EOF {
-			closeReason = classifyCloseReason(copyErr, "client")
+			reason = classifyCloseReason(copyErr, "client")
 		}
-		done <- struct{}{}
+		done <- reason
 	}()
 	go func() {
 		serverReader := tracker.WrapServerReader(upstream)
 		_, copyErr := io.Copy(client, serverReader)
+		reason := "server_eof"
 		if copyErr != nil && copyErr != io.EOF {
-			closeReason = classifyCloseReason(copyErr, "server")
+			reason = classifyCloseReason(copyErr, "server")
 		}
-		done <- struct{}{}
+		done <- reason
 	}()
 	go p.watchStalls(stallStop, tracker)
 
 	select {
-	case <-done:
+	case reason := <-done:
+		closeReason = reason
 	case <-ctx.Done():
 		closeReason = "context_cancel"
 	}
