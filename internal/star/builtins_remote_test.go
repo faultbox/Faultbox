@@ -403,6 +403,75 @@ fault_assumption("geo_unavailable",
 	}
 }
 
+// ---- @faultbox/discovery/k8s.star helper ----
+
+func TestK8sDiscovery_ServiceReturnsClusterDNS(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+load("@faultbox/discovery/k8s.star", "k8s")
+
+geo = service("geo-config",
+    interface("public", "http", 8080),
+    remote      = k8s.service("geo-config", namespace = "staging"),
+    healthcheck = http(k8s.endpoint("geo-config", 8080, namespace = "staging") + "/healthz"),
+)
+`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	svc := rt.services["geo-config"]
+	if svc == nil {
+		t.Fatalf("service not registered")
+	}
+	want := "geo-config.staging.svc.cluster.local"
+	if svc.Remote != want {
+		t.Errorf("svc.Remote = %q; want %q", svc.Remote, want)
+	}
+	wantHC := "http://geo-config.staging.svc.cluster.local:8080/healthz"
+	if svc.Healthcheck.Test != wantHC {
+		t.Errorf("healthcheck = %q; want %q", svc.Healthcheck.Test, wantHC)
+	}
+}
+
+func TestK8sDiscovery_DefaultNamespace(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+load("@faultbox/discovery/k8s.star", "k8s")
+
+svc = service("svc",
+    interface("main", "http", 8080),
+    remote      = k8s.service("svc"),
+    healthcheck = http(k8s.endpoint("svc", 8080) + "/h"),
+)
+`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	if rt.services["svc"].Remote != "svc.default.svc.cluster.local" {
+		t.Errorf("default namespace path: %q", rt.services["svc"].Remote)
+	}
+}
+
+func TestK8sDiscovery_LocalShortForm(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+load("@faultbox/discovery/k8s.star", "k8s")
+
+svc = service("svc",
+    interface("main", "http", 8080),
+    remote      = "geo.staging",
+    healthcheck = http(k8s.local("geo", 8080, namespace = "staging") + "/h"),
+)
+`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	wantHC := "http://geo.staging:8080/h"
+	if rt.services["svc"].Healthcheck.Test != wantHC {
+		t.Errorf("local short form: %q; want %q", rt.services["svc"].Healthcheck.Test, wantHC)
+	}
+}
+
 func TestRemote_FaultAssumption_RejectsSyscallEvenWithIfaceTarget(t *testing.T) {
 	// Targeting an interface_ref still has an underlying service; the gate
 	// must catch this too, not just bare service() targets.

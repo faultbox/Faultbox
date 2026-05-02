@@ -24,7 +24,8 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`service`](#service-topology),
 [`mock_service`](#mock_service),
 [`interface`](#interface),
-[`tls_cert`](#tls-support) (RFC-038).
+[`tls_cert`](#tls-support) (RFC-038),
+[`remotes`](#remotesdict) (RFC-036).
 
 **Healthchecks** —
 [`tcp`](#healthchecks),
@@ -72,6 +73,11 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`grpc.server`](#stdlib-mocks) + 7 status shorthands (v0.9.8),
 [`http.server`](#stdlib-mocks),
 [`jwt.server`](#stdlib-mocks) (v0.9.9).
+
+**Discovery helpers** (under `@faultbox/discovery/`, RFC-036) —
+[`k8s.service`](#remote-services),
+[`k8s.endpoint`](#remote-services),
+[`k8s.local`](#remote-services).
 
 **Spec-load file readers** (RFC-026, v0.9.8) —
 [`load_file`](#file-readers--load_file-load_yaml-load_json-v098),
@@ -217,7 +223,8 @@ api = service("api",
 | `seed` | callable | no | Initialize service state after healthcheck — runs once (see [Container Lifecycle](#container-lifecycle)) |
 | `reset` | callable | no | Re-initialize state between tests — runs before each test except the first (see [Container Lifecycle](#container-lifecycle)) |
 | `ops` | dict | no | Named operations for fd-level fault targeting (see [Named Operations](#named-operations)) |
-| `seccomp` | bool | no | Default `True`. Set to `False` to skip shim + seccomp-notify acquisition for this service. Proxy-level faults (HTTP/SQL/Redis/etc.) still apply; syscall-level `fault()` rules on this service are silently skipped. Workaround for multi-process container entrypoints (MySQL 8's `mysqld_safe` wrapper, certain JVM images) where the shim handoff hangs. |
+| `seccomp` | bool | no | Default `True`. Set to `False` to skip shim + seccomp-notify acquisition for this service. Proxy-level faults (HTTP/SQL/Redis/etc.) still apply; syscall-level `fault()` rules on this service are silently skipped. Workaround for multi-process container entrypoints (MySQL 8's `mysqld_safe` wrapper, certain JVM images) where the shim handoff hangs. Rejected on remote services. |
+| `remote` | string \| `remotes()` | one of three* | Point at an externally-running endpoint instead of launching a process — typically a k8s Service hostname, a port-forwarded address, or an IP. Faultbox stands up its proxy in front of each interface; protocol-level faults work as usual; the SUT reaches the remote through the proxy. See [Remote Services](#remote-services) for the full rules. |
 
 **Seed data for databases** — use `volumes` to mount init scripts:
 
@@ -279,6 +286,102 @@ courier = service("courier", "./courier-svc",
 ```
 
 Access interfaces by name: `courier.public`, `courier.internal`, `courier.events`.
+
+### Remote Services
+
+`service(remote=...)` (RFC-036, v0.13.0) declares a service whose process
+lives outside Faultbox — typically a real pod in a k8s dev cluster you
+can't pull as a Docker image. Faultbox does not launch the service. It
+stands up its existing protocol proxy in front of each declared
+interface and dials the remote upstream. The SUT reaches the remote
+through the proxy, so every protocol-level fault — `response()`,
+`error()`, `slow()`, gRPC method targeting, SQL matchers — fires
+exactly as if it were a local container.
+
+```python
+load("@faultbox/discovery/k8s.star", "k8s")
+
+geo = service("geo-config",
+    interface("public",   "http", 8080),
+    interface("internal", "grpc", 9090),
+    remote      = k8s.service("geo-config", namespace = "staging"),
+    healthcheck = http(k8s.endpoint("geo-config", 8080, namespace = "staging") + "/healthz"),
+)
+```
+
+Behaviour:
+
+- The `remote=` value is a plain hostname (e.g.
+  `"geo.staging.svc.cluster.local"` or `"127.0.0.1"`) or a
+  `host:port` string when you need to override the interface port.
+  All interfaces share the host by default.
+- For services whose interfaces live on different hosts, use
+  `remotes({"iface": "host"})` — the keys must match declared interface
+  names. Values are `host` (interface port appended) or `host:port`.
+- `healthcheck=` is **required**. Faultbox can't infer "ready" for a
+  pod it doesn't own; the spec must declare what readiness means.
+- Cluster connectivity is your responsibility — `telepresence
+  connect`, `kubectl port-forward`, in-cluster execution, or VPN. If
+  the healthcheck fails on session start, the error includes a hint
+  pointing at these workflows. See [docs/guides/connectivity.md] for
+  the supported setups.
+- Use `@faultbox/discovery/k8s.star` for the standard cluster-DNS
+  string forms; nothing magic about it, just sugar over
+  `<name>.<namespace>.svc.cluster.local`.
+
+What's rejected on remote services (spec-load errors with explicit
+messages naming the offending kwarg):
+
+- Syscall-level faults (`write=deny()`, `connect=delay()`,
+  `op(...)=hold()`, etc.) — Faultbox can't seccomp a remote process.
+  Move them to protocol faults (`response()` / `error()` / `slow()`)
+  or use `mock_service()` if you need full process control.
+- `seed=`, `reset=`, `reuse=` — Faultbox doesn't own the lifecycle.
+- `volumes=`, `ports=`, `args=`, `binary=`, `image=`, `build=` —
+  meaningless without a launched process.
+- `seccomp=` — implied false; cannot be set.
+- `observe=` — current event sources (`stdout`, `stderr`) require a
+  process. (`topic()` and `poll()` will be allowed when they ship.)
+- `ops=` — named-op grouping is a syscall-targeting feature.
+
+Errors are deliberate and explicit ("I tried X, it silently did
+nothing" is the failure mode this RFC is built to prevent).
+
+#### `remotes(dict)`
+
+Typed per-interface upstream-host map for `service(remote=...)`. Use
+when interfaces of one logical service live on different hosts:
+
+```python
+geo = service("geo",
+    interface("public",   "http", 8080),
+    interface("internal", "grpc", 9090),
+    remote = remotes({
+        "public":   "geo.staging.svc.cluster.local",
+        "internal": "geo-grpc.staging.svc.cluster.local:9999",
+    }),
+    healthcheck = http("geo.staging.svc.cluster.local:8080/healthz"),
+)
+```
+
+Keys must match declared interface names. Values are `host` (interface
+port appended at runtime) or `host:port` (used as-is).
+
+#### Reproducibility caveat
+
+A bundle from a run that used `remote=` services breaks the [`.fb`
+bundle reproducibility contract](#bundles) — the remote pod is shared
+and may drift between runs. The bundle records *that* remote services
+were used (in `env.json` under `remotes: [...]`); `faultbox replay`
+warns and re-dials them. Offline replay against recorded remote
+responses is tracked in **RFC-037**.
+
+For deterministic tests today, swap `remote=` for `mock_service()`
+(same DSL surface elsewhere) and check the mock contract into git.
+
+\* "one of three" / "one of four" — the source kwarg is exactly one of
+`binary` / `image` / `build` / `remote`. Combining any two errors at
+spec load.
 
 ---
 
