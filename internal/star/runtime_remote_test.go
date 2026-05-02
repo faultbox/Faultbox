@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/faultbox/Faultbox/internal/proxy"
 )
 
 // RFC-036 runtime / proxy lifecycle tests. Pin the behaviour the RFC
@@ -351,3 +353,197 @@ func readAll(t *testing.T, resp *http.Response) []byte {
 // rt.events.All() and .Len() exist on the event log; if not, this helper
 // localises the fix for the test surface.
 var _ = httptest.NewServer // keep import live in case all() / len() shift
+
+// TestRemote_FaultRewriteOverridesRemoteResponse — full e2e for the
+// "swap one keyword" claim. A fake remote returns 200 with a
+// distinctive body. With a proxy rule installed (the same kind a
+// fault_assumption(rules=[error(...)]) would install), a request
+// through the pre-started proxy must receive the faulted response
+// instead. This is the regression that locks in: protocol faults
+// fire against remote services exactly like they fire against local
+// containers.
+func TestRemote_FaultRewriteOverridesRemoteResponse(t *testing.T) {
+	host, port, cleanup := fakeRemoteHTTPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"from":"real-remote"}`))
+	})
+	defer cleanup()
+
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+geo = service("geo",
+    interface("public", "http", %d),
+    remote = "%s",
+    healthcheck = http("%s:%d/healthz"),
+)
+`, port, host, host, port)
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	t.Cleanup(func() { rt.proxyMgr.StopAll() })
+
+	proxyAddr := rt.proxyMgr.GetProxyAddr("geo", "public")
+	if proxyAddr == "" {
+		t.Fatalf("no proxy addr for geo.public")
+	}
+
+	// Install the equivalent of `error(path="/v1/regions/**", status=503)`.
+	if err := rt.proxyMgr.AddRule("geo", "public", proxy.Rule{
+		Action: proxy.ActionRespond,
+		Status: 503,
+		Body:   `{"from":"fault-injected"}`,
+	}); err != nil {
+		t.Fatalf("AddRule: %v", err)
+	}
+
+	resp, err := http.Get("http://" + proxyAddr + "/v1/regions/EU")
+	if err != nil {
+		t.Fatalf("GET via proxy: %v", err)
+	}
+	body := readAll(t, resp)
+	if resp.StatusCode != 503 {
+		t.Errorf("status = %d; want 503 (fault override)", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "fault-injected") {
+		t.Errorf("body = %q; want substring fault-injected", body)
+	}
+	if strings.Contains(string(body), "real-remote") {
+		t.Errorf("body still has remote response %q — proxy did not short-circuit", body)
+	}
+}
+
+// TestRemote_VsLocal_ProxyParity — stand up the same logical service
+// twice: once as a binary mode service pointing at the same fake
+// upstream (the local control), once as `remote=` pointing at the
+// fake upstream directly. With identical proxy rules, requests
+// through both proxies receive bit-equivalent responses (modulo
+// timing). This is the test that locks in the "swap one keyword"
+// success criterion in the RFC.
+func TestRemote_VsLocal_ProxyParity(t *testing.T) {
+	calls := 0
+	host, port, cleanup := fakeRemoteHTTPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"calls":1}`))
+	})
+	defer cleanup()
+
+	// Run A: remote=
+	rtRemote := New(testLogger())
+	srcA := fmt.Sprintf(`
+geo = service("geo",
+    interface("public", "http", %d),
+    remote = "%s",
+    healthcheck = http("%s:%d/healthz"),
+)
+`, port, host, host, port)
+	if err := rtRemote.LoadString("a.star", srcA); err != nil {
+		t.Fatalf("Load A: %v", err)
+	}
+	ctxA, cancelA := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelA()
+	if err := rtRemote.startServices(ctxA); err != nil {
+		t.Fatalf("startServices A: %v", err)
+	}
+	t.Cleanup(func() { rtRemote.proxyMgr.StopAll() })
+	addrA := rtRemote.proxyMgr.GetProxyAddr("geo", "public")
+	respA, err := http.Get("http://" + addrA + "/p")
+	if err != nil {
+		t.Fatalf("GET A: %v", err)
+	}
+	bodyA := readAll(t, respA)
+
+	// Run B: a separate runtime with EnsureProxy pointed at the same
+	// upstream — matches what a local-binary-mode service would do once
+	// preStartProxies wires it up. (Binary mode itself can't be exercised
+	// in a unit test without a fork+exec target; the proxy machinery is
+	// the same.)
+	rtLocal := New(testLogger())
+	if _, err := rtLocal.proxyMgr.EnsureProxy(context.Background(), "geo", "public", "http", fmt.Sprintf("%s:%d", host, port)); err != nil {
+		t.Fatalf("EnsureProxy B: %v", err)
+	}
+	t.Cleanup(func() { rtLocal.proxyMgr.StopAll() })
+	addrB := rtLocal.proxyMgr.GetProxyAddr("geo", "public")
+	respB, err := http.Get("http://" + addrB + "/p")
+	if err != nil {
+		t.Fatalf("GET B: %v", err)
+	}
+	bodyB := readAll(t, respB)
+
+	if string(bodyA) != string(bodyB) {
+		t.Errorf("response divergence: remote=%q local=%q", bodyA, bodyB)
+	}
+	if respA.StatusCode != respB.StatusCode {
+		t.Errorf("status divergence: remote=%d local=%d", respA.StatusCode, respB.StatusCode)
+	}
+}
+
+// TestRemote_MidRunDeath — fake remote dies after a successful initial
+// pass-through. The next request through the proxy gets a synthetic
+// protocol error (lean-(b) from the RFC's Open Question 3). The proxy
+// stays up; the SUT sees something that looks like a real service
+// outage, which is exactly what oracles should test.
+func TestRemote_MidRunDeath(t *testing.T) {
+	host, port, cleanup := fakeRemoteHTTPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"alive":true}`))
+	})
+
+	rt := New(testLogger())
+	src := fmt.Sprintf(`
+geo = service("geo",
+    interface("public", "http", %d),
+    remote = "%s",
+    healthcheck = http("%s:%d/healthz"),
+)
+`, port, host, host, port)
+	if err := rt.LoadString("test.star", src); err != nil {
+		cleanup()
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		cleanup()
+		t.Fatalf("startServices: %v", err)
+	}
+	t.Cleanup(func() { rt.proxyMgr.StopAll() })
+
+	addr := rt.proxyMgr.GetProxyAddr("geo", "public")
+
+	// Initial successful request.
+	respOK, err := http.Get("http://" + addr + "/p")
+	if err != nil {
+		cleanup()
+		t.Fatalf("GET pre-death: %v", err)
+	}
+	bodyOK := readAll(t, respOK)
+	if !strings.Contains(string(bodyOK), "alive") {
+		cleanup()
+		t.Fatalf("pre-death body = %q; want alive", bodyOK)
+	}
+
+	// Kill the upstream.
+	cleanup()
+	// Give the listener time to fully release.
+	time.Sleep(50 * time.Millisecond)
+
+	// Subsequent request should fail at the proxy → upstream dial.
+	// Different protocols surface this differently (httputil.ReverseProxy
+	// returns 502 by default; raw byte proxies close the connection); we
+	// just verify the SUT-facing request *does not* succeed silently.
+	resp2, err := http.Get("http://" + addr + "/p")
+	if err == nil {
+		body2 := readAll(t, resp2)
+		if resp2.StatusCode == 200 && strings.Contains(string(body2), "alive") {
+			t.Fatalf("post-death request succeeded with original body — proxy did not detect upstream death (status=%d body=%q)", resp2.StatusCode, body2)
+		}
+	}
+}
