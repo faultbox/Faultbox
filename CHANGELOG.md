@@ -13,6 +13,65 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.22] - 2026-05-02
+
+RFC-038 Phase 1 — TLS-aware proxy foundation. Lays the transport-
+layer plumbing every plugin will inherit when the per-plugin migration
+lands in Phase 3. No plugin behavior changes in this release; pure
+infrastructure addition.
+
+### Added
+
+- **`proxy.ListenTLS(cfg)`** — TLS-aware variant of `Listen()` that
+  wraps the bind-side listener via `tls.NewListener`. Returns the
+  same `(net.Listener, listenAddr, error)` triple, so plugins flip
+  one call site to opt into TLS termination at the proxy without
+  touching their handler code (the handler still reads/writes
+  plaintext via the wrapped `*tls.Conn`).
+- **`proxy.Dial(ctx, target, cfg, timeout)`** — upstream-side
+  companion. With a nil cfg it's `net.DialTimeout("tcp", …)`; with
+  a non-nil cfg it negotiates TLS via `tls.Client.HandshakeContext`,
+  honouring both ctx cancellation and the timeout argument so
+  stalled handshakes don't outlive the call.
+  - Auto-fills `cfg.ServerName` from `target`'s host portion when
+    unset, so the customer's `tls=tls_cert(ca=...)` material matches
+    upstream certs without per-plugin SNI plumbing.
+- **`proxy.GenerateSelfSignedCert(hosts)`** — returns a `*tls.Config`
+  with a freshly minted ECDSA P-256 self-signed cert in memory. SAN
+  always includes `localhost` + `127.0.0.1` + `::1` so the host-side
+  dial address from `Listen()` works without per-test config; extra
+  hosts get added on top. 24-hour validity window. New cert per call
+  (intentional — Phase 1 ships sub-option 1a from the RFC; persisted
+  fixture path 1c lands when a customer asks).
+
+### RFC-038 scope notes
+
+- Phase 1 = foundation only. `internal/proxy/{listen.go,tls.go}` are
+  the only files touched on the data path — the 14 existing `Listen()`
+  callsites in plugins are unchanged. Adding the sibling helper
+  rather than extending `Listen()`'s signature kept the diff
+  reviewable and lets per-plugin migration roll in one PR at a time.
+- Spec-language surface (`tls_cert(...)` Starlark builtin) is
+  Phase 2; per-plugin upstream-dial migration is Phase 3.
+- `proxy_tls_handshake_complete` event family (Open Question 6 in
+  the RFC) lands with Phase 4 once at least one plugin actually
+  terminates TLS — no point shipping the event before something
+  fires it.
+
+### Tests
+
+9 new tests cover the foundation:
+- Loopback SAN defaults / custom hosts / fresh-on-each-call for
+  `GenerateSelfSignedCert`.
+- `ListenTLS` rejects nil cfg and round-trips bytes through a real
+  TLS handshake.
+- `Dial` plaintext path, TLS path, handshake-timeout (timeout
+  argument is honoured), and ServerName-defaulting-from-target
+  verification.
+
+Full repo `go test ./...` green; no plugin behavior changes so
+Lima sweep mirrors v0.12.21.
+
 ## [0.12.21] - 2026-05-01
 
 RFC-034 Phase 2 — proxy traffic observability extended to 9 more
