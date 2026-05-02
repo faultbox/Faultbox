@@ -146,7 +146,78 @@ type InterfaceDef struct {
 	Port     int
 	HostPort int    // actual host-mapped port (container mode, 0 = same as Port)
 	Spec     string // path to protocol spec file (swagger, proto, etc.)
+
+	// TLS — RFC-038 Phase 2. When non-nil the interface declares
+	// upstream TLS; Phase 3 plugins consume this via TLS.Resolve()
+	// to wrap their listener / dial via proxy.ListenTLS / proxy.Dial.
+	// Pre-Phase-3 plugins ignore the field; preStartProxies emits a
+	// warning so customers know their TLS config is currently a no-op
+	// for that protocol.
+	TLS *TLSConfigDef
 }
+
+// ---------------------------------------------------------------------------
+// TLSConfigDef — returned by tls_cert() builtin, attached to interfaces
+// ---------------------------------------------------------------------------
+
+// TLSConfigDef carries the cert material an interface needs to terminate
+// TLS at the proxy and (optionally) dial the upstream over mTLS. It is
+// the Starlark-visible counterpart of *tls.Config — fields hold paths
+// rather than parsed material so the same spec can be loaded on hosts
+// that don't yet have the cert files staged. Resolution happens at
+// proxy start time via Resolve().
+//
+// All fields are optional. The empty TLSConfigDef means "this upstream
+// speaks TLS; auto-generate proxy server cert; trust the system CA pool
+// for upstream verification" — the dev/test default.
+type TLSConfigDef struct {
+	// Server-side material — the cert + key the proxy presents to
+	// clients connecting to its listener. Empty means
+	// auto-generated self-signed (proxy.GenerateSelfSignedCert).
+	ProxyCert string
+	ProxyKey  string
+
+	// Client-side material — cert + key the proxy presents to the
+	// upstream when dialing mTLS. Empty means the proxy dials
+	// without a client cert (server-cert-only TLS).
+	ClientCert string
+	ClientKey  string
+
+	// CA bundle the proxy trusts when verifying the upstream's cert.
+	// Empty means the system CA pool. Must be a PEM file when set.
+	CA string
+
+	// InsecureSkipVerify on the upstream side. Last-ditch escape
+	// hatch for dev clusters with self-signed upstream certs that
+	// the proxy can't trust via CA. Equivalent to curl -k. Logs a
+	// warning at spec-load when set.
+	Insecure bool
+}
+
+var _ starlark.Value = (*TLSConfigDef)(nil)
+
+func (t *TLSConfigDef) String() string {
+	parts := []string{}
+	if t.ProxyCert != "" {
+		parts = append(parts, "proxy_cert="+t.ProxyCert)
+	} else {
+		parts = append(parts, "proxy_cert=auto")
+	}
+	if t.ClientCert != "" {
+		parts = append(parts, "mTLS")
+	}
+	if t.CA != "" {
+		parts = append(parts, "ca="+t.CA)
+	}
+	if t.Insecure {
+		parts = append(parts, "insecure")
+	}
+	return fmt.Sprintf("<tls_cert %s>", strings.Join(parts, " "))
+}
+func (t *TLSConfigDef) Type() string          { return "tls_cert" }
+func (t *TLSConfigDef) Freeze()               {}
+func (t *TLSConfigDef) Truth() starlark.Bool  { return true }
+func (t *TLSConfigDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: tls_cert") }
 
 var _ starlark.Value = (*InterfaceDef)(nil)
 

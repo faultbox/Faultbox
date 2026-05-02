@@ -100,6 +100,11 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"jwt_keypair": starlark.NewBuiltin("jwt_keypair", builtinJWTKeypair),
 		"jwt_sign":    starlark.NewBuiltin("jwt_sign", builtinJWTSign),
 		"jwt_jwks":    starlark.NewBuiltin("jwt_jwks", builtinJWTJWKS),
+		// TLS material for protocol proxies (RFC-038 Phase 2).
+		// Attach via interface(..., tls=tls_cert(...)). Phase 3
+		// plugin migration is when individual proxies actually
+		// terminate TLS using the resolved cfg.
+		"tls_cert": starlark.NewBuiltin("tls_cert", rt.builtinTLSCert),
 	}
 }
 
@@ -319,26 +324,40 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 	return svc, nil
 }
 
-// interface(name, protocol, port, spec=)
+// interface(name, protocol, port, spec=, tls=)
 func builtinInterface(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var name, protocol string
 	var port int
-	if err := starlark.UnpackPositionalArgs("interface", args, kwargs, 3, &name, &protocol, &port); err != nil {
-		// Try with kwargs for spec.
-		if err := starlark.UnpackArgs("interface", args, kwargs, "name", &name, "protocol", &protocol, "port", &port); err != nil {
-			return nil, err
-		}
+	var spec string
+	var tlsVal starlark.Value
+	if err := starlark.UnpackArgs("interface", args, kwargs,
+		"name", &name,
+		"protocol", &protocol,
+		"port", &port,
+		"spec?", &spec,
+		"tls?", &tlsVal,
+	); err != nil {
+		return nil, err
 	}
 
 	iface := &InterfaceDef{
 		Name:     name,
 		Protocol: protocol,
 		Port:     port,
+		Spec:     spec,
 	}
 
-	if spec, ok := starKwarg(kwargs, "spec"); ok {
-		s, _ := starlark.AsString(spec)
-		iface.Spec = s
+	// RFC-038 Phase 2: tls=tls_cert(...) attaches TLS material the
+	// Phase 3 plugin migration will consume. We accept the value
+	// here (and reject other types early) so the spec error message
+	// mentions tls_cert() rather than the deeper failure mode that
+	// would surface when a plugin tried to use a non-TLS value.
+	if tlsVal != nil && tlsVal != starlark.None {
+		tcfg, ok := tlsVal.(*TLSConfigDef)
+		if !ok {
+			return nil, fmt.Errorf("interface(%s): tls= must be a tls_cert(...) value, got %s", name, tlsVal.Type())
+		}
+		iface.TLS = tcfg
 	}
 
 	return iface, nil

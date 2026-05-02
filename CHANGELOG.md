@@ -13,6 +13,84 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.23] - 2026-05-02
+
+RFC-038 Phase 2 — Starlark spec-language surface for TLS. Customers
+can now declare `interface(..., tls=tls_cert(...))` on a service
+interface; the spec validates at load time and the resolved cert
+material flows through to the proxy lifecycle. Phase 3 plugin
+migration is what actually wraps the listener; Phase 2 ships the
+spec contract so customers can write their TLS specs ahead of the
+per-plugin work.
+
+### Added
+
+- **`tls_cert(...)` Starlark builtin** in `internal/star/builtins_tls.go`.
+  Kwargs-only — positional args are refused so a typo can't silently
+  swap server / client material:
+  - `proxy_cert` / `proxy_key` — server cert + key the proxy
+    presents to clients connecting to its listener. Both must be
+    set or both omitted; empty pair = auto-generated self-signed
+    cert at proxy-start time (RFC sub-option 1a).
+  - `client_cert` / `client_key` — mTLS client material the proxy
+    presents to upstream when dialing. Same paired-or-omitted rule.
+  - `ca` — PEM file the proxy trusts when verifying the upstream
+    cert. Parsed at spec-load to fail fast on garbage CAs.
+  - `insecure=True` — escape hatch for dev clusters with self-signed
+    upstream certs the proxy can't trust. Mutually exclusive with
+    `ca=` (refused at spec-load).
+  - Relative paths resolve against the spec's directory (rt.baseDir),
+    matching the load_file convention.
+- **`interface(..., tls=tls_cert(...))`** — kwarg accepted on every
+  interface. Switched the builtin from `UnpackPositionalArgs` to
+  `UnpackArgs` with `spec?` and `tls?` declared, so unknown kwargs
+  now produce clean errors instead of silently being ignored.
+- **`TLSConfigDef.ResolveServerConfig(baseDir, extraHosts)`** —
+  builds the `*tls.Config` Phase 3 plugins will hand to
+  `proxy.ListenTLS`. Auto-falls-through to
+  `proxy.GenerateSelfSignedCert` when no `proxy_cert` was set.
+- **`TLSConfigDef.ResolveClientConfig(baseDir)`** — builds the
+  upstream-side `*tls.Config` for `proxy.Dial`. Honours mTLS client
+  cert + CA pool + InsecureSkipVerify.
+- **`proxy_tls_pending` event** — emitted from `preStartProxies`
+  when an interface declares `tls=` but Phase 3 hasn't migrated
+  that protocol yet. The starlark logger also warns. Silence here
+  would let a "TLS handshake fails against proxy" debugging
+  session burn an hour, so we surface the gap explicitly.
+
+### Validation guarantees
+
+Spec authors get fast errors at load time, not at first dial:
+- Half-set proxy / client cert+key pairs.
+- Missing cert / key / CA files on disk.
+- CA file that doesn't contain any PEM certificates.
+- `insecure=True` combined with `ca=` (contradictory).
+- `tls=` value that isn't a `tls_cert(...)` (string, bool, etc.) —
+  error names `tls_cert(...)` so customers know how to fix it.
+
+### Tests
+
+12 new tests in `internal/star/builtins_tls_test.go`:
+- `tls_cert()` no-args / kwargs-only / pair-validation /
+  file-existence / CA-parse / insecure×ca-exclusion / relative-path
+  resolution.
+- `interface(..., tls=...)` stores the value on InterfaceDef and
+  rejects wrong types.
+- `ResolveServerConfig` auto-cert path + load-from-disk path.
+- `ResolveClientConfig` mTLS+CA path + insecure path.
+
+### Internal
+
+- `interface()` builtin moved from `UnpackPositionalArgs` (which
+  silently ignored anything not in its 3-arg list) to `UnpackArgs`
+  with explicit `spec?` and `tls?` declarations. Net effect:
+  unknown kwargs now error at spec-load. Tests confirm no
+  regressions across the 17 packages that exercise interface().
+
+Full repo `go test ./...` green; `go vet` clean.
+
+Version 0.12.22 → 0.12.23.
+
 ## [0.12.22] - 2026-05-02
 
 RFC-038 Phase 1 — TLS-aware proxy foundation. Lays the transport-
