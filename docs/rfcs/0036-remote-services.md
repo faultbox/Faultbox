@@ -1,9 +1,9 @@
 # RFC-036: Remote Services — Faulting Dependencies in Customer k8s Dev Environments
 
-- **Status:** Draft
+- **Status:** Implemented (v0.12.29, 2026-05-02)
 - **Author:** Boris Glebov, Claude Opus 4.7
 - **Created:** 2026-05-01
-- **Target:** v0.13.0 (subject to scheduling)
+- **Shipped:** v0.12.29 (2026-05-02). Originally targeted v0.13.0; landed in the 0.12.x train alongside the RFC-038 TLS work it interops with.
 - **Depends on:** RFC-017 (mock services), RFC-024 (proxy datapath)
 - **Companion:** RFC-037 (Determinism for Remote Services) — split out from this
   RFC on 2026-05-01; remote services break the `.fb` bundle reproducibility
@@ -389,8 +389,9 @@ open.
 
 | Phase | Scope | Target |
 |---|---|---|
-| **v1** | `service(remote=...)` plumbing; spec-load validation; healthcheck; per-interface `remotes({...})`; `@faultbox/discovery/k8s.star` helper; `env.json` records remotes used. | v0.13.0 |
-| **v2** | Replay-warning UX when a bundle declaring remotes is replayed; report-side annotation that flags "this run used remote services" at the top of the HTML report. | v0.13.x |
+| **v1** | `service(remote=...)` plumbing; spec-load validation; healthcheck; per-interface `remotes({...})`; `@faultbox/discovery/k8s.star` helper; `env.json` records remotes used; `faultbox replay` warning. | **Shipped v0.12.29** (2026-05-02) |
+| **v1.1** | RFC-038 TLS interop test + docs. | **Shipped v0.12.29** (2026-05-02) |
+| **v2** | Report-side annotation that flags "this run used remote services" at the top of the HTML report. | TBD |
 | **Determinism** | See RFC-037. | TBD |
 
 ## Regression tests
