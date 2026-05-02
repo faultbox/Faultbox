@@ -94,9 +94,17 @@ func TestHTTPProxyErrorRule(t *testing.T) {
 	}
 	resp2.Body.Close()
 
-	// Should have 1 proxy event.
-	if len(events) != 1 {
-		t.Errorf("expected 1 event, got %d", len(events))
+	// Should have 1 rule-fired event (legacy ProxyEvent.Type=="").
+	// RFC-034 added connection-lifecycle events (proxy_conn_open /
+	// _close); count only the legacy events for this assertion.
+	ruleEvents := 0
+	for _, e := range events {
+		if e.Type == "" {
+			ruleEvents++
+		}
+	}
+	if ruleEvents != 1 {
+		t.Errorf("expected 1 rule-fired event, got %d (total events: %d)", ruleEvents, len(events))
 	}
 }
 

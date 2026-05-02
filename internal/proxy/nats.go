@@ -72,14 +72,26 @@ func (p *natsProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	// RFC-034: per-connection lifecycle tracker. NATS sends an
+	// INFO line immediately after connect (the handshake-equivalent
+	// — server announces itself); we mark handshake_complete after
+	// the first server-line reaches the client.
+	tracker := newConnTracker(p.onEvent, p.svcName, "main", "nats",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+
 	errCh := make(chan error, 2)
 
 	// Server → client.
 	go func() {
 		scanner := bufio.NewScanner(serverConn)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		linesSeen := 0
 		for scanner.Scan() {
 			line := scanner.Text()
+			tracker.AddBytesS2C(len(line) + 1) // +1 for newline
 			// Intercept MSG lines (delivery).
 			if strings.HasPrefix(line, "MSG ") {
 				subject := extractNATSSubject(line)
@@ -88,6 +100,12 @@ func (p *natsProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 				}
 			}
 			fmt.Fprintln(clientConn, line)
+			linesSeen++
+			if linesSeen == 1 {
+				// First server line (typically `INFO {...}`) marks
+				// the connection-ready state.
+				tracker.EmitHandshakeComplete("info", 1)
+			}
 		}
 		errCh <- scanner.Err()
 	}()
@@ -98,6 +116,7 @@ func (p *natsProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			tracker.AddBytesC2S(len(line) + 1)
 			// Intercept PUB lines (publish).
 			if strings.HasPrefix(line, "PUB ") {
 				subject := extractNATSSubject(line)
@@ -110,7 +129,9 @@ func (p *natsProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		errCh <- scanner.Err()
 	}()
 
-	<-errCh
+	if err := <-errCh; err != nil {
+		closeReason = classifyCloseReason(err, "client")
+	}
 }
 
 func (p *natsProxy) shouldDrop(subject, direction string) bool {

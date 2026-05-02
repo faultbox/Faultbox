@@ -46,10 +46,14 @@ func (p *clickhouseProxy) Start(ctx context.Context, target string) (string, err
 	}
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 
+	// RFC-034: connection-lifecycle events via http.Server.ConnState.
+	connTracker := NewHTTPConnStateTracker(p.onEvent, p.svcName, "main", "clickhouse", target)
+
 	p.server = &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p.handle(w, r, reverseProxy)
 		}),
+		ConnState: connTracker.ConnState,
 	}
 	go p.server.Serve(ln)
 	go func() {

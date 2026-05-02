@@ -78,9 +78,22 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	// RFC-034: per-connection lifecycle tracker. Kafka has no
+	// explicit handshake — client jumps straight to Produce/Fetch
+	// requests after TCP connect. We mark handshake_complete after
+	// the first request-response round-trip as a stand-in for "this
+	// connection is in steady-state command phase".
+	tracker := newConnTracker(p.onEvent, p.svcName, "main", "kafka",
+		clientConn.RemoteAddr().String(), p.target)
+	tracker.EmitOpen()
+	closeReason := "client_eof"
+	defer func() { tracker.EmitClose(closeReason) }()
+	requestsSeen := 0
+
 	for {
 		select {
 		case <-ctx.Done():
+			closeReason = "context_cancel"
 			return
 		default:
 		}
@@ -91,17 +104,22 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		// Payload starts with: api_key(2) + api_version(2) + correlation_id(4) + client_id.
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(clientConn, lenBuf); err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
+		tracker.AddBytesC2S(4)
 		msgLen := int(binary.BigEndian.Uint32(lenBuf))
 		if msgLen <= 0 || msgLen > 10*1024*1024 {
+			closeReason = "io_error"
 			return
 		}
 
 		payload := make([]byte, msgLen)
 		if _, err := io.ReadFull(clientConn, payload); err != nil {
+			closeReason = classifyCloseReason(err, "client")
 			return
 		}
+		tracker.AddBytesC2S(msgLen)
 
 		// Parse API key to identify Produce/Fetch requests.
 		if len(payload) >= 8 {
@@ -120,27 +138,39 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 		// Forward to server.
 		if _, err := serverConn.Write(lenBuf); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 		if _, err := serverConn.Write(payload); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
 
 		// Forward response back.
 		respLenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(serverConn, respLenBuf); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
+		tracker.AddBytesS2C(4)
 		respLen := int(binary.BigEndian.Uint32(respLenBuf))
 		if respLen <= 0 || respLen > 10*1024*1024 {
+			closeReason = "io_error"
 			return
 		}
 		resp := make([]byte, respLen)
 		if _, err := io.ReadFull(serverConn, resp); err != nil {
+			closeReason = classifyCloseReason(err, "server")
 			return
 		}
+		tracker.AddBytesS2C(respLen)
 		clientConn.Write(respLenBuf)
 		clientConn.Write(resp)
+
+		requestsSeen++
+		if requestsSeen == 1 {
+			tracker.EmitHandshakeComplete("", 1)
+		}
 	}
 }
 

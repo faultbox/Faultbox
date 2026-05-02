@@ -13,6 +13,71 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.21] - 2026-05-01
+
+RFC-034 Phase 2 — proxy traffic observability extended to 9 more
+plugins. v0.12.20 wired conn lifecycle + handshake + stall events
+into 4 plugins (tcp, mysql, postgres, redis). This release covers
+9 of the remaining 11; the customer's bundle now carries
+proxy_conn_open / _close / _handshake_complete events for nearly
+every protocol Faultbox proxies.
+
+### Added
+
+- **6 frame/text-based plugins instrumented** (same pattern as
+  mysql/postgres/redis):
+  - `amqp.go` — protocol-header acts as handshake marker;
+    bidirectional frame forwarders count C2S/S2C bytes per
+    direction.
+  - `cassandra.go` — frame-aware on client→server (count C2S
+    inline), `io.Copy` on server→client (wrapped via
+    `tracker.WrapServerReader` to count S2C). Handshake fires
+    after first request-response round-trip.
+  - `kafka.go` — length-prefix framed; conn_open/close + first
+    request marks handshake.
+  - `memcached.go` — text-line + binary-data hybrid; bytes
+    counted at every `bufio.Reader.ReadString` and
+    `Fprintf`/`Write`. Handshake fires on first round-trip.
+  - `mongodb.go` — LE32 framed; same pattern as kafka.
+  - `nats.go` — text-line via `bufio.Scanner`; first server line
+    (typically `INFO`) marks handshake_complete; byte counts
+    include the trailing newline.
+
+- **3 HTTP-family plugins instrumented via
+  `http.Server.ConnState`** (http, http2, clickhouse):
+  - New `HTTPConnStateTracker` helper in `observability.go`
+    maps `StateNew` → `proxy_conn_open`, `StateClosed` →
+    `proxy_conn_close`, first `StateActive` →
+    `proxy_handshake_complete`. Idempotent on keep-alive
+    (handshakeDone CAS).
+  - HTTP/2 emits per underlying-TCP-conn (one open/close per
+    physical connection regardless of stream count).
+  - **Byte counts not yet wired** for HTTP-family — `http.Server`
+    reads/writes through the listener internally; a Listener
+    wrapper that returns counting Conns is the natural follow-up.
+    `bytes_c2s` / `bytes_s2c` report 0 for these plugins until
+    that ships.
+
+### Out of scope (final follow-up)
+
+- **`udp.go`** — datagram protocol, connectionless. RFC-034's
+  conn_open/conn_close model doesn't fit. Likely needs a new
+  event family (`proxy_datagram_received` / `_sent`) — separate
+  RFC.
+- **`grpc.go`** — gRPC's per-RPC handler is not connection-scoped
+  and the standard library's grpc.Server does not expose a
+  per-connection lifecycle hook compatible with RFC-034. The
+  `grpc.StatsHandler` interface gives per-RPC stats but not
+  per-connection lifecycle. Defer until we can either build a
+  StatsHandler-based variant or wrap the listener pre-gRPC.
+
+### Internal
+
+- `proxy_test.go::TestHTTPProxyErrorRule` updated to count only
+  legacy rule-fired events (`ProxyEvent.Type == ""`); the
+  added connection-lifecycle events would otherwise inflate the
+  per-test count from 1 to 3.
+
 ## [0.12.20] - 2026-05-01
 
 RFC-034: proxy traffic observability. The Faultbox transparent
@@ -1382,7 +1447,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.20...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.21...HEAD
+[0.12.21]: https://github.com/faultbox/Faultbox/compare/release-0.12.20...release-0.12.21
 [0.12.20]: https://github.com/faultbox/Faultbox/compare/release-0.12.19...release-0.12.20
 [0.12.19]: https://github.com/faultbox/Faultbox/compare/release-0.12.18...release-0.12.19
 [0.12.18]: https://github.com/faultbox/Faultbox/compare/release-0.12.17...release-0.12.18

@@ -68,10 +68,16 @@ func (p *http2Proxy) Start(ctx context.Context, target string) (string, error) {
 		p.handleRequest(w, r, reverseProxy)
 	})
 
+	// RFC-034: connection-lifecycle events via http.Server.ConnState.
+	// HTTP/2 multiplexes streams over a single TCP conn; we emit per
+	// underlying-TCP-conn (StateNew/StateClosed), not per-stream.
+	connTracker := NewHTTPConnStateTracker(p.onEvent, p.svcName, "main", "http2", target)
+
 	// h2c.NewHandler upgrades prior-knowledge HTTP/2 cleartext connections
 	// in the inbound direction. Clients that send HTTP/1.1 still work.
 	p.server = &http.Server{
-		Handler: h2c.NewHandler(handler, &http2.Server{}),
+		Handler:   h2c.NewHandler(handler, &http2.Server{}),
+		ConnState: connTracker.ConnState,
 	}
 
 	go func() {
