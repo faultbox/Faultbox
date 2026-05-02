@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -26,6 +27,14 @@ type kafkaProxy struct {
 	svcName  string
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+
+	// RFC-038 Phase 3: TLS material. Kafka brokers expose
+	// SSL/PLAINTEXT listeners on separate ports — there is no
+	// in-band SSL upgrade like the postgres SSLRequest. So we
+	// can wrap-and-dial directly: serverTLS wraps the listener,
+	// clientTLS upgrades the upstream dial via proxy.Dial.
+	serverTLS *tls.Config
+	clientTLS *tls.Config
 }
 
 func newKafkaProxy(onEvent OnProxyEvent, svcName string) *kafkaProxy {
@@ -37,10 +46,23 @@ func newKafkaProxy(onEvent OnProxyEvent, svcName string) *kafkaProxy {
 
 func (p *kafkaProxy) Protocol() string { return "kafka" }
 
+// SetTLS implements TLSAware. Must be called before Start.
+func (p *kafkaProxy) SetTLS(server, client *tls.Config) {
+	p.serverTLS = server
+	p.clientTLS = client
+}
+
 func (p *kafkaProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 
-	ln, listenAddr, err := Listen()
+	var ln net.Listener
+	var listenAddr string
+	var err error
+	if p.serverTLS != nil {
+		ln, listenAddr, err = ListenTLS(p.serverTLS)
+	} else {
+		ln, listenAddr, err = Listen()
+	}
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
@@ -72,7 +94,10 @@ func (p *kafkaProxy) Start(ctx context.Context, target string) (string, error) {
 func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	defer clientConn.Close()
 
-	serverConn, err := net.DialTimeout("tcp", p.target, 5*time.Second)
+	// proxy.Dial routes through tls.Client + HandshakeContext when
+	// clientTLS is set; otherwise it's net.DialTimeout. The 5s
+	// budget covers both the TCP connect and the TLS handshake.
+	serverConn, err := Dial(ctx, p.target, p.clientTLS, 5*time.Second)
 	if err != nil {
 		return
 	}
