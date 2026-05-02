@@ -1034,6 +1034,25 @@ func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *Ser
 			"target":    targetAddr,
 			"mode":      "passthrough",
 		})
+
+		// RFC-038 Phase 2: spec accepted tls=tls_cert(...) but no
+		// plugin terminates TLS yet (Phase 3 ships per-plugin
+		// migration). Emit a one-time warning so customers know the
+		// declaration parsed but isn't actively wrapping the
+		// listener — silence here would let a "TLS handshake fails
+		// against proxy" debugging session burn an hour.
+		if iface.TLS != nil {
+			rt.log.Warn("tls= declared but plugin not yet migrated — listener stays plaintext until RFC-038 Phase 3 lands this protocol",
+				slog.String("service", svcName),
+				slog.String("interface", ifaceName),
+				slog.String("protocol", iface.Protocol),
+			)
+			rt.events.Emit("proxy_tls_pending", svcName, map[string]string{
+				"interface": ifaceName,
+				"protocol":  iface.Protocol,
+				"reason":    "phase3_not_landed",
+			})
+		}
 	}
 	return nil
 }
