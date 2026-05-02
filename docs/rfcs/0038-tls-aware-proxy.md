@@ -1,6 +1,6 @@
 # RFC-038: TLS-aware proxy
 
-> **Status: Draft (problem statement + three options — design not yet committed.)**
+> **Status: Partially Implemented.** Phase 1 (foundation) shipped in v0.12.22; Phase 2 (Starlark `tls_cert()`) in v0.12.23; Phase 3 plugin migration shipped 6 of 14 plugins (http v0.12.24, http2 v0.12.24, gRPC v0.12.25, Kafka v0.12.26, Redis v0.12.27, TCP v0.12.28). Remaining 8 plugins (postgres, mysql, mongodb, cassandra, clickhouse, memcached, nats, amqp) deferred to [RFC-039](https://github.com/faultbox/Faultbox/issues/106); UDP has no TLS story.
 
 ## Summary
 
