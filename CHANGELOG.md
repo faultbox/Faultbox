@@ -1853,7 +1853,14 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.21...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.28...HEAD
+[0.12.28]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
+[0.12.27]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
+[0.12.26]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
+[0.12.25]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
+[0.12.24]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
+[0.12.23]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
+[0.12.22]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
 [0.12.21]: https://github.com/faultbox/Faultbox/compare/release-0.12.20...release-0.12.21
 [0.12.20]: https://github.com/faultbox/Faultbox/compare/release-0.12.19...release-0.12.20
 [0.12.19]: https://github.com/faultbox/Faultbox/compare/release-0.12.18...release-0.12.19
