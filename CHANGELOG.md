@@ -13,6 +13,55 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.12.25] - 2026-05-02
+
+RFC-038 Phase 3 (2 of 4) — gRPC plugin TLS migration. Closes the
+remaining half of the customer's gap #1 (gRPC-TLS) — `truck-api →
+geo-config` over mTLS now flows through the proxy with rules still
+firing.
+
+### Changed
+
+- **`grpc` plugin migrated to TLSAware.** `SetTLS(server, client)`
+  threads the resolved configs into:
+  - Server side: `grpc.Creds(credentials.NewTLS(serverCfg))` —
+    routed via the gRPC framework's own creds path rather than
+    pre-wrapping the listener (which double-handshakes the
+    connection). The listener stays plain `Listen()`.
+  - Client side: `credentials.NewTLS(clientCfg)` instead of
+    `insecure.NewCredentials()` for the upstream dial. ALPN h2 is
+    forced on the client cfg (gRPC-go forces it server-side
+    automatically).
+- Plaintext path runs unchanged — without `SetTLS`, the plugin
+  retains its `insecure.NewCredentials()` h2c behavior verbatim.
+
+### Why a different listener strategy than http2
+
+The http2 plugin pre-wraps its listener via `proxy.ListenTLS` because
+`http.Server` integrates TLS via the wrapped conn. gRPC-go's server
+owns its own TLS handshake via `grpc.Creds` and gets confused when
+handed an already-encrypted conn. Routing through `grpc.Creds` is the
+framework-idiomatic seam and avoids a double-handshake bug.
+
+The customer-facing surface is identical: `interface("geo", "grpc",
+443, tls=tls_cert(...))` works the same way — only the internal
+plumbing differs.
+
+### Tests
+
+4 new tests in `internal/proxy/grpc_tls_test.go`:
+
+| Test | Covers |
+|---|---|
+| `TestGRPCProxy_TLSEndToEnd` | gRPC-over-TLS at both legs, raw-bytes byte-identity round trip |
+| `TestGRPCProxy_TLSRuleInjection` | `grpc.error(method=...)` rule fires through TLS |
+| `TestGRPCProxy_PlaintextStillWorks` | regression — h2c + insecure.NewCredentials |
+| `TestGRPCProxy_ImplementsTLSAware` | type-assertion contract |
+
+Full repo `go test ./...` green; `go vet` clean.
+
+Version 0.12.24 → 0.12.25.
+
 ## [0.12.24] - 2026-05-02
 
 RFC-038 Phase 3 (1 of 4) — first plugin migrations. The `http` and

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math/rand"
@@ -11,6 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/metadata"
@@ -69,6 +71,12 @@ type grpcProxy struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	upstream *grpc.ClientConn
+
+	// RFC-038 Phase 3: TLS material. serverTLS wraps the listener
+	// (ALPN h2 forced); clientTLS becomes upstream credentials via
+	// credentials.NewTLS, replacing the insecure.NewCredentials path.
+	serverTLS *tls.Config
+	clientTLS *tls.Config
 }
 
 func newGRPCProxy(onEvent OnProxyEvent, svcName string) *grpcProxy {
@@ -80,21 +88,44 @@ func newGRPCProxy(onEvent OnProxyEvent, svcName string) *grpcProxy {
 
 func (p *grpcProxy) Protocol() string { return "grpc" }
 
+// SetTLS implements TLSAware. Must be called before Start.
+func (p *grpcProxy) SetTLS(server, client *tls.Config) {
+	p.serverTLS = server
+	p.clientTLS = client
+}
+
 func (p *grpcProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 	ctx, p.cancel = context.WithCancel(ctx)
 
+	// gRPC owns TLS termination on the server side via grpc.Creds —
+	// pre-wrapping the listener via ListenTLS would double-up the
+	// handshake. Use plain Listen() and pass serverTLS through
+	// credentials.NewTLS instead. Mirrors the http2 plugin's spirit
+	// (TLS+ALPN h2) but routed via the gRPC framework's own seam.
 	ln, listenAddr, err := Listen()
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
 	p.listener = ln
 
-	// Connect to upstream. ForceCodec on every outbound call so
-	// forwardRPC can hand raw bytes straight through without the
-	// default proto codec rejecting them (Bug #1).
+	// Upstream credentials: clientTLS non-nil ⇒ TLS with ALPN h2.
+	// Otherwise insecure (cleartext h2c) — same behavior as before
+	// RFC-038. ForceCodec on every outbound call so forwardRPC can
+	// hand raw bytes straight through without the default proto
+	// codec rejecting them (Bug #1).
+	var transportCreds credentials.TransportCredentials
+	if p.clientTLS != nil {
+		clientCfg := p.clientTLS.Clone()
+		if len(clientCfg.NextProtos) == 0 {
+			clientCfg.NextProtos = []string{"h2"}
+		}
+		transportCreds = credentials.NewTLS(clientCfg)
+	} else {
+		transportCreds = insecure.NewCredentials()
+	}
 	conn, err := grpc.NewClient(target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(transportCreds),
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(grpcRawCodec{})),
 	)
 	if err != nil {
@@ -103,14 +134,22 @@ func (p *grpcProxy) Start(ctx context.Context, target string) (string, error) {
 	}
 	p.upstream = conn
 
-	// Create gRPC server with unknown service handler (catches all RPCs).
-	// ForceServerCodec so incoming frames reach handleStream as raw
-	// bytes — mirrors the upstream client codec above so passthrough
-	// is a byte-identity transform.
-	p.server = grpc.NewServer(
+	// Server-side: when serverTLS is set, configure grpc.Creds to
+	// terminate TLS at handshake time. ForceServerCodec so incoming
+	// frames reach handleStream as raw bytes — mirrors the upstream
+	// client codec above so passthrough is a byte-identity transform.
+	serverOpts := []grpc.ServerOption{
 		grpc.UnknownServiceHandler(p.handleStream),
 		grpc.ForceServerCodec(grpcRawCodec{}),
-	)
+	}
+	if p.serverTLS != nil {
+		serverCfg := p.serverTLS.Clone()
+		// gRPC handles ALPN internally but won't override an existing
+		// NextProtos set by the customer's cfg; we don't preset it
+		// because grpc-go forces "h2" anyway.
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(serverCfg)))
+	}
+	p.server = grpc.NewServer(serverOpts...)
 
 	p.wg.Add(1)
 	go func() {
