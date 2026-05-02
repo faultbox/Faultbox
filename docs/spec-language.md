@@ -289,7 +289,7 @@ Access interfaces by name: `courier.public`, `courier.internal`, `courier.events
 
 ### Remote Services
 
-`service(remote=...)` (RFC-036, v0.13.0) declares a service whose process
+`service(remote=...)` (RFC-036, v0.12.29) declares a service whose process
 lives outside Faultbox — typically a real pod in a k8s dev cluster you
 can't pull as a Docker image. Faultbox does not launch the service. It
 stands up its existing protocol proxy in front of each declared

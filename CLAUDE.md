@@ -50,12 +50,14 @@ Runtime (internal/star/) -- parses topology, discovers tests
 - **Syscall family expansion:** `write=deny("EIO")` automatically covers write,
   writev, pwrite64. Users think in operations, not syscall numbers.
 
-### Two Modes
+### Modes
 
 | Mode | How | Use case |
 |------|-----|----------|
 | **Binary** | Fork+exec with seccomp filter | Local development, mock services |
 | **Container** | Docker + faultbox-shim entrypoint | Real infrastructure (Postgres, Redis) |
+| **Mock** (RFC-017) | In-process protocol stub, no process | Stand-in for trivial dependencies (JWKS, feature flags) |
+| **Remote** (RFC-036) | No launch; proxy dials externally-running endpoint | Real cluster pods (k8s dev platforms) when images aren't distributable. Healthcheck required; syscall faults rejected at spec load. Composes with RFC-038 `tls=tls_cert(...)` for TLS upstreams. |
 
 ### Project Structure
 
