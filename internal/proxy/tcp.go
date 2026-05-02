@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math/rand"
@@ -36,6 +37,14 @@ type tcpProxy struct {
 	svcName  string
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+
+	// RFC-038 Phase 3: TLS material. The generic TCP plugin handles
+	// any "TLS from byte 1" service Faultbox doesn't have a dedicated
+	// plugin for — same wrap-and-dial pattern as kafka / redis. The
+	// prefix-peek rule predicate (Rule.Method) still fires against
+	// the plaintext bytes between the two TLS legs.
+	serverTLS *tls.Config
+	clientTLS *tls.Config
 }
 
 func newTCPProxy(onEvent OnProxyEvent, svcName string) *tcpProxy {
@@ -44,14 +53,37 @@ func newTCPProxy(onEvent OnProxyEvent, svcName string) *tcpProxy {
 
 func (p *tcpProxy) Protocol() string { return "tcp" }
 
+// SetTLS implements TLSAware. Must be called before Start.
+func (p *tcpProxy) SetTLS(server, client *tls.Config) {
+	p.serverTLS = server
+	p.clientTLS = client
+}
+
 func (p *tcpProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
-	ln, listenAddr, err := Listen()
+	var ln net.Listener
+	var listenAddr string
+	var err error
+	if p.serverTLS != nil {
+		ln, listenAddr, err = ListenTLS(p.serverTLS)
+	} else {
+		ln, listenAddr, err = Listen()
+	}
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
 	p.listener = ln
 	ctx, p.cancel = context.WithCancel(ctx)
+
+	// When the listener is TLS-wrapped (*tls.listener), the
+	// SetDeadline-on-TCPListener trick in acceptLoop doesn't apply —
+	// the type assertion fails silently. Close the listener on ctx
+	// cancel so Accept returns and the loop exits cleanly without
+	// relying on a Stop() call from the manager.
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
 
 	p.wg.Add(1)
 	go p.acceptLoop(ctx)
@@ -89,7 +121,10 @@ func (p *tcpProxy) handle(ctx context.Context, client net.Conn) {
 	defer p.wg.Done()
 	defer client.Close()
 
-	upstream, err := net.DialTimeout("tcp", p.target, 5*time.Second)
+	// proxy.Dial routes through tls.Client + HandshakeContext when
+	// clientTLS is set; otherwise it's net.DialTimeout. The 5s
+	// budget covers both the TCP connect and the TLS handshake.
+	upstream, err := Dial(ctx, p.target, p.clientTLS, 5*time.Second)
 	if err != nil {
 		return
 	}
