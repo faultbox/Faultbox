@@ -1023,25 +1023,53 @@ func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *Ser
 			continue // already running (container reuse across tests)
 		}
 		targetAddr := proxyTargetAddr(iface)
-		proxyAddr, err := rt.proxyMgr.EnsureProxy(ctx, svcName, ifaceName, iface.Protocol, targetAddr)
+
+		// RFC-038 Phase 3: when iface.TLS is set, resolve the cert
+		// material and route through EnsureProxyTLS so plugins
+		// that implement TLSAware (http, http2 in this PR) can
+		// terminate TLS at the listener and / or dial upstream
+		// over TLS. EnsureProxyTLS reports whether the plugin
+		// accepted the TLS material — when it didn't, we emit
+		// proxy_tls_pending so the customer knows their tls=
+		// declaration is currently a no-op for that protocol.
+		var proxyAddr string
+		var tlsApplied bool
+		var err error
+		if iface.TLS != nil {
+			serverCfg, sErr := iface.TLS.ResolveServerConfig(rt.baseDir, []string{targetHostname(targetAddr)})
+			if sErr != nil {
+				return fmt.Errorf("proxy %s.%s: resolve server tls: %w", svcName, ifaceName, sErr)
+			}
+			clientCfg, cErr := iface.TLS.ResolveClientConfig(rt.baseDir)
+			if cErr != nil {
+				return fmt.Errorf("proxy %s.%s: resolve client tls: %w", svcName, ifaceName, cErr)
+			}
+			proxyAddr, tlsApplied, err = rt.proxyMgr.EnsureProxyTLS(ctx, svcName, ifaceName, iface.Protocol, targetAddr, serverCfg, clientCfg)
+		} else {
+			proxyAddr, err = rt.proxyMgr.EnsureProxy(ctx, svcName, ifaceName, iface.Protocol, targetAddr)
+		}
 		if err != nil {
 			return fmt.Errorf("proxy %s.%s: %w", svcName, ifaceName, err)
+		}
+
+		mode := "passthrough"
+		if tlsApplied {
+			mode = "tls"
 		}
 		rt.events.Emit("proxy_started", svcName, map[string]string{
 			"interface": ifaceName,
 			"protocol":  iface.Protocol,
 			"listen":    proxyAddr,
 			"target":    targetAddr,
-			"mode":      "passthrough",
+			"mode":      mode,
 		})
 
-		// RFC-038 Phase 2: spec accepted tls=tls_cert(...) but no
-		// plugin terminates TLS yet (Phase 3 ships per-plugin
-		// migration). Emit a one-time warning so customers know the
-		// declaration parsed but isn't actively wrapping the
-		// listener — silence here would let a "TLS handshake fails
-		// against proxy" debugging session burn an hour.
-		if iface.TLS != nil {
+		// Spec declared TLS but the plugin doesn't implement
+		// TLSAware yet. Phase 3 lands plugins incrementally
+		// (http/http2 → grpc → kafka → redis); the rest defer to
+		// RFC-039. Make the gap visible so debugging doesn't
+		// burn an hour on "TLS handshake fails against proxy."
+		if iface.TLS != nil && !tlsApplied {
 			rt.log.Warn("tls= declared but plugin not yet migrated — listener stays plaintext until RFC-038 Phase 3 lands this protocol",
 				slog.String("service", svcName),
 				slog.String("interface", ifaceName),
@@ -1055,6 +1083,17 @@ func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *Ser
 		}
 	}
 	return nil
+}
+
+// targetHostname strips the port from "host:port" for SAN-list
+// inclusion when auto-generating a self-signed proxy cert.
+// Customers usually point at a hostname (postgres-prod.svc.local)
+// and want the cert to cover it without spelling out a SAN list.
+func targetHostname(target string) string {
+	if i := strings.LastIndex(target, ":"); i > 0 {
+		return target[:i]
+	}
+	return target
 }
 
 // runSeedCallback executes the seed() Starlark callable for a service.

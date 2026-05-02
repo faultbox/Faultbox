@@ -24,6 +24,12 @@ type http2Proxy struct {
 	server  *http.Server
 	onEvent OnProxyEvent
 	svcName string
+
+	// RFC-038 Phase 3: TLS material. serverTLS wraps the listener
+	// (ALPN h2 forced); clientTLS configures the http2.Transport
+	// to dial upstream over TLS with ALPN h2.
+	serverTLS *tls.Config
+	clientTLS *tls.Config
 }
 
 func newHTTP2Proxy(onEvent OnProxyEvent, svcName string) *http2Proxy {
@@ -35,30 +41,58 @@ func newHTTP2Proxy(onEvent OnProxyEvent, svcName string) *http2Proxy {
 
 func (p *http2Proxy) Protocol() string { return "http2" }
 
+// SetTLS implements TLSAware. Must be called before Start.
+func (p *http2Proxy) SetTLS(server, client *tls.Config) {
+	p.serverTLS = server
+	p.clientTLS = client
+}
+
 func (p *http2Proxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 
-	ln, listenAddr, err := Listen()
+	// Listen on random port. ListenTLS wraps the listener with ALPN
+	// h2 negotiated via NextProtos. Plain Listen otherwise (h2c
+	// upgrade happens at the handler level).
+	var ln net.Listener
+	var listenAddr string
+	var err error
+	if p.serverTLS != nil {
+		serverCfg := p.serverTLS.Clone()
+		serverCfg.NextProtos = []string{"h2"}
+		ln, listenAddr, err = ListenTLS(serverCfg)
+	} else {
+		ln, listenAddr, err = Listen()
+	}
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
 
-	targetURL, err := url.Parse("http://" + target)
+	// Upstream URL scheme: clientTLS non-nil ⇒ dial https:// with
+	// ALPN h2; otherwise cleartext h2c http://.
+	scheme := "http"
+	if p.clientTLS != nil {
+		scheme = "https"
+	}
+	targetURL, err := url.Parse(scheme + "://" + target)
 	if err != nil {
 		ln.Close()
 		return "", fmt.Errorf("parse target URL: %w", err)
 	}
 
-	// Upstream transport speaks HTTP/2 over cleartext — matches the most
-	// common service-mesh deployment. For TLS upstream, the transport would
-	// need its TLS config wired from the container trust store; out of scope
-	// for v1.
-	upstream := &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+	upstream := &http2.Transport{}
+	if p.clientTLS != nil {
+		clientCfg := p.clientTLS.Clone()
+		if len(clientCfg.NextProtos) == 0 {
+			clientCfg.NextProtos = []string{"h2"}
+		}
+		upstream.TLSClientConfig = clientCfg
+	} else {
+		// Cleartext upstream — h2c. Same shape as before RFC-038.
+		upstream.AllowHTTP = true
+		upstream.DialTLSContext = func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, network, addr)
-		},
+		}
 	}
 
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
@@ -73,11 +107,29 @@ func (p *http2Proxy) Start(ctx context.Context, target string) (string, error) {
 	// underlying-TCP-conn (StateNew/StateClosed), not per-stream.
 	connTracker := NewHTTPConnStateTracker(p.onEvent, p.svcName, "main", "http2", target)
 
-	// h2c.NewHandler upgrades prior-knowledge HTTP/2 cleartext connections
-	// in the inbound direction. Clients that send HTTP/1.1 still work.
+	// Listener side: when serverTLS is set, ALPN h2 is negotiated at
+	// the TLS layer and http.Server.Serve dispatches via the http2
+	// stack once http2.ConfigureServer runs. When serverTLS is nil
+	// we keep the h2c upgrade path for prior-knowledge cleartext.
+	var rootHandler http.Handler
+	if p.serverTLS != nil {
+		rootHandler = handler
+	} else {
+		rootHandler = h2c.NewHandler(handler, &http2.Server{})
+	}
+
 	p.server = &http.Server{
-		Handler:   h2c.NewHandler(handler, &http2.Server{}),
+		Handler:   rootHandler,
 		ConnState: connTracker.ConnState,
+	}
+	if p.serverTLS != nil {
+		// Without ConfigureServer, http.Server.Serve falls back to
+		// HTTP/1.1 even when ALPN negotiated h2. ConfigureServer
+		// installs the http2 protocol handler on TLSNextProto.
+		if err := http2.ConfigureServer(p.server, &http2.Server{}); err != nil {
+			ln.Close()
+			return "", fmt.Errorf("configure http2 server: %w", err)
+		}
 	}
 
 	go func() {

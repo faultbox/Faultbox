@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -19,6 +21,12 @@ type httpProxy struct {
 	server  *http.Server
 	onEvent OnProxyEvent
 	svcName string
+
+	// RFC-038 Phase 3: TLS material when the interface declares
+	// tls=tls_cert(...). Either may be nil — see the TLSAware
+	// docstring in proxy.go for the four combinations.
+	serverTLS *tls.Config
+	clientTLS *tls.Config
 }
 
 func newHTTPProxy(onEvent OnProxyEvent, svcName string) *httpProxy {
@@ -30,22 +38,59 @@ func newHTTPProxy(onEvent OnProxyEvent, svcName string) *httpProxy {
 
 func (p *httpProxy) Protocol() string { return "http" }
 
+// SetTLS implements TLSAware. Must be called before Start.
+func (p *httpProxy) SetTLS(server, client *tls.Config) {
+	p.serverTLS = server
+	p.clientTLS = client
+}
+
 func (p *httpProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 
-	// Listen on random port.
-	ln, listenAddr, err := Listen()
+	// Listen on random port. ListenTLS wraps the listener via
+	// tls.NewListener when serverTLS is set; otherwise plain Listen.
+	var ln net.Listener
+	var listenAddr string
+	var err error
+	if p.serverTLS != nil {
+		ln, listenAddr, err = ListenTLS(p.serverTLS)
+	} else {
+		ln, listenAddr, err = Listen()
+	}
 	if err != nil {
 		return "", fmt.Errorf("listen: %w", err)
 	}
 
-	targetURL, err := url.Parse("http://" + target)
+	// Upstream URL scheme follows the upstream-side TLS cfg: clientTLS
+	// non-nil ⇒ the proxy dials the upstream over TLS, so the reverse
+	// proxy must speak https://. Otherwise plain http://.
+	scheme := "http"
+	if p.clientTLS != nil {
+		scheme = "https"
+	}
+	targetURL, err := url.Parse(scheme + "://" + target)
 	if err != nil {
 		ln.Close()
 		return "", fmt.Errorf("parse target URL: %w", err)
 	}
 
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+	// When dialing upstream over TLS, hand the resolved cfg to the
+	// reverse proxy's transport so the customer's CA / mTLS material
+	// applies. Otherwise the default transport (plain TCP) keeps
+	// working unchanged.
+	if p.clientTLS != nil {
+		transport := &http.Transport{
+			TLSClientConfig:       p.clientTLS,
+			ForceAttemptHTTP2:     false,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+		reverseProxy.Transport = transport
+	}
 
 	// RFC-034: connection-lifecycle events via http.Server.ConnState.
 	// Per-conn open/close + first-request handshake_complete; byte
