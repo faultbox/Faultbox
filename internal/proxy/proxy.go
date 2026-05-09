@@ -321,6 +321,43 @@ func (m *Manager) GetProxyAddr(svcName, ifaceName string) string {
 	return ""
 }
 
+// IsListenPort reports whether the given port is currently bound by any
+// running proxy listener. The determinism layer (RFC-040 §8.1) calls this
+// to recognise SUT connections to a Faultbox proxy as mediated rather than
+// classifying them as unmediated network I/O.
+func (m *Manager) IsListenPort(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, rp := range m.proxies {
+		if extractPort(rp.listenAddr) == port {
+			return true
+		}
+	}
+	return false
+}
+
+// extractPort parses the trailing :PORT off a listen address ("127.0.0.1:34567"
+// or "[::1]:34567"). Returns 0 if the address is malformed; callers that pass
+// 0 are expected to treat it as "no listener" because port=0 only appears
+// before bind completes.
+func extractPort(addr string) int {
+	if addr == "" {
+		return 0
+	}
+	idx := strings.LastIndex(addr, ":")
+	if idx < 0 {
+		return 0
+	}
+	var port int
+	if _, err := fmt.Sscanf(addr[idx+1:], "%d", &port); err != nil {
+		return 0
+	}
+	return port
+}
+
 // StopAll shuts down all running proxies.
 func (m *Manager) StopAll() {
 	m.mu.Lock()

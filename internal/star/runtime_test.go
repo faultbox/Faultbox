@@ -858,13 +858,20 @@ def test_api_connect():
 		t.Fatalf("postgres syscalls = %v, expected write+pwrite64", pgSyscalls)
 	}
 
-	// API should have connect only.
+	// API should have connect from the fault, plus L1 detection adds
+	// clock_gettime and getrandom (RFC-040 §8.1; v0.13.0 default).
 	apiSyscalls := rt.requiredSyscallsForService("api")
 	if apiSyscalls == nil {
 		t.Fatal("expected syscalls for api, got nil")
 	}
-	if len(apiSyscalls) != 1 || apiSyscalls[0] != "connect" {
-		t.Fatalf("api syscalls = %v, expected [connect]", apiSyscalls)
+	apiSet := make(map[string]bool, len(apiSyscalls))
+	for _, sc := range apiSyscalls {
+		apiSet[sc] = true
+	}
+	for _, want := range []string{"connect", "clock_gettime", "getrandom"} {
+		if !apiSet[want] {
+			t.Errorf("api syscalls = %v, expected to contain %q", apiSyscalls, want)
+		}
 	}
 
 	// Redis is never faulted — should return nil.

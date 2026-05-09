@@ -299,3 +299,56 @@ func TestRuleMatchGlob(t *testing.T) {
 		t.Error("should not match /health")
 	}
 }
+
+// ---- IsListenPort (RFC-040 §8.1) ----
+
+func TestIsListenPort_NoListeners(t *testing.T) {
+	m := NewManager(nil)
+	if m.IsListenPort(8080) {
+		t.Error("empty manager should not match any port")
+	}
+}
+
+func TestIsListenPort_RejectsZero(t *testing.T) {
+	m := NewManager(nil)
+	m.RegisterListenAddr("svc", "iface", "127.0.0.1:0")
+	if m.IsListenPort(0) {
+		t.Error("port 0 should always be rejected (means no listener bound)")
+	}
+}
+
+func TestIsListenPort_MatchesIPv4(t *testing.T) {
+	m := NewManager(nil)
+	m.RegisterListenAddr("svc", "iface", "127.0.0.1:34567")
+	if !m.IsListenPort(34567) {
+		t.Error("should match registered listen port")
+	}
+	if m.IsListenPort(34568) {
+		t.Error("should not match different port")
+	}
+}
+
+func TestIsListenPort_MatchesIPv6(t *testing.T) {
+	m := NewManager(nil)
+	m.RegisterListenAddr("svc", "iface", "[::1]:9999")
+	if !m.IsListenPort(9999) {
+		t.Error("should match IPv6 listen port")
+	}
+}
+
+func TestIsListenPort_MultipleListeners(t *testing.T) {
+	m := NewManager(nil)
+	m.RegisterListenAddr("api", "main", "127.0.0.1:11000")
+	m.RegisterListenAddr("worker", "queue", "127.0.0.1:22000")
+	if !m.IsListenPort(11000) || !m.IsListenPort(22000) {
+		t.Error("should match both registered ports")
+	}
+}
+
+func TestIsListenPort_MalformedAddrIgnored(t *testing.T) {
+	m := NewManager(nil)
+	m.RegisterListenAddr("svc", "iface", "no-port-here")
+	if m.IsListenPort(0) {
+		t.Error("port 0 must always return false")
+	}
+}

@@ -1,7 +1,10 @@
 package star
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/faultbox/Faultbox/internal/engine"
 )
 
 // RFC-040 §8.4 reserved-syntax + §8.2 escape-hatch parse-time tests. Pinned
@@ -256,4 +259,181 @@ func TestEffectiveAllow_UnknownService(t *testing.T) {
 	if !allow[CategoryClock] {
 		t.Error("unknown service should still see spec-level allow")
 	}
+}
+
+// ---- Detection: isMediatedAddress ----
+
+func TestIsMediatedAddress_DeclaredInterface(t *testing.T) {
+	rt := New(testLogger())
+	src := `service("api", "/bin/true", interface("main", "http", 8080))`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !rt.isMediatedAddress("127.0.0.1", 8080) {
+		t.Error("declared interface port 8080 should be mediated")
+	}
+	if rt.isMediatedAddress("127.0.0.1", 8081) {
+		t.Error("undeclared port 8081 should not be mediated")
+	}
+}
+
+func TestIsMediatedAddress_ZeroPort(t *testing.T) {
+	rt := New(testLogger())
+	if rt.isMediatedAddress("127.0.0.1", 0) {
+		t.Error("port 0 must always be unmediated")
+	}
+}
+
+// ---- Detection: detectUnmediated emits unmediated_io ----
+
+func TestDetectUnmediated_EmitsClock(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `service("api", "/bin/true", interface("main", "http", 8080))`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{
+		Syscall: "clock_gettime",
+		PID:     1234,
+	})
+	got := findEvent(rt, "unmediated_io")
+	if got == nil {
+		t.Fatalf("expected unmediated_io event, got none")
+	}
+	if got.Fields["category"] != "clock" {
+		t.Errorf("category = %q; want clock", got.Fields["category"])
+	}
+	if got.Fields["syscall"] != "clock_gettime" {
+		t.Errorf("syscall = %q; want clock_gettime", got.Fields["syscall"])
+	}
+}
+
+func TestDetectUnmediated_EmitsRand(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `service("api", "/bin/true", interface("main", "http", 8080))`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{
+		Syscall: "getrandom",
+		PID:     1234,
+	})
+	got := findEvent(rt, "unmediated_io")
+	if got == nil || got.Fields["category"] != "rand" {
+		t.Fatalf("expected category=rand, got %v", got)
+	}
+}
+
+func TestDetectUnmediated_ConnectToDeclaredInterface_Silent(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `service("api", "/bin/true", interface("main", "http", 8080))`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{
+		Syscall:  "connect",
+		PID:      1234,
+		DestIP:   "127.0.0.1",
+		DestPort: 8080, // declared interface port
+	})
+	if got := findEvent(rt, "unmediated_io"); got != nil {
+		t.Errorf("connect to mediated address should be silent; got %v", got)
+	}
+}
+
+func TestDetectUnmediated_ConnectToUndeclaredPort_Network(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `service("api", "/bin/true", interface("main", "http", 8080))`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{
+		Syscall:  "connect",
+		PID:      1234,
+		DestIP:   "127.0.0.1",
+		DestPort: 9999, // not declared, not 53
+	})
+	got := findEvent(rt, "unmediated_io")
+	if got == nil || got.Fields["category"] != "network-unmediated" {
+		t.Fatalf("expected category=network-unmediated, got %v", got)
+	}
+	if !strings.Contains(got.Fields["detail"], "127.0.0.1:9999") {
+		t.Errorf("detail should include addr:port; got %q", got.Fields["detail"])
+	}
+}
+
+func TestDetectUnmediated_ConnectToPort53_DNS(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `service("api", "/bin/true", interface("main", "http", 8080))`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{
+		Syscall:  "connect",
+		PID:      1234,
+		DestIP:   "8.8.8.8",
+		DestPort: 53,
+	})
+	got := findEvent(rt, "unmediated_io")
+	if got == nil || got.Fields["category"] != "dns" {
+		t.Fatalf("expected category=dns, got %v", got)
+	}
+}
+
+func TestDetectUnmediated_ConnectMissingDest_Silent(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `service("api", "/bin/true", interface("main", "http", 8080))`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// sockaddr read failed upstream; no DestIP populated.
+	rt.detectUnmediated("api", engine.SyscallEvent{
+		Syscall: "connect",
+		PID:     1234,
+	})
+	if got := findEvent(rt, "unmediated_io"); got != nil {
+		t.Errorf("missing DestIP should be silent (cannot classify); got %v", got)
+	}
+}
+
+func TestDetectUnmediated_ProxyListenerIsMediated(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `service("api", "/bin/true", interface("main", "http", 8080))`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Register a proxy listener; the SUT dialing it should not fire.
+	rt.proxyMgr.RegisterListenAddr("api", "main", "127.0.0.1:34567")
+	rt.detectUnmediated("api", engine.SyscallEvent{
+		Syscall:  "connect",
+		PID:      1234,
+		DestIP:   "127.0.0.1",
+		DestPort: 34567,
+	})
+	if got := findEvent(rt, "unmediated_io"); got != nil {
+		t.Errorf("connect to Faultbox proxy port should be silent; got %v", got)
+	}
+}
+
+func TestDetectUnmediated_L0SkipsAllDetection(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+determinism(level = "L0")
+service("api", "/bin/true", interface("main", "http", 8080))
+`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{Syscall: "clock_gettime", PID: 1234})
+	rt.detectUnmediated("api", engine.SyscallEvent{Syscall: "getrandom", PID: 1234})
+	rt.detectUnmediated("api", engine.SyscallEvent{Syscall: "connect", PID: 1234, DestIP: "8.8.8.8", DestPort: 53})
+	if got := findEvent(rt, "unmediated_io"); got != nil {
+		t.Errorf("L0 should not emit any unmediated_io events; got %v", got)
+	}
+}
+
+// findEvent returns the first event with the given Type from the runtime's
+// event log, or nil if none. Test helper.
+func findEvent(rt *Runtime, eventType string) *Event {
+	all := rt.events.Events()
+	for i := range all {
+		ev := &all[i]
+		if ev.Type == eventType {
+			return ev
+		}
+	}
+	return nil
 }

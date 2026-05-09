@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"go.starlark.net/starlark"
+
+	"github.com/faultbox/Faultbox/internal/engine"
 )
 
 // RFC-040 determinism levels. v0.13.0 implements L0 (plan determinism, no
@@ -160,6 +162,92 @@ func (rt *Runtime) builtinDeterminism(thread *starlark.Thread, fn *starlark.Buil
 	rt.detAllow = allow
 	rt.detExplicit = true
 	return starlark.None, nil
+}
+
+// detectUnmediated inspects a syscall event and emits an unmediated_io event
+// if it matches one of the L1 detection categories. Called from the OnSyscall
+// callback. RFC-040 §8.1.
+//
+// Categories handled here:
+//   - clock_gettime → "clock"
+//   - getrandom     → "rand"
+//   - connect       → "dns" (port 53) / "network-unmediated" (other ports
+//                     not bound to a declared interface or a Faultbox proxy)
+//
+// fs-unmediated is a reserved category in v0.13.0 — accepted in allow= lists
+// but no events are emitted yet (deferred to a future release).
+func (rt *Runtime) detectUnmediated(svcName string, evt engine.SyscallEvent) {
+	if rt.detLevel != DeterminismL1 {
+		return
+	}
+	switch evt.Syscall {
+	case "clock_gettime":
+		rt.emitUnmediated(svcName, CategoryClock, evt, "")
+	case "getrandom":
+		rt.emitUnmediated(svcName, CategoryRand, evt, "")
+	case "connect":
+		rt.detectUnmediatedConnect(svcName, evt)
+	}
+}
+
+// detectUnmediatedConnect classifies a connect() destination. Mediated
+// connections (declared interface ports, Faultbox proxy listeners) are
+// silent; everything else fires either dns or network-unmediated.
+func (rt *Runtime) detectUnmediatedConnect(svcName string, evt engine.SyscallEvent) {
+	if evt.DestIP == "" {
+		return // sockaddr read failed; nothing to classify
+	}
+	// Declared interface? Mediated.
+	if rt.isMediatedAddress(evt.DestIP, evt.DestPort) {
+		return
+	}
+	// Faultbox proxy listener? Mediated.
+	if rt.proxyMgr != nil && rt.proxyMgr.IsListenPort(evt.DestPort) {
+		return
+	}
+	// Port-53 → DNS heuristic. Catches plain DNS to a real resolver; misses
+	// DoH/DoT (acknowledged in docs).
+	if evt.DestPort == 53 {
+		rt.emitUnmediated(svcName, CategoryDNS, evt, fmt.Sprintf("%s:%d", evt.DestIP, evt.DestPort))
+		return
+	}
+	rt.emitUnmediated(svcName, CategoryNetworkUnmediated, evt, fmt.Sprintf("%s:%d", evt.DestIP, evt.DestPort))
+}
+
+// isMediatedAddress reports whether (ip, port) matches a declared interface
+// port on any service in the spec — i.e. traffic Faultbox is mediating
+// directly. Both container HostPort and the in-spec Port match (containers
+// publish a HostPort that the SUT may dial; binary services dial Port).
+func (rt *Runtime) isMediatedAddress(ip string, port int) bool {
+	if port <= 0 {
+		return false
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for _, svc := range rt.services {
+		for _, iface := range svc.Interfaces {
+			if iface.Port == port || iface.HostPort == port {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// emitUnmediated writes an unmediated_io event into the event log with a
+// stable field schema: category + syscall + pid + (optional) detail. The
+// strict-mode check in PR 3 will read these fields to decide whether to
+// fail the test.
+func (rt *Runtime) emitUnmediated(svcName, category string, evt engine.SyscallEvent, detail string) {
+	fields := map[string]string{
+		"category": category,
+		"syscall":  evt.Syscall,
+		"pid":      fmt.Sprintf("%d", evt.PID),
+	}
+	if detail != "" {
+		fields["detail"] = detail
+	}
+	rt.events.Emit("unmediated_io", svcName, fields)
 }
 
 // parseNondeterministicOK reads a service(nondeterministic_ok=[...]) kwarg

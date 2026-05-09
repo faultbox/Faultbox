@@ -1556,6 +1556,12 @@ func (rt *Runtime) makeSyscallCallback(svcName string) func(engine.SyscallEvent)
 		}
 		rt.events.Emit("syscall", svcName, fields)
 
+		// RFC-040 §8.1 — emit unmediated_io for syscalls Faultbox can
+		// observe but isn't actively mediating (clock_gettime, getrandom,
+		// connect to undeclared destinations). Strict mode (PR 3) reads
+		// these to decide whether to fail the test.
+		rt.detectUnmediated(svcName, evt)
+
 		if (evt.Syscall == "connect" || evt.Syscall == "sendto") &&
 			strings.HasPrefix(evt.Decision, "allow") {
 			rt.mergeClocksForNetworkCall(svcName)
@@ -2657,6 +2663,28 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 		found["nanosleep"] = true
 		found["clock_nanosleep"] = true
 		found["clock_gettime"] = true
+	}
+
+	// RFC-040 §8.1 — L1 unmediated_io detection. Install seccomp interception
+	// on clock_gettime / getrandom / connect for any service that *already*
+	// has a seccomp filter (because some fault rule needs one). Unfaulted
+	// services keep their native-speed fast path — there's no event log
+	// path for them anyway, so the detection wouldn't fire even if the
+	// filter were installed. Skip categories whose effective allow set
+	// tolerates the drift.
+	if rt.detLevel == DeterminismL1 && len(found) > 0 {
+		eff := rt.effectiveAllow(svcName)
+		if !eff[CategoryClock] {
+			found["clock_gettime"] = true
+		}
+		if !eff[CategoryRand] {
+			found["getrandom"] = true
+		}
+		if !eff[CategoryNetworkUnmediated] && !eff[CategoryDNS] {
+			// connect carries both the network-unmediated and dns signals;
+			// only skip if both categories are tolerated.
+			found["connect"] = true
+		}
 	}
 
 	// Union syscalls from any fault_assumption() targeting this service.
