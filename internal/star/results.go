@@ -65,9 +65,10 @@ type TestTraceOutput struct {
 	// RFC-027 expectation metadata — mirrored from the manifest so
 	// trace.json is self-contained for the drill-down renderer. Empty
 	// Expectation means the test had no expect=/default_expect=.
-	Expectation         string         `json:"expectation,omitempty"`
-	ExpectationViolated bool           `json:"expectation_violated,omitempty"`
-	FaultBypassed       bool           `json:"fault_bypassed,omitempty"`
+	Expectation                string `json:"expectation,omitempty"`
+	ExpectationViolated        bool   `json:"expectation_violated,omitempty"`
+	FaultBypassed              bool   `json:"fault_bypassed,omitempty"`
+	StrictDeterminismViolation bool   `json:"strict_determinism_violation,omitempty"` // RFC-040 §8.3
 	BypassedRules       []BypassedRule `json:"bypassed_rules,omitempty"`
 	ErrorDetail         *ErrorDetail                    `json:"error_detail,omitempty"`
 	Faults              []FaultInfo                     `json:"faults,omitempty"`
@@ -122,18 +123,19 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 	}
 	for _, tr := range result.Tests {
 		tto := TestTraceOutput{
-			Name:                tr.Name,
-			Result:              tr.Result,
-			Reason:              tr.Reason,
-			FailureType:         classifyFailure(tr.Reason),
-			Seed:                tr.Seed,
-			DurationMs:          tr.DurationMs,
-			Events:              tr.Events,
-			Expectation:         tr.ExpectationName,
-			ExpectationViolated: tr.ExpectationViolated,
-			FaultBypassed:       tr.FaultBypassed,
-			BypassedRules:       tr.BypassedRules,
-			Assertion:           tr.Assertion,
+			Name:                       tr.Name,
+			Result:                     tr.Result,
+			Reason:                     tr.Reason,
+			FailureType:                classifyFailure(tr.Reason),
+			Seed:                       tr.Seed,
+			DurationMs:                 tr.DurationMs,
+			Events:                     tr.Events,
+			Expectation:                tr.ExpectationName,
+			ExpectationViolated:        tr.ExpectationViolated,
+			FaultBypassed:              tr.FaultBypassed,
+			StrictDeterminismViolation: tr.StrictDeterminismViolation,
+			BypassedRules:              tr.BypassedRules,
+			Assertion:                  tr.Assertion,
 		}
 		if tr.ReturnValue != nil && tr.ReturnValue != starlark.None {
 			tto.ReturnValue = tr.ReturnValue.String()
@@ -177,7 +179,10 @@ func buildMatrixOutput(result *SuiteResult) *MatrixOutput {
 		switch tr.Result {
 		case "fail":
 			outcome = "failed"
-			if tr.ExpectationViolated {
+			switch {
+			case tr.StrictDeterminismViolation:
+				outcome = "strict_determinism_violation"
+			case tr.ExpectationViolated:
 				outcome = "expectation_violated"
 			}
 		case "error":

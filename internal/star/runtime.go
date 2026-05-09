@@ -58,6 +58,13 @@ type TestResult struct {
 	// "fault_bypassed" in the manifest, rendered grey in the HTML
 	// report. Does NOT overwrite failed/errored/expectation_violated.
 	FaultBypassed bool `json:"-"`
+	// StrictDeterminismViolation flags a row where strict mode (RFC-040
+	// §8.3) failed the test on an unmediated_io event whose category
+	// wasn't in the effective allow set. Result is "fail" with a clear
+	// Reason naming the category, service, syscall and dest. Surfaced
+	// as outcome="strict_determinism_violation" in the bundle manifest
+	// so the report can render it distinctly from a body-assert fail.
+	StrictDeterminismViolation bool `json:"-"`
 	// BypassedRules lists the rule descriptors (service+syscall+label)
 	// the runtime flagged as zero-traffic. Surfaced in the drill-down
 	// so users know exactly which fault dodged the scenario.
@@ -862,6 +869,25 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			Events:          events,
 			Matrix:          matrixInfo,
 			ExpectationName: expectName,
+		}
+	}
+
+	// RFC-040 §8.3 — strict determinism. Fails on the first unmediated_io
+	// event whose category isn't in the effective allow set (spec-level
+	// allow ∪ service.nondeterministic_ok). Disabled at L0 and overridable
+	// via --strict-determinism (PR 4); the default at L1 is strict=True.
+	if rt.strictEffective() {
+		if v := rt.firstStrictViolation(events); v != nil {
+			return TestResult{
+				Name:                       name,
+				Result:                     "fail",
+				Reason:                     strictViolationReason(v),
+				DurationMs:                 time.Since(start).Milliseconds(),
+				Events:                     events,
+				Matrix:                     matrixInfo,
+				ExpectationName:            expectName,
+				StrictDeterminismViolation: true,
+			}
 		}
 	}
 

@@ -2170,7 +2170,10 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 		switch tr.Result {
 		case "fail":
 			outcome = "failed"
-			if tr.ExpectationViolated {
+			switch {
+			case tr.StrictDeterminismViolation:
+				outcome = "strict_determinism_violation"
+			case tr.ExpectationViolated:
 				outcome = "expectation_violated"
 			}
 		case "error":

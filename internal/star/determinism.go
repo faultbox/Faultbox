@@ -164,6 +164,64 @@ func (rt *Runtime) builtinDeterminism(thread *starlark.Thread, fn *starlark.Buil
 	return starlark.None, nil
 }
 
+// strictEffective reports whether strict mode should fail the test on
+// unmediated_io events. Defaults to the spec setting; overridden if the
+// CLI passed --strict-determinism / --strict-determinism=false (PR 4 wires
+// the override). Strict only applies at L1 — L0 has no detection events,
+// L2..L5 are reserved.
+func (rt *Runtime) strictEffective() bool {
+	if rt.detStrictOverride != nil {
+		return *rt.detStrictOverride
+	}
+	return rt.detLevel == DeterminismL1 && rt.detStrict
+}
+
+// firstStrictViolation walks the event log and returns the first
+// unmediated_io event whose category is not in the offending service's
+// effective allow set, or nil if every event is tolerated. Used by RunTest
+// to fail the test with a precise, actionable error pointing at the leak.
+func (rt *Runtime) firstStrictViolation(events []Event) *Event {
+	for i := range events {
+		ev := &events[i]
+		if ev.Type != "unmediated_io" {
+			continue
+		}
+		cat := ev.Fields["category"]
+		if cat == "" {
+			continue
+		}
+		eff := rt.effectiveAllow(ev.Service)
+		if eff[cat] {
+			continue
+		}
+		return ev
+	}
+	return nil
+}
+
+// strictViolationReason composes the failure string for a strict
+// determinism violation. Names the category, service, syscall and call
+// site, and points the user at the two escape hatches before the
+// "fix the SUT" option. Single source so the wording stays consistent
+// between RunTest and any future report-renderer copy.
+func strictViolationReason(ev *Event) string {
+	cat := ev.Fields["category"]
+	syscallName := ev.Fields["syscall"]
+	detail := ev.Fields["detail"]
+	pid := ev.Fields["pid"]
+
+	parts := []string{
+		fmt.Sprintf("strict determinism: unmediated_io[%s] from service %q (syscall=%s, pid=%s)", cat, ev.Service, syscallName, pid),
+	}
+	if detail != "" {
+		parts = append(parts, fmt.Sprintf("dest=%s", detail))
+	}
+	parts = append(parts,
+		fmt.Sprintf("— add %q to determinism(allow=...) or service(%q, nondeterministic_ok=[...]) to tolerate, or fix the underlying I/O leak", cat, ev.Service),
+	)
+	return strings.Join(parts, " ")
+}
+
 // detectUnmediated inspects a syscall event and emits an unmediated_io event
 // if it matches one of the L1 detection categories. Called from the OnSyscall
 // callback. RFC-040 §8.1.

@@ -437,3 +437,145 @@ func findEvent(rt *Runtime, eventType string) *Event {
 	}
 	return nil
 }
+
+// ---- Strict-mode helpers (RFC-040 §8.3) ----
+
+func TestStrictEffective_DefaultsTrueAtL1(t *testing.T) {
+	rt := New(testLogger())
+	if !rt.strictEffective() {
+		t.Error("strictEffective should default true at L1 (no override)")
+	}
+}
+
+func TestStrictEffective_FalseAtL0(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `determinism(level = "L0")`); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if rt.strictEffective() {
+		t.Error("strictEffective must be false at L0")
+	}
+}
+
+func TestStrictEffective_FollowsSpecStrictFalse(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `determinism(strict = False)`); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if rt.strictEffective() {
+		t.Error("strictEffective should be false when spec sets strict=False")
+	}
+}
+
+func TestStrictEffective_OverrideWins(t *testing.T) {
+	rt := New(testLogger())
+	if err := rt.LoadString("test.star", `determinism(strict = False)`); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	yes := true
+	rt.detStrictOverride = &yes
+	if !rt.strictEffective() {
+		t.Error("override=true should beat spec strict=False")
+	}
+	no := false
+	rt.detStrictOverride = &no
+	if rt.strictEffective() {
+		t.Error("override=false should beat any spec setting")
+	}
+}
+
+func TestFirstStrictViolation_FindsUntoleratedCategory(t *testing.T) {
+	rt := New(testLogger())
+	src := `service("api", "/bin/true", interface("main", "http", 8080))`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{Syscall: "clock_gettime", PID: 1234})
+
+	v := rt.firstStrictViolation(rt.events.Events())
+	if v == nil {
+		t.Fatalf("expected a violation; got nil")
+	}
+	if v.Fields["category"] != "clock" {
+		t.Errorf("category = %q; want clock", v.Fields["category"])
+	}
+}
+
+func TestFirstStrictViolation_TolerateViaSpec(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+determinism(allow = ["clock"])
+service("api", "/bin/true", interface("main", "http", 8080))
+`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{Syscall: "clock_gettime", PID: 1234})
+
+	if v := rt.firstStrictViolation(rt.events.Events()); v != nil {
+		t.Errorf("clock-tolerating spec should produce no violation; got %v", v)
+	}
+}
+
+func TestFirstStrictViolation_TolerateViaService(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+service("api", "/bin/true",
+    interface("main", "http", 8080),
+    nondeterministic_ok = ["rand"],
+)
+`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	rt.detectUnmediated("api", engine.SyscallEvent{Syscall: "getrandom", PID: 1234})
+
+	if v := rt.firstStrictViolation(rt.events.Events()); v != nil {
+		t.Errorf("per-service tolerance should suppress the violation; got %v", v)
+	}
+}
+
+func TestFirstStrictViolation_PerServiceScoped(t *testing.T) {
+	// Tolerance on service A must not silence the same category on service B.
+	rt := New(testLogger())
+	src := `
+service("api", "/bin/true",
+    interface("main", "http", 8080),
+    nondeterministic_ok = ["clock"],
+)
+service("worker", "/bin/true",
+    interface("main", "http", 8081),
+)
+`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	rt.detectUnmediated("worker", engine.SyscallEvent{Syscall: "clock_gettime", PID: 1234})
+
+	v := rt.firstStrictViolation(rt.events.Events())
+	if v == nil {
+		t.Fatal("worker should still trip; api's tolerance must not leak")
+	}
+	if v.Service != "worker" {
+		t.Errorf("violation.Service = %q; want worker", v.Service)
+	}
+}
+
+func TestStrictViolationReason_NamesEverything(t *testing.T) {
+	ev := &Event{
+		Service: "api",
+		Type:    "unmediated_io",
+		Fields: map[string]string{
+			"category": "dns",
+			"syscall":  "connect",
+			"pid":      "4242",
+			"detail":   "8.8.8.8:53",
+		},
+	}
+	got := strictViolationReason(ev)
+	for _, want := range []string{"dns", "api", "connect", "4242", "8.8.8.8:53", "determinism(allow=", "nondeterministic_ok"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reason missing %q; got %q", want, got)
+		}
+	}
+}
