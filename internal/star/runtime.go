@@ -270,6 +270,18 @@ type Runtime struct {
 	mockTLSOnce sync.Once
 	mockTLSImpl *mockTLS
 	mockTLSErr  error
+
+	// Determinism state — RFC-040. Populated by the determinism() top-level
+	// builtin (or defaults to L1 / runtime=default / strict=True if not
+	// called). Detection layer (Phase 3) reads detLevel and detAllow before
+	// emitting unmediated_io events; strict mode (Phase 4) reads
+	// detStrictOverride and detStrict to decide whether to fail the test.
+	detLevel          string
+	detRuntime        string
+	detStrict         bool
+	detAllow          map[string]bool
+	detExplicit       bool
+	detStrictOverride *bool
 }
 
 type runningSession struct {
@@ -289,6 +301,12 @@ func New(logger *slog.Logger) *Runtime {
 		faults:            make(map[string]map[string]*FaultDef),
 		proxyPlaceholders: make(map[string]proxyPlaceholderRef),
 		ServiceStdout:     os.Stdout,
+		// RFC-040 defaults: L1 / runtime=default / strict=True. A spec can
+		// override by calling determinism(...) once at the top of the file.
+		detLevel:   DeterminismL1,
+		detRuntime: DeterminismRuntimeDefault,
+		detStrict:  true,
+		detAllow:   make(map[string]bool),
 	}
 	rt.proxyMgr = proxy.NewManager(func(evt proxy.ProxyEvent) {
 		// RFC-034: ProxyEvent.Type discriminates the event family.

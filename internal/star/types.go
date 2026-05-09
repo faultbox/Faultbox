@@ -103,6 +103,12 @@ type ServiceDef struct {
 	Remote             string
 	RemotePerInterface map[string]string
 
+	// NondeterministicOK lists unmediated_io categories (RFC-040 §8.2) that
+	// strict mode tolerates for this service. The runtime unions this set
+	// with the spec-level determinism(allow=...) set before deciding
+	// whether to fail. Populated by service(nondeterministic_ok=[...]).
+	NondeterministicOK map[string]bool
+
 	rt         *Runtime // set by runtime after registration
 }
 
