@@ -193,6 +193,11 @@ func testCmd(args []string) int {
 	// emission entirely (CI opt-out).
 	var bundlePath string
 	var noBundle bool
+	// RFC-040 §8.3 — strict-determinism CLI override. nil = follow the
+	// spec's determinism(strict=...). --strict-determinism / =true forces
+	// strict on; --no-strict-determinism / --strict-determinism=false
+	// forces it off. Useful for local debug iteration on a strict CI spec.
+	var strictDet *bool
 
 	for len(args) > 0 {
 		switch {
@@ -248,6 +253,17 @@ func testCmd(args []string) int {
 			showFilter = "all"
 		case args[0] == "--virtual-time":
 			virtualTime = true
+		case args[0] == "--strict-determinism", args[0] == "--strict-determinism=true":
+			yes := true
+			strictDet = &yes
+		case args[0] == "--no-strict-determinism", args[0] == "--strict-determinism=false":
+			no := false
+			strictDet = &no
+		case strings.HasPrefix(args[0], "--strict-determinism="):
+			// Reject any value other than the two recognised forms so a
+			// typo like --strict-determinism=on doesn't silently no-op.
+			fmt.Fprintf(os.Stderr, "unknown value for --strict-determinism: %q (use true|false)\n", strings.TrimPrefix(args[0], "--strict-determinism="))
+			return 1
 		case strings.HasPrefix(args[0], "--explore="):
 			exploreMode = strings.TrimPrefix(args[0], "--explore=")
 		case args[0] == "--explore" && len(args) > 1:
@@ -325,12 +341,13 @@ func testCmd(args []string) int {
 			runs = 100
 		}
 		rcfg := star.RunConfig{
-			Filter:      testFilter,
-			Seed:        seedPtr,
-			Runs:        runs,
-			FailOnly:    showFilter == "fail",
-			VirtualTime: virtualTime,
-			ExploreMode: exploreMode,
+			Filter:            testFilter,
+			Seed:              seedPtr,
+			Runs:              runs,
+			FailOnly:          showFilter == "fail",
+			VirtualTime:       virtualTime,
+			ExploreMode:       exploreMode,
+			StrictDeterminism: strictDet,
 		}
 		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, formatFlag, logFormat, logLevel, dryRun, bundlePath, noBundle)
 	}
@@ -1822,6 +1839,14 @@ Test flags:
   --shiviz trace.shiviz    Write ShiViz visualization
   --normalize trace.norm   Write normalized trace for diff
   --format json              Output structured JSON to stdout (human output on stderr)
+  --strict-determinism[=true|false]   Override the spec's determinism(strict=...)
+                             for this run. With no value or =true, every
+                             unmediated_io event whose category is not in
+                             determinism(allow=...) or service.nondeterministic_ok
+                             fails the test. =false (or --no-strict-determinism)
+                             demotes them to warnings — useful for local iteration
+                             on a CI spec without editing it. RFC-040 §8.3.
+  --no-strict-determinism    Equivalent to --strict-determinism=false.
   --log-format=console     Force colored console output
   --debug                  Enable debug logging
 

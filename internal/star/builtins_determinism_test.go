@@ -579,3 +579,54 @@ func TestStrictViolationReason_NamesEverything(t *testing.T) {
 		}
 	}
 }
+
+// ---- RunConfig.StrictDeterminism override (PR 4) ----
+
+func TestRunAll_AppliesStrictDeterminismOverrideTrue(t *testing.T) {
+	rt := New(testLogger())
+	// Spec sets strict=False; CLI override flips it on.
+	src := `determinism(strict = False)`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	yes := true
+	cfg := RunConfig{StrictDeterminism: &yes}
+	if _, err := rt.RunAll(t.Context(), cfg); err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if !rt.strictEffective() {
+		t.Error("override=true should make strictEffective() true even when spec says strict=False")
+	}
+}
+
+func TestRunAll_AppliesStrictDeterminismOverrideFalse(t *testing.T) {
+	rt := New(testLogger())
+	// Spec defaults to strict=True at L1; CLI flips it off.
+	src := `service("api", "/bin/true", interface("main", "http", 8080))`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	no := false
+	cfg := RunConfig{StrictDeterminism: &no}
+	if _, err := rt.RunAll(t.Context(), cfg); err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if rt.strictEffective() {
+		t.Error("override=false should make strictEffective() false even at L1 default")
+	}
+}
+
+func TestRunAll_NilOverrideKeepsSpec(t *testing.T) {
+	rt := New(testLogger())
+	src := `determinism(strict = False)`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	cfg := RunConfig{} // no override
+	if _, err := rt.RunAll(t.Context(), cfg); err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if rt.strictEffective() {
+		t.Error("nil override should follow spec strict=False")
+	}
+}

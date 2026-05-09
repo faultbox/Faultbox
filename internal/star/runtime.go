@@ -566,6 +566,10 @@ type RunConfig struct {
 	FailOnly    bool    // only keep failing test results
 	VirtualTime bool    // enable virtual time (skip fault delays)
 	ExploreMode string  // "all" (exhaustive), "sample" (random), or "" (off)
+	// StrictDeterminism overrides the spec's determinism(strict=...) for the
+	// duration of the run (RFC-040 §8.3). nil = follow the spec; non-nil
+	// pointer = override. Set by --strict-determinism / =false on the CLI.
+	StrictDeterminism *bool
 }
 
 // matchTestFilter resolves `--test <filter>` against a discovered
@@ -610,6 +614,10 @@ func matchTestFilter(testName, filter string) bool {
 func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, error) {
 	start := time.Now()
 	tests := rt.DiscoverTests()
+
+	// CLI override of spec-level determinism(strict=...). Single point of
+	// application — the override stays in force for the whole suite.
+	rt.detStrictOverride = cfg.StrictDeterminism
 
 	runs := cfg.Runs
 	if runs <= 0 {
