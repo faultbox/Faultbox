@@ -55,6 +55,15 @@ Discover with `faultbox recipes list`.
 **Deterministic exploration** -- `hold()` + `release()` control syscall ordering
 across services. `--explore` mode walks all interleavings automatically.
 
+**Determinism contract** (RFC-040, v0.13.0) -- `determinism()` declares the spec's
+reproducibility level (L0/L1) and strict-mode policy. At L1, Faultbox emits
+`unmediated_io` events for I/O outside what it mediates (clock reads, RNG, DNS,
+connections to undeclared destinations) and strict mode (the default) fails the
+test on the first untolerated leak. Per-service `nondeterministic_ok=` and
+spec-wide `allow=` lists are the documented escape hatches.
+[docs/determinism.md](docs/determinism.md) for the full L0–L5 taxonomy and
+post-L1 roadmap.
+
 **Two modes** -- run local binaries with `binary=` or real infrastructure
 (Postgres, Redis, Kafka) in Docker containers with `image=`.
 
@@ -150,6 +159,7 @@ make demo
 | [Spec Language Reference](docs/spec-language.md) | Complete Starlark API reference |
 | [CLI Reference](docs/cli-reference.md) | All commands and flags |
 | [Error Code Reference](docs/errno-reference.md) | Errno values for fault injection |
+| [Determinism Levels](docs/determinism.md) | L0–L5 taxonomy, the L1 contract, escape hatches (RFC-040) |
 
 ### Tutorial Structure
 

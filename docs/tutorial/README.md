@@ -61,6 +61,7 @@ make lima-create && make lima-build                 # macOS (one-time)
 | 14 | [Invariants & Safety Properties](04-safety/14-invariants.md) | 30 min |
 | 15 | [Monitors & Temporal Properties](04-safety/15-monitors.md) | 30 min |
 | 16 | [Network Partitions](04-safety/16-partitions.md) | 20 min |
+| 24 | [Determinism & the L1 Contract](04-safety/24-determinism.md) | 25 min |
 
 ## Part 5: Advanced Features
 

@@ -13,6 +13,86 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.13.0] - unreleased
+
+RFC-040 — **determinism levels**. v0.13.0 makes **L1 (mediated-event
+determinism) a contract**: every spec runs at L1 with strict mode on
+by default, and the runtime emits `unmediated_io` events when the
+service-under-test does I/O Faultbox can observe but isn't mediating
+(`clock_gettime`, `getrandom`, DNS to a non-Faultbox resolver,
+`connect()` to an undeclared address). Strict mode fails the test on
+the first untolerated leak with a precise error pointing at the call
+site and the two escape hatches.
+
+The wider determinism epic was scoped down to fit one release. RFC-041
+(temporal properties), RFC-042 (exploration plan), RFC-043 (non-deterministic
+operators), and RFC-044 (spec-language simplification) are filed as
+draft RFCs and tracked in GitHub issues #110–#113; RFC-046 carries the
+post-L1 roadmap (gVisor Path B/C, L4 hermetic mode, L5 instruction-boundary
+research). Only RFC-040 ships in this cut.
+
+### Added
+
+- **`determinism()` top-level builtin** with `level=`, `runtime=`,
+  `strict=`, `allow=` kwargs. Defaults: `L1` / `default` / strict on /
+  empty allow list. May be called at most once per spec; reserved
+  syntax (`L2`–`L5`, `runtime="gvisor"`) parses but errors at spec
+  load citing RFC-046, so future migration is non-breaking.
+- **`service(nondeterministic_ok=[...])`** kwarg for per-service
+  tolerance. Unions with the spec-level `allow=` set when strict
+  mode decides whether to fail.
+- **L1 detection layer** — five categories (`clock`, `rand`, `dns`,
+  `network-unmediated`, `fs-unmediated`) with stable `unmediated_io.<syscall>`
+  event types. `fs-unmediated` is reserved in v0.13.0 (accepted in
+  lists, no events emitted yet). Detection installs only on services
+  that already need a seccomp filter — unfaulted services keep their
+  native-speed path.
+- **Strict-mode failure surface**. `RunTest` returns Result="fail"
+  with a Reason naming the category, service, syscall, and dest.
+  New `outcome="strict_determinism_violation"` value flows through
+  the bundle manifest and HTML report, parallel to `expectation_violated`
+  (refines `failed`) and `fault_bypassed` (refines `passed`).
+- **`--strict-determinism[=true|false]`** and **`--no-strict-determinism`**
+  CLI overrides on `faultbox test`. Bidirectional and final — beats
+  whatever the spec declared. Useful for local iteration on a strict
+  CI spec without editing it.
+- **`docs/determinism.md`** — full L0–L5 taxonomy, the L1 contract,
+  the per-level author manifest, and the post-L1 roadmap pointer.
+- Tutorial chapter [24: Determinism & the L1 Contract](docs/tutorial/04-safety/24-determinism.md)
+  with worked examples.
+- Engine-level `SyscallEvent.DestIP` / `DestPort` fields, populated
+  once at the top of `handleNotification` for `connect()` syscalls.
+  The rule-loop sockaddr read uses the captured values instead of
+  reading process memory twice.
+- `proxy.Manager.IsListenPort()` to recognise SUT connections to a
+  Faultbox proxy as mediated.
+
+### Documentation
+
+- README features list now mentions the determinism contract; docs
+  table links to `docs/determinism.md`.
+- `docs/spec-language.md` gains a Determinism section with the
+  builtin reference, escape-hatch workflow, `unmediated_io` event
+  schema, and the per-category caveats (Go VDSO blindness for
+  `clock`, DoH/DoT for `dns`).
+- `docs/feature-manifest.md` rows for the determinism builtin,
+  detection layer, and strict-mode outcome.
+
+### Filed but not implemented in this cut
+
+- RFC-041 (Temporal Properties) — #110
+- RFC-042 (Exploration Plan) — #111
+- RFC-043 (Non-deterministic Operators) — #112
+- RFC-044 (Spec Language Simplification) — #113
+- RFC-046 (Beyond L1: gVisor Roadmap & L5 Research) — #114
+
+### Deferred
+
+- End-to-end goldens for the three RFC strict-mode scenarios (DNS
+  leak, raw socket, clock read). They require seccomp + a real
+  binary, not seedable from macOS — Linux-side follow-up tracked
+  separately. Unit tests cover the strict-mode logic.
+
 ## [0.12.29] - 2026-05-02
 
 RFC-036 — **remote services**. The single-keyword path from a local
