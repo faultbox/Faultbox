@@ -112,6 +112,47 @@ var Cases = []Case{
 		LinuxOnly: true,
 	},
 
+	// RFC-040 strict-mode end-to-end goldens. Each spec drives the
+	// /tmp/faultbox-leaker binary (built by `make testops-prep`) into
+	// one of the four detection categories and asserts the strict-mode
+	// failure surface end-to-end. LinuxOnly because seccomp-notify only
+	// works on Linux; on macOS hosts these run via Lima.
+	{
+		Name:      "determinism_clock_read",
+		Spec:      "testops/corpus/determinism_clock_read.star",
+		Seed:      1,
+		Timeout:   60 * time.Second,
+		LinuxOnly: true,
+	},
+	{
+		Name:      "determinism_rand_read",
+		Spec:      "testops/corpus/determinism_rand_read.star",
+		Seed:      1,
+		Timeout:   60 * time.Second,
+		LinuxOnly: true,
+	},
+	{
+		Name:      "determinism_dns_leak",
+		Spec:      "testops/corpus/determinism_dns_leak.star",
+		Seed:      1,
+		Timeout:   60 * time.Second,
+		LinuxOnly: true,
+	},
+	{
+		Name:      "determinism_raw_socket",
+		Spec:      "testops/corpus/determinism_raw_socket.star",
+		Seed:      1,
+		Timeout:   60 * time.Second,
+		LinuxOnly: true,
+	},
+	{
+		Name:      "determinism_tolerated",
+		Spec:      "testops/corpus/determinism_tolerated.star",
+		Seed:      1,
+		Timeout:   60 * time.Second,
+		LinuxOnly: true,
+	},
+
 	// --- LinuxOnly, currently skipped. ---
 	//
 	// These stay in the registry so their absence is visible; un-skip

@@ -546,6 +546,16 @@ func NormalizeTrace(result *SuiteResult) string {
 					continue
 				}
 
+				// Skip allowed syscalls to Go-runtime kernel fds: eventfd
+				// (scheduler signalling), anonymous pipes, raw sockets,
+				// /dev/null. The count and ordering of these is driven
+				// by the Go scheduler and varies run-to-run even with a
+				// pinned seed. They're never application behaviour.
+				if decision == "allow" && (strings.HasPrefix(path, "anon_inode:") ||
+					path == "pipe" || path == "socket" || path == "/dev/null") {
+					continue
+				}
+
 				// Normalize non-deterministic paths:
 				// socket:[12345] → socket (inode numbers change between runs)
 				// pipe:[12345] → pipe
@@ -560,6 +570,15 @@ func NormalizeTrace(result *SuiteResult) string {
 			case "step_send", "step_recv":
 				target := ev.Fields["target"]
 				line = fmt.Sprintf("%s %s", ev.Type, target)
+			case "unmediated_io":
+				// RFC-040 §8.1 — keep these in the normalized trace so
+				// determinism goldens can differentiate by category. The
+				// detail field is dropped: it carries the destination
+				// address for network-unmediated/dns events and would
+				// vary across runs (ephemeral ports for the resolver
+				// pick path, host-specific routing).
+				line = fmt.Sprintf("unmediated_io %s %s",
+					ev.Fields["category"], ev.Fields["syscall"])
 			default:
 				continue
 			}

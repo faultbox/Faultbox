@@ -78,6 +78,24 @@ research). Only RFC-040 ships in this cut.
 - `docs/feature-manifest.md` rows for the determinism builtin,
   detection layer, and strict-mode outcome.
 
+### testops goldens
+
+End-to-end goldens for every L1 detection category, driven by a new
+`/tmp/faultbox-leaker` HTTP harness (built by `make testops-prep` on
+Linux). Each spec faults the leaker at `write=allow()` (a no-op rule
+that installs the seccomp filter), then triggers one leak per request:
+
+- `determinism_clock_read` — raw `clock_gettime` syscall
+- `determinism_rand_read` — raw `getrandom` syscall
+- `determinism_dns_leak` — `connect()` to `8.8.8.8:53`
+- `determinism_raw_socket` — `connect()` to `127.0.0.1:19999`
+- `determinism_tolerated` — all four leaks tolerated via `allow=` /
+  `nondeterministic_ok=`; verifies the trace still surfaces the
+  events even when strict mode is suppressed.
+
+LinuxOnly because seccomp-notify is Linux-kernel-specific. macOS
+hosts run them via Lima.
+
 ### Filed but not implemented in this cut
 
 - RFC-041 (Temporal Properties) — #110
@@ -86,12 +104,16 @@ research). Only RFC-040 ships in this cut.
 - RFC-044 (Spec Language Simplification) — #113
 - RFC-046 (Beyond L1: gVisor Roadmap & L5 Research) — #114
 
-### Deferred
+### Behaviour change worth flagging
 
-- End-to-end goldens for the three RFC strict-mode scenarios (DNS
-  leak, raw socket, clock read). They require seccomp + a real
-  binary, not seedable from macOS — Linux-side follow-up tracked
-  separately. Unit tests cover the strict-mode logic.
+Tolerated unmediated-I/O categories still emit `unmediated_io` events
+into the trace and bundle. Tolerance only suppresses the strict-mode
+*failure decision*, not the event itself — customers see what their
+service did even when they've explicitly accepted the drift. This
+diverges from the original PR-2 design (which skipped seccomp
+interception entirely for tolerated categories); the new behaviour
+matches the principle that visibility and enforcement are separate
+concerns.
 
 ## [0.12.29] - 2026-05-02
 

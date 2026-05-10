@@ -1,0 +1,13 @@
+=== test_raw_socket_trips_strict ===
+--- leaker ---
+service_started
+write allow pipe
+write allow socket
+service_ready
+fault_applied
+unmediated_io network-unmediated connect
+write allow socket
+fault_removed
+--- test ---
+step_send leaker
+step_recv leaker

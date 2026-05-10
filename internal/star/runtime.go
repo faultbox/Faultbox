@@ -2704,21 +2704,16 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 	// has a seccomp filter (because some fault rule needs one). Unfaulted
 	// services keep their native-speed fast path — there's no event log
 	// path for them anyway, so the detection wouldn't fire even if the
-	// filter were installed. Skip categories whose effective allow set
-	// tolerates the drift.
+	// filter were installed.
+	//
+	// Tolerated categories still get intercepted: the event log carries
+	// the unmediated_io record so the report and bundle make tolerated
+	// drift visible. Tolerance only suppresses the strict-mode failure
+	// (RFC-040 §8.3), not the visibility.
 	if rt.detLevel == DeterminismL1 && len(found) > 0 {
-		eff := rt.effectiveAllow(svcName)
-		if !eff[CategoryClock] {
-			found["clock_gettime"] = true
-		}
-		if !eff[CategoryRand] {
-			found["getrandom"] = true
-		}
-		if !eff[CategoryNetworkUnmediated] && !eff[CategoryDNS] {
-			// connect carries both the network-unmediated and dns signals;
-			// only skip if both categories are tolerated.
-			found["connect"] = true
-		}
+		found["clock_gettime"] = true
+		found["getrandom"] = true
+		found["connect"] = true
 	}
 
 	// Union syscalls from any fault_assumption() targeting this service.

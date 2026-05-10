@@ -1,0 +1,25 @@
+=== test_all_leaks_tolerated ===
+--- leaker ---
+service_started
+write allow pipe
+write allow socket
+service_ready
+fault_applied
+unmediated_io clock clock_gettime
+write allow socket
+unmediated_io rand getrandom
+write allow socket
+unmediated_io dns connect
+write allow socket
+unmediated_io network-unmediated connect
+write allow socket
+fault_removed
+--- test ---
+step_send leaker
+step_recv leaker
+step_send leaker
+step_recv leaker
+step_send leaker
+step_recv leaker
+step_send leaker
+step_recv leaker
