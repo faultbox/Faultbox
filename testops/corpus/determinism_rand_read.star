@@ -9,7 +9,7 @@ determinism()
 
 leaker = service("leaker", "/tmp/faultbox-leaker",
     interface("main", "http", 8094),
-    healthcheck = http("localhost:8094/healthz"),
+    healthcheck = http("localhost:8094/healthz", timeout = "30s"),
     nondeterministic_ok = ["rand"],
     env = {"PORT": "8094"},
 )

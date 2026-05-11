@@ -1624,10 +1624,18 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 	// They are explicitly cancelled by stopServices() via svcCancel.
 	svcCtx, svcCancel := context.WithCancel(context.Background())
 	done := make(chan *engine.Result, 1)
+	// sessionReady is closed by the goroutine as its first act, guaranteeing
+	// the goroutine has been scheduled before the healthcheck poll loop starts.
+	// Without this, on single-P environments (GOMAXPROCS=1 under cgroup CPU
+	// limits) the healthcheck can exhaust its 10-second window before the
+	// session goroutine ever runs to launch the child binary.
+	sessionReady := make(chan struct{})
 	go func() {
+		close(sessionReady)
 		r, _ := session.Run(svcCtx)
 		done <- r
 	}()
+	<-sessionReady
 
 	rt.sessions[svcName] = &runningSession{
 		session: session,
