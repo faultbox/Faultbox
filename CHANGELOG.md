@@ -15,7 +15,9 @@ Next-version work is tracked in
 
 ## [0.13.0] - unreleased
 
-RFC-040 — **determinism levels**. v0.13.0 makes **L1 (mediated-event
+Two RFCs ship in v0.13.0:
+
+**RFC-040 — determinism levels.** Makes **L1 (mediated-event
 determinism) a contract**: every spec runs at L1 with strict mode on
 by default, and the runtime emits `unmediated_io` events when the
 service-under-test does I/O Faultbox can observe but isn't mediating
@@ -24,12 +26,20 @@ service-under-test does I/O Faultbox can observe but isn't mediating
 the first untolerated leak with a precise error pointing at the call
 site and the two escape hatches.
 
-The wider determinism epic was scoped down to fit one release. RFC-041
-(temporal properties), RFC-042 (exploration plan), RFC-043 (non-deterministic
-operators), and RFC-044 (spec-language simplification) are filed as
-draft RFCs and tracked in GitHub issues #110–#113; RFC-046 carries the
-post-L1 roadmap (gVisor Path B/C, L4 hermetic mode, L5 instruction-boundary
-research). Only RFC-040 ships in this cut.
+**RFC-041 — temporal properties.** Five new primitives for asserting
+on *what must be true* about a distributed system rather than *how
+long to wait* before checking: `eventually(p)`, `always(p, between=)`,
+`await_event(matcher)`, `await_stable(quiescence_window=)`, and a
+rewritten `monitor(name, on=, state_init=, update=, check=)` that
+keeps per-test memory. The test lifecycle gains a three-valued
+verdict (PASS / FAIL / **INCONCLUSIVE**) plus a declarative
+`test(name, body=, timeout=, expect=, terminate_when=)` builtin.
+User guide: [docs/temporal.md](docs/temporal.md).
+
+RFC-042 (exploration plan), RFC-043 (non-deterministic operators),
+and RFC-044 (spec-language simplification) remain draft RFCs tracked
+in GitHub issues #111–#113. RFC-046 carries the post-L1 roadmap
+(gVisor Path B/C, L4 hermetic mode, L5 instruction-boundary research).
 
 ### Added
 
@@ -67,6 +77,52 @@ research). Only RFC-040 ships in this cut.
 - `proxy.Manager.IsListenPort()` to recognise SUT connections to a
   Faultbox proxy as mediated.
 
+### Added (RFC-041 temporal properties)
+
+- **Five new temporal primitives:**
+  - `eventually(predicate, anchor=)` — liveness, evaluated continuously
+    and finalized at Termination per the §5.5 verdict table.
+  - `always(predicate, between=)` — invariant; fails immediately on
+    the first violation in the bounded window.
+  - `await_event(matcher_or_predicate)` — blocks the test body until
+    a matching event arrives (eager-checks on entry, returns the
+    matching `EventVal`).
+  - `await_stable(quiescence_window=, ignore=)` — blocks until no
+    non-ignored event has fired for the full window.
+  - `monitor(name, on=, state_init=, update=, check=)` — state-machine
+    monitor with per-test memory and a sandboxed Starlark predicate
+    environment.
+- **`test(name, body=, setup=, expect=, timeout=, terminate_when=,
+  clock=)`** declarative test wrapper. Coexists with legacy
+  `def test_*()` functions.
+- **Three-valued test verdict** — `TestResult.Result` now takes one of
+  `"pass" | "fail" | "error" | "inconclusive"`. `SuiteResult` and
+  `TraceOutput` gain an `Inconclusive` counter (omitted from JSON
+  when zero so pre-RFC-041 specs serialize identically).
+- **CLI exit code 3** for inconclusive-only runs (no failures, at
+  least one timeout with pending temporal assertion). Code 2 for
+  any-fail stays as it was.
+- **Trace API** (`internal/star/trace.go`) — `trace.event/events/
+  first/last/count`, `trace.events_between`, `trace.events_within`,
+  `trace.causal_chain`. Backed by secondary event-log indexes (by
+  type, by service) built incrementally in `EventLog.Emit`.
+- **`match` namespace** — `match.event(type=..., **fields)`,
+  `match.any(...)`, `match.all(...)`, `match.never()`. Reusable
+  matcher values consumed by monitor `on=`, `await_event`,
+  `await_stable(ignore=)`.
+- **EventVal causal operators** — `happens_before/after`,
+  `concurrent_with`, `same_service_as`, `same_correlation_as`,
+  `preceded_by/within`, `followed_by/within`, `directly_caused_by`,
+  `duration_since`.
+- **Reserved kwarg `clock="virtual"`** on `test()`, `await_stable()`,
+  and `await_event()` parses but errors with `"requires gVisor (Path
+  C); not available in this release"`. Locks the syntax now so the
+  L1 → L3 migration is a substrate swap, not a spec rewrite.
+- **Monitor sandbox** — `update`/`check` lambdas validated at spec
+  load against a denylist of Faultbox builtins that would mutate
+  runtime state or recurse into the temporal machinery. Failures cite
+  the source line and the per-entry reason.
+
 ### Documentation
 
 - README features list now mentions the determinism contract; docs
@@ -77,6 +133,15 @@ research). Only RFC-040 ships in this cut.
   `clock`, DoH/DoT for `dns`).
 - `docs/feature-manifest.md` rows for the determinism builtin,
   detection layer, and strict-mode outcome.
+- **`docs/temporal.md`** — full user guide for the five RFC-041
+  primitives, the predicate language, the verdict table, and the
+  L1→L3 level-awareness story.
+- `docs/spec-language.md` adds a Temporal Primitives section with
+  reference entries for `eventually`, `always`, `await_event`,
+  `await_stable`, `test()`, the `match` namespace, the trace API,
+  and the rewritten `monitor()` signature.
+- `docs/feature-manifest.md` rows for every RFC-041 primitive, the
+  trace API, and the PASS/FAIL/INCONCLUSIVE lifecycle.
 
 ### testops goldens
 
@@ -98,7 +163,6 @@ hosts run them via Lima.
 
 ### Filed but not implemented in this cut
 
-- RFC-041 (Temporal Properties) — #110
 - RFC-042 (Exploration Plan) — #111
 - RFC-043 (Non-deterministic Operators) — #112
 - RFC-044 (Spec Language Simplification) — #113

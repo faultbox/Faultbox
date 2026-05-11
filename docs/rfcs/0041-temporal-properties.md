@@ -1,6 +1,6 @@
 # RFC-041: Temporal Properties & Monitors
 
-> **Status: Draft.** Part of the v0.13.0 epic. Builds on RFC-040 (Determinism Levels) — temporal primitives' semantics depend on level. Pairs with RFC-042 (Exploration Plan) and RFC-043 (Non-deterministic Operators).
+> **Status: Implemented (v0.13.0).** Part of the v0.13.0 epic. Builds on RFC-040 (Determinism Levels) — temporal primitives' semantics depend on level. Pairs with RFC-042 (Exploration Plan) and RFC-043 (Non-deterministic Operators). User-facing guide: [docs/temporal.md](../temporal.md).
 
 ## Summary
 
@@ -704,20 +704,20 @@ Per the #84 coverage gate. Goldens for representative scenarios:
 
 ## Implementation plan
 
-| Phase | Scope | Target |
+| Phase | Scope | Status |
 |-------|-------|--------|
-| 8.1 `eventually` | Builtin + post-body poll loop | v0.13.0-rc1 |
-| 8.2 `always` | Builtin + window iteration | v0.13.0-rc1 |
-| 8.3 Body-blocking primitives | `await_stable()` (quiescence) and `await_event()` (specific event); both bounded by test `timeout=` | v0.13.0-rc1 |
-| 8.4 `monitor` | Builtin + `on=` matcher + event-log subscription | v0.13.0-rc1 |
-| 8.5 Trace API + event log indexes | `trace.event`, `trace.events`, queries; secondary indexes for type/service/time/correlation | v0.13.0-rc1 |
-| 8.6 Test lifecycle | PASS / FAIL / INCONCLUSIVE three-valued result; assertion phase; per-test `timeout=`; bundle/report integration | v0.13.0-rc2 |
-| 8.7 Spec-load coherence | `monitor` requires `on=`; `terminate_when=` static checks; sandbox restrictions on monitor lambdas | v0.13.0-rc1 |
-| 8.8 Reserved kwargs | Virtual-clock variants reserved | v0.13.0-rc1 |
-| 8.9 Tests | Goldens + unit tests + #84 coverage | v0.13.0-rc2 |
-| 8.10 Docs | `docs/temporal.md`, spec-language, manifest, tutorial | v0.13.0-rc2 |
-| Virtual-clock implementation (out of this RFC) | Real virtual-clock for `test(timeout=)` and `await_stable` quiescence window | gVisor Path C / v2.0 |
-| LTL sugar (out of this RFC) | `G`, `F`, `U` operators | Future, demand-driven |
+| 8.1 `eventually` | Builtin + post-body poll loop | ✅ landed (epic/v0.13.0-temporal PR 4) |
+| 8.2 `always` | Builtin + window iteration | ✅ landed (PR 4) |
+| 8.3 Body-blocking primitives | `await_stable()` (quiescence) and `await_event()` (specific event); both bounded by test `timeout=` | ✅ landed (PR 5) |
+| 8.4 `monitor` | Builtin + `on=` matcher + event-log subscription | ✅ landed (PR 3); sandbox in PR 2 |
+| 8.5 Trace API + event log indexes | `trace.event`, `trace.events`, queries; secondary indexes for type/service/time/correlation | ✅ landed (PR 1) |
+| 8.6 Test lifecycle | PASS / FAIL / INCONCLUSIVE three-valued result; assertion phase; per-test `timeout=`; bundle/report integration | ✅ landed (PR 6) |
+| 8.7 Spec-load coherence | `monitor` requires `on=`; `terminate_when=` static checks; sandbox restrictions on monitor lambdas | ✅ landed (PR 2 sandbox; PR 6 terminate_when type check) |
+| 8.8 Reserved kwargs | Virtual-clock variants reserved | ✅ landed (PR 5 await_*; PR 6 test()) |
+| 8.9 Tests | Goldens + unit tests + #84 coverage | ✅ unit + lifecycle tests landed; testops goldens follow-up (Linux harness) |
+| 8.10 Docs | `docs/temporal.md`, spec-language, manifest, tutorial | ✅ landed (PR 7) |
+| Virtual-clock implementation (out of this RFC) | Real virtual-clock for `test(timeout=)` and `await_stable` quiescence window | Deferred — gVisor Path C / v2.0 |
+| LTL sugar (out of this RFC) | `G`, `F`, `U` operators | Deferred — future, demand-driven |
 
 ## Dependencies
 

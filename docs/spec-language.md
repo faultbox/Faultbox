@@ -116,6 +116,14 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`determinism`](#determinism-rfc-040),
 [`service(nondeterministic_ok=...)`](#per-service-tolerance-nondeterministic_ok).
 
+**Temporal primitives** (RFC-041, v0.13.0) —
+[`eventually`](#eventuallypredicate-anchor),
+[`always`](#alwayspredicate-between),
+[`await_event`](#await_eventpredicate_or_matcher),
+[`await_stable`](#await_stablequiescence_window-ignore),
+[`test`](#testname-body-setup-expect-timeout-terminate_when-clock),
+[`match`](#the-match-module).
+
 **Misc** —
 [`struct`](#struct---namespace-objects),
 [`load`](#loadfilename-symbol1-symbol2-).
@@ -2262,61 +2270,186 @@ Detection only kicks in for services that already need a seccomp filter (because
 
 ## Monitors
 
-### `monitor(callback, service=, syscall=, path=, decision=) → MonitorDef`
+### `monitor(name, on=, state_init=, update=, check=) → MonitorDef`
 
-Creates a **first-class monitor** — a reusable value that can be stored in
-variables and passed to `fault_assumption(monitors=)`, `fault_scenario(monitors=)`,
-and `fault_matrix(monitors=)`.
+A monitor is a spec-wide observer that fires on matching events
+throughout a test, maintaining per-test memory via a small state
+machine. Replaces the legacy callback-style monitor (RFC-041 §5.4).
 
-The callback receives a dict with event fields and is called on every matching
-event during test execution. If the callback raises an error (via `fail()` or
-`assert_*`), the test fails with "monitor violation".
+**Required:** `name` (positional), `on=` (a `MatcherVal` from
+`match.event/any/all`). **Optional:** `state_init` (any Starlark value
+seeded fresh per test, default `None`), `update` (`lambda event,
+state: new_state`, default identity), `check` (`lambda event, state:
+bool`, default always-pass).
 
-**Event dict fields passed to callback:**
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `"seq"` | int | Monotonic sequence number |
-| `"type"` | string | `"syscall"`, `"proxy"`, `"lifecycle"`, etc. |
-| `"service"` | string | Service that produced the event |
-| `"syscall"` | string | Syscall name (for syscall events) |
-| `"path"` | string | File path (for file syscalls) |
-| `"decision"` | string | `"allow"`, `"deny(EIO)"`, `"delay(500ms)"`, etc. |
-| `"label"` | string | Fault label if set |
-| `"latency_ms"` | string | Latency (for delay faults) |
-
-Filter kwargs support glob patterns (e.g., `decision="deny*"`).
+For each event satisfying `on=`:
+1. `new_state = update(event, state)`
+2. `verdict = check(event, new_state)`
+3. If `verdict` is false → test FAILs, citing the event
+4. `state ← new_state` for the next iteration
 
 ```python
-# First-class monitor — stored as variable, reusable.
-def check_no_wal_write(event):
-    fail("unexpected WAL write: seq=" + str(event["seq"]))
-
-no_wal_write = monitor(check_no_wal_write,
-    service = "inventory",
-    syscall = "openat",
-    path = "/tmp/inventory.wal",
-)
-
-# Use with fault_assumption:
-inventory_down = fault_assumption("inventory_down",
-    target = inventory,
-    connect = deny("ECONNREFUSED"),
-    monitors = [no_wal_write],  # fires during any test using this assumption
+monitor("balance_invariant",
+    on         = match.event(type="account.balance"),
+    state_init = {"last_balance": None},
+    update     = lambda event, state: {"last_balance": event.amount},
+    check      = lambda event, state:
+                     state["last_balance"] == None or state["last_balance"] >= 0,
 )
 ```
 
-**Inline usage** (backward compatible): When called inside a running `test_*`
-function, `monitor()` auto-registers on the event log immediately:
+**Scoping** — a top-level `monitor(...)` auto-registers spec-wide
+(fires for every test). A monitor passed to
+`fault_assumption(monitors=)`, `fault_scenario(monitors=)`, or
+`fault_matrix(monitors=)` is scenario-scoped instead; Faultbox claims
+it from the spec-wide list so it doesn't double-register.
+
+**Sandbox restrictions** — `update` and `check` lambdas run in a
+restricted Starlark thread. Calls to `fault`, `service`, `assert_*`,
+`parallel`, `partition`, `eventually`, `always`, `monitor`,
+`await_stable`, `await_event`, `determinism`, and friends are
+rejected at spec load with a clear error message. See
+[docs/temporal.md](temporal.md#sandbox-restrictions) for the full
+list.
+
+---
+
+## Temporal Primitives (RFC-041)
+
+The temporal primitives express *what must be true* about a
+distributed system rather than *how long to wait* before checking.
+See [docs/temporal.md](temporal.md) for the full guide; the entries
+below are the spec-language reference.
+
+### `eventually(predicate, anchor=)`
+
+Asserts that `predicate` holds at some point before Termination. No
+per-assertion deadline — only the test `timeout=` bounds it.
 
 ```python
-def test_manual():
-    monitor(lambda e: fail("bad") if e["decision"].startswith("deny") else None,
-            service="inventory", syscall="write")
-    orders.post(path="/orders", body='{"sku":"widget","qty":1}')
+test("order_propagates",
+    body   = lambda: api.create_order(sku="abc", qty=5),
+    expect = eventually(
+        lambda t: t.event(type="inventory.stock", sku="abc").qty == -5,
+    ),
+    timeout = "30s",
+)
 ```
 
-Monitors are cleared between tests automatically.
+Optional `anchor=<matcher>` narrows the relevant event range so
+evaluation doesn't start until the anchor event fires.
+
+### `always(predicate, between=)`
+
+Invariant: `predicate` must hold for every evaluation between two
+anchors. A single false evaluation fails immediately.
+
+```python
+expect = always(
+    lambda t: t.event(type="balance").amount >= 0,
+    between = ("body_start", "stable"),
+)
+```
+
+`between=` accepts a tuple of two anchors: each is either a string
+lifecycle marker (`"body_start"`, `"body_end"`, `"stable"`) or a
+`MatcherVal`.
+
+### `await_event(predicate_or_matcher)`
+
+Blocks the test body until the event log contains a matching event.
+Eager-checks on entry; returns the matching event.
+
+```python
+def body():
+    api.start_workflow(id="wf-42")
+    event = await_event(match.event(type="workflow.phase_1", id="wf-42"))
+    api.kick_off_phase_2(id=event.id)
+```
+
+No own timeout — bounded by `test(timeout=)`.
+Reserved kwarg `clock="virtual"` errors with a gVisor migration message.
+
+### `await_stable(quiescence_window=, ignore=)`
+
+Blocks the body until no non-ignored event has fired for the full
+quiescence window. Default `quiescence_window="1s"`.
+
+```python
+def body():
+    api.start_workflow()
+    await_stable(quiescence_window="500ms",
+                 ignore=match.event(type="heartbeat"))
+    api.check_status()
+```
+
+`ignore=` accepts a matcher or callable for events that should not
+reset the quiescence timer (heartbeats, telemetry, metric flushes).
+
+### `test(name, body=, setup=, expect=, timeout=, terminate_when=, clock=)`
+
+Declarative test wrapper with explicit temporal config. Registered as
+`test_<name>` so CLI `--test foo` and `--test test_foo` both work.
+
+```python
+test("eventual_propagation",
+    body            = lambda: api.start_workflow(id="wf-42"),
+    timeout         = "30s",
+    terminate_when  = eventually(
+        lambda t: t.event(type="workflow.status", id="wf-42").status == "completed"
+    ),
+    expect          = always(lambda t: t.event(type="balance").amount >= 0),
+)
+```
+
+Legacy `def test_*()` functions remain supported. They use the same
+lifecycle without per-test timeout or `terminate_when=`.
+
+### Termination & three-valued verdict
+
+A test terminates when the first of these conditions fires:
+
+- **(a) Natural completion** — body returned **and** every
+  registered `eventually`/`always` is in a positive terminal state
+- **(b) `terminate_when=` predicate fires**
+- **(c) `timeout=` deadline elapsed**
+- **(d) Immediate failure** — body raised, `always` violated mid-test,
+  or a monitor fired
+
+Verdict per cause:
+
+| Cause | All eventually satisfied | Some unsatisfied |
+|-------|--------------------------|------------------|
+| (a) Natural | PASS | FAIL |
+| (b) terminate_when | PASS | FAIL |
+| (c) timeout | PASS | **INCONCLUSIVE** |
+| (d) Immediate failure | n/a | FAIL |
+
+CLI exit code: `0` pass, `2` any-fail, `3` inconclusive-only.
+
+### The `match` module
+
+| Constructor | Meaning |
+|-------------|---------|
+| `match.event(type=..., **fields)` | Single-event matcher (field globs supported) |
+| `match.any(*matchers)` | OR composition |
+| `match.all(*matchers)` | AND composition |
+| `match.never()` | Never matches |
+
+### The trace API (in predicates)
+
+Predicates receive a `trace` object. Most-used operators:
+
+- `trace.event(type=..., **fields)` → first matching `EventVal` or None
+- `trace.events(matcher)` → wrapped sequence with `.map/.filter/.reduce`
+- `trace.first(matcher)` / `trace.last(matcher)` / `trace.count(matcher)`
+- `trace.events_between(start, end)` / `trace.events_within(matcher, window, of=event)`
+- `trace.causal_chain(event)`
+
+`EventVal` exposes `.type`, `.service`, `.seq`, `.timestamp`, plus
+causal methods (`happens_before/after`, `concurrent_with`,
+`same_service_as`, `preceded_by/within`, `followed_by/within`,
+`directly_caused_by`, `duration_since`).
 
 ---
 
