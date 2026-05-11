@@ -125,6 +125,12 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// lifecycle integration.
 		"eventually": starlark.NewBuiltin("eventually", rt.builtinEventually),
 		"always":     starlark.NewBuiltin("always", rt.builtinAlways),
+		// Body-blocking primitives (RFC-041 §5.3). Pause the test
+		// body until quiescence (await_stable) or until a specific
+		// matching event arrives (await_event). Both are bounded by
+		// the per-test context; no own timeout.
+		"await_stable": starlark.NewBuiltin("await_stable", rt.builtinAwaitStable),
+		"await_event":  starlark.NewBuiltin("await_event", rt.builtinAwaitEvent),
 	}
 }
 

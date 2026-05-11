@@ -243,6 +243,14 @@ type Runtime struct {
 	// register on their own; they do not feed this slice.
 	specMonitors []*MonitorDef
 
+	// testCtx is the active per-test context. Set at the top of
+	// RunTest, cleared on exit. Body-blocking primitives
+	// (await_stable, await_event in PR 5) read it via testContext()
+	// to honor test cancellation; PR 6 will bind a per-test timeout
+	// derived from test(timeout=) here.
+	testCtxMu sync.Mutex
+	testCtx   context.Context
+
 	// inTest is true when RunTest is executing a test function.
 	// Used by monitor() to auto-register when called inside a test.
 	inTest bool
@@ -836,6 +844,11 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// with the spec-defined timeout so this budget is for infrastructure only.
 	testCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
+
+	// Expose testCtx to body-blocking primitives (await_stable,
+	// await_event). PR 6 will refine the per-test timeout binding.
+	rt.setTestContext(testCtx)
+	defer rt.setTestContext(nil)
 
 	if err := rt.startServices(testCtx); err != nil {
 		rt.stopServices()
@@ -2628,6 +2641,27 @@ func (rt *Runtime) recordMonitorError(err error) {
 	rt.monitorMu.Lock()
 	defer rt.monitorMu.Unlock()
 	rt.monitorErrors = append(rt.monitorErrors, err)
+}
+
+// setTestContext records ctx as the active per-test context for body-
+// blocking primitives (await_stable, await_event) to honor cancellation.
+// Pass nil to clear on test exit.
+func (rt *Runtime) setTestContext(ctx context.Context) {
+	rt.testCtxMu.Lock()
+	defer rt.testCtxMu.Unlock()
+	rt.testCtx = ctx
+}
+
+// testContext returns the active per-test context, or context.Background
+// if no test is running. Body-blocking primitives use this to wait on
+// the test's cancellation signal (RFC-041 §5.3, §5.5 (c) timeout path).
+func (rt *Runtime) testContext() context.Context {
+	rt.testCtxMu.Lock()
+	defer rt.testCtxMu.Unlock()
+	if rt.testCtx == nil {
+		return context.Background()
+	}
+	return rt.testCtx
 }
 
 // claimMonitor removes m from rt.specMonitors so that it will not
