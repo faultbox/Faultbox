@@ -119,6 +119,12 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// match.event(...), match.any(...), match.all(...), match.never().
 		// Used by monitor(on=...), await_event(...), and await_stable(ignore=...).
 		"match": &matchNamespace{},
+		// Temporal expectations (RFC-041 §5.1, §5.2). Construct values
+		// that the test runner evaluates after each event and at
+		// Termination per the §5.5 verdict table. PR 6 wires the
+		// lifecycle integration.
+		"eventually": starlark.NewBuiltin("eventually", rt.builtinEventually),
+		"always":     starlark.NewBuiltin("always", rt.builtinAlways),
 	}
 }
 

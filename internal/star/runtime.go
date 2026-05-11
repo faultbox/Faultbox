@@ -231,6 +231,12 @@ type Runtime struct {
 	monitorMu     sync.Mutex
 	monitorErrors []error
 
+	// Temporal expectations registered by eventually()/always() during the
+	// current test. Reset at the top of RunTest; iterated by the test
+	// runner's Termination logic (PR 6) for the §5.5 verdict table.
+	temporalMu           sync.Mutex
+	temporalExpectations []ExpectationVal
+
 	// inTest is true when RunTest is executing a test function.
 	// Used by monitor() to auto-register when called inside a test.
 	inTest bool
@@ -791,6 +797,9 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	rt.monitorMu.Lock()
 	rt.monitorErrors = nil
 	rt.monitorMu.Unlock()
+	// RFC-041 §5.1, §5.2 — clear any temporal expectations from the
+	// previous test so eventually()/always() registrations are per-test.
+	rt.resetExpectations()
 
 	// Reset expectation metadata — makeFaultScenarioRunner may re-populate
 	// these for fault_scenario/fault_matrix tests. Plain user tests leave
