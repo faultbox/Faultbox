@@ -58,6 +58,13 @@ type TestResult struct {
 	// "fault_bypassed" in the manifest, rendered grey in the HTML
 	// report. Does NOT overwrite failed/errored/expectation_violated.
 	FaultBypassed bool `json:"-"`
+	// StrictDeterminismViolation flags a row where strict mode (RFC-040
+	// §8.3) failed the test on an unmediated_io event whose category
+	// wasn't in the effective allow set. Result is "fail" with a clear
+	// Reason naming the category, service, syscall and dest. Surfaced
+	// as outcome="strict_determinism_violation" in the bundle manifest
+	// so the report can render it distinctly from a body-assert fail.
+	StrictDeterminismViolation bool `json:"-"`
 	// BypassedRules lists the rule descriptors (service+syscall+label)
 	// the runtime flagged as zero-traffic. Surfaced in the drill-down
 	// so users know exactly which fault dodged the scenario.
@@ -270,6 +277,18 @@ type Runtime struct {
 	mockTLSOnce sync.Once
 	mockTLSImpl *mockTLS
 	mockTLSErr  error
+
+	// Determinism state — RFC-040. Populated by the determinism() top-level
+	// builtin (or defaults to L1 / runtime=default / strict=True if not
+	// called). Detection layer (Phase 3) reads detLevel and detAllow before
+	// emitting unmediated_io events; strict mode (Phase 4) reads
+	// detStrictOverride and detStrict to decide whether to fail the test.
+	detLevel          string
+	detRuntime        string
+	detStrict         bool
+	detAllow          map[string]bool
+	detExplicit       bool
+	detStrictOverride *bool
 }
 
 type runningSession struct {
@@ -289,6 +308,12 @@ func New(logger *slog.Logger) *Runtime {
 		faults:            make(map[string]map[string]*FaultDef),
 		proxyPlaceholders: make(map[string]proxyPlaceholderRef),
 		ServiceStdout:     os.Stdout,
+		// RFC-040 defaults: L1 / runtime=default / strict=True. A spec can
+		// override by calling determinism(...) once at the top of the file.
+		detLevel:   DeterminismL1,
+		detRuntime: DeterminismRuntimeDefault,
+		detStrict:  true,
+		detAllow:   make(map[string]bool),
 	}
 	rt.proxyMgr = proxy.NewManager(func(evt proxy.ProxyEvent) {
 		// RFC-034: ProxyEvent.Type discriminates the event family.
@@ -541,6 +566,10 @@ type RunConfig struct {
 	FailOnly    bool    // only keep failing test results
 	VirtualTime bool    // enable virtual time (skip fault delays)
 	ExploreMode string  // "all" (exhaustive), "sample" (random), or "" (off)
+	// StrictDeterminism overrides the spec's determinism(strict=...) for the
+	// duration of the run (RFC-040 §8.3). nil = follow the spec; non-nil
+	// pointer = override. Set by --strict-determinism / =false on the CLI.
+	StrictDeterminism *bool
 }
 
 // matchTestFilter resolves `--test <filter>` against a discovered
@@ -585,6 +614,10 @@ func matchTestFilter(testName, filter string) bool {
 func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, error) {
 	start := time.Now()
 	tests := rt.DiscoverTests()
+
+	// CLI override of spec-level determinism(strict=...). Single point of
+	// application — the override stays in force for the whole suite.
+	rt.detStrictOverride = cfg.StrictDeterminism
 
 	runs := cfg.Runs
 	if runs <= 0 {
@@ -844,6 +877,33 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			Events:          events,
 			Matrix:          matrixInfo,
 			ExpectationName: expectName,
+		}
+	}
+
+	// RFC-040 §8.3 — strict determinism. Fails on the first unmediated_io
+	// event whose category isn't in the effective allow set (spec-level
+	// allow ∪ service.nondeterministic_ok). Disabled at L0 and overridable
+	// via --strict-determinism (PR 4); the default at L1 is strict=True.
+	//
+	// Priority ordering (Q3): monitor errors above take priority. A test body
+	// panic or setup error surfaces as an "error" result before this block
+	// runs — if runBody returns an error the function returns early above.
+	// Within the normal completion path the order is: monitor violation →
+	// strict_determinism_violation → fault_bypassed. This means a concurrent
+	// monitor violation and unmediated_io event are reported as "monitor
+	// violation"; the unmediated_io event is still in the trace for the report.
+	if rt.strictEffective() {
+		if v := rt.firstStrictViolation(events); v != nil {
+			return TestResult{
+				Name:                       name,
+				Result:                     "fail",
+				Reason:                     strictViolationReason(v),
+				DurationMs:                 time.Since(start).Milliseconds(),
+				Events:                     events,
+				Matrix:                     matrixInfo,
+				ExpectationName:            expectName,
+				StrictDeterminismViolation: true,
+			}
 		}
 	}
 
@@ -1537,6 +1597,12 @@ func (rt *Runtime) makeSyscallCallback(svcName string) func(engine.SyscallEvent)
 			fields["op"] = evt.Op
 		}
 		rt.events.Emit("syscall", svcName, fields)
+
+		// RFC-040 §8.1 — emit unmediated_io for syscalls Faultbox can
+		// observe but isn't actively mediating (clock_gettime, getrandom,
+		// connect to undeclared destinations). Strict mode (PR 3) reads
+		// these to decide whether to fail the test.
+		rt.detectUnmediated(svcName, evt)
 
 		if (evt.Syscall == "connect" || evt.Syscall == "sendto") &&
 			strings.HasPrefix(evt.Decision, "allow") {
@@ -2639,6 +2705,27 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 		found["nanosleep"] = true
 		found["clock_nanosleep"] = true
 		found["clock_gettime"] = true
+	}
+
+	// RFC-040 §8.1 — L1 unmediated_io detection. Install seccomp interception
+	// on clock_gettime / getrandom / connect for any service that *already*
+	// has a seccomp filter (because some fault rule needs one). Unfaulted
+	// services keep their native-speed fast path — there's no event log
+	// path for them anyway, so the detection wouldn't fire even if the
+	// filter were installed.
+	//
+	// Tolerated categories still get intercepted: the event log carries
+	// the unmediated_io record so the report and bundle make tolerated
+	// drift visible. Tolerance only suppresses the strict-mode failure
+	// (RFC-040 §8.3), not the visibility.
+	rt.mu.Lock()
+	level := rt.detLevel
+	rt.mu.Unlock()
+	if level == DeterminismL1 && len(found) > 0 {
+		found["clock_gettime"] = true
+		found["gettimeofday"] = true // rare fallback; VDSO normally intercepts it
+		found["getrandom"] = true
+		found["connect"] = true
 	}
 
 	// Union syscalls from any fault_assumption() targeting this service.

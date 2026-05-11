@@ -13,6 +13,108 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.13.0] - unreleased
+
+RFC-040 — **determinism levels**. v0.13.0 makes **L1 (mediated-event
+determinism) a contract**: every spec runs at L1 with strict mode on
+by default, and the runtime emits `unmediated_io` events when the
+service-under-test does I/O Faultbox can observe but isn't mediating
+(`clock_gettime`, `getrandom`, DNS to a non-Faultbox resolver,
+`connect()` to an undeclared address). Strict mode fails the test on
+the first untolerated leak with a precise error pointing at the call
+site and the two escape hatches.
+
+The wider determinism epic was scoped down to fit one release. RFC-041
+(temporal properties), RFC-042 (exploration plan), RFC-043 (non-deterministic
+operators), and RFC-044 (spec-language simplification) are filed as
+draft RFCs and tracked in GitHub issues #110–#113; RFC-046 carries the
+post-L1 roadmap (gVisor Path B/C, L4 hermetic mode, L5 instruction-boundary
+research). Only RFC-040 ships in this cut.
+
+### Added
+
+- **`determinism()` top-level builtin** with `level=`, `runtime=`,
+  `strict=`, `allow=` kwargs. Defaults: `L1` / `default` / strict on /
+  empty allow list. May be called at most once per spec; reserved
+  syntax (`L2`–`L5`, `runtime="gvisor"`) parses but errors at spec
+  load citing RFC-046, so future migration is non-breaking.
+- **`service(nondeterministic_ok=[...])`** kwarg for per-service
+  tolerance. Unions with the spec-level `allow=` set when strict
+  mode decides whether to fail.
+- **L1 detection layer** — five categories (`clock`, `rand`, `dns`,
+  `network-unmediated`, `fs-unmediated`) with stable `unmediated_io.<syscall>`
+  event types. `fs-unmediated` is reserved in v0.13.0 (accepted in
+  lists, no events emitted yet). Detection installs only on services
+  that already need a seccomp filter — unfaulted services keep their
+  native-speed path.
+- **Strict-mode failure surface**. `RunTest` returns Result="fail"
+  with a Reason naming the category, service, syscall, and dest.
+  New `outcome="strict_determinism_violation"` value flows through
+  the bundle manifest and HTML report, parallel to `expectation_violated`
+  (refines `failed`) and `fault_bypassed` (refines `passed`).
+- **`--strict-determinism[=true|false]`** and **`--no-strict-determinism`**
+  CLI overrides on `faultbox test`. Bidirectional and final — beats
+  whatever the spec declared. Useful for local iteration on a strict
+  CI spec without editing it.
+- **`docs/determinism.md`** — full L0–L5 taxonomy, the L1 contract,
+  the per-level author manifest, and the post-L1 roadmap pointer.
+- Tutorial chapter [24: Determinism & the L1 Contract](docs/tutorial/04-safety/24-determinism.md)
+  with worked examples.
+- Engine-level `SyscallEvent.DestIP` / `DestPort` fields, populated
+  once at the top of `handleNotification` for `connect()` syscalls.
+  The rule-loop sockaddr read uses the captured values instead of
+  reading process memory twice.
+- `proxy.Manager.IsListenPort()` to recognise SUT connections to a
+  Faultbox proxy as mediated.
+
+### Documentation
+
+- README features list now mentions the determinism contract; docs
+  table links to `docs/determinism.md`.
+- `docs/spec-language.md` gains a Determinism section with the
+  builtin reference, escape-hatch workflow, `unmediated_io` event
+  schema, and the per-category caveats (Go VDSO blindness for
+  `clock`, DoH/DoT for `dns`).
+- `docs/feature-manifest.md` rows for the determinism builtin,
+  detection layer, and strict-mode outcome.
+
+### testops goldens
+
+End-to-end goldens for every L1 detection category, driven by a new
+`/tmp/faultbox-leaker` HTTP harness (built by `make testops-prep` on
+Linux). Each spec faults the leaker at `write=allow()` (a no-op rule
+that installs the seccomp filter), then triggers one leak per request:
+
+- `determinism_clock_read` — raw `clock_gettime` syscall
+- `determinism_rand_read` — raw `getrandom` syscall
+- `determinism_dns_leak` — `connect()` to `8.8.8.8:53`
+- `determinism_raw_socket` — `connect()` to `127.0.0.1:19999`
+- `determinism_tolerated` — all four leaks tolerated via `allow=` /
+  `nondeterministic_ok=`; verifies the trace still surfaces the
+  events even when strict mode is suppressed.
+
+LinuxOnly because seccomp-notify is Linux-kernel-specific. macOS
+hosts run them via Lima.
+
+### Filed but not implemented in this cut
+
+- RFC-041 (Temporal Properties) — #110
+- RFC-042 (Exploration Plan) — #111
+- RFC-043 (Non-deterministic Operators) — #112
+- RFC-044 (Spec Language Simplification) — #113
+- RFC-046 (Beyond L1: gVisor Roadmap & L5 Research) — #114
+
+### Behaviour change worth flagging
+
+Tolerated unmediated-I/O categories still emit `unmediated_io` events
+into the trace and bundle. Tolerance only suppresses the strict-mode
+*failure decision*, not the event itself — customers see what their
+service did even when they've explicitly accepted the drift. This
+diverges from the original PR-2 design (which skipped seccomp
+interception entirely for tolerated categories); the new behaviour
+matches the principle that visibility and enforcement are separate
+concerns.
+
 ## [0.12.29] - 2026-05-02
 
 RFC-036 — **remote services**. The single-keyword path from a local

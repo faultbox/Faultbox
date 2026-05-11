@@ -112,6 +112,10 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`trace_start`](#tracing),
 [`trace_stop`](#tracing).
 
+**Determinism** (RFC-040, v0.13.0) —
+[`determinism`](#determinism-rfc-040),
+[`service(nondeterministic_ok=...)`](#per-service-tolerance-nondeterministic_ok).
+
 **Misc** —
 [`struct`](#struct---namespace-objects),
 [`load`](#loadfilename-symbol1-symbol2-).
@@ -2167,6 +2171,92 @@ faultbox test faultbox.star --virtual-time --explore=all      # fast + exhaustiv
 **Go targets limitation:** Go uses vDSO for `time.Now()` (no syscall, not interceptable)
 and `futex` for `time.Sleep()`. Virtual time primarily speeds up fault delays,
 which is the main bottleneck in multi-run exploration.
+
+---
+
+## Determinism (RFC-040)
+
+Faultbox v0.13.0 makes **L1 determinism** a contract: every spec runs at L1 by default and the runtime detects unmediated I/O the SUT performs (`clock_gettime`, `getrandom`, DNS, connect to undeclared destinations) and emits `unmediated_io` events. Strict mode (the default) fails the test on the first such event whose category isn't tolerated; non-strict mode records them as warnings only.
+
+The full taxonomy (L0 plan determinism through L5 instruction-boundary, why the levels split where they do, and the post-L1 roadmap) lives in [docs/determinism.md](determinism.md). This section is the spec-language reference for the two builtins.
+
+### `determinism(level=, runtime=, strict=, allow=)`
+
+Top-level declaration. May be called at most once per spec; if omitted, the spec runs with the L1 / `default` runtime / `strict=True` defaults.
+
+| Kwarg | Type | Default | Notes |
+|-------|------|---------|-------|
+| `level` | string | `"L1"` | One of `"L0"`, `"L1"`. `"L2"`–`"L5"` parse but error at spec load (reserved for future releases — see [RFC-046](rfcs/0046-beyond-l1-roadmap.md)). |
+| `runtime` | string | `"default"` | The substrate. v0.13.0 ships only `"default"` (seccomp-notify). `"gvisor"` parses but errors. |
+| `strict` | bool | `True` (at L1) | `True` ⇒ untolerated `unmediated_io` events fail the test. `False` ⇒ they appear as warnings. Passing `strict=` at L0 is rejected — L0 has no detection events, so the kwarg can't honor any intent. |
+| `allow` | list | `[]` | Spec-wide tolerated categories. Items must come from `clock`, `rand`, `dns`, `network-unmediated`, `fs-unmediated`. Any other string is rejected at spec load. |
+
+CLI overrides at runtime:
+
+```
+faultbox test --strict-determinism              # force on
+faultbox test --strict-determinism=true         # same
+faultbox test --strict-determinism=false        # force off
+faultbox test --no-strict-determinism           # alias for =false
+```
+
+Override is bidirectional and final — beats whatever the spec declared. Useful for iterating locally on a strict CI spec without editing it.
+
+```python
+# Default behaviour: L1 / default runtime / strict on, no escape hatches.
+service("api", "/usr/local/bin/api",
+    interface("main", "http", 8080),
+)
+
+# Spec-wide tolerance for clock + DNS drift across every service.
+determinism(allow = ["clock", "dns"])
+
+# Loosen for local dev iteration only.
+determinism(level = "L1", strict = False)
+```
+
+### Per-service tolerance: `nondeterministic_ok=`
+
+`service()` accepts a `nondeterministic_ok = [...]` kwarg listing categories tolerated *for that service alone*. The runtime takes the union of `determinism(allow=...)` and `service.nondeterministic_ok` when deciding whether to fail.
+
+```python
+determinism(allow = ["clock"])           # everyone is allowed clock drift
+
+service("api", "/usr/local/bin/api",
+    interface("main", "http", 8080),
+    nondeterministic_ok = ["dns"],       # api also tolerated DNS
+)
+
+service("worker", "/usr/local/bin/worker",
+    interface("main", "http", 8081),
+    # no escape hatches — clock allowed (from spec), DNS would fail
+)
+```
+
+### `unmediated_io` event schema
+
+Every detected leak emits one `unmediated_io` event. Stable fields the report and tooling can rely on:
+
+| Field | Always present | Description |
+|-------|---------------|-------------|
+| `category` | yes | One of `clock`, `rand`, `dns`, `network-unmediated`, `fs-unmediated` |
+| `syscall` | yes | The syscall that triggered the event (e.g. `clock_gettime`, `connect`) |
+| `pid` | yes | Process ID inside the SUT |
+| `detail` | sometimes | For network categories: `host:port` of the unmediated destination |
+
+When strict mode fires, the test outcome is `strict_determinism_violation` (a refinement of `failed`, similar to how `expectation_violated` refines `failed` and `fault_bypassed` refines `passed`). The bundle's `Summary.StrictDeterminismViolation` counts these rows; legacy `Summary.Failed` also counts them so existing CI gates keep working.
+
+### What L1 detection actually catches
+
+| Category | Detection mechanism | Caveat |
+|----------|--------------------|--------|
+| `clock` | `clock_gettime` syscall | **VDSO unreachable** — Go's `time.Now()` uses VDSO and seccomp cannot intercept it. Best-effort detection. |
+| `rand` | `getrandom` syscall + `/dev/urandom` reads | Catches the kernel-call paths; an in-process Mersenne twister seeded once at startup is invisible. |
+| `dns` | `connect()` whose destination port is `53` outside any declared interface | Misses DoH (`https://*/dns-query`) and DoT (port 853). |
+| `network-unmediated` | `connect()` to an address/port not matching any declared `interface()` and not bound by a Faultbox proxy | The cleanest signal; works for any TCP destination. |
+| `fs-unmediated` | reserved category — accepted in `allow=` lists but emits no events in v0.13.0 | Detection lands in a future release; the kwarg is reserved so future migration is non-breaking. |
+
+Detection only kicks in for services that already need a seccomp filter (because some `fault()` rule targets them). Unfaulted services keep their native-speed path — there's no event log path for them anyway. To enable detection without injecting any actual fault, declare a `fault()` rule with no faults (the runtime still installs the filter for the L1 categories).
 
 ---
 

@@ -60,12 +60,13 @@ type CrashInfo struct {
 // bypass is an ambiguity signal ("we don't know if the service is
 // resilient"), not a failure. Rendered in grey, reported separately.
 type Summary struct {
-	Total               int `json:"total"`
-	Passed              int `json:"passed"`
-	Failed              int `json:"failed"`
-	Errored             int `json:"errored"`
-	ExpectationViolated int `json:"expectation_violated,omitempty"`
-	FaultBypassed       int `json:"fault_bypassed,omitempty"`
+	Total                      int `json:"total"`
+	Passed                     int `json:"passed"`
+	Failed                     int `json:"failed"`
+	Errored                    int `json:"errored"`
+	ExpectationViolated        int `json:"expectation_violated,omitempty"`
+	FaultBypassed              int `json:"fault_bypassed,omitempty"`
+	StrictDeterminismViolation int `json:"strict_determinism_violation,omitempty"` // RFC-040 §8.3
 }
 
 // TestRow is one row of the tests array in the manifest. Mirrors the
@@ -88,7 +89,7 @@ type Summary struct {
 //     the HTML report.
 type TestRow struct {
 	Name             string         `json:"name"`
-	Outcome          string         `json:"outcome"` // passed | failed | errored | expectation_violated | fault_bypassed
+	Outcome          string         `json:"outcome"` // passed | failed | errored | expectation_violated | fault_bypassed | strict_determinism_violation
 	DurationMs       int64          `json:"duration_ms"`
 	Seed             uint64         `json:"seed,omitempty"`
 	FaultAssumptions []string       `json:"fault_assumptions,omitempty"`

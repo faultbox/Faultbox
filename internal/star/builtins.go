@@ -110,6 +110,11 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// handled inline; remotes() exists for the rare case where
 		// interfaces of one logical service live on different hosts.
 		"remotes": starlark.NewBuiltin("remotes", builtinRemotes),
+		// Determinism level + escape hatches (RFC-040 §8.4). Top-level
+		// declaration; may only be called once per spec. v0.13.0 accepts
+		// level={"L0","L1"} and runtime={"default"}; L2..L5 and gvisor
+		// parse-but-error so future migration is non-breaking.
+		"determinism": starlark.NewBuiltin("determinism", rt.builtinDeterminism),
 	}
 }
 
@@ -359,6 +364,16 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				return nil, fmt.Errorf("service() seccomp must be a bool (True or False)")
 			}
 			svc.NoSeccomp = !bool(b)
+		case "nondeterministic_ok":
+			// RFC-040 §8.2: per-service escape hatch listing unmediated_io
+			// categories the spec author has investigated and accepts.
+			// Strict mode unions this with determinism(allow=...) before
+			// deciding whether to fail.
+			set, err := parseNondeterministicOK(name, kv[1])
+			if err != nil {
+				return nil, err
+			}
+			svc.NondeterministicOK = set
 		}
 	}
 

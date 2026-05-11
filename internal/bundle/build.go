@@ -133,6 +133,11 @@ func summaryFromTests(rows []TestRow) Summary {
 		case "fault_bypassed":
 			s.Passed++
 			s.FaultBypassed++
+		case "strict_determinism_violation":
+			// Refinement of "failed" — bump both so legacy CI gates that
+			// only know v0.10.0 outcomes still see the row in Failed.
+			s.Failed++
+			s.StrictDeterminismViolation++
 		}
 	}
 	return s

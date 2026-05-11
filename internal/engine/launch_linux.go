@@ -311,6 +311,29 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 		}
 	}
 
+	// connect() destination: RFC-040 §8.1 needs IP/port on the SyscallEvent
+	// so the determinism layer can decide whether the destination is
+	// mediated. Read once here; rule-loop matching below uses these
+	// captured values instead of a second sockaddr read.
+	var destIP string
+	var destPort int
+	if syscallName == "connect" {
+		if ip, port, err := seccomp.ReadSockaddrFromProcess(req.PID, req.Data.Args[1]); err == nil {
+			destIP = ip
+			destPort = port
+		}
+	}
+
+	// emit dispatches to the connect-aware path for connect syscalls,
+	// otherwise to the plain emitter. Keeps the call sites below unchanged.
+	emit := func(decision, path string, latency time.Duration, extra ...string) {
+		if syscallName == "connect" {
+			s.emitSyscallEventDest(syscallName, req.PID, decision, path, latency, destIP, destPort, extra...)
+		} else {
+			s.emitSyscallEvent(syscallName, req.PID, decision, path, latency, extra...)
+		}
+	}
+
 	// Virtual time: intercept time syscalls and return synthetic values.
 	if s.vclock != nil && s.vclock.enabled {
 		if s.handleTimeSyscall(listenerFd, req, syscallName) {
@@ -337,7 +360,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 
 			decision := fmt.Sprintf("hold(%s)", rule.HoldTag)
 			s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
-			s.emitSyscallEvent(syscallName, req.PID, decision, path, 0)
+			emit(decision, path, 0)
 
 			releaseCh := make(chan HoldDecision, 1)
 			q.Enqueue(&HeldNotif{
@@ -367,7 +390,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 						}
 					}
 				}
-				s.emitSyscallEvent(syscallName, req.PID, releaseDecision, path, 0)
+				emit(releaseDecision, path, 0)
 			case <-ctx.Done():
 				// Fail-safe: allow on shutdown.
 				seccomp.Allow(listenerFd, req.ID)
@@ -406,9 +429,9 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 			}
 
 			// Destination address filtering for connect() syscalls.
+			// Uses dest captured at top of handleNotification.
 			if rule.DestAddr != "" && syscallName == "connect" {
-				ip, port, err := seccomp.ReadSockaddrFromProcess(req.PID, req.Data.Args[1])
-				if err != nil || fmt.Sprintf("%s:%d", ip, port) != rule.DestAddr {
+				if destIP == "" || fmt.Sprintf("%s:%d", destIP, destPort) != rule.DestAddr {
 					continue
 				}
 			}
@@ -428,7 +451,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 					} else {
 						time.Sleep(rule.Delay)
 					}
-					s.emitSyscallEvent(syscallName, req.PID, decision, path, rule.Delay, rule.Label, rule.Op)
+					emit(decision, path, rule.Delay, rule.Label, rule.Op)
 					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
 						if !isClosedFdErr(err) {
 							s.log.Error("failed to allow syscall after delay", slog.String("error", err.Error()))
@@ -439,7 +462,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 				case ActionDeny:
 					decision = fmt.Sprintf("deny(%s)", rule.Errno)
 					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
-					s.emitSyscallEvent(syscallName, req.PID, decision, path, 0, rule.Label, rule.Op)
+					emit(decision, path, 0, rule.Label, rule.Op)
 					if err := seccomp.Deny(listenerFd, req.ID, int32(rule.Errno)); err != nil {
 						if !isClosedFdErr(err) {
 							s.log.Error("failed to deny syscall", slog.String("error", err.Error()))
@@ -450,7 +473,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 				case ActionTrace:
 					decision = "trace"
 					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
-					s.emitSyscallEvent(syscallName, req.PID, decision, path, 0)
+					emit(decision, path, 0)
 					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
 						if !isClosedFdErr(err) {
 							s.log.Error("failed to allow traced syscall", slog.String("error", err.Error()))
@@ -464,7 +487,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 
 	// Allow: let the kernel handle the syscall.
 	s.logSyscall(slog.LevelDebug, syscallName, req.PID, decision, path)
-	s.emitSyscallEvent(syscallName, req.PID, decision, path, 0)
+	emit(decision, path, 0)
 	if err := seccomp.Allow(listenerFd, req.ID); err != nil {
 		if !isClosedFdErr(err) {
 			s.log.Error("failed to allow syscall", slog.String("error", err.Error()))

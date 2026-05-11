@@ -65,9 +65,10 @@ type TestTraceOutput struct {
 	// RFC-027 expectation metadata — mirrored from the manifest so
 	// trace.json is self-contained for the drill-down renderer. Empty
 	// Expectation means the test had no expect=/default_expect=.
-	Expectation         string         `json:"expectation,omitempty"`
-	ExpectationViolated bool           `json:"expectation_violated,omitempty"`
-	FaultBypassed       bool           `json:"fault_bypassed,omitempty"`
+	Expectation                string `json:"expectation,omitempty"`
+	ExpectationViolated        bool   `json:"expectation_violated,omitempty"`
+	FaultBypassed              bool   `json:"fault_bypassed,omitempty"`
+	StrictDeterminismViolation bool   `json:"strict_determinism_violation,omitempty"` // RFC-040 §8.3
 	BypassedRules       []BypassedRule `json:"bypassed_rules,omitempty"`
 	ErrorDetail         *ErrorDetail                    `json:"error_detail,omitempty"`
 	Faults              []FaultInfo                     `json:"faults,omitempty"`
@@ -122,18 +123,19 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 	}
 	for _, tr := range result.Tests {
 		tto := TestTraceOutput{
-			Name:                tr.Name,
-			Result:              tr.Result,
-			Reason:              tr.Reason,
-			FailureType:         classifyFailure(tr.Reason),
-			Seed:                tr.Seed,
-			DurationMs:          tr.DurationMs,
-			Events:              tr.Events,
-			Expectation:         tr.ExpectationName,
-			ExpectationViolated: tr.ExpectationViolated,
-			FaultBypassed:       tr.FaultBypassed,
-			BypassedRules:       tr.BypassedRules,
-			Assertion:           tr.Assertion,
+			Name:                       tr.Name,
+			Result:                     tr.Result,
+			Reason:                     tr.Reason,
+			FailureType:                classifyFailure(tr.Reason),
+			Seed:                       tr.Seed,
+			DurationMs:                 tr.DurationMs,
+			Events:                     tr.Events,
+			Expectation:                tr.ExpectationName,
+			ExpectationViolated:        tr.ExpectationViolated,
+			FaultBypassed:              tr.FaultBypassed,
+			StrictDeterminismViolation: tr.StrictDeterminismViolation,
+			BypassedRules:              tr.BypassedRules,
+			Assertion:                  tr.Assertion,
 		}
 		if tr.ReturnValue != nil && tr.ReturnValue != starlark.None {
 			tto.ReturnValue = tr.ReturnValue.String()
@@ -177,7 +179,10 @@ func buildMatrixOutput(result *SuiteResult) *MatrixOutput {
 		switch tr.Result {
 		case "fail":
 			outcome = "failed"
-			if tr.ExpectationViolated {
+			switch {
+			case tr.StrictDeterminismViolation:
+				outcome = "strict_determinism_violation"
+			case tr.ExpectationViolated:
 				outcome = "expectation_violated"
 			}
 		case "error":
@@ -541,6 +546,16 @@ func NormalizeTrace(result *SuiteResult) string {
 					continue
 				}
 
+				// Skip allowed syscalls to Go-runtime kernel fds: eventfd
+				// (scheduler signalling), anonymous pipes, raw sockets,
+				// /dev/null. The count and ordering of these is driven
+				// by the Go scheduler and varies run-to-run even with a
+				// pinned seed. They're never application behaviour.
+				if decision == "allow" && (strings.HasPrefix(path, "anon_inode:") ||
+					path == "pipe" || path == "socket" || path == "/dev/null") {
+					continue
+				}
+
 				// Normalize non-deterministic paths:
 				// socket:[12345] → socket (inode numbers change between runs)
 				// pipe:[12345] → pipe
@@ -555,6 +570,15 @@ func NormalizeTrace(result *SuiteResult) string {
 			case "step_send", "step_recv":
 				target := ev.Fields["target"]
 				line = fmt.Sprintf("%s %s", ev.Type, target)
+			case "unmediated_io":
+				// RFC-040 §8.1 — keep these in the normalized trace so
+				// determinism goldens can differentiate by category. The
+				// detail field is dropped: it carries the destination
+				// address for network-unmediated/dns events and would
+				// vary across runs (ephemeral ports for the resolver
+				// pick path, host-specific routing).
+				line = fmt.Sprintf("unmediated_io %s %s",
+					ev.Fields["category"], ev.Fields["syscall"])
 			default:
 				continue
 			}

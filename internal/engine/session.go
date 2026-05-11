@@ -37,6 +37,14 @@ type SyscallEvent struct {
 	Latency  time.Duration `json:"latency_ns,omitempty"` // time spent in fault (delay duration)
 	Label    string        `json:"label,omitempty"`       // optional fault label from deny/delay
 	Op       string        `json:"op,omitempty"`          // named operation (e.g., "persist")
+
+	// DestIP / DestPort are populated only for connect() syscalls — read
+	// from the SUT's sockaddr argument once at the top of handleNotification
+	// and forwarded so the determinism layer (RFC-040 §8.1) can classify
+	// network destinations as mediated / unmediated / DNS without reading
+	// process memory a second time.
+	DestIP   string `json:"dest_ip,omitempty"`
+	DestPort int    `json:"dest_port,omitempty"`
 }
 
 // VirtualClock tracks virtual time for a session. When enabled, fault delays
@@ -418,6 +426,15 @@ func (s *Session) randFloat64() float64 {
 // emitSyscallEvent sends a syscall event to the OnSyscall callback if set.
 // Optional extra args: labels[0]=label, labels[1]=op.
 func (s *Session) emitSyscallEvent(syscallName string, pid uint32, decision, path string, latency time.Duration, extra ...string) {
+	s.emitSyscallEventDest(syscallName, pid, decision, path, latency, "", 0, extra...)
+}
+
+// emitSyscallEventDest is the connect-aware emit path used when
+// handleNotification has already read the sockaddr destination. Non-connect
+// callers go through emitSyscallEvent which passes "" / 0 for the dest pair.
+// RFC-040 §8.1 — destination is captured here so the determinism layer can
+// classify connect() events without re-reading process memory.
+func (s *Session) emitSyscallEventDest(syscallName string, pid uint32, decision, path string, latency time.Duration, destIP string, destPort int, extra ...string) {
 	if s.cfg.OnSyscall == nil {
 		return
 	}
@@ -439,6 +456,8 @@ func (s *Session) emitSyscallEvent(syscallName string, pid uint32, decision, pat
 		Latency:  latency,
 		Label:    label,
 		Op:       op,
+		DestIP:   destIP,
+		DestPort: destPort,
 	})
 }
 

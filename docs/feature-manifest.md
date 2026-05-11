@@ -77,6 +77,9 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | `--explore=all` exhaustive | 2 | No dedicated coverage | 🔴 | |
 | `--virtual-time` | 2 | No dedicated coverage | 🔴 | |
 | `--runs N` counterexample search | 2 | No dedicated coverage | 🔴 | |
+| `determinism()` builtin + L0/L1 levels (RFC-040) | 2 | `internal/star/builtins_determinism_test.go` (parse-time + helpers, 24 tests) | 🟢 | Spec-level determinism declaration with reserved-syntax gating for L2..L5 + `runtime="gvisor"`; spec-wide `allow=` and per-service `nondeterministic_ok=` escape hatches |
+| L1 `unmediated_io` detection — clock / rand / dns / network-unmediated (RFC-040) | 2 | `internal/star/builtins_determinism_test.go` (detection helpers + isMediatedAddress) + `internal/proxy/proxy_test.go` (IsListenPort, 6 tests) + testops corpus (determinism_clock_read, determinism_rand_read, determinism_dns_leak, determinism_raw_socket, determinism_tolerated; LinuxOnly via `poc/leaker`) | 🟢 | Detection wires into the syscall callback for already-faulted services; goldens lock down each category end-to-end via a leak-on-demand HTTP harness (`/tmp/faultbox-leaker`) faulted at `write=allow()`. Tolerated categories still emit unmediated_io events into the trace — tolerance only suppresses the strict-mode failure. |
+| Strict mode + `strict_determinism_violation` outcome (RFC-040) | 2 | `internal/star/builtins_determinism_test.go` (strict helpers, 7 tests) | 🟢 | Default `strict=True` at L1 fails the test on the first untolerated `unmediated_io` event; `--strict-determinism[=true|false]` and `--no-strict-determinism` CLI overrides |
 
 ### DX and outputs — Supported / Experimental (proposed)
 
