@@ -3,9 +3,30 @@ package star
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"go.starlark.net/starlark"
 )
+
+// TestConfig is the per-test declarative metadata produced by the
+// RFC-041 §8.6 test(name=, body=, setup=, expect=, timeout=,
+// terminate_when=) builtin. Legacy `def test_*()` functions have no
+// TestConfig — they run under the simpler synchronous lifecycle.
+//
+// All callable fields are optional except Body.
+//
+// PR 6's RunTest reads this struct to:
+//   - apply the per-test timeout (Timeout, default 30s when zero)
+//   - call Setup before the body (if set)
+//   - register Expect with the temporal-expectation list (if set)
+//   - watch TerminateWhen on the event log (if set)
+type TestConfig struct {
+	Body          starlark.Callable
+	Setup         starlark.Callable
+	Expect        ExpectationVal
+	Timeout       time.Duration // 0 → use suite default (30s)
+	TerminateWhen ExpectationVal
+}
 
 // Verdict is the three-valued result of evaluating a temporal expectation.
 // PR 4 (this file) defines the type; PR 6 wires it into TestResult.
@@ -160,11 +181,15 @@ func (e *EventuallyExpectation) Finalize(thread *starlark.Thread, log *EventLog,
 		// Caller maps VerdictPending under timeout → INCONCLUSIVE at the
 		// suite level. We surface "pending" rather than fabricating a fail.
 		return VerdictPending, "eventually(" + funcName(e.predicate) + ") never satisfied within timeout"
+	case TerminationNatural:
+		// Body returned but the eventually never satisfied. RFC §5.5(a)
+		// table: "natural completion requires every eventually already
+		// satisfied" — so an unsatisfied eventually at body-return is
+		// the contradiction case → FAIL. Distinguished from the timeout
+		// case (INCONCLUSIVE) because the body had its chance.
+		return VerdictFail, "eventually(" + funcName(e.predicate) + ") never satisfied before body returned"
 	default:
-		// TerminationNatural is impossible with pending eventually (the
-		// runner only fires natural completion when every eventually is
-		// already satisfied). Treat defensively as inconclusive.
-		return VerdictPending, "eventually(" + funcName(e.predicate) + ") still pending at unexpected natural completion"
+		return VerdictPending, "eventually(" + funcName(e.predicate) + ") still pending"
 	}
 }
 
@@ -354,6 +379,132 @@ func funcName(c starlark.Callable) string {
 		return "<nil>"
 	}
 	return c.Name()
+}
+
+// ---------------------------------------------------------------------------
+// test() builtin — RFC-041 §8.6
+// ---------------------------------------------------------------------------
+
+// builtinTest declares a test with explicit temporal configuration:
+//
+//	test(name, body=, setup=, expect=, timeout="30s", terminate_when=,
+//	     clock="wall")
+//
+// Required: name (positional string) + body (callable). Optional:
+//   - setup           — called once before body; result discarded
+//   - expect          — an eventually(...) or always(...) value;
+//                       registered alongside any expectations the body
+//                       declares inline so the §5.5 Finalize pass sees
+//                       it. Body cannot raise from expect=.
+//   - timeout         — duration string ("30s", "1m"). Default 30s.
+//   - terminate_when  — an eventually(...) value; when its predicate
+//                       holds, Termination fires via (b) §5.5.
+//   - clock           — reserved per §8.8. "wall" today;
+//                       "virtual" → "requires gVisor" error.
+//
+// Tests declared via test() coexist with legacy def test_*() functions.
+// DiscoverTests includes both. The full test name is "test_<n>" so
+// `--test foo` and `--test test_foo` both work from the CLI.
+func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var name string
+	var body starlark.Callable
+	var setupArg starlark.Value = starlark.None
+	var expectArg starlark.Value = starlark.None
+	var twArg starlark.Value = starlark.None
+	var timeoutStr string
+	var clockStr = "wall"
+	if err := starlark.UnpackArgs("test", args, kwargs,
+		"name", &name,
+		"body", &body,
+		"setup?", &setupArg,
+		"expect?", &expectArg,
+		"timeout?", &timeoutStr,
+		"terminate_when?", &twArg,
+		"clock?", &clockStr,
+	); err != nil {
+		return nil, err
+	}
+	if err := checkReservedClockKwarg(clockStr); err != nil {
+		return nil, fmt.Errorf("test(%q): %w", name, err)
+	}
+	if name == "" {
+		return nil, fmt.Errorf("test() name must be non-empty")
+	}
+
+	cfg := &TestConfig{Body: body}
+	if setupArg != starlark.None {
+		cb, ok := setupArg.(starlark.Callable)
+		if !ok {
+			return nil, fmt.Errorf("test(%q): setup= must be callable, got %s", name, setupArg.Type())
+		}
+		cfg.Setup = cb
+	}
+	if expectArg != starlark.None {
+		exp, ok := expectArg.(ExpectationVal)
+		if !ok {
+			return nil, fmt.Errorf("test(%q): expect= must be eventually(...) or always(...), got %s", name, expectArg.Type())
+		}
+		cfg.Expect = exp
+	}
+	if twArg != starlark.None {
+		tw, ok := twArg.(ExpectationVal)
+		if !ok {
+			return nil, fmt.Errorf("test(%q): terminate_when= must be eventually(...) or always(...), got %s", name, twArg.Type())
+		}
+		cfg.TerminateWhen = tw
+	}
+	if timeoutStr != "" {
+		d, err := parseStarDuration(timeoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("test(%q): bad timeout=%q: %w", name, timeoutStr, err)
+		}
+		cfg.Timeout = d
+	}
+
+	fullName := "test_" + name
+	// Register the config. DiscoverTests will surface the entry as a
+	// discoverable test name and register the body into rt.globals
+	// (which is nil during the spec-load ExecFile and only populated
+	// once execution returns). Following the scenario()/fault_scenario
+	// pattern in this file.
+	rt.testConfigs[fullName] = cfg
+	return starlark.None, nil
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle helpers (consumed by RunTest)
+// ---------------------------------------------------------------------------
+
+// bodyOutcomeCh is the channel type RunTest uses to await body
+// completion. Exported only by signature, not by type alias, to keep
+// the surface minimal.
+type bodyOutcomeT = struct {
+	retVal starlark.Value
+	err    error
+	// panicVal is set when the body goroutine recovered from a Go-level
+	// panic. RunTest uses this to surface the failure as Result="error"
+	// so RunAll captures it in SuiteResult.Crash. Empty for normal
+	// Starlark errors that the body returned via err.
+	panicVal string
+}
+
+// waitBodyExit drains a body-outcome channel with a hard deadline.
+// Used after TerminationTerminateWhen or TerminationTimeout to give
+// the body goroutine a chance to exit cleanly (its await_* primitives
+// see the cancelled context and unwind) before the runtime moves on.
+//
+// If the body does not exit within deadline, returns a zero outcome —
+// the body goroutine is leaked. PR 6 ships a 2-second deadline; a
+// well-behaved spec yields long before that.
+func waitBodyExit(ch <-chan bodyOutcomeT, deadline time.Duration) bodyOutcomeT {
+	t := time.NewTimer(deadline)
+	defer t.Stop()
+	select {
+	case bo := <-ch:
+		return bo
+	case <-t.C:
+		return bodyOutcomeT{}
+	}
 }
 
 // ---------------------------------------------------------------------------

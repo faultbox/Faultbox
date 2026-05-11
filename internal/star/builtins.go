@@ -131,6 +131,11 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// the per-test context; no own timeout.
 		"await_stable": starlark.NewBuiltin("await_stable", rt.builtinAwaitStable),
 		"await_event":  starlark.NewBuiltin("await_event", rt.builtinAwaitEvent),
+		// Declarative test definition (RFC-041 §8.6). Augments the
+		// def test_*() function-style declaration with per-test
+		// timeout, expect=, setup=, and terminate_when= temporal
+		// config. Legacy function-style tests continue to work.
+		"test": starlark.NewBuiltin("test", rt.builtinTest),
 	}
 }
 

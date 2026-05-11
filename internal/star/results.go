@@ -21,8 +21,12 @@ type TraceOutput struct {
 	DurationMs int64             `json:"duration_ms"`
 	Pass       int               `json:"pass"`
 	Fail       int               `json:"fail"`
-	Tests      []TestTraceOutput `json:"tests"`
-	Matrix     *MatrixOutput     `json:"matrix,omitempty"`
+	// Inconclusive — count of tests that timed out with pending
+	// temporal assertions (RFC-041 §5.5(c)). Omitted when zero so
+	// trace.json from pre-RFC-041 specs is byte-identical.
+	Inconclusive int               `json:"inconclusive,omitempty"`
+	Tests        []TestTraceOutput `json:"tests"`
+	Matrix       *MatrixOutput     `json:"matrix,omitempty"`
 }
 
 // MatrixOutput is the fault_matrix section of the JSON trace output.
@@ -114,12 +118,13 @@ type ErrorDetail struct {
 // BuildTraceOutput constructs the full JSON output structure from suite results.
 func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 	out := TraceOutput{
-		Version:    2,
-		StarFile:   starFile,
-		DurationMs: result.DurationMs,
-		Pass:       result.Pass,
-		Fail:       result.Fail,
-		Tests:      make([]TestTraceOutput, 0, len(result.Tests)),
+		Version:      2,
+		StarFile:     starFile,
+		DurationMs:   result.DurationMs,
+		Pass:         result.Pass,
+		Fail:         result.Fail,
+		Inconclusive: result.Inconclusive,
+		Tests:        make([]TestTraceOutput, 0, len(result.Tests)),
 	}
 	for _, tr := range result.Tests {
 		tto := TestTraceOutput{
