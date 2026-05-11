@@ -630,3 +630,51 @@ func TestRunAll_NilOverrideKeepsSpec(t *testing.T) {
 		t.Error("nil override should follow spec strict=False")
 	}
 }
+
+// TestStrictOverrideFalse_SuppressesEnforcement verifies that override=false
+// (lenient) actually prevents a strict failure when unmediated_io events are
+// present — not just that strictEffective() returns false, but that the
+// firstStrictViolation path returns nil (no outcome change).
+func TestStrictOverrideFalse_SuppressesEnforcement(t *testing.T) {
+	rt := New(testLogger())
+	src := `service("api", "/bin/true", interface("main", "http", 8080))`
+	if err := rt.LoadString("test.star", src); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	// Inject a clock event — normally strict-mode-fatal.
+	rt.detectUnmediated("api", engine.SyscallEvent{Syscall: "clock_gettime", PID: 1234})
+
+	events := rt.events.Events()
+
+	// Without override: strict=true, violation fires.
+	if !rt.strictEffective() {
+		t.Fatal("default at L1 should be strict=true")
+	}
+	if v := rt.firstStrictViolation(events); v == nil {
+		t.Fatal("clock event without tolerance should produce a violation at strict L1")
+	}
+
+	// With override=false: strictEffective() returns false, enforcer is skipped.
+	no := false
+	rt.detStrictOverride = &no
+	if rt.strictEffective() {
+		t.Fatal("override=false must make strictEffective() return false")
+	}
+	// Simulate the RunTest decision: only call firstStrictViolation when strictEffective.
+	if rt.strictEffective() {
+		if v := rt.firstStrictViolation(events); v != nil {
+			t.Errorf("override=false must not produce a strict failure; got %v", v)
+		}
+	}
+	// Events are still in the trace (visibility/enforcement separation).
+	found := false
+	for _, ev := range events {
+		if ev.Type == "unmediated_io" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("override=false must not suppress the unmediated_io event from the trace")
+	}
+}

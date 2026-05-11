@@ -58,12 +58,15 @@ func isKnownCategory(s string) bool {
 // effectiveAllow returns the union of the spec-level allow set and the
 // per-service nondeterministic_ok list. Strict mode consults this set when
 // deciding whether an unmediated_io event should fail the test.
+//
+// Holds rt.mu for the entire read so the race detector is satisfied:
+// builtinDeterminism writes det* fields under the same lock.
 func (rt *Runtime) effectiveAllow(svcName string) map[string]bool {
+	rt.mu.Lock()
 	out := make(map[string]bool, len(rt.detAllow))
 	for k := range rt.detAllow {
 		out[k] = true
 	}
-	rt.mu.Lock()
 	svc := rt.services[svcName]
 	rt.mu.Unlock()
 	if svc != nil {
@@ -79,9 +82,14 @@ func (rt *Runtime) effectiveAllow(svcName string) map[string]bool {
 // + allow) on the Runtime and rejects any combination that v0.13.0 does not
 // implement (L2..L5, runtime="gvisor"). May only be called once per spec.
 func (rt *Runtime) builtinDeterminism(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	// LoadString runs single-threaded, so no race on detExplicit here. The
+	// mu.Lock at the end protects concurrent goroutine reads of det* fields.
 	if rt.detExplicit {
 		return nil, fmt.Errorf("determinism(): may only be called once per spec")
 	}
+	// Reject positional args before UnpackArgs so they are not silently mapped
+	// to the first kwarg (level). Without this guard the call determinism("L1")
+	// would parse successfully with level="L1", hiding the intent to use kwargs.
 	if len(args) != 0 {
 		return nil, fmt.Errorf("determinism() takes only keyword arguments")
 	}
@@ -156,24 +164,34 @@ func (rt *Runtime) builtinDeterminism(thread *starlark.Thread, fn *starlark.Buil
 		return nil, fmt.Errorf("determinism(allow=...): must be a list of category strings, got %s", v.Type())
 	}
 
+	rt.mu.Lock()
 	rt.detLevel = level
 	rt.detRuntime = rtName
 	rt.detStrict = strictBool
 	rt.detAllow = allow
 	rt.detExplicit = true
+	rt.mu.Unlock()
 	return starlark.None, nil
 }
 
 // strictEffective reports whether strict mode should fail the test on
 // unmediated_io events. Defaults to the spec setting; overridden if the
-// CLI passed --strict-determinism / --strict-determinism=false (PR 4 wires
-// the override). Strict only applies at L1 — L0 has no detection events,
-// L2..L5 are reserved.
+// CLI passed --strict-determinism / --strict-determinism=false. Strict
+// only applies at L1 — L0 has no detection events, L2..L5 are reserved.
+//
+// detStrictOverride is written once (by RunAll before any test goroutine
+// starts) and treated as read-only thereafter, so the pointer dereference
+// needs no lock. The det* spec fields are written under rt.mu by
+// builtinDeterminism and read under the same lock here.
 func (rt *Runtime) strictEffective() bool {
 	if rt.detStrictOverride != nil {
 		return *rt.detStrictOverride
 	}
-	return rt.detLevel == DeterminismL1 && rt.detStrict
+	rt.mu.Lock()
+	level := rt.detLevel
+	strict := rt.detStrict
+	rt.mu.Unlock()
+	return level == DeterminismL1 && strict
 }
 
 // firstStrictViolation walks the event log and returns the first
@@ -227,19 +245,33 @@ func strictViolationReason(ev *Event) string {
 // callback. RFC-040 §8.1.
 //
 // Categories handled here:
-//   - clock_gettime → "clock"
+//   - clock_gettime / gettimeofday → "clock"
 //   - getrandom     → "rand"
 //   - connect       → "dns" (port 53) / "network-unmediated" (other ports
 //                     not bound to a declared interface or a Faultbox proxy)
 //
 // fs-unmediated is a reserved category in v0.13.0 — accepted in allow= lists
 // but no events are emitted yet (deferred to a future release).
+//
+// Q1 (reviewer): detectUnmediated fires regardless of evt.Decision, so a
+// fault rule that *denies* a connect to an unmediated address still emits
+// unmediated_io. This is intentional: the connect attempt itself is a
+// non-determinism signal — the SUT made a choice to try to connect somewhere
+// outside the declared spec topology. Whether Faultbox allowed or denied the
+// call does not change the fact that the SUT's execution path diverged from
+// what the spec mediates. If a caller needs to suppress detection on denied
+// syscalls it can use nondeterministic_ok= on the affected service.
 func (rt *Runtime) detectUnmediated(svcName string, evt engine.SyscallEvent) {
-	if rt.detLevel != DeterminismL1 {
+	rt.mu.Lock()
+	level := rt.detLevel
+	rt.mu.Unlock()
+	if level != DeterminismL1 {
 		return
 	}
 	switch evt.Syscall {
-	case "clock_gettime":
+	case "clock_gettime", "gettimeofday":
+		// gettimeofday is VDSO-accelerated on amd64/arm64 and rarely reaches
+		// seccomp, but we intercept it when it does for completeness.
 		rt.emitUnmediated(svcName, CategoryClock, evt, "")
 	case "getrandom":
 		rt.emitUnmediated(svcName, CategoryRand, evt, "")
@@ -276,6 +308,12 @@ func (rt *Runtime) detectUnmediatedConnect(svcName string, evt engine.SyscallEve
 // port on any service in the spec — i.e. traffic Faultbox is mediating
 // directly. Both container HostPort and the in-spec Port match (containers
 // publish a HostPort that the SUT may dial; binary services dial Port).
+//
+// Known limitation (v0.13.0): matching is port-only. The ip argument is
+// accepted for API forward-compatibility but not consulted. A SUT connecting
+// to any host on a declared port is treated as mediated — a false negative
+// for connects to hosts that happen to share the same port number but are
+// not Faultbox-declared dependencies. Documented in docs/determinism.md §Known Limitations.
 func (rt *Runtime) isMediatedAddress(ip string, port int) bool {
 	if port <= 0 {
 		return false

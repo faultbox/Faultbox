@@ -11,7 +11,9 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -325,6 +327,13 @@ func (m *Manager) GetProxyAddr(svcName, ifaceName string) string {
 // running proxy listener. The determinism layer (RFC-040 §8.1) calls this
 // to recognise SUT connections to a Faultbox proxy as mediated rather than
 // classifying them as unmediated network I/O.
+//
+// Startup ordering invariant (Q2): proxies are started by preStartProxies()
+// in RunTest before the SUT process is launched and before the healthcheck
+// loop begins. No SUT goroutine can issue a connect() syscall until the
+// healthcheck passes, which happens after preStartProxies() completes.
+// IsListenPort therefore always observes the fully-populated proxy map for
+// any SUT connect that reaches the seccomp notification callback.
 func (m *Manager) IsListenPort(port int) bool {
 	if port <= 0 {
 		return false
@@ -340,19 +349,18 @@ func (m *Manager) IsListenPort(port int) bool {
 }
 
 // extractPort parses the trailing :PORT off a listen address ("127.0.0.1:34567"
-// or "[::1]:34567"). Returns 0 if the address is malformed; callers that pass
-// 0 are expected to treat it as "no listener" because port=0 only appears
-// before bind completes.
+// or "[::1]:34567"). Returns 0 if the address is malformed; callers treat 0
+// as "no listener" (port=0 only appears before bind completes).
 func extractPort(addr string) int {
 	if addr == "" {
 		return 0
 	}
-	idx := strings.LastIndex(addr, ":")
-	if idx < 0 {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
 		return 0
 	}
-	var port int
-	if _, err := fmt.Sscanf(addr[idx+1:], "%d", &port); err != nil {
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
 		return 0
 	}
 	return port

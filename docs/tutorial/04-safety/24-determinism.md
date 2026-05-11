@@ -126,7 +126,9 @@ Five categories. Three caveats worth knowing.
 | `network-unmediated` | `connect()` to any address/port not matching an `interface()` and not a Faultbox proxy listener | Nothing — this is the cleanest signal |
 | `fs-unmediated` | reserved category in v0.13.0 — accepted in `allow=` lists but not detected yet | (everything for now) |
 
-The Go VDSO caveat is load-bearing for most users: if every service in your stack is Go and you don't tolerate `clock`, strict mode will *under-report* clock drift, not over-report. That's the right side of the trade — false negatives are debt; false positives are noise. Document the limit in your spec comments, and revisit when v0.14.0 lands gVisor (which sees VDSO).
+The Go VDSO caveat is load-bearing for most users: if every service in your stack is Go and you don't tolerate `clock`, strict mode will *under-report* clock drift, not over-report. That's the right side of the trade — false negatives are debt; false positives are noise. Document the limit in your spec comments.
+
+This VDSO blindness is resolved only at **Path C (Faultbox Sentry fork)** — see [RFC-046](../../rfcs/0046-beyond-l1-roadmap.md). Path B gVisor (v0.14.x) replaces the TCP proxy with gVisor netstack but does *not* run SUT code inside gVisor Sentry, so VDSO calls remain outside seccomp reach at v0.14.x.
 
 ## Worked example: a real flake
 

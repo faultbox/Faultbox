@@ -561,7 +561,7 @@ Per the #84 coverage gate: every new file in `cmd/faultbox/` and `internal/star/
 
 **Moved into scope for v0.13.0** (vs the original draft): bundle integration (`plan.json`), report integration (Plan tab), **spec-level interleaving enumeration AND execution**, the `interleavings=` kwarg on parallel composition primitives, and **probability-driven exhaustive plan-tree fan-out** (with `max_fires=` and `mode=` controls). The interleaving and probability work together deliver "interleaving is the most interesting feature" and "we cover all scenarios even when probability is small" without needing L5.
 
-<--TODO: Execution engine should use plan, and in process of test save meta inforamtion about what node of plan has been executed and how, after i wanna see that in report (when we added plan visulation there)  -->
+<!-- Open: Execution engine should record which plan-tree node each test executed and surface that in the report's plan visualization. Track in GitHub issue before implementation. -->
 
 ## Open questions
 

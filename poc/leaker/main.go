@@ -38,6 +38,14 @@ func main() {
 	if port == "" {
 		port = "8090"
 	}
+	// DNS_RESOLVER lets CI environments override the target resolver so
+	// outbound UDP/53 to 8.8.8.8 is not required (some CI networks block
+	// external DNS). Any host:port works — only the connect() attempt
+	// matters for detection, not whether it succeeds.
+	dnsResolver := os.Getenv("DNS_RESOLVER")
+	if dnsResolver == "" {
+		dnsResolver = "8.8.8.8:53"
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +53,7 @@ func main() {
 	})
 	mux.HandleFunc("/trigger", func(w http.ResponseWriter, r *http.Request) {
 		kind := r.URL.Query().Get("leak")
-		if err := performLeak(kind); err != nil {
+		if err := performLeak(kind, dnsResolver); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -65,7 +73,7 @@ func main() {
 	}
 }
 
-func performLeak(kind string) error {
+func performLeak(kind, dnsResolver string) error {
 	switch kind {
 	case "clock":
 		// Raw clock_gettime syscall — bypasses Go's VDSO fast path so
@@ -86,10 +94,11 @@ func performLeak(kind string) error {
 		}
 		return nil
 	case "dns":
-		// connect() to a public DNS resolver on port 53. We don't care
-		// whether it succeeds — the connect attempt itself is what
-		// fires the detection. Short timeout so the test stays bounded.
-		_, _ = net.DialTimeout("udp", "8.8.8.8:53", 200*time.Millisecond)
+		// connect() to the configured DNS resolver on port 53. We don't
+		// care whether it succeeds — the connect attempt itself fires
+		// detection. Use DNS_RESOLVER env var to avoid requiring outbound
+		// UDP/53 access in locked-down CI environments.
+		_, _ = net.DialTimeout("udp", dnsResolver, 200*time.Millisecond)
 		return nil
 	case "network":
 		// connect() to localhost:19999 — nothing listens there in the

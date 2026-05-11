@@ -146,7 +146,19 @@ This is the level most customers operate at today. The manifest is the longest b
 
 ## Worked examples
 
-> *TODO (v0.13.0 doc work):* before/after Go snippets per L1 manifest item — the unmediated-I/O leak fix, the injectable clock pattern, the disable-able retry jitter, the idempotent-write idiom, the request-ID-vs-business-RNG split. The tutorial chapter (`docs/tutorial/`) walks one concrete SUT through these end-to-end with strict-mode catching the regressions.
+The tutorial chapter [24: Determinism & the L1 Contract](tutorial/04-safety/24-determinism.md) walks a concrete SUT through the L1 manifest end-to-end: an unmediated-I/O leak, the strict-mode failure, the investigation workflow, and the escape-hatch decision. Start there.
+
+## Known limitations (v0.13.0)
+
+These are intentional trade-offs accepted for the initial L1 contract. Each has a filed follow-up.
+
+| Area | Limitation | Impact |
+|------|-----------|--------|
+| **Declared-interface matching** | `isMediatedAddress` matches by port only — the destination IP is not checked. A `connect()` to any host on a declared interface port is classified as mediated, even if the host is not the declared dependency. | False negative: a connect to an external host that happens to share a declared port is silently treated as mediated rather than emitting `network-unmediated`. |
+| **VDSO clock reads** | Go's `time.Now()` and many libc clock calls use the kernel VDSO fast path (`__vdso_clock_gettime`), which bypasses seccomp-notify entirely. The `clock` category therefore under-reports. | The `clock_gettime` raw syscall path IS caught; the VDSO path is not. Services that use `time.Now()` exclusively will not trigger `unmediated_io[clock]` even without tolerating the category. |
+| **`gettimeofday` VDSO** | `gettimeofday` is also VDSO-accelerated on all supported targets (amd64 and arm64). Faultbox intercepts the `gettimeofday` *syscall* path for completeness, but most callers never reach it. | Same as above — under-reports on platforms that stay in VDSO. |
+| **DNS over HTTPS/TLS (DoH/DoT)** | DNS queries tunnelled through HTTPS or TLS look like plain TCP/443 connects to Faultbox. They are classified as `network-unmediated` (port 443 is not port 53), not as `dns`. | The `dns` category only covers wire-DNS on port 53. |
+| **`fs-unmediated` not yet emitted** | The `fs-unmediated` category constant is accepted in `allow=` / `nondeterministic_ok=` lists but Faultbox does not emit events for it yet. | File I/O outside declared volume paths is silently undetected at L1. |
 
 ## See also
 

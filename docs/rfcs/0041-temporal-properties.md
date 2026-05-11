@@ -109,7 +109,7 @@ This keeps wall-clock comparisons explicit and inside the predicate logic where 
 - Default: beginning of test body
 - `anchor=event_matcher` — start watching from the first event matching this matcher
 
-<!--TODO: if between skiped last point should Termination event -->
+<!-- Open: if an event is skipped between anchor points, should a Termination event be emitted? Track in GitHub issue before implementation. -->
 ### 5.2 — `always(predicate)`
 
 Invariant assertion: `predicate` must hold for every event between two points.
@@ -280,7 +280,7 @@ test("any_concurrent_workload",
 ```
 
 **Per-event lifecycle:**
-1. Event matching `on=` arrives. <!--TODO: add example with multiply event types-->
+1. Event matching `on=` arrives. <!-- Open: add a worked example with multiple event types in the on= matcher. -->
 2. `new_state = update(event, state)`.
 3. `verdict = check(event, new_state)`.
 4. If verdict false → test fails, citing the event and the violated invariant.
@@ -296,7 +296,7 @@ Monitors register at spec load and apply to every test in the spec (unless scope
 
 **The `on=` kwarg is mandatory and exists for performance reasons.** Without filtering, a monitor's `check` runs on every mediated event in the event log — which can be tens of thousands of events per test for an active service. The `on=` matcher narrows this to events the monitor cares about (typically O(10–100) per test). Without `on=`, spec load fails with: *"monitor 'X' has no `on=` filter; specify the events that should trigger this monitor. To intentionally trigger on every event, use `on=match.all()`."*
 
-<!--TODO: fully agreed, if eventlog doesnt contain needed information better way evolve plugins-->
+<!-- Open: if the event log lacks needed information, evolving the relevant plugin is the right path — track in GitHub issue. -->
 **Monitors run in a restricted Starlark sandbox.** The `update` and `check` functions execute with read-only access to the event-log query API (`trace.event(...)`, `trace.events(...)`, vector-clock relations) and to the per-monitor memory. They **cannot** call any other Faultbox builtin — no `fault()`, no service-method calls, no `wait_all`, no plugin invocations. This is enforced at execution time: monitor predicates run in a Starlark `Thread` with a restricted globals map that excludes everything except the trace API. Reasons:
 
 - A monitor that calls into the SUT (e.g. issuing a database query through a service plugin) makes the monitor non-deterministic and re-introduces wall-clock dependencies the determinism levels (RFC-040) explicitly removed.

@@ -130,13 +130,15 @@ A level/runtime mismatch (e.g. `level="L2", runtime="default"`) errors at spec l
 
 These kwargs are **escape hatches for known drift the spec author has investigated and accepted** — not a way to make warnings go away.
 
-The categories shipped in v0.13.0 are `clock`, `dns`, `rand`. Each maps to a class of unmediated I/O Faultbox can detect:
+The categories shipped in v0.13.0 are `clock`, `dns`, `rand`, `network-unmediated`, and `fs-unmediated`. Each maps to a class of unmediated I/O Faultbox can detect:
 
 | Category | What it covers | When to acknowledge |
 |----------|----------------|---------------------|
-| `clock` | `clock_gettime`, `gettimeofday`, VDSO time reads | SUT logs wall-clock timestamps; SUT uses time only for monotonic durations the test doesn't assert on; SUT exposes a metrics endpoint that includes uptime |
-| `dns` | DNS resolution outside Faultbox's resolver path | SUT uses cgo-based resolution Faultbox doesn't intercept; SUT talks to a host outside any declared `interface()` (e.g. `localhost` for self-checks) |
+| `clock` | `clock_gettime` and `gettimeofday` raw syscall paths. **VDSO limitation:** Go's `time.Now()` and most libc callers use VDSO (`__vdso_clock_gettime`) which seccomp cannot intercept — the category under-reports for callers that never leave VDSO. | SUT logs wall-clock timestamps; SUT uses time only for monotonic durations the test doesn't assert on; SUT exposes a metrics endpoint that includes uptime |
+| `dns` | `connect()` to port 53 (UDP/TCP) outside Faultbox proxy or declared interface ports. DoH/DoT (DNS over HTTPS/TLS) is not covered — those are port-443 connects classified as `network-unmediated`. | SUT uses cgo-based resolution Faultbox doesn't intercept; SUT talks to a host outside any declared `interface()` |
 | `rand` | `getrandom`, `/dev/urandom`, `crypto/rand.Read` | SUT generates request IDs / UUIDs / nonces that don't affect business logic the test asserts on; SUT seeds an internal PRNG for retry jitter the test doesn't care about |
+| `network-unmediated` | `connect()` to any address/port not matching a declared `interface()` and not a Faultbox proxy listener | SUT makes background calls to telemetry/metrics endpoints outside the spec; SUT performs DNS-over-HTTPS or other encrypted DNS |
+| `fs-unmediated` | Reserved in v0.13.0 — accepted in lists, no events emitted yet | (No current use — listed so specs that tolerate future fs-unmediated events don't need updating when detection lands) |
 
 **Workflow for using these:**
 
@@ -225,7 +227,7 @@ Audit `internal/star/` and `internal/engine/` for the I/O paths Faultbox can *ob
 - File I/O outside container-mediated paths (category: `fs-unmediated`)
 - DNS resolution outside Faultbox's resolver (category: `dns`)
 - `getrandom` / `/dev/urandom` reads (category: `rand`)
-- `clock_gettime` / `gettimeofday` calls (category: `clock`) — best effort; VDSO unreachable
+- `clock_gettime` / `gettimeofday` calls (category: `clock`) — best effort; both syscalls are intercepted when they reach seccomp, but VDSO-accelerated paths (used by Go's `time.Now()` and most libc callers) are not reachable by seccomp-notify
 
 ### 8.2 — Declarative escape hatches
 

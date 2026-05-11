@@ -884,6 +884,14 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// event whose category isn't in the effective allow set (spec-level
 	// allow ∪ service.nondeterministic_ok). Disabled at L0 and overridable
 	// via --strict-determinism (PR 4); the default at L1 is strict=True.
+	//
+	// Priority ordering (Q3): monitor errors above take priority. A test body
+	// panic or setup error surfaces as an "error" result before this block
+	// runs — if runBody returns an error the function returns early above.
+	// Within the normal completion path the order is: monitor violation →
+	// strict_determinism_violation → fault_bypassed. This means a concurrent
+	// monitor violation and unmediated_io event are reported as "monitor
+	// violation"; the unmediated_io event is still in the trace for the report.
 	if rt.strictEffective() {
 		if v := rt.firstStrictViolation(events); v != nil {
 			return TestResult{
