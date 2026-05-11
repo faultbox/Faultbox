@@ -246,7 +246,8 @@ func strictViolationReason(ev *Event) string {
 // callback. RFC-040 §8.1.
 //
 // Categories handled here:
-//   - clock_gettime / gettimeofday → "clock"
+//   - clock_gettime → "clock" (gettimeofday omitted: always VDSO on
+//                    amd64/arm64, absent from the seccomp arch tables)
 //   - getrandom     → "rand"
 //   - connect       → "dns" (port 53) / "network-unmediated" (other ports
 //                     not bound to a declared interface or a Faultbox proxy)
@@ -266,7 +267,7 @@ func (rt *Runtime) detectUnmediated(svcName string, evt engine.SyscallEvent) {
 	// Fast path: skip syscalls that are never detection targets, avoiding
 	// lock acquisition for the common case (write, writev, etc.).
 	switch evt.Syscall {
-	case "clock_gettime", "gettimeofday", "getrandom", "connect":
+	case "clock_gettime", "getrandom", "connect":
 	default:
 		return
 	}
@@ -277,9 +278,7 @@ func (rt *Runtime) detectUnmediated(svcName string, evt engine.SyscallEvent) {
 		return
 	}
 	switch evt.Syscall {
-	case "clock_gettime", "gettimeofday":
-		// gettimeofday is VDSO-accelerated on amd64/arm64 and rarely reaches
-		// seccomp, but we intercept it when it does for completeness.
+	case "clock_gettime":
 		rt.emitUnmediated(svcName, CategoryClock, evt, "")
 	case "getrandom":
 		rt.emitUnmediated(svcName, CategoryRand, evt, "")

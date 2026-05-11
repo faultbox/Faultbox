@@ -2732,7 +2732,11 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 	rt.mu.Unlock()
 	if level == DeterminismL1 && explicit && len(found) > 0 {
 		found["clock_gettime"] = true
-		found["gettimeofday"] = true // rare fallback; VDSO normally intercepts it
+		// gettimeofday is always VDSO-accelerated on amd64/arm64 and never
+		// reaches seccomp-notify; it is also absent from the seccomp arch
+		// tables, so including it would make SyscallNumber() return -1 and
+		// silently break service startup. Dropped in favour of clock_gettime
+		// (which is in the arch tables and catches the same category).
 		found["getrandom"] = true
 		found["connect"] = true
 	}
