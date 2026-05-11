@@ -2718,8 +2718,12 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 	// the unmediated_io record so the report and bundle make tolerated
 	// drift visible. Tolerance only suppresses the strict-mode failure
 	// (RFC-040 §8.3), not the visibility.
-	if rt.detLevel == DeterminismL1 && len(found) > 0 {
+	rt.mu.Lock()
+	level := rt.detLevel
+	rt.mu.Unlock()
+	if level == DeterminismL1 && len(found) > 0 {
 		found["clock_gettime"] = true
+		found["gettimeofday"] = true // rare fallback; VDSO normally intercepts it
 		found["getrandom"] = true
 		found["connect"] = true
 	}

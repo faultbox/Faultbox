@@ -59,8 +59,9 @@ func isKnownCategory(s string) bool {
 // per-service nondeterministic_ok list. Strict mode consults this set when
 // deciding whether an unmediated_io event should fail the test.
 //
-// Holds rt.mu for the entire read so the race detector is satisfied:
-// builtinDeterminism writes det* fields under the same lock.
+// Holds rt.mu for the detAllow read (written by builtinDeterminism under
+// the same lock). svc.NondeterministicOK is iterated after the unlock —
+// it is write-once during LoadString and safe to read without a lock.
 func (rt *Runtime) effectiveAllow(svcName string) map[string]bool {
 	rt.mu.Lock()
 	out := make(map[string]bool, len(rt.detAllow))

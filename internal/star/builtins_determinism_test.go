@@ -660,12 +660,6 @@ func TestStrictOverrideFalse_SuppressesEnforcement(t *testing.T) {
 	if rt.strictEffective() {
 		t.Fatal("override=false must make strictEffective() return false")
 	}
-	// Simulate the RunTest decision: only call firstStrictViolation when strictEffective.
-	if rt.strictEffective() {
-		if v := rt.firstStrictViolation(events); v != nil {
-			t.Errorf("override=false must not produce a strict failure; got %v", v)
-		}
-	}
 	// Events are still in the trace (visibility/enforcement separation).
 	found := false
 	for _, ev := range events {
