@@ -36,6 +36,12 @@ type EventLog struct {
 	seq    int64
 	clocks map[string]map[string]int64 // per-service vector clocks
 
+	// Secondary indexes for O(log N) event lookups (RFC-041 §8.5).
+	// byType and byService map to slices of indices into events[].
+	// Built incrementally in Emit; reset in Reset.
+	byType    map[string][]int
+	byService map[string][]int
+
 	// Subscribers notified on each Emit.
 	subMu       sync.RWMutex
 	subscribers []Subscriber
@@ -45,7 +51,9 @@ type EventLog struct {
 // NewEventLog creates a new empty event log.
 func NewEventLog() *EventLog {
 	return &EventLog{
-		clocks: make(map[string]map[string]int64),
+		clocks:    make(map[string]map[string]int64),
+		byType:    make(map[string][]int),
+		byService: make(map[string][]int),
 	}
 }
 
@@ -94,7 +102,14 @@ func (l *EventLog) Emit(typ, service string, fields map[string]string) {
 		Fields:       fields,
 		VectorClock:  vc,
 	}
+	idx := len(l.events)
 	l.events = append(l.events, ev)
+	if ev.Type != "" {
+		l.byType[ev.Type] = append(l.byType[ev.Type], idx)
+	}
+	if ev.Service != "" {
+		l.byService[ev.Service] = append(l.byService[ev.Service], idx)
+	}
 
 	// Notify subscribers (under a separate lock to avoid deadlock).
 	// Copy subscriber list under read lock, then call outside the event lock.
@@ -191,6 +206,83 @@ func (l *EventLog) Reset() {
 	l.events = nil
 	l.seq = 0
 	l.clocks = make(map[string]map[string]int64)
+	l.byType = make(map[string][]int)
+	l.byService = make(map[string][]int)
+}
+
+// EventsByType returns a snapshot of all events with the given type,
+// ordered by emission. Uses the secondary type index for efficiency.
+func (l *EventLog) EventsByType(typ string) []Event {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	idxs := l.byType[typ]
+	out := make([]Event, len(idxs))
+	for i, idx := range idxs {
+		out[i] = l.events[idx]
+	}
+	return out
+}
+
+// EventsByService returns a snapshot of all events from the given service.
+func (l *EventLog) EventsByService(svc string) []Event {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	idxs := l.byService[svc]
+	out := make([]Event, len(idxs))
+	for i, idx := range idxs {
+		out[i] = l.events[idx]
+	}
+	return out
+}
+
+// MatchingEvents returns all events matching the given matcher, in emission order.
+func (l *EventLog) MatchingEvents(m *MatcherVal) []Event {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	var out []Event
+	for _, ev := range l.events {
+		if m.Matches(ev) {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// LastMatching returns the most recently emitted event matching m, or zero.
+func (l *EventLog) LastMatching(m *MatcherVal) (Event, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for i := len(l.events) - 1; i >= 0; i-- {
+		if m.Matches(l.events[i]) {
+			return l.events[i], true
+		}
+	}
+	return Event{}, false
+}
+
+// FirstMatching returns the earliest emitted event matching m, or zero.
+func (l *EventLog) FirstMatching(m *MatcherVal) (Event, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, ev := range l.events {
+		if m.Matches(ev) {
+			return ev, true
+		}
+	}
+	return Event{}, false
+}
+
+// CountMatching returns the number of events matching m.
+func (l *EventLog) CountMatching(m *MatcherVal) int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	n := 0
+	for _, ev := range l.events {
+		if m.Matches(ev) {
+			n++
+		}
+	}
+	return n
 }
 
 // FormatShiViz renders the event log in ShiViz-compatible text format.

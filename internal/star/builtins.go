@@ -115,6 +115,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// level={"L0","L1"} and runtime={"default"}; L2..L5 and gvisor
 		// parse-but-error so future migration is non-breaking.
 		"determinism": starlark.NewBuiltin("determinism", rt.builtinDeterminism),
+		// Event matchers (RFC-041 §8.5). `match` is a namespace exposing
+		// match.event(...), match.any(...), match.all(...), match.never().
+		// Used by monitor(on=...), await_event(...), and await_stable(ignore=...).
+		"match": &matchNamespace{},
 	}
 }
 
