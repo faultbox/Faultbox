@@ -263,6 +263,13 @@ func strictViolationReason(ev *Event) string {
 // what the spec mediates. If a caller needs to suppress detection on denied
 // syscalls it can use nondeterministic_ok= on the affected service.
 func (rt *Runtime) detectUnmediated(svcName string, evt engine.SyscallEvent) {
+	// Fast path: skip syscalls that are never detection targets, avoiding
+	// lock acquisition for the common case (write, writev, etc.).
+	switch evt.Syscall {
+	case "clock_gettime", "gettimeofday", "getrandom", "connect":
+	default:
+		return
+	}
 	rt.mu.Lock()
 	level := rt.detLevel
 	rt.mu.Unlock()

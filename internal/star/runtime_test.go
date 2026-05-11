@@ -858,8 +858,9 @@ def test_api_connect():
 		t.Fatalf("postgres syscalls = %v, expected write+pwrite64", pgSyscalls)
 	}
 
-	// API should have connect from the fault, plus L1 detection adds
-	// clock_gettime and getrandom (RFC-040 §8.1; v0.13.0 default).
+	// API should have connect from the fault. Without an explicit determinism()
+	// call, L1 detection syscalls (clock_gettime, getrandom) must NOT be added
+	// — that would slow down service startup on specs that don't opt into detection.
 	apiSyscalls := rt.requiredSyscallsForService("api")
 	if apiSyscalls == nil {
 		t.Fatal("expected syscalls for api, got nil")
@@ -868,9 +869,12 @@ def test_api_connect():
 	for _, sc := range apiSyscalls {
 		apiSet[sc] = true
 	}
-	for _, want := range []string{"connect", "clock_gettime", "getrandom"} {
-		if !apiSet[want] {
-			t.Errorf("api syscalls = %v, expected to contain %q", apiSyscalls, want)
+	if !apiSet["connect"] {
+		t.Errorf("api syscalls = %v, expected connect", apiSyscalls)
+	}
+	for _, notwant := range []string{"clock_gettime", "getrandom", "gettimeofday"} {
+		if apiSet[notwant] {
+			t.Errorf("api syscalls = %v, must NOT contain %q without explicit determinism()", apiSyscalls, notwant)
 		}
 	}
 
@@ -878,6 +882,37 @@ def test_api_connect():
 	redisSyscalls := rt.requiredSyscallsForService("redis")
 	if redisSyscalls != nil {
 		t.Fatalf("redis syscalls = %v, expected nil (not faulted)", redisSyscalls)
+	}
+}
+
+func TestRequiredSyscallsDetectionExplicit(t *testing.T) {
+	// With determinism() in the spec, L1 detection syscalls are added to the
+	// filter for any faulted service.
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `
+determinism()
+
+svc = service("svc", "/tmp/mock-svc",
+    interface("main", "http", 8080),
+)
+
+def test_x():
+    def scenario():
+        pass
+    fault(svc, write=deny("EIO"), run=scenario)
+`)
+	if err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	svcSyscalls := rt.requiredSyscallsForService("svc")
+	svcSet := make(map[string]bool, len(svcSyscalls))
+	for _, sc := range svcSyscalls {
+		svcSet[sc] = true
+	}
+	for _, want := range []string{"write", "clock_gettime", "getrandom", "connect"} {
+		if !svcSet[want] {
+			t.Errorf("svc syscalls = %v, expected %q when determinism() is explicit", svcSyscalls, want)
+		}
 	}
 }
 

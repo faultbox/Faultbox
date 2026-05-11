@@ -12,6 +12,8 @@
 # unmediated_io[dns] event in the trace is what the golden locks
 # down.
 
+determinism()
+
 leaker = service("leaker", "/tmp/faultbox-leaker",
     interface("main", "http", 8091),
     healthcheck = http("localhost:8091/healthz"),

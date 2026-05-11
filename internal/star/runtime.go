@@ -2720,8 +2720,9 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 	// (RFC-040 §8.3), not the visibility.
 	rt.mu.Lock()
 	level := rt.detLevel
+	explicit := rt.detExplicit
 	rt.mu.Unlock()
-	if level == DeterminismL1 && len(found) > 0 {
+	if level == DeterminismL1 && explicit && len(found) > 0 {
 		found["clock_gettime"] = true
 		found["gettimeofday"] = true // rare fallback; VDSO normally intercepts it
 		found["getrandom"] = true

@@ -10,6 +10,8 @@
 # We tolerate "network-unmediated" at the service level so exit stays
 # 0; the unmediated_io event in the trace is what the golden locks down.
 
+determinism()
+
 leaker = service("leaker", "/tmp/faultbox-leaker",
     interface("main", "http", 8092),
     healthcheck = http("localhost:8092/healthz"),

@@ -13,6 +13,8 @@
 # correctly — clock_gettime is intercepted, classified, and emitted with
 # the right category.
 
+determinism()
+
 leaker = service("leaker", "/tmp/faultbox-leaker",
     interface("main", "http", 8090),
     healthcheck = http("localhost:8090/healthz"),

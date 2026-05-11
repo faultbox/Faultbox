@@ -5,6 +5,8 @@
 # service level so exit stays 0; the unmediated_io[rand] event in
 # the trace is what the golden locks down.
 
+determinism()
+
 leaker = service("leaker", "/tmp/faultbox-leaker",
     interface("main", "http", 8094),
     healthcheck = http("localhost:8094/healthz"),
