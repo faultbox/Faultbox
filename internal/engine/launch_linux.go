@@ -162,7 +162,14 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	notifDone := make(chan error, 1)
 	if listenerFd >= 0 {
 		go func() {
-			notifDone <- s.notificationLoop(ctx, listenerFd, ruleMap, stopNotif)
+			err := s.notificationLoop(ctx, listenerFd, ruleMap, stopNotif)
+			if err != nil && !isClosedFdErr(err) {
+				s.log.Error("notification loop exited unexpectedly",
+					slog.String("error", err.Error()),
+					slog.Int("listener_fd", listenerFd),
+				)
+			}
+			notifDone <- err
 		}()
 	} else {
 		close(notifDone)
