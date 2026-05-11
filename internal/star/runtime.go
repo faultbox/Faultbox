@@ -237,6 +237,12 @@ type Runtime struct {
 	temporalMu           sync.Mutex
 	temporalExpectations []ExpectationVal
 
+	// specMonitors are monitor() declarations made at spec top level
+	// (RFC-041 §5.4). They auto-register for every test via RunTest.
+	// In-test monitor() calls and fault_scenario(monitors=) lists
+	// register on their own; they do not feed this slice.
+	specMonitors []*MonitorDef
+
 	// inTest is true when RunTest is executing a test function.
 	// Used by monitor() to auto-register when called inside a test.
 	inTest bool
@@ -363,6 +369,12 @@ func (rt *Runtime) LoadFile(path string) error {
 		rt.loadedSpecs[absPath] = append([]byte(nil), src...)
 	}
 
+	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
+	// violations surface as load errors instead of mid-test panics.
+	if err := validateMonitorLambdasInSource(path, string(src)); err != nil {
+		return fmt.Errorf("load %s: %w", path, err)
+	}
+
 	thread := &starlark.Thread{Name: "load"}
 	thread.Load = rt.makeLoadFunc()
 
@@ -377,6 +389,11 @@ func (rt *Runtime) LoadFile(path string) error {
 
 // LoadString executes Starlark source from a string (for testing).
 func (rt *Runtime) LoadString(name, src string) error {
+	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
+	// violations surface as load errors instead of mid-test panics.
+	if err := validateMonitorLambdasInSource(name, src); err != nil {
+		return fmt.Errorf("load: %w", err)
+	}
 	thread := &starlark.Thread{Name: "load"}
 	thread.Load = rt.makeLoadFunc()
 	rt.sourceText = src
@@ -829,6 +846,22 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			Events:     rt.events.Events(),
 		}
 	}
+
+	// RFC-041 §5.4 — register spec-wide monitors for the duration of
+	// this test. Each gets its own freshly-initialized per-test state
+	// (RegisterMonitor handles the StateInit copy). IDs are tracked so
+	// the registrations can be torn down deterministically before
+	// stopServices to avoid stray event-log dispatches against a
+	// half-freed runtime.
+	var specMonitorIDs []int
+	for _, m := range rt.specMonitors {
+		specMonitorIDs = append(specMonitorIDs, rt.RegisterMonitor(m))
+	}
+	defer func() {
+		for _, id := range specMonitorIDs {
+			rt.UnregisterMonitor(id)
+		}
+	}()
 
 	// Run the test function.
 	thread := &starlark.Thread{
@@ -2504,33 +2537,80 @@ func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callab
 	})
 }
 
-// RegisterMonitor subscribes a MonitorDef to the event log.
-// Returns the subscription ID for later unregistration.
+// RegisterMonitor subscribes a MonitorDef to the event log for the
+// lifetime of one test (or fault scenario). Returns the subscription
+// ID; UnregisterMonitor tears it down.
+//
+// Per RFC-041 §5.4 the monitor maintains per-registration state:
+//
+//	state ← m.StateInit          (fresh per registration)
+//	for each event satisfying m.On:
+//	    new_state ← m.Update(event, state)        (Update is optional)
+//	    verdict   ← m.Check(event, new_state)     (Check is optional)
+//	    if !verdict: record monitor violation
+//	    state ← new_state
+//
+// Update/Check run in a dedicated starlark.Thread named "monitor:<N>"
+// (see monitor_sandbox.go) so monitor work is attributable in stack
+// traces. The On matcher pre-filters events at the Go layer so
+// uninteresting events skip the Starlark machinery entirely (RFC-041
+// performance note in §5.4).
 func (rt *Runtime) RegisterMonitor(m *MonitorDef) int {
-	// Convert EventFilter to eventFilter for the event log.
-	filters := make([]eventFilter, len(m.Filters))
-	for i, f := range m.Filters {
-		filters[i] = eventFilter{key: f.Key, value: f.Value}
+	if m == nil {
+		return 0
 	}
+	state := m.StateInit
+	if state == nil {
+		state = starlark.None
+	}
+	// Each registration carries its own state cell to keep concurrent
+	// scenarios isolated. A sync.Mutex guards the cell because the
+	// event-log subscriber is invoked under the EventLog write lock,
+	// but the runtime may register/unregister monitors concurrently
+	// (fault_matrix interleaves rows).
+	var stateMu sync.Mutex
 
-	callback := m.Callback
-	return rt.events.Subscribe(filters, func(ev Event) error {
-		d := starlark.NewDict(6)
-		d.SetKey(starlark.String("seq"), starlark.MakeInt64(ev.Seq))
-		d.SetKey(starlark.String("type"), starlark.String(ev.Type))
-		d.SetKey(starlark.String("service"), starlark.String(ev.Service))
-		for k, v := range ev.Fields {
-			d.SetKey(starlark.String(k), starlark.String(v))
+	return rt.events.Subscribe(nil, func(ev Event) error {
+		// Pre-filter via the matcher before doing any Starlark work.
+		if m.On != nil && !m.On.Matches(ev) {
+			return nil
+		}
+		stateMu.Lock()
+		defer stateMu.Unlock()
+
+		evVal := newEventVal(ev, rt.events)
+		thread := newSandboxThread(m.Name)
+
+		// Update step — optional. Default behavior is "state unchanged".
+		newState := state
+		if m.Update != nil {
+			res, err := starlark.Call(thread, m.Update, starlark.Tuple{evVal, state}, nil)
+			if err != nil {
+				rt.recordMonitorError(fmt.Errorf("monitor %q update raised: %w", m.Name, err))
+				return err
+			}
+			newState = res
 		}
 
-		t := &starlark.Thread{Name: "monitor"}
-		_, err := starlark.Call(t, callback, starlark.Tuple{d}, nil)
-		if err != nil {
-			rt.monitorMu.Lock()
-			rt.monitorErrors = append(rt.monitorErrors, err)
-			rt.monitorMu.Unlock()
-			return err
+		// Check step — optional. Default behavior is "always passes".
+		if m.Check != nil {
+			verdict, err := starlark.Call(thread, m.Check, starlark.Tuple{evVal, newState}, nil)
+			if err != nil {
+				rt.recordMonitorError(fmt.Errorf("monitor %q check raised: %w", m.Name, err))
+				return err
+			}
+			if verdict.Truth() != starlark.True {
+				violation := fmt.Errorf(
+					"monitor %q violated at event seq=%d type=%q service=%q",
+					m.Name, ev.Seq, ev.Type, ev.Service,
+				)
+				rt.recordMonitorError(violation)
+				return violation
+			}
 		}
+
+		// Commit the new state for the next event.
+		state = newState
 		return nil
 	})
 }
@@ -2538,6 +2618,35 @@ func (rt *Runtime) RegisterMonitor(m *MonitorDef) int {
 // UnregisterMonitor removes a monitor subscription by ID.
 func (rt *Runtime) UnregisterMonitor(id int) {
 	rt.events.Unsubscribe(id)
+}
+
+// recordMonitorError appends an error to the per-test monitor-error
+// list under rt.monitorMu. Used by RegisterMonitor on every failure
+// path so that RunTest can surface the first violation as a test
+// FAIL after the body returns.
+func (rt *Runtime) recordMonitorError(err error) {
+	rt.monitorMu.Lock()
+	defer rt.monitorMu.Unlock()
+	rt.monitorErrors = append(rt.monitorErrors, err)
+}
+
+// claimMonitor removes m from rt.specMonitors so that it will not
+// auto-register at the next RunTest. Used by the fault scenario
+// builtins (fault_assumption, fault_scenario, fault_matrix) when they
+// consume a monitor via their monitors= kwarg — those monitors are
+// scenario-scoped, not spec-wide, and registering them in both places
+// would double-fire every matching event.
+//
+// Idempotent: removing a monitor that was never in specMonitors is a
+// no-op so users can pass a monitor to multiple scenarios without
+// triggering a "not found" error.
+func (rt *Runtime) claimMonitor(m *MonitorDef) {
+	for i, sm := range rt.specMonitors {
+		if sm == m {
+			rt.specMonitors = append(rt.specMonitors[:i], rt.specMonitors[i+1:]...)
+			return
+		}
+	}
 }
 
 // expandSyscallFamily maps a user-facing fault keyword to all underlying syscalls.

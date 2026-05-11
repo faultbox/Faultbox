@@ -1378,6 +1378,7 @@ func (rt *Runtime) builtinFaultAssumption(thread *starlark.Thread, fn *starlark.
 				if !ok {
 					return nil, fmt.Errorf("fault_assumption() monitors[%d] must be a monitor, got %s", i, list.Index(i).Type())
 				}
+				rt.claimMonitor(m) // scenario-scoped: don't double-register spec-wide
 				monitors = append(monitors, m)
 			}
 		case "faults":
@@ -1573,6 +1574,7 @@ func (rt *Runtime) builtinFaultScenario(thread *starlark.Thread, fn *starlark.Bu
 				if !ok {
 					return nil, fmt.Errorf("fault_scenario() monitors[%d] must be a monitor, got %s", i, list.Index(i).Type())
 				}
+				rt.claimMonitor(m) // scenario-scoped: don't double-register spec-wide
 				fs.Monitors = append(fs.Monitors, m)
 			}
 		case "timeout":
@@ -1663,6 +1665,7 @@ func (rt *Runtime) builtinFaultMatrix(thread *starlark.Thread, fn *starlark.Buil
 				if !ok {
 					return nil, fmt.Errorf("fault_matrix() monitors[%d] must be a monitor, got %s", i, list.Index(i).Type())
 				}
+				rt.claimMonitor(m) // scenario-scoped: don't double-register spec-wide
 				monitors = append(monitors, m)
 			}
 		case "exclude":
@@ -1961,36 +1964,58 @@ func (rt *Runtime) collectParallelResults(results []parallelResult) (starlark.Va
 	return starlark.NewList(resultList), nil
 }
 
-// monitor(callback, service=, syscall=, path=, decision=)
-// Creates a MonitorDef — a first-class monitor value.
-// When called inside a running test (inTest=true), also auto-registers
-// the monitor on the event log for backward compatibility.
-// The callback receives an event dict. If the callback raises an error,
-// the test fails with "monitor violation".
+// monitor(name, on=, state_init=, update=, check=) — RFC-041 §5.4.
+//
+// Creates a MonitorDef carrying the matcher and the state-machine
+// callbacks. Required: name (positional string) and on= (a MatcherVal
+// from match.event/any/all). Optional: state_init (any Starlark value,
+// default None), update (lambda event, state → new_state, default
+// identity), check (lambda event, state → bool, default always true).
+//
+// Scoping (RFC-041 §5.4 + open-question 3):
+//   - Called at spec top level → appended to rt.specMonitors, auto-
+//     registered for every test that runs under this spec.
+//   - Called inside a running test or fault scenario → registered
+//     immediately for the active test only (legacy scoped behavior).
+//
+// Lambda safety is enforced statically at spec load via
+// validateMonitorLambdasInSource (RFC-041 §8.7); update/check that
+// reference forbidden Faultbox builtins (fault, service, etc.) fail
+// LoadString/LoadFile before any test runs.
 func (rt *Runtime) builtinMonitor(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if len(args) < 1 {
-		return nil, fmt.Errorf("monitor() requires a callback")
+	var name string
+	var onArg starlark.Value
+	var stateInit starlark.Value = starlark.None
+	var update, check starlark.Callable
+	if err := starlark.UnpackArgs("monitor", args, kwargs,
+		"name", &name,
+		"on", &onArg,
+		"state_init?", &stateInit,
+		"update?", &update,
+		"check?", &check,
+	); err != nil {
+		return nil, err
 	}
-	callback, ok := args[0].(starlark.Callable)
-	if !ok {
-		return nil, fmt.Errorf("monitor() first argument must be callable, got %s", args[0].Type())
+	on, err := matcherOrPredFromArg(onArg)
+	if err != nil {
+		return nil, fmt.Errorf("monitor(%q) on=: %w", name, err)
 	}
-
-	// Remaining kwargs are event filters.
-	var filters []EventFilter
-	for _, kv := range kwargs {
-		key, _ := starlark.AsString(kv[0])
-		val, _ := starlark.AsString(kv[1])
-		filters = append(filters, EventFilter{Key: key, Value: val})
+	m := &MonitorDef{
+		Name:      name,
+		On:        on,
+		StateInit: stateInit,
+		Update:    update,
+		Check:     check,
 	}
-
-	m := &MonitorDef{Callback: callback, Filters: filters}
-
-	// Auto-register when called inside a running test (backward compat).
+	// Spec-load registration (auto-registers for every test) vs.
+	// in-test registration (scoped to the running test). Scoped
+	// scenario use (fault_scenario monitors=) does its own registration
+	// at scenario start; that path doesn't touch this branch.
 	if rt.inTest {
 		rt.RegisterMonitor(m)
+	} else {
+		rt.specMonitors = append(rt.specMonitors, m)
 	}
-
 	return m, nil
 }
 
