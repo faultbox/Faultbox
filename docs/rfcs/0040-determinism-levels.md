@@ -1,6 +1,6 @@
 # RFC-040: Determinism Levels
 
-> **Status: Draft.** Foundational RFC for the v0.13.0 epic. Defines the determinism vocabulary that RFC-041 (Temporal Properties) and RFC-042 (Exploration Plan) build on. Implementation scope for v0.13.0 is limited to Section 8 — *L1 tightening*. The post-L1 roadmap (gVisor Path B/C, L4 Hermetic, L5 instruction-boundary research) is split out to **[RFC-046](0046-beyond-l1-roadmap.md)**; per-level author manifests live in **[docs/determinism.md](../determinism.md)**.
+> **Status: Implemented (v0.13.0).** Foundational RFC for the v0.13.0 epic. Defines the determinism vocabulary that RFC-041 (Temporal Properties) and RFC-042 (Exploration Plan) build on. Implementation scope for v0.13.0 is limited to Section 8 — *L1 tightening*. The post-L1 roadmap (gVisor Path B/C, L4 Hermetic, L5 instruction-boundary research) is split out to **[RFC-046](0046-beyond-l1-roadmap.md)**; per-level author manifests live in **[docs/determinism.md](../determinism.md)**.
 
 ## Summary
 
