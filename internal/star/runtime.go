@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.starlark.net/starlark"
@@ -135,6 +136,11 @@ type SuiteResult struct {
 	Tests      []TestResult `json:"tests"`
 	Pass       int          `json:"pass"`
 	Fail       int          `json:"fail"`
+	// Inconclusive counts tests that timed out with pending temporal
+	// assertions (RFC-041 §5.5(c)). Distinct from Fail so CI can choose
+	// to gate on either or both (CLI exit code 3 reflects Inconclusive
+	// > 0 when Fail == 0; exit code 2 is reserved for Fail > 0).
+	Inconclusive int `json:"inconclusive,omitempty"`
 
 	// Crash, if non-nil, indicates the suite was terminated by a Go
 	// runtime panic — typically inside RunTest. The bundle emitted on
@@ -231,9 +237,37 @@ type Runtime struct {
 	monitorMu     sync.Mutex
 	monitorErrors []error
 
+	// Temporal expectations registered by eventually()/always() during the
+	// current test. Reset at the top of RunTest; iterated by the test
+	// runner's Termination logic (PR 6) for the §5.5 verdict table.
+	temporalMu           sync.Mutex
+	temporalExpectations []ExpectationVal
+
+	// specMonitors are monitor() declarations made at spec top level
+	// (RFC-041 §5.4). They auto-register for every test via RunTest.
+	// In-test monitor() calls and fault_scenario(monitors=) lists
+	// register on their own; they do not feed this slice.
+	specMonitors []*MonitorDef
+
+	// testConfigs maps the full test name ("test_<name>") to its
+	// declarative config from a test() builtin call (RFC-041 §8.6).
+	// Legacy def test_*() functions have no entry here and run under
+	// the existing synchronous-body path.
+	testConfigs map[string]*TestConfig
+
+	// testCtx is the active per-test context. Set at the top of
+	// RunTest, cleared on exit. Body-blocking primitives
+	// (await_stable, await_event in PR 5) read it via testContext()
+	// to honor test cancellation; PR 6 will bind a per-test timeout
+	// derived from test(timeout=) here.
+	testCtxMu sync.Mutex
+	testCtx   context.Context
+
 	// inTest is true when RunTest is executing a test function.
 	// Used by monitor() to auto-register when called inside a test.
-	inTest bool
+	// atomic because a leaked body goroutine (waitBodyExit deadline)
+	// may still read it after RunTest's main goroutine clears the flag.
+	inTest atomic.Bool
 
 	// currentFaultScenario is set by makeFaultScenarioRunner during execution
 	// so RunTest can copy MatrixInfo to the TestResult.
@@ -307,6 +341,7 @@ func New(logger *slog.Logger) *Runtime {
 		sessions:          make(map[string]*runningSession),
 		faults:            make(map[string]map[string]*FaultDef),
 		proxyPlaceholders: make(map[string]proxyPlaceholderRef),
+		testConfigs:       make(map[string]*TestConfig),
 		ServiceStdout:     os.Stdout,
 		// RFC-040 defaults: L1 / runtime=default / strict=True. A spec can
 		// override by calling determinism(...) once at the top of the file.
@@ -357,6 +392,12 @@ func (rt *Runtime) LoadFile(path string) error {
 		rt.loadedSpecs[absPath] = append([]byte(nil), src...)
 	}
 
+	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
+	// violations surface as load errors instead of mid-test panics.
+	if err := validateMonitorLambdasInSource(path, string(src)); err != nil {
+		return fmt.Errorf("load %s: %w", path, err)
+	}
+
 	thread := &starlark.Thread{Name: "load"}
 	thread.Load = rt.makeLoadFunc()
 
@@ -371,6 +412,11 @@ func (rt *Runtime) LoadFile(path string) error {
 
 // LoadString executes Starlark source from a string (for testing).
 func (rt *Runtime) LoadString(name, src string) error {
+	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
+	// violations surface as load errors instead of mid-test panics.
+	if err := validateMonitorLambdasInSource(name, src); err != nil {
+		return fmt.Errorf("load: %w", err)
+	}
 	thread := &starlark.Thread{Name: "load"}
 	thread.Load = rt.makeLoadFunc()
 	rt.sourceText = src
@@ -485,6 +531,17 @@ func (rt *Runtime) DiscoverTests() []string {
 			seen[testName] = true
 			// Register a wrapper callable in globals so RunTest can find it.
 			rt.globals[testName] = rt.makeFaultScenarioRunner(fs)
+		}
+	}
+	// RFC-041 §8.6 — surface test()-declared tests. Their body callable
+	// is registered into rt.globals here (couldn't happen at spec-load
+	// time because rt.globals is nil during ExecFile). RunTest reads
+	// rt.testConfigs to apply per-test timeout / expect / etc.
+	for fullName, cfg := range rt.testConfigs {
+		if !seen[fullName] {
+			names = append(names, fullName)
+			seen[fullName] = true
+			rt.globals[fullName] = cfg.Body
 		}
 	}
 	sort.Strings(names)
@@ -693,12 +750,19 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 				)
 			}
 
-			if tr.Result == "pass" {
+			switch tr.Result {
+			case "pass":
 				suite.Pass++
 				if !cfg.FailOnly {
 					suite.Tests = append(suite.Tests, tr)
 				}
-			} else {
+			case "inconclusive":
+				// RFC-041 §5.5(c). Tracked separately from Fail so CI
+				// can choose to gate on either or both; CLI exit code
+				// 3 (in main.go) reflects Inconclusive > 0 when Fail == 0.
+				suite.Inconclusive++
+				suite.Tests = append(suite.Tests, tr)
+			default: // "fail", "error", anything else non-pass
 				suite.Fail++
 				suite.Tests = append(suite.Tests, tr)
 				// In multi-run mode, stop this test on first failure.
@@ -791,6 +855,9 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	rt.monitorMu.Lock()
 	rt.monitorErrors = nil
 	rt.monitorMu.Unlock()
+	// RFC-041 §5.1, §5.2 — clear any temporal expectations from the
+	// previous test so eventually()/always() registrations are per-test.
+	rt.resetExpectations()
 
 	// Reset expectation metadata — makeFaultScenarioRunner may re-populate
 	// these for fault_scenario/fault_matrix tests. Plain user tests leave
@@ -811,6 +878,11 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	testCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
+	// Expose testCtx to body-blocking primitives (await_stable,
+	// await_event). PR 6 will refine the per-test timeout binding.
+	rt.setTestContext(testCtx)
+	defer rt.setTestContext(nil)
+
 	if err := rt.startServices(testCtx); err != nil {
 		rt.stopServices()
 		return TestResult{
@@ -821,16 +893,211 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		}
 	}
 
-	// Run the test function.
+	// RFC-041 §5.4 — register spec-wide monitors for the duration of
+	// this test. Each gets its own freshly-initialized per-test state
+	// (RegisterMonitor handles the StateInit copy). IDs are tracked so
+	// the registrations can be torn down deterministically before
+	// stopServices to avoid stray event-log dispatches against a
+	// half-freed runtime.
+	var specMonitorIDs []int
+	for _, m := range rt.specMonitors {
+		specMonitorIDs = append(specMonitorIDs, rt.RegisterMonitor(m))
+	}
+	defer func() {
+		for _, id := range specMonitorIDs {
+			rt.UnregisterMonitor(id)
+		}
+	}()
+
+	// RFC-041 §8.6 — per-test config from test() builtin. Legacy
+	// def test_*() functions have no config; their lifecycle is the
+	// classical synchronous body call with no per-test timeout and no
+	// terminate_when.
+	testCfg := rt.testConfigs[name]
+
+	// RFC-041 §8.6 — derive the per-test wall-clock budget. A test()
+	// declaration with explicit timeout= wins; otherwise use the
+	// default 30 s. Legacy tests get no per-test timeout (the
+	// 3-minute infrastructure ctx from above is the only ceiling), so
+	// existing specs continue to behave as before.
+	bodyCtx := testCtx
+	if testCfg != nil {
+		d := testCfg.Timeout
+		if d <= 0 {
+			d = 30 * time.Second
+		}
+		var bodyCancel context.CancelFunc
+		bodyCtx, bodyCancel = context.WithTimeout(testCtx, d)
+		defer bodyCancel()
+		rt.setTestContext(bodyCtx)
+		// Pre-register the expect= expectation alongside body-declared
+		// expectations so the §5.5 Finalize pass sees it.
+		if testCfg.Expect != nil {
+			rt.registerExpectation(testCfg.Expect)
+		}
+	}
+
+	// Run the body's setup callable (RFC-041 §8.6) if declared. Setup
+	// runs synchronously before the body; a setup error short-circuits
+	// to TerminationImmediateFail.
+	if testCfg != nil && testCfg.Setup != nil {
+		setupThread := &starlark.Thread{Name: name + "/setup"}
+		if _, err := starlark.Call(setupThread, testCfg.Setup, nil, nil); err != nil {
+			rt.stopServices()
+			return TestResult{
+				Name: name, Result: "fail",
+				Reason:     fmt.Sprintf("setup: %v", err),
+				DurationMs: time.Since(start).Milliseconds(),
+				Events:     rt.events.Events(),
+			}
+		}
+	}
+
+	// RFC-041 §5.2 — install a per-event always() watcher so a violated
+	// always() invariant fails the test the moment it breaks instead of
+	// at body return. The watcher cancels bodyCtx via the shared
+	// bodyCancel and closes alwaysFired so the select arm in RunTest
+	// can classify the cause as TerminationImmediateFail. The violation
+	// message is surfaced through the Finalize path: AlwaysExpectation
+	// keeps its own violated/violationMsg state, so Finalize re-runs
+	// Evaluate, sees the cached failure, and returns Fail with the same
+	// message — no need to thread the message through RunTest itself.
+	bodyCtx, bodyCancel := context.WithCancel(bodyCtx)
+	defer bodyCancel()
+	rt.setTestContext(bodyCtx)
+
+	alwaysFired := make(chan struct{})
+	var alwaysOnce sync.Once
+	alwaysSubID := rt.events.Subscribe(nil, func(Event) error {
+		// snapshot under lock; expectations are added during body execution
+		for _, exp := range rt.snapshotExpectations() {
+			a, ok := exp.(*AlwaysExpectation)
+			if !ok {
+				continue
+			}
+			// Fresh starlark.Thread per invocation — Emit may dispatch
+			// subscribers concurrently from multiple goroutines, and
+			// starlark.Thread is not goroutine-safe (review note N1).
+			thread := newSandboxThread("always_watch:" + a.Name())
+			v, _, _ := a.Evaluate(thread, rt.events)
+			if v == VerdictFail {
+				alwaysOnce.Do(func() {
+					close(alwaysFired)
+					bodyCancel()
+				})
+				return nil
+			}
+		}
+		return nil
+	})
+	defer rt.events.Unsubscribe(alwaysSubID)
+
+	// Watch terminate_when (RFC-041 §5.5(b)) on the event log. A
+	// fresh subscriber re-evaluates the expectation after every event;
+	// when it returns Pass, cancel bodyCtx so the body's await_*
+	// primitives unblock with context.Canceled and exit cleanly.
+	twFired := make(chan struct{})
+	var twSubID int
+	var twOnce sync.Once
+	if testCfg != nil && testCfg.TerminateWhen != nil {
+		twSubID = rt.events.Subscribe(nil, func(Event) error {
+			// Fresh starlark.Thread per call (review note N1).
+			twThread := &starlark.Thread{Name: name + "/terminate_when"}
+			v, _, _ := testCfg.TerminateWhen.Evaluate(twThread, rt.events)
+			if v == VerdictPass {
+				twOnce.Do(func() {
+					close(twFired)
+					bodyCancel()
+				})
+			}
+			return nil
+		})
+		defer rt.events.Unsubscribe(twSubID)
+	}
+
+	// Run the test function. For legacy tests this is a synchronous
+	// call. For test()-declared tests we wrap it in a goroutine so the
+	// timeout (and terminate_when) can interrupt blocking primitives.
 	thread := &starlark.Thread{
 		Name: name,
 		Print: func(_ *starlark.Thread, msg string) {
 			fmt.Fprintln(os.Stderr, msg)
 		},
 	}
-	rt.inTest = true
-	retVal, err := starlark.Call(thread, fn, nil, nil)
-	rt.inTest = false
+	rt.inTest.Store(true)
+
+	// RFC-041 §5.2 — signal the "body_start" lifecycle anchor to any
+	// always() expectations registered before body entry (e.g. via
+	// test(expect=...)). Body-registered expectations don't need this
+	// since they couldn't have observed events before their creation.
+	rt.signalLifecycleAnchor("body_start")
+
+	bodyDone := make(chan bodyOutcomeT, 1)
+	go func() {
+		// Convert a Go-level panic inside the body into a structured
+		// error result. Without this defer the panic propagates out of
+		// the goroutine and crashes the whole process — runTestSafely's
+		// recover only covers the calling goroutine. Issue #76 (panic
+		// → "errored" TestResult) regression-tested by
+		// TestRunTestSafelyConvertsPanicToErrorResult.
+		defer func() {
+			if r := recover(); r != nil {
+				bodyDone <- bodyOutcomeT{
+					err:      fmt.Errorf("panic: %v\n\n%s", r, debug.Stack()),
+					panicVal: fmt.Sprintf("panic: %v\n\n%s", r, debug.Stack()),
+				}
+			}
+		}()
+		v, e := starlark.Call(thread, fn, nil, nil)
+		bodyDone <- bodyOutcomeT{retVal: v, err: e}
+	}()
+
+	cause := TerminationNatural
+	var bo bodyOutcomeT
+	select {
+	case bo = <-bodyDone:
+		// Body completed under its own power. cause stays Natural
+		// unless the body raised; that's classified after we examine
+		// the error below.
+	case <-alwaysFired:
+		// always() invariant violated mid-run. RFC-041 §5.2 — fail
+		// immediately, rolling pending eventually's into the verdict.
+		cause = TerminationImmediateFail
+		bo = waitBodyExit(bodyDone, 2*time.Second)
+	case <-twFired:
+		// terminate_when fired. Wait briefly for the body to exit,
+		// then take whatever it had. bodyCtx is already cancelled so
+		// any await_* should unblock immediately.
+		cause = TerminationTerminateWhen
+		bo = waitBodyExit(bodyDone, 2*time.Second)
+	case <-bodyCtx.Done():
+		// Cancellation fired before the body returned. Could be wall-
+		// clock timeout, an always violation we cancelled below (the
+		// alwaysFired arm above), or parent context cancellation.
+		// Drain the always/tw signals to disambiguate.
+		cause = TerminationTimeout
+		select {
+		case <-alwaysFired:
+			cause = TerminationImmediateFail
+		case <-twFired:
+			cause = TerminationTerminateWhen
+		default:
+		}
+		bo = waitBodyExit(bodyDone, 2*time.Second)
+	}
+	rt.inTest.Store(false)
+
+	// RFC-041 §5.2 — close any always() windows anchored to body exit.
+	rt.signalLifecycleAnchor("body_end")
+
+	retVal := bo.retVal
+	err := bo.err
+	if err != nil && cause == TerminationNatural {
+		// Body raised — promote to immediate-fail cause so Finalize
+		// rolls pending eventually's into the failure rather than
+		// trying to evaluate them against an unstable trace.
+		cause = TerminationImmediateFail
+	}
 
 	// Capture matrix info before clearing (set by makeFaultScenarioRunner).
 	var matrixInfo *MatrixInfo
@@ -852,10 +1119,25 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 
 	events := rt.events.Events()
 
-	if err != nil {
+	// Body errors caused by the per-test cancellation we triggered
+	// (await_* returning context.DeadlineExceeded under the cancelled
+	// bodyCtx) are NOT real body failures — they are the body cooperating
+	// with our timeout / terminate_when. The §5.5 verdict for those
+	// causes is determined by the Finalize phase below (INCONCLUSIVE for
+	// timeout, FAIL for terminate_when with pending eventually). Skip
+	// the "err → FAIL" return when cause already reflects a cancellation.
+	if err != nil && cause != TerminationTimeout && cause != TerminationTerminateWhen {
+		// Distinguish a Go-level panic in the body from a Starlark
+		// error so RunAll's Crash detection (Result=="error") fires.
+		resultKind := "fail"
+		reason := err.Error()
+		if bo.panicVal != "" {
+			resultKind = "error"
+			reason = bo.panicVal
+		}
 		return TestResult{
-			Name: name, Result: "fail",
-			Reason:              err.Error(),
+			Name: name, Result: resultKind,
+			Reason:              reason,
 			DurationMs:          time.Since(start).Milliseconds(),
 			Events:              events,
 			Matrix:              matrixInfo,
@@ -904,6 +1186,68 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 				ExpectationName:            expectName,
 				StrictDeterminismViolation: true,
 			}
+		}
+	}
+
+	// RFC-041 §5.5 — Finalize the temporal-expectation phase. Each
+	// registered eventually()/always() value gets one last evaluation
+	// pass with the Termination cause; the verdict mapping per the
+	// §5.5 table is implemented by each ExpectationVal's Finalize.
+	//
+	// Result mapping at the suite level:
+	//   any Fail              → test FAIL
+	//   no Fail, any Pending  → INCONCLUSIVE under timeout cause,
+	//                           FAIL under natural/terminate_when
+	//                           cause (eventually's contradiction case)
+	//   otherwise             → PASS
+	expectations := rt.snapshotExpectations()
+	if len(expectations) > 0 {
+		finThread := &starlark.Thread{Name: name + "/finalize"}
+		anyPending := false
+		for _, exp := range expectations {
+			v, msg := exp.Finalize(finThread, rt.events, cause)
+			switch v {
+			case VerdictFail:
+				return TestResult{
+					Name: name, Result: "fail",
+					Reason:          fmt.Sprintf("%s: %s", exp.Name(), msg),
+					DurationMs:      time.Since(start).Milliseconds(),
+					Events:          events,
+					Matrix:          matrixInfo,
+					ExpectationName: expectName,
+				}
+			case VerdictPending:
+				anyPending = true
+			}
+		}
+		if anyPending {
+			// Any pending verdict that reaches here is from
+			// TerminationTimeout (other causes resolved to Fail or
+			// Pass inside Finalize). Map to INCONCLUSIVE.
+			return TestResult{
+				Name: name, Result: "inconclusive",
+				Reason:          fmt.Sprintf("test timeout: temporal expectation(s) still pending after %s", time.Since(start).Round(time.Millisecond)),
+				DurationMs:      time.Since(start).Milliseconds(),
+				Events:          events,
+				Matrix:          matrixInfo,
+				ExpectationName: expectName,
+			}
+		}
+	}
+
+	// Timeout with no temporal expectations to gate on — INCONCLUSIVE
+	// rather than PASS, because we couldn't observe the body's verdict.
+	// (Legacy synchronous tests never reach this branch because their
+	// only timeout is the 3-minute infrastructure ctx, and they'd have
+	// returned via err != nil instead.)
+	if cause == TerminationTimeout {
+		return TestResult{
+			Name: name, Result: "inconclusive",
+			Reason:          fmt.Sprintf("test timeout: body did not complete within %s", time.Since(start).Round(time.Millisecond)),
+			DurationMs:      time.Since(start).Milliseconds(),
+			Events:          events,
+			Matrix:          matrixInfo,
+			ExpectationName: expectName,
 		}
 	}
 
@@ -2495,33 +2839,80 @@ func (rt *Runtime) makeFaultScenarioRunner(fs *FaultScenarioDef) starlark.Callab
 	})
 }
 
-// RegisterMonitor subscribes a MonitorDef to the event log.
-// Returns the subscription ID for later unregistration.
+// RegisterMonitor subscribes a MonitorDef to the event log for the
+// lifetime of one test (or fault scenario). Returns the subscription
+// ID; UnregisterMonitor tears it down.
+//
+// Per RFC-041 §5.4 the monitor maintains per-registration state:
+//
+//	state ← m.StateInit          (fresh per registration)
+//	for each event satisfying m.On:
+//	    new_state ← m.Update(event, state)        (Update is optional)
+//	    verdict   ← m.Check(event, new_state)     (Check is optional)
+//	    if !verdict: record monitor violation
+//	    state ← new_state
+//
+// Update/Check run in a dedicated starlark.Thread named "monitor:<N>"
+// (see monitor_sandbox.go) so monitor work is attributable in stack
+// traces. The On matcher pre-filters events at the Go layer so
+// uninteresting events skip the Starlark machinery entirely (RFC-041
+// performance note in §5.4).
 func (rt *Runtime) RegisterMonitor(m *MonitorDef) int {
-	// Convert EventFilter to eventFilter for the event log.
-	filters := make([]eventFilter, len(m.Filters))
-	for i, f := range m.Filters {
-		filters[i] = eventFilter{key: f.Key, value: f.Value}
+	if m == nil {
+		return 0
 	}
+	state := m.StateInit
+	if state == nil {
+		state = starlark.None
+	}
+	// Each registration carries its own state cell to keep concurrent
+	// scenarios isolated. A sync.Mutex guards the cell because the
+	// event-log subscriber is invoked under the EventLog write lock,
+	// but the runtime may register/unregister monitors concurrently
+	// (fault_matrix interleaves rows).
+	var stateMu sync.Mutex
 
-	callback := m.Callback
-	return rt.events.Subscribe(filters, func(ev Event) error {
-		d := starlark.NewDict(6)
-		d.SetKey(starlark.String("seq"), starlark.MakeInt64(ev.Seq))
-		d.SetKey(starlark.String("type"), starlark.String(ev.Type))
-		d.SetKey(starlark.String("service"), starlark.String(ev.Service))
-		for k, v := range ev.Fields {
-			d.SetKey(starlark.String(k), starlark.String(v))
+	return rt.events.Subscribe(nil, func(ev Event) error {
+		// Pre-filter via the matcher before doing any Starlark work.
+		if m.On != nil && !m.On.Matches(ev) {
+			return nil
+		}
+		stateMu.Lock()
+		defer stateMu.Unlock()
+
+		evVal := newEventVal(ev, rt.events)
+		thread := newSandboxThread(m.Name)
+
+		// Update step — optional. Default behavior is "state unchanged".
+		newState := state
+		if m.Update != nil {
+			res, err := starlark.Call(thread, m.Update, starlark.Tuple{evVal, state}, nil)
+			if err != nil {
+				rt.recordMonitorError(fmt.Errorf("monitor %q update raised: %w", m.Name, err))
+				return err
+			}
+			newState = res
 		}
 
-		t := &starlark.Thread{Name: "monitor"}
-		_, err := starlark.Call(t, callback, starlark.Tuple{d}, nil)
-		if err != nil {
-			rt.monitorMu.Lock()
-			rt.monitorErrors = append(rt.monitorErrors, err)
-			rt.monitorMu.Unlock()
-			return err
+		// Check step — optional. Default behavior is "always passes".
+		if m.Check != nil {
+			verdict, err := starlark.Call(thread, m.Check, starlark.Tuple{evVal, newState}, nil)
+			if err != nil {
+				rt.recordMonitorError(fmt.Errorf("monitor %q check raised: %w", m.Name, err))
+				return err
+			}
+			if verdict.Truth() != starlark.True {
+				violation := fmt.Errorf(
+					"monitor %q violated at event seq=%d type=%q service=%q",
+					m.Name, ev.Seq, ev.Type, ev.Service,
+				)
+				rt.recordMonitorError(violation)
+				return violation
+			}
 		}
+
+		// Commit the new state for the next event.
+		state = newState
 		return nil
 	})
 }
@@ -2529,6 +2920,56 @@ func (rt *Runtime) RegisterMonitor(m *MonitorDef) int {
 // UnregisterMonitor removes a monitor subscription by ID.
 func (rt *Runtime) UnregisterMonitor(id int) {
 	rt.events.Unsubscribe(id)
+}
+
+// recordMonitorError appends an error to the per-test monitor-error
+// list under rt.monitorMu. Used by RegisterMonitor on every failure
+// path so that RunTest can surface the first violation as a test
+// FAIL after the body returns.
+func (rt *Runtime) recordMonitorError(err error) {
+	rt.monitorMu.Lock()
+	defer rt.monitorMu.Unlock()
+	rt.monitorErrors = append(rt.monitorErrors, err)
+}
+
+// setTestContext records ctx as the active per-test context for body-
+// blocking primitives (await_stable, await_event) to honor cancellation.
+// Pass nil to clear on test exit.
+func (rt *Runtime) setTestContext(ctx context.Context) {
+	rt.testCtxMu.Lock()
+	defer rt.testCtxMu.Unlock()
+	rt.testCtx = ctx
+}
+
+// testContext returns the active per-test context, or context.Background
+// if no test is running. Body-blocking primitives use this to wait on
+// the test's cancellation signal (RFC-041 §5.3, §5.5 (c) timeout path).
+func (rt *Runtime) testContext() context.Context {
+	rt.testCtxMu.Lock()
+	defer rt.testCtxMu.Unlock()
+	if rt.testCtx == nil {
+		return context.Background()
+	}
+	return rt.testCtx
+}
+
+// claimMonitor removes m from rt.specMonitors so that it will not
+// auto-register at the next RunTest. Used by the fault scenario
+// builtins (fault_assumption, fault_scenario, fault_matrix) when they
+// consume a monitor via their monitors= kwarg — those monitors are
+// scenario-scoped, not spec-wide, and registering them in both places
+// would double-fire every matching event.
+//
+// Idempotent: removing a monitor that was never in specMonitors is a
+// no-op so users can pass a monitor to multiple scenarios without
+// triggering a "not found" error.
+func (rt *Runtime) claimMonitor(m *MonitorDef) {
+	for i, sm := range rt.specMonitors {
+		if sm == m {
+			rt.specMonitors = append(rt.specMonitors[:i], rt.specMonitors[i+1:]...)
+			return
+		}
+	}
 }
 
 // expandSyscallFamily maps a user-facing fault keyword to all underlying syscalls.

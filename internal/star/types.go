@@ -604,37 +604,54 @@ type MatrixInfo struct {
 // MonitorDef — first-class monitor value
 // ---------------------------------------------------------------------------
 
-// MonitorDef is a first-class Starlark value representing a monitor.
-// Created by monitor() builtin, can be stored in variables and passed
-// to fault_assumption(monitors=) and fault_scenario(monitors=).
+// MonitorDef is a first-class Starlark value representing a monitor
+// per RFC-041 §5.4. Created by monitor(name, on=, state_init=,
+// update=, check=); can be stored in variables and passed to
+// fault_assumption(monitors=) / fault_scenario(monitors=) for
+// scenario-scoped registration. Top-level monitor() calls auto-
+// register spec-wide via rt.specMonitors.
+//
+// The two callbacks compose as a small state machine:
+//
+//	state ← StateInit               (fresh per test)
+//	for each event matching On:
+//	    new_state ← Update(event, state)
+//	    verdict   ← Check(event, new_state)
+//	    if !verdict: test FAILs with the violating event cited
+//	    state ← new_state
+//
+// Update and Check run in a restricted Starlark thread tagged
+// "monitor:<Name>" (see monitor_sandbox.go); spec-load validation
+// rejects update/check lambdas that reference disallowed builtins.
 type MonitorDef struct {
-	Callback starlark.Callable
-	Filters  []EventFilter
+	Name      string
+	On        *MatcherVal       // mandatory matcher (validated at spec load)
+	StateInit starlark.Value    // optional; default starlark.None
+	Update    starlark.Callable // optional; default identity (state → state)
+	Check     starlark.Callable // optional; default always-true
 }
 
-// EventFilter is a key-value pair for filtering events.
-// Exported so MonitorDef can reference it from types.go.
+// EventFilter is a legacy filter shape preserved as a small key/value
+// representation for any internal caller that still uses string-keyed
+// filtering. RFC-041 monitor matching goes through MatcherVal; this
+// type stays to avoid cascading edits in unrelated code paths.
 type EventFilter struct {
-	Key   string // "service", "syscall", "path", "decision", "type"
-	Value string // value to match (supports trailing * for glob)
+	Key   string
+	Value string
 }
 
 var _ starlark.Value = (*MonitorDef)(nil)
 
 func (m *MonitorDef) String() string {
-	var parts []string
-	for _, f := range m.Filters {
-		parts = append(parts, f.Key+"="+f.Value)
+	if m.Name != "" {
+		return fmt.Sprintf("<monitor %s>", m.Name)
 	}
-	if len(parts) == 0 {
-		return fmt.Sprintf("<monitor %s>", m.Callback.Name())
-	}
-	return fmt.Sprintf("<monitor %s %s>", m.Callback.Name(), strings.Join(parts, " "))
+	return "<monitor>"
 }
-func (m *MonitorDef) Type() string           { return "monitor" }
-func (m *MonitorDef) Freeze()                {}
-func (m *MonitorDef) Truth() starlark.Bool   { return true }
-func (m *MonitorDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: monitor") }
+func (m *MonitorDef) Type() string          { return "monitor" }
+func (m *MonitorDef) Freeze()               {}
+func (m *MonitorDef) Truth() starlark.Bool  { return true }
+func (m *MonitorDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: monitor") }
 
 // ---------------------------------------------------------------------------
 // StarlarkEvent — wraps Event for lambda predicate access

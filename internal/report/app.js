@@ -144,6 +144,8 @@
       case "expectation_violated": return "violated";
       case "fault_bypassed": return "bypassed";
       case "errored": return "errored";
+      // RFC-041 §5.5(c) — timeout with pending temporal expectations.
+      case "inconclusive": return "warn";
       default: return "warn";
     }
   }
@@ -241,6 +243,12 @@
     if (s.fault_bypassed) {
       pillText += " · " + s.fault_bypassed + " bypassed";
       if (pillClass === "pass") pillClass = "bypassed";
+    }
+    // RFC-041 §5.5(c): inconclusive rows aren't pass and aren't fail —
+    // surface their count separately so users see them at a glance.
+    if (s.inconclusive) {
+      pillText += " · " + s.inconclusive + " inconclusive";
+      if (pillClass === "pass") pillClass = "warn";
     }
     host.innerHTML = "";
     host.appendChild(el("span", { class: "pill " + pillClass, text: pillText }));
@@ -346,6 +354,8 @@
       case "expectation_violated": icon = "≠"; break;
       case "fault_bypassed": icon = "∅"; break;
       case "errored": icon = "!"; break;
+      // RFC-041 §5.5(c) — timeout with pending temporal expectation.
+      case "inconclusive": icon = "?"; break;
       default: icon = "?";
     }
     var title = cell.scenario + " × " + cell.fault + "\n" + outcome;

@@ -220,6 +220,7 @@ func TestBuildPopulatesAllCoreFiles(t *testing.T) {
 			{Name: "test_a", Outcome: "passed", DurationMs: 10},
 			{Name: "test_b", Outcome: "failed", DurationMs: 20},
 			{Name: "test_c", Outcome: "errored", DurationMs: 5},
+			{Name: "test_d", Outcome: "inconclusive", DurationMs: 30},
 		},
 		Trace: []byte(`{"version":1}`),
 	}
@@ -244,7 +245,7 @@ func TestBuildPopulatesAllCoreFiles(t *testing.T) {
 	if man.SchemaVersion != SchemaVersion {
 		t.Errorf("schema version = %d, want %d", man.SchemaVersion, SchemaVersion)
 	}
-	wantSummary := Summary{Total: 3, Passed: 1, Failed: 1, Errored: 1}
+	wantSummary := Summary{Total: 4, Passed: 1, Failed: 1, Errored: 1, Inconclusive: 1}
 	if man.Summary != wantSummary {
 		t.Errorf("summary = %+v, want %+v", man.Summary, wantSummary)
 	}

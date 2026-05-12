@@ -467,8 +467,13 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		}
 	}
 
-	// Print summary.
-	fmt.Fprintf(os.Stderr, "\n%d passed, %d failed\n", result.Pass, result.Fail)
+	// Print summary. Inconclusive count is appended only when >0 so
+	// the line stays unchanged for pre-RFC-041 specs.
+	if result.Inconclusive > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d passed, %d failed, %d inconclusive\n", result.Pass, result.Fail, result.Inconclusive)
+	} else {
+		fmt.Fprintf(os.Stderr, "\n%d passed, %d failed\n", result.Pass, result.Fail)
+	}
 
 	// Terminal replay hint per failed test (RFC-025 §Observability).
 	// Makes `replay_command` visible without digging into JSON. Skipped
@@ -497,8 +502,20 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		fmt.Fprintln(os.Stdout, string(data))
 	}
 
+	// Exit code convention:
+	//   0 — all tests passed
+	//   2 — at least one test failed (long-standing project convention;
+	//       RFC-041 §8.6 nominally specs this as 1 but the codebase's
+	//       existing CI integrations gate on 2 so we keep it stable)
+	//   3 — INCONCLUSIVE without Fail (RFC-041 §5.5(c)). CI integrations
+	//       can choose to gate on 3 or treat it as warning per the
+	//       "(CI integrations can choose to gate on either or both)"
+	//       clause in §8.6.
 	if result.Fail > 0 {
 		return 2
+	}
+	if result.Inconclusive > 0 {
+		return 3
 	}
 	return 0
 }
@@ -2203,6 +2220,12 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 			}
 		case "error":
 			outcome = "errored"
+		case "inconclusive":
+			// RFC-041 §5.5(c) — timeout with pending temporal
+			// expectations. Distinct from "passed" so CI dashboards
+			// built on the bundle manifest don't misread a stall as
+			// success.
+			outcome = "inconclusive"
 		default:
 			if tr.FaultBypassed {
 				outcome = "fault_bypassed"

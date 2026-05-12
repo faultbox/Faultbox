@@ -127,6 +127,9 @@ func summaryFromTests(rows []TestRow) Summary {
 			s.Failed++
 		case "errored":
 			s.Errored++
+		case "inconclusive":
+			// RFC-041 §5.5(c) — distinct bucket from Passed/Failed.
+			s.Inconclusive++
 		case "expectation_violated":
 			s.Failed++
 			s.ExpectationViolated++

@@ -64,6 +64,11 @@ type Summary struct {
 	Passed                     int `json:"passed"`
 	Failed                     int `json:"failed"`
 	Errored                    int `json:"errored"`
+	// Inconclusive counts RFC-041 §5.5(c) timeouts — tests that ran past
+	// their wall-clock budget with temporal expectations still pending.
+	// Distinct from Passed and Failed so CI gates can choose to flag,
+	// fail, or ignore them.
+	Inconclusive               int `json:"inconclusive,omitempty"`
 	ExpectationViolated        int `json:"expectation_violated,omitempty"`
 	FaultBypassed              int `json:"fault_bypassed,omitempty"`
 	StrictDeterminismViolation int `json:"strict_determinism_violation,omitempty"` // RFC-040 §8.3

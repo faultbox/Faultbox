@@ -1502,16 +1502,15 @@ func TestMonitorReturnsMonitorDef(t *testing.T) {
 	err := rt.LoadString("test.star", `
 svc = service("svc", "/tmp/svc", interface("main", "tcp", 8080))
 
-def check_no_write(event):
-    fail("unexpected write")
-
-m = monitor(check_no_write, service="svc", syscall="write")
+m = monitor("no_write",
+    on = match.event(type="syscall", service="svc", syscall="write"),
+    check = lambda event, state: False,
+)
 `)
 	if err != nil {
 		t.Fatalf("LoadString: %v", err)
 	}
 
-	// monitor() at top level should return a MonitorDef, not None.
 	mVal, ok := rt.globals["m"]
 	if !ok {
 		t.Fatal("global 'm' not found")
@@ -1521,96 +1520,67 @@ m = monitor(check_no_write, service="svc", syscall="write")
 		t.Fatalf("expected *MonitorDef, got %T (%s)", mVal, mVal.Type())
 	}
 
-	// Check type and string representation.
 	if md.Type() != "monitor" {
 		t.Errorf("Type() = %q, want monitor", md.Type())
 	}
 	if md.Truth() != true {
 		t.Error("Truth() should be true")
 	}
-
-	// Check callback name.
-	if md.Callback.Name() != "check_no_write" {
-		t.Errorf("Callback.Name() = %q, want check_no_write", md.Callback.Name())
+	if md.Name != "no_write" {
+		t.Errorf("Name = %q, want no_write", md.Name)
 	}
-
-	// Check filters.
-	if len(md.Filters) != 2 {
-		t.Fatalf("expected 2 filters, got %d", len(md.Filters))
+	if md.On == nil {
+		t.Error("On matcher should be set")
 	}
-	filterMap := make(map[string]string)
-	for _, f := range md.Filters {
-		filterMap[f.Key] = f.Value
-	}
-	if filterMap["service"] != "svc" {
-		t.Errorf("service filter = %q, want svc", filterMap["service"])
-	}
-	if filterMap["syscall"] != "write" {
-		t.Errorf("syscall filter = %q, want write", filterMap["syscall"])
+	if md.Check == nil {
+		t.Error("Check should be set")
 	}
 }
 
 func TestMonitorStringRepresentation(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `
-svc = service("svc", "/tmp/svc", interface("main", "tcp", 8080))
-
-def my_check(e):
-    pass
-
-m_with_filters = monitor(my_check, service="svc")
-m_no_filters = monitor(my_check)
+m_named = monitor("balance_inv",
+    on = match.event(type="balance"),
+    check = lambda event, state: True,
+)
 `)
 	if err != nil {
 		t.Fatalf("LoadString: %v", err)
 	}
 
-	mf := rt.globals["m_with_filters"].(*MonitorDef)
-	if got := mf.String(); got != "<monitor my_check service=svc>" {
-		t.Errorf("String() with filters = %q", got)
-	}
-
-	mnf := rt.globals["m_no_filters"].(*MonitorDef)
-	if got := mnf.String(); got != "<monitor my_check>" {
-		t.Errorf("String() without filters = %q", got)
+	mf := rt.globals["m_named"].(*MonitorDef)
+	if got := mf.String(); got != "<monitor balance_inv>" {
+		t.Errorf("String() = %q, want <monitor balance_inv>", got)
 	}
 }
 
-func TestMonitorNotAutoRegisteredAtTopLevel(t *testing.T) {
+func TestMonitorAutoRegisteredSpecWide(t *testing.T) {
+	// RFC-041 §5.4 — top-level monitor() auto-registers spec-wide.
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `
-svc = service("svc", "/tmp/svc", interface("main", "tcp", 8080))
-
-def my_check(e):
-    pass
-
-m = monitor(my_check, service="svc")
+m = monitor("watch",
+    on = match.event(type="any"),
+    check = lambda event, state: True,
+)
 `)
 	if err != nil {
 		t.Fatalf("LoadString: %v", err)
 	}
-
-	// At top level (not inside a test), monitor() should NOT auto-register
-	// as an event subscriber. The subscriber list should be empty.
-	rt.events.subMu.RLock()
-	subCount := len(rt.events.subscribers)
-	rt.events.subMu.RUnlock()
-
-	if subCount != 0 {
-		t.Errorf("expected 0 subscribers at top level, got %d", subCount)
+	if len(rt.specMonitors) != 1 {
+		t.Errorf("expected 1 spec monitor registered, got %d", len(rt.specMonitors))
 	}
 }
 
 func TestRegisterMonitorSubscribes(t *testing.T) {
 	rt := New(testLogger())
 
-	cb := starlark.NewBuiltin("test_cb", func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
-		return starlark.None, nil
-	})
-
 	m := &MonitorDef{
-		Callback: cb,
-		Filters:  []EventFilter{{Key: "service", Value: "svc"}},
+		Name: "test",
+		On:   &MatcherVal{matchFn: func(Event) bool { return true }},
+		Check: starlark.NewBuiltin("check", func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
+			return starlark.True, nil
+		}),
 	}
 
 	id := rt.RegisterMonitor(m)
@@ -1618,7 +1588,6 @@ func TestRegisterMonitorSubscribes(t *testing.T) {
 		t.Errorf("expected positive subscriber ID, got %d", id)
 	}
 
-	// Should have 1 subscriber.
 	rt.events.subMu.RLock()
 	subCount := len(rt.events.subscribers)
 	rt.events.subMu.RUnlock()
@@ -1626,7 +1595,6 @@ func TestRegisterMonitorSubscribes(t *testing.T) {
 		t.Errorf("expected 1 subscriber after RegisterMonitor, got %d", subCount)
 	}
 
-	// Unregister.
 	rt.UnregisterMonitor(id)
 	rt.events.subMu.RLock()
 	subCount = len(rt.events.subscribers)
@@ -1764,10 +1732,10 @@ db = service("db", "/tmp/mock-db",
     interface("main", "tcp", 5432),
 )
 
-def check(e):
-    pass
-
-m = monitor(check, service="db")
+m = monitor("watch_db",
+    on = match.event(type="syscall", service="db"),
+    check = lambda event, state: True,
+)
 
 a = fault_assumption("db_down",
     target = db,
@@ -1783,8 +1751,13 @@ a = fault_assumption("db_down",
 	if len(a.Monitors) != 1 {
 		t.Fatalf("expected 1 monitor, got %d", len(a.Monitors))
 	}
-	if a.Monitors[0].Callback.Name() != "check" {
-		t.Errorf("monitor callback = %q, want check", a.Monitors[0].Callback.Name())
+	if a.Monitors[0].Name != "watch_db" {
+		t.Errorf("monitor name = %q, want watch_db", a.Monitors[0].Name)
+	}
+	// Scenario-scoped: monitor must have been claimed from specMonitors so
+	// it doesn't double-register at test start.
+	if len(rt.specMonitors) != 0 {
+		t.Errorf("monitor passed to fault_assumption should be claimed from specMonitors, got %d remaining", len(rt.specMonitors))
 	}
 }
 
@@ -1800,10 +1773,10 @@ orders = service("orders", "/tmp/orders",
     depends_on = [db],
 )
 
-def check_db(e):
-    pass
-
-m_db = monitor(check_db, service="db")
+m_db = monitor("check_db",
+    on = match.event(type="syscall", service="db"),
+    check = lambda event, state: True,
+)
 
 db_down = fault_assumption("db_down",
     target = db,
@@ -1845,8 +1818,8 @@ cascade = fault_assumption("cascade",
 	if len(c.Monitors) != 1 {
 		t.Fatalf("expected 1 inherited monitor, got %d", len(c.Monitors))
 	}
-	if c.Monitors[0].Callback.Name() != "check_db" {
-		t.Errorf("inherited monitor = %q, want check_db", c.Monitors[0].Callback.Name())
+	if c.Monitors[0].Name != "check_db" {
+		t.Errorf("inherited monitor = %q, want check_db", c.Monitors[0].Name)
 	}
 
 	// Description.
@@ -2070,10 +2043,10 @@ db = service("db", "/tmp/mock-db",
 def order_flow():
     return "ok"
 
-def check_retry(e):
-    pass
-
-retry_mon = monitor(check_retry, service="orders", syscall="connect")
+retry_mon = monitor("check_retry",
+    on = match.event(type="syscall", service="orders", syscall="connect"),
+    check = lambda event, state: True,
+)
 
 db_down = fault_assumption("db_down",
     target = db,
@@ -2095,8 +2068,8 @@ fault_scenario("order_db_down_retries",
 	if len(fs.Monitors) != 1 {
 		t.Fatalf("expected 1 scenario-level monitor, got %d", len(fs.Monitors))
 	}
-	if fs.Monitors[0].Callback.Name() != "check_retry" {
-		t.Errorf("monitor callback = %q, want check_retry", fs.Monitors[0].Callback.Name())
+	if fs.Monitors[0].Name != "check_retry" {
+		t.Errorf("monitor name = %q, want check_retry", fs.Monitors[0].Name)
 	}
 }
 
@@ -2483,10 +2456,10 @@ db = service("db", "/tmp/mock-db",
 def order_flow():
     return "ok"
 
-def check_all(e):
-    pass
-
-global_mon = monitor(check_all, service="db")
+global_mon = monitor("check_all",
+    on = match.event(type="syscall", service="db"),
+    check = lambda event, state: True,
+)
 
 db_down = fault_assumption("db_down",
     target = db,
@@ -2507,8 +2480,8 @@ fault_matrix(
 	if len(fs.Monitors) != 1 {
 		t.Fatalf("expected 1 matrix-wide monitor, got %d", len(fs.Monitors))
 	}
-	if fs.Monitors[0].Callback.Name() != "check_all" {
-		t.Errorf("monitor = %q, want check_all", fs.Monitors[0].Callback.Name())
+	if fs.Monitors[0].Name != "check_all" {
+		t.Errorf("monitor = %q, want check_all", fs.Monitors[0].Name)
 	}
 }
 
