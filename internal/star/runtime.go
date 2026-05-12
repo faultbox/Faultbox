@@ -955,19 +955,19 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 
 	// RFC-041 §5.2 — install a per-event always() watcher so a violated
 	// always() invariant fails the test the moment it breaks instead of
-	// at body return. The same shared cancellation is reused for
-	// terminate_when (§5.5(b)) below; always-violation wins the cause
-	// race because we set alwaysFailExp before cancelling, and the
-	// select arm for bodyCtx.Done() consults it.
+	// at body return. The watcher cancels bodyCtx via the shared
+	// bodyCancel and closes alwaysFired so the select arm in RunTest
+	// can classify the cause as TerminationImmediateFail. The violation
+	// message is surfaced through the Finalize path: AlwaysExpectation
+	// keeps its own violated/violationMsg state, so Finalize re-runs
+	// Evaluate, sees the cached failure, and returns Fail with the same
+	// message — no need to thread the message through RunTest itself.
 	bodyCtx, bodyCancel := context.WithCancel(bodyCtx)
 	defer bodyCancel()
 	rt.setTestContext(bodyCtx)
 
 	alwaysFired := make(chan struct{})
 	var alwaysOnce sync.Once
-	var alwaysFailMu sync.Mutex
-	var alwaysFailExp ExpectationVal
-	var alwaysFailMsg string
 	alwaysSubID := rt.events.Subscribe(nil, func(Event) error {
 		// snapshot under lock; expectations are added during body execution
 		for _, exp := range rt.snapshotExpectations() {
@@ -979,13 +979,9 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			// subscribers concurrently from multiple goroutines, and
 			// starlark.Thread is not goroutine-safe (review note N1).
 			thread := newSandboxThread("always_watch:" + a.Name())
-			v, msg, _ := a.Evaluate(thread, rt.events)
+			v, _, _ := a.Evaluate(thread, rt.events)
 			if v == VerdictFail {
 				alwaysOnce.Do(func() {
-					alwaysFailMu.Lock()
-					alwaysFailExp = a
-					alwaysFailMsg = msg
-					alwaysFailMu.Unlock()
 					close(alwaysFired)
 					bodyCancel()
 				})
@@ -1102,13 +1098,6 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		// trying to evaluate them against an unstable trace.
 		cause = TerminationImmediateFail
 	}
-
-	// The always-violation case is handled by the Finalize pass below:
-	// AlwaysExpectation.Evaluate already flipped violated=true in the
-	// subscriber that fired alwaysFired, so Finalize returns the same
-	// Fail with the captured message via the standard mapping.
-	_ = alwaysFailExp
-	_ = alwaysFailMsg
 
 	// Capture matrix info before clearing (set by makeFaultScenarioRunner).
 	var matrixInfo *MatrixInfo
