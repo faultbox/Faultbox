@@ -157,9 +157,15 @@ func (t *TraceVal) traceEventsWithin(_ *starlark.Thread, _ *starlark.Builtin, ar
 	if err != nil {
 		return nil, fmt.Errorf("trace.events_within() bad window: %w", err)
 	}
+	// of=None → no time filter; return every matching event. Otherwise
+	// of must be an EventVal whose timestamp anchors the window.
 	var anchor time.Time
+	hasAnchor := false
 	if ev, ok := ofArg.(*EventVal); ok {
 		anchor = ev.ev.Timestamp
+		hasAnchor = true
+	} else if ofArg != starlark.None {
+		return nil, fmt.Errorf("trace.events_within(of=...): must be an event or None, got %s", ofArg.Type())
 	}
 	all := t.log.Events()
 	var out []Event
@@ -167,7 +173,7 @@ func (t *TraceVal) traceEventsWithin(_ *starlark.Thread, _ *starlark.Builtin, ar
 		if !m.Matches(ev) {
 			continue
 		}
-		if !anchor.IsZero() && absDuration(ev.Timestamp.Sub(anchor)) > window {
+		if hasAnchor && absDuration(ev.Timestamp.Sub(anchor)) > window {
 			continue
 		}
 		out = append(out, ev)
@@ -325,14 +331,22 @@ func (e *EventVal) sameCorrelationAs(_ *starlark.Thread, _ *starlark.Builtin, ar
 	return starlark.Bool(corr != "" && corr == otherCorr), nil
 }
 
-// event.duration_since(other) — elapsed time as a string like "1.5s".
+// event.duration_since(other) — elapsed time as integer nanoseconds.
+//
+// Returning an int (not a string) is load-bearing for usable comparisons:
+// `e.duration_since(other) < ms(200)` compares numerically. An earlier
+// version returned a Go duration string ("1.5s") and was compared lexically
+// in Starlark, silently giving wrong results across magnitude boundaries.
+//
+// Use `ms(n)` / `us(n)` / `ns(n)` helpers (or the literal nanosecond count)
+// to build comparison values.
 func (e *EventVal) durationSince(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
 	other, err := unpackEventArg("event.duration_since", args)
 	if err != nil {
 		return nil, err
 	}
 	d := e.ev.Timestamp.Sub(other.ev.Timestamp)
-	return starlark.String(d.String()), nil
+	return starlark.MakeInt64(int64(d)), nil
 }
 
 // event.preceded_by(matcher) — some earlier event in the log matches.
@@ -479,7 +493,9 @@ func (l *EventListVal) Iterate() starlark.Iterator {
 }
 
 func (l *EventListVal) AttrNames() []string {
-	return []string{"count", "filter", "first", "last", "map", "reduce", "sum"}
+	// `sum` is intentionally omitted — it's chained off .map() which
+	// returns a plain starlark.List, so it isn't a method on EventListVal.
+	return []string{"count", "filter", "first", "last", "map", "reduce"}
 }
 
 func (l *EventListVal) Attr(name string) (starlark.Value, error) {
@@ -490,8 +506,6 @@ func (l *EventListVal) Attr(name string) (starlark.Value, error) {
 		return starlark.NewBuiltin("events.filter", l.listFilter), nil
 	case "reduce":
 		return starlark.NewBuiltin("events.reduce", l.listReduce), nil
-	case "sum":
-		return starlark.NewBuiltin("events.sum", l.listSum), nil
 	case "first":
 		if len(l.events) == 0 {
 			return starlark.None, nil
@@ -559,35 +573,43 @@ func (l *EventListVal) listReduce(thread *starlark.Thread, _ *starlark.Builtin, 
 	return acc, nil
 }
 
-// events.sum() — sum the integer/float values of a mapped list (convenience).
-// Expects each event to have a numeric attribute; use .map() first to extract.
-func (l *EventListVal) listSum(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if len(args) != 0 || len(kwargs) != 0 {
-		return nil, fmt.Errorf("events.sum() takes no arguments; chain .map(fn).sum() instead")
-	}
-	// Not useful on EventListVal directly — sum() is designed to be chained
-	// after .map() which returns a plain starlark.List. Kept for API symmetry.
-	return nil, fmt.Errorf("events.sum() requires mapping to a numeric field first; use .map(lambda e: int(e.field)).sum()")
-}
 
 // ---------------------------------------------------------------------------
 // Vector-clock helpers.
 // ---------------------------------------------------------------------------
 
 // vcHappensBefore reports whether vc1 → vc2 in the partial order:
-// for every key k, vc1[k] ≤ vc2[k], with at least one strict inequality.
+// for every key k (in the union of both clocks' key sets), vc1[k] ≤ vc2[k],
+// with at least one strict inequality.
+//
+// Missing keys are treated as zero. This is load-bearing for multi-service
+// traces: when vc2 has progressed on a dimension that vc1 has no knowledge
+// of (vc1 missing the key, vc2[k] > 0), vc1 strictly precedes vc2 on that
+// dimension. An earlier version of this function iterated only vc1's keys
+// and returned a false negative in that case.
 func vcHappensBefore(vc1, vc2 map[string]int64) bool {
-	if len(vc1) == 0 {
-		return false // no information → can't establish order
+	if len(vc1) == 0 && len(vc2) == 0 {
+		return false // no information either way
 	}
 	strictLess := false
-	for k, v1 := range vc1 {
-		v2 := vc2[k]
+	// First pass: every key present in vc2 must satisfy vc1[k] ≤ vc2[k].
+	for k, v2 := range vc2 {
+		v1 := vc1[k]
 		if v1 > v2 {
-			return false // vc1 is NOT dominated by vc2 on this key
+			return false
 		}
 		if v1 < v2 {
 			strictLess = true
+		}
+	}
+	// Second pass: any key vc1 has but vc2 doesn't is implicitly vc2[k]=0,
+	// so vc1[k] > 0 disqualifies the relation.
+	for k, v1 := range vc1 {
+		if _, seen := vc2[k]; seen {
+			continue
+		}
+		if v1 > 0 {
+			return false
 		}
 	}
 	return strictLess
@@ -609,7 +631,10 @@ func argsToMatcher(name string, args starlark.Tuple, kwargs []starlark.Tuple) (*
 	criteria := make(map[string]string, len(kwargs))
 	for _, kv := range kwargs {
 		k, _ := starlark.AsString(kv[0])
-		v, _ := starlark.AsString(kv[1])
+		v, ok := starlark.AsString(kv[1])
+		if !ok {
+			return nil, fmt.Errorf("%s(%s=...): value must be a string, got %s", name, k, kv[1].Type())
+		}
 		criteria[k] = v
 	}
 	return &MatcherVal{

@@ -2220,6 +2220,12 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 			}
 		case "error":
 			outcome = "errored"
+		case "inconclusive":
+			// RFC-041 §5.5(c) — timeout with pending temporal
+			// expectations. Distinct from "passed" so CI dashboards
+			// built on the bundle manifest don't misread a stall as
+			// success.
+			outcome = "inconclusive"
 		default:
 			if tr.FaultBypassed {
 				outcome = "fault_bypassed"

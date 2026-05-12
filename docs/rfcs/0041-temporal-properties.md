@@ -640,7 +640,9 @@ In `internal/engine/session.go`. The test runner implements the three-condition 
 - Any terminal negative → FAIL.
 - Termination via (c) with assertions still pending OR `await_stable` blocked → INCONCLUSIVE.
 
-Bundle (`.fb`, RFC-025) records the verdict in `manifest.json` (`outcome` field gains `inconclusive` enum value). Report (RFC-029) renders INCONCLUSIVE with distinct color (yellow vs FAIL's red). CLI exit code: PASS = 0, FAIL = 1, INCONCLUSIVE = 2 (CI integrations can choose to gate on either or both).
+Bundle (`.fb`, RFC-025) records the verdict in `manifest.json` (`outcome` field gains `inconclusive` enum value). Report (RFC-029) renders INCONCLUSIVE with distinct color (yellow vs FAIL's red). CLI exit code: PASS = 0, FAIL = 2, INCONCLUSIVE = 3 (CI integrations can choose to gate on either or both).
+
+> **Implementation note (v0.13.0):** Faultbox already returned exit code 2 for FAIL prior to RFC-041 to keep CI gates that distinguish "broken invocation" (1) from "test failure" (2). The RFC's original `FAIL = 1, INCONCLUSIVE = 2` mapping was rebased to `FAIL = 2, INCONCLUSIVE = 3` to preserve that convention. The semantics — distinct exit codes per verdict, so CI can gate independently — are unchanged.
 
 **Configuration:**
 - `test("foo", timeout="60s", terminate_when=eventually(...), ...)` — per-test.
@@ -691,7 +693,7 @@ Per the #84 coverage gate. Goldens for representative scenarios:
 1. **Default per-test `timeout=`.** Strawman: 30 seconds. Configurable per-test via `test(timeout=...)` and spec-wide via `determinism(test_timeout=...)`. Worth a sanity check — too low and users hit INCONCLUSIVE often; too high and CI burns time on stuck tests.
 2. **`await_stable` quiescence window default.** Strawman: 1 second. Configurable per call; configurable spec-wide via `determinism(quiescence_window=...)` (extension to RFC-040's builtin).
 3. **Monitor scope.** Strawman: spec-wide by default. Reserved kwarg `scope="test"|"spec"` for future flexibility.
-4. **CI semantics for INCONCLUSIVE.** Should INCONCLUSIVE block merges by default, warn, or be ignored? Strawman: warn (CI exit code 2; not failure). Different CI integrations can choose to gate on it. Track INCONCLUSIVE rate per test in dashboards; spec authors with high rates should investigate.
+4. **CI semantics for INCONCLUSIVE.** Should INCONCLUSIVE block merges by default, warn, or be ignored? Strawman: warn (CI exit code 3; not failure). Different CI integrations can choose to gate on it. Track INCONCLUSIVE rate per test in dashboards; spec authors with high rates should investigate.
 5. **Should `monitor` accept multiple matchers?** Strawman: `on=` is a single matcher; for "this monitor cares about A or B," users compose: `on=match.any(match.event(type="A"), match.event(type="B"))`. Keeps the API surface small.
 
 **Resolved:**

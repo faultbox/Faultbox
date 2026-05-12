@@ -3,6 +3,7 @@ package star
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"go.starlark.net/starlark"
 )
@@ -262,6 +263,76 @@ func TestAlways_TimeoutWithoutEndAnchor_Inconclusive(t *testing.T) {
 	v, _ := exp.Finalize(thread, log, TerminationTimeout)
 	if v != VerdictPending {
 		t.Errorf("end-anchor never reached + timeout → expected pending, got %v", v)
+	}
+}
+
+func TestAlways_NamedLifecycleAnchors(t *testing.T) {
+	// Named start anchor "body_start" should defer evaluation until
+	// SetWindowStarted("body_start") fires; named end anchor "stable"
+	// should close the window when SetWindowEnded("stable") fires.
+	log := NewEventLog()
+
+	exp := &AlwaysExpectation{
+		predicate:    makePredicate("p", func(*TraceVal) bool { return false }),
+		betweenStart: betweenAnchor{name: "stable"}, // not body_start: must wait for signal
+		betweenEnd:   betweenAnchor{name: "body_end"},
+	}
+	thread := &starlark.Thread{Name: "test"}
+
+	log.Emit("bad", "svc", nil)
+	v, _, _ := exp.Evaluate(thread, log)
+	if v != VerdictPending {
+		t.Errorf("named start anchor not yet signalled — expected pending, got %v", v)
+	}
+
+	exp.SetWindowStarted("stable")
+	v, _, _ = exp.Evaluate(thread, log)
+	if v != VerdictFail {
+		t.Errorf("after window opened, predicate is false → expected fail, got %v", v)
+	}
+}
+
+func TestAlways_SignalLifecycleAnchor_RuntimeWiring(t *testing.T) {
+	rt := New(testLogger())
+	// Register an always() with a named start anchor only the
+	// runtime can fire.
+	exp := &AlwaysExpectation{
+		predicate:    makePredicate("p", func(*TraceVal) bool { return true }),
+		betweenStart: betweenAnchor{name: "body_start"},
+		betweenEnd:   betweenAnchor{name: "body_end"},
+	}
+	rt.registerExpectation(exp)
+	rt.signalLifecycleAnchor("body_start")
+	if !exp.windowStarted {
+		t.Error("signalLifecycleAnchor(body_start) should open window")
+	}
+	rt.signalLifecycleAnchor("body_end")
+	if !exp.windowEnded {
+		t.Error("signalLifecycleAnchor(body_end) should close window")
+	}
+}
+
+func TestBuiltinDuration_ParsesNanoseconds(t *testing.T) {
+	v, err := builtinDuration(nil, nil, starlark.Tuple{starlark.String("200ms")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, _ := v.(starlark.Int).Int64()
+	want := int64(200 * time.Millisecond)
+	if n != want {
+		t.Errorf("duration(200ms) = %d ns, want %d", n, want)
+	}
+}
+
+func TestBuiltinTest_DuplicateNameErrors(t *testing.T) {
+	rt := New(testLogger())
+	body := makePredicate("body", func(*TraceVal) bool { return true })
+	args := starlark.Tuple{starlark.String("dup"), body}
+	if _, err := rt.builtinTest(nil, nil, args, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.builtinTest(nil, nil, args, nil); err == nil {
+		t.Error("expected error for duplicate test name")
 	}
 }
 

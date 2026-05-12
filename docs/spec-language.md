@@ -2307,8 +2307,9 @@ it from the spec-wide list so it doesn't double-register.
 **Sandbox restrictions** — `update` and `check` lambdas run in a
 restricted Starlark thread. Calls to `fault`, `service`, `assert_*`,
 `parallel`, `partition`, `eventually`, `always`, `monitor`,
-`await_stable`, `await_event`, `determinism`, and friends are
-rejected at spec load with a clear error message. See
+`await_stable`, `await_event`, `determinism`, `trace`, `trace_start`,
+`trace_stop`, `events`, and friends are rejected at spec load with a
+clear error message. See
 [docs/temporal.md](temporal.md#sandbox-restrictions) for the full
 list.
 
@@ -2440,7 +2441,7 @@ CLI exit code: `0` pass, `2` any-fail, `3` inconclusive-only.
 
 Predicates receive a `trace` object. Most-used operators:
 
-- `trace.event(type=..., **fields)` → first matching `EventVal` or None
+- `trace.event(type=..., **fields)` → most recent (last) matching `EventVal`, or `None` (alias for `trace.last(...)`; use `trace.first(...)` for the earliest)
 - `trace.events(matcher)` → wrapped sequence with `.map/.filter/.reduce`
 - `trace.first(matcher)` / `trace.last(matcher)` / `trace.count(matcher)`
 - `trace.events_between(start, end)` / `trace.events_within(matcher, window, of=event)`

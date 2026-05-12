@@ -187,6 +187,10 @@ func (rt *Runtime) builtinAwaitStable(_ *starlark.Thread, _ *starlark.Builtin, a
 	if err := awaitStable(ctx, rt.events, window, ignore); err != nil {
 		return nil, fmt.Errorf("await_stable: %w", err)
 	}
+	// RFC-041 §5.2 — fire the "stable" lifecycle anchor so always()
+	// expectations whose between=(..., "stable") window-end matches
+	// can close cleanly. No-op when no expectation uses the anchor.
+	rt.signalLifecycleAnchor("stable")
 	return starlark.None, nil
 }
 

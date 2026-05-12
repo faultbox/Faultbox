@@ -70,7 +70,13 @@ func builtinMatchEvent(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tu
 	criteria := make(map[string]string, len(kwargs))
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
-		val, _ := starlark.AsString(kv[1])
+		// Reject non-string values explicitly — starlark.AsString
+		// returns ("", false) for ints/bools, and silently coercing
+		// to "" produces a misleading match (review note N4).
+		val, ok := starlark.AsString(kv[1])
+		if !ok {
+			return nil, fmt.Errorf("match.event(%s=...): value must be a string, got %s", key, kv[1].Type())
+		}
 		criteria[key] = val
 	}
 	name := "event(" + fmtCriteria(criteria) + ")"

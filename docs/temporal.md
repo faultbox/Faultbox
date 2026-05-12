@@ -55,9 +55,14 @@ predicate, keeping wall-clock comparisons explicit:
 expect = eventually(
     lambda t: t.event(type="api.response").duration_since(
         t.event(type="api.request")
-    ) < "200ms"
+    ) < duration("200ms")
 )
 ```
+
+`event.duration_since(other)` returns integer nanoseconds; `duration(s)`
+parses a duration literal into nanoseconds so the two compose with `<`,
+`<=`, etc. Comparing against bare strings would compare lexicographically
+and silently misorder magnitudes ("1.5s" < "200ms" lexically).
 
 ## `always(predicate, between=)`
 
@@ -181,6 +186,9 @@ recurse into the temporal machinery:
 - Test runner integration: `parallel`, `partition`, `nondet`
 - Temporal primitives themselves: `eventually`, `always`, `monitor`,
   `await_stable`, `await_event`
+- Body-level trace plumbing: `trace`, `trace_start`, `trace_stop`,
+  `events`. Monitors receive the matching `event` and a per-monitor
+  `state` cell directly; they don't re-query the global trace.
 
 This restriction is enforced at spec load. Calls to forbidden builtins
 inside monitor lambdas fail with a clear error citing the line number
@@ -260,7 +268,7 @@ Predicates receive a `trace` object exposing:
 
 | Operator | Returns | Notes |
 |----------|---------|-------|
-| `trace.event(type=..., **fields)` | First matching event (or `None`) | Most recent by emission order |
+| `trace.event(type=..., **fields)` | Most recent (last) matching event, or `None` | Alias for `trace.last(...)`; use `trace.first(...)` for the earliest |
 | `trace.events(matcher)` | All matching events | Ordered by emission |
 | `trace.first(matcher)` | Earliest matching event | |
 | `trace.last(matcher)` | Most recent matching event | Same as `event(...)` |
@@ -283,7 +291,7 @@ Predicates receive a `trace` object exposing:
 | `event.preceded_by_within(matcher, window)` | Earlier event within a duration |
 | `event.followed_by_within(matcher, window)` | Later event within a duration |
 | `event.directly_caused_by(matcher)` | Immediate (non-transitive) causal predecessor matches |
-| `event.duration_since(other)` | Elapsed time as a string ("1.5s") |
+| `event.duration_since(other)` | Elapsed time as integer nanoseconds (compare with `duration("...")`) |
 
 ### Aggregations on event lists
 

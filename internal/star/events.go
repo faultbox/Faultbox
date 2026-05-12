@@ -58,9 +58,15 @@ func NewEventLog() *EventLog {
 }
 
 // Emit appends an event to the log with automatic vector clock tracking.
+//
+// Subscriber callbacks are dispatched AFTER releasing l.mu. This is
+// load-bearing: subscribers (terminate_when, monitor check=, always()
+// per-event eval) read the event log via TraceVal methods that acquire
+// l.mu.RLock(). sync.RWMutex is not re-entrant, so dispatching under
+// the write lock would deadlock the moment any user predicate touches
+// trace.event/events/last/first/count/etc.
 func (l *EventLog) Emit(typ, service string, fields map[string]string) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.seq++
 
 	// Advance vector clock for this service.
@@ -110,23 +116,20 @@ func (l *EventLog) Emit(typ, service string, fields map[string]string) {
 	if ev.Service != "" {
 		l.byService[ev.Service] = append(l.byService[ev.Service], idx)
 	}
+	l.mu.Unlock()
 
-	// Notify subscribers (under a separate lock to avoid deadlock).
-	// Copy subscriber list under read lock, then call outside the event lock.
+	// Snapshot the subscriber list under subMu, then dispatch with NO
+	// locks held. Subscribers reading the log via TraceVal will acquire
+	// l.mu.RLock() themselves and see the newly-appended event.
 	l.subMu.RLock()
 	subs := make([]Subscriber, len(l.subscribers))
 	copy(subs, l.subscribers)
 	l.subMu.RUnlock()
 
-	// Note: we've already released l.mu above via defer.
-	// Actually we haven't — defer runs at function end. So we dispatch here
-	// while still holding l.mu. Subscribers must NOT call Emit (deadlock).
 	for i := range subs {
 		if matchesFilters(ev, subs[i].Filters) {
 			if err := subs[i].OnEvent(ev); err != nil {
-				// Store error on the subscriber — caller checks later.
-				// For now, we just ignore (runtime collects errors separately).
-				_ = err
+				_ = err // runtime collects errors via the subscriber callback itself
 			}
 		}
 	}

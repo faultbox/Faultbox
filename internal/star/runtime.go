@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.starlark.net/starlark"
@@ -137,8 +138,8 @@ type SuiteResult struct {
 	Fail       int          `json:"fail"`
 	// Inconclusive counts tests that timed out with pending temporal
 	// assertions (RFC-041 §5.5(c)). Distinct from Fail so CI can choose
-	// to gate on either or both (CLI exit code 2 reflects Inconclusive
-	// > 0 when Fail == 0).
+	// to gate on either or both (CLI exit code 3 reflects Inconclusive
+	// > 0 when Fail == 0; exit code 2 is reserved for Fail > 0).
 	Inconclusive int `json:"inconclusive,omitempty"`
 
 	// Crash, if non-nil, indicates the suite was terminated by a Go
@@ -264,7 +265,9 @@ type Runtime struct {
 
 	// inTest is true when RunTest is executing a test function.
 	// Used by monitor() to auto-register when called inside a test.
-	inTest bool
+	// atomic because a leaked body goroutine (waitBodyExit deadline)
+	// may still read it after RunTest's main goroutine clears the flag.
+	inTest atomic.Bool
 
 	// currentFaultScenario is set by makeFaultScenarioRunner during execution
 	// so RunTest can copy MatrixInfo to the TestResult.
@@ -756,7 +759,7 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 			case "inconclusive":
 				// RFC-041 §5.5(c). Tracked separately from Fail so CI
 				// can choose to gate on either or both; CLI exit code
-				// 2 (in main.go) reflects Inconclusive > 0.
+				// 3 (in main.go) reflects Inconclusive > 0 when Fail == 0.
 				suite.Inconclusive++
 				suite.Tests = append(suite.Tests, tr)
 			default: // "fail", "error", anything else non-pass
@@ -950,6 +953,49 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		}
 	}
 
+	// RFC-041 §5.2 — install a per-event always() watcher so a violated
+	// always() invariant fails the test the moment it breaks instead of
+	// at body return. The same shared cancellation is reused for
+	// terminate_when (§5.5(b)) below; always-violation wins the cause
+	// race because we set alwaysFailExp before cancelling, and the
+	// select arm for bodyCtx.Done() consults it.
+	bodyCtx, bodyCancel := context.WithCancel(bodyCtx)
+	defer bodyCancel()
+	rt.setTestContext(bodyCtx)
+
+	alwaysFired := make(chan struct{})
+	var alwaysOnce sync.Once
+	var alwaysFailMu sync.Mutex
+	var alwaysFailExp ExpectationVal
+	var alwaysFailMsg string
+	alwaysSubID := rt.events.Subscribe(nil, func(Event) error {
+		// snapshot under lock; expectations are added during body execution
+		for _, exp := range rt.snapshotExpectations() {
+			a, ok := exp.(*AlwaysExpectation)
+			if !ok {
+				continue
+			}
+			// Fresh starlark.Thread per invocation — Emit may dispatch
+			// subscribers concurrently from multiple goroutines, and
+			// starlark.Thread is not goroutine-safe (review note N1).
+			thread := newSandboxThread("always_watch:" + a.Name())
+			v, msg, _ := a.Evaluate(thread, rt.events)
+			if v == VerdictFail {
+				alwaysOnce.Do(func() {
+					alwaysFailMu.Lock()
+					alwaysFailExp = a
+					alwaysFailMsg = msg
+					alwaysFailMu.Unlock()
+					close(alwaysFired)
+					bodyCancel()
+				})
+				return nil
+			}
+		}
+		return nil
+	})
+	defer rt.events.Unsubscribe(alwaysSubID)
+
 	// Watch terminate_when (RFC-041 §5.5(b)) on the event log. A
 	// fresh subscriber re-evaluates the expectation after every event;
 	// when it returns Pass, cancel bodyCtx so the body's await_*
@@ -957,23 +1003,20 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	twFired := make(chan struct{})
 	var twSubID int
 	var twOnce sync.Once
-	var bodyCancelForTW context.CancelFunc
 	if testCfg != nil && testCfg.TerminateWhen != nil {
-		bodyCtx, bodyCancelForTW = context.WithCancel(bodyCtx)
-		defer bodyCancelForTW()
-		twThread := &starlark.Thread{Name: name + "/terminate_when"}
 		twSubID = rt.events.Subscribe(nil, func(Event) error {
+			// Fresh starlark.Thread per call (review note N1).
+			twThread := &starlark.Thread{Name: name + "/terminate_when"}
 			v, _, _ := testCfg.TerminateWhen.Evaluate(twThread, rt.events)
 			if v == VerdictPass {
 				twOnce.Do(func() {
 					close(twFired)
-					bodyCancelForTW()
+					bodyCancel()
 				})
 			}
 			return nil
 		})
 		defer rt.events.Unsubscribe(twSubID)
-		rt.setTestContext(bodyCtx)
 	}
 
 	// Run the test function. For legacy tests this is a synchronous
@@ -985,7 +1028,13 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 			fmt.Fprintln(os.Stderr, msg)
 		},
 	}
-	rt.inTest = true
+	rt.inTest.Store(true)
+
+	// RFC-041 §5.2 — signal the "body_start" lifecycle anchor to any
+	// always() expectations registered before body entry (e.g. via
+	// test(expect=...)). Body-registered expectations don't need this
+	// since they couldn't have observed events before their creation.
+	rt.signalLifecycleAnchor("body_start")
 
 	bodyDone := make(chan bodyOutcomeT, 1)
 	go func() {
@@ -1014,6 +1063,11 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		// Body completed under its own power. cause stays Natural
 		// unless the body raised; that's classified after we examine
 		// the error below.
+	case <-alwaysFired:
+		// always() invariant violated mid-run. RFC-041 §5.2 — fail
+		// immediately, rolling pending eventually's into the verdict.
+		cause = TerminationImmediateFail
+		bo = waitBodyExit(bodyDone, 2*time.Second)
 	case <-twFired:
 		// terminate_when fired. Wait briefly for the body to exit,
 		// then take whatever it had. bodyCtx is already cancelled so
@@ -1021,13 +1075,24 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		cause = TerminationTerminateWhen
 		bo = waitBodyExit(bodyDone, 2*time.Second)
 	case <-bodyCtx.Done():
-		// Timeout (or parent cancellation) fired before the body
-		// returned. Wait for the body goroutine to exit so we don't
-		// leak it. INCONCLUSIVE for any still-pending expectation.
+		// Cancellation fired before the body returned. Could be wall-
+		// clock timeout, an always violation we cancelled below (the
+		// alwaysFired arm above), or parent context cancellation.
+		// Drain the always/tw signals to disambiguate.
 		cause = TerminationTimeout
+		select {
+		case <-alwaysFired:
+			cause = TerminationImmediateFail
+		case <-twFired:
+			cause = TerminationTerminateWhen
+		default:
+		}
 		bo = waitBodyExit(bodyDone, 2*time.Second)
 	}
-	rt.inTest = false
+	rt.inTest.Store(false)
+
+	// RFC-041 §5.2 — close any always() windows anchored to body exit.
+	rt.signalLifecycleAnchor("body_end")
 
 	retVal := bo.retVal
 	err := bo.err
@@ -1037,6 +1102,13 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		// trying to evaluate them against an unstable trace.
 		cause = TerminationImmediateFail
 	}
+
+	// The always-violation case is handled by the Finalize pass below:
+	// AlwaysExpectation.Evaluate already flipped violated=true in the
+	// subscriber that fired alwaysFired, so Finalize returns the same
+	// Fail with the captured message via the standard mapping.
+	_ = alwaysFailExp
+	_ = alwaysFailMsg
 
 	// Capture matrix info before clearing (set by makeFaultScenarioRunner).
 	var matrixInfo *MatrixInfo

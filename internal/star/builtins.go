@@ -136,7 +136,26 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// timeout, expect=, setup=, and terminate_when= temporal
 		// config. Legacy function-style tests continue to work.
 		"test": starlark.NewBuiltin("test", rt.builtinTest),
+		// duration("200ms") → integer nanoseconds. Pairs with
+		// event.duration_since(other) (also nanoseconds) so durations
+		// can be compared numerically.
+		"duration": starlark.NewBuiltin("duration", builtinDuration),
 	}
+}
+
+// builtinDuration parses a duration string ("200ms", "1.5s", "2m") into
+// integer nanoseconds. event.duration_since() returns the same units so
+// the two compose with `<`, `<=`, `>`, etc.
+func builtinDuration(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var s string
+	if err := starlark.UnpackPositionalArgs("duration", args, kwargs, 1, &s); err != nil {
+		return nil, err
+	}
+	d, err := parseStarDuration(s)
+	if err != nil {
+		return nil, fmt.Errorf("duration(%q): %w", s, err)
+	}
+	return starlark.MakeInt64(int64(d)), nil
 }
 
 // remotes({"public": "host", "internal": "host:port"}) — returns a typed
@@ -2022,7 +2041,7 @@ func (rt *Runtime) builtinMonitor(thread *starlark.Thread, fn *starlark.Builtin,
 	// in-test registration (scoped to the running test). Scoped
 	// scenario use (fault_scenario monitors=) does its own registration
 	// at scenario start; that path doesn't touch this branch.
-	if rt.inTest {
+	if rt.inTest.Load() {
 		rt.RegisterMonitor(m)
 	} else {
 		rt.specMonitors = append(rt.specMonitors, m)

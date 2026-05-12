@@ -202,14 +202,23 @@ func TestEventValDurationSince(t *testing.T) {
 	a := newEventVal(evA, nil)
 	b := newEventVal(evB, nil)
 
-	// b.duration_since(a) should be ~500ms.
+	// b.duration_since(a) should be ~500ms (500_000_000 ns).
 	res, err := b.durationSince(nil, nil, starlark.Tuple{a}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, _ := starlark.AsString(res)
-	if s == "" || s == "0s" {
-		t.Errorf("expected non-zero duration, got %q", s)
+	ni, ok := res.(starlark.Int)
+	if !ok {
+		t.Fatalf("expected starlark.Int, got %T", res)
+	}
+	n, ok := ni.Int64()
+	if !ok {
+		t.Fatalf("duration overflowed int64: %v", ni)
+	}
+	wantMin := int64(400 * time.Millisecond)
+	wantMax := int64(600 * time.Millisecond)
+	if n < wantMin || n > wantMax {
+		t.Errorf("expected ~500ms in nanoseconds, got %d (want %d..%d)", n, wantMin, wantMax)
 	}
 }
 
@@ -339,7 +348,17 @@ func TestVcHappensBefore(t *testing.T) {
 		{"equal", map[string]int64{"a": 1}, map[string]int64{"a": 1}, false},
 		{"after", map[string]int64{"a": 2}, map[string]int64{"a": 1}, false},
 		{"concurrent", map[string]int64{"a": 1, "b": 0}, map[string]int64{"a": 0, "b": 1}, false},
-		{"empty vc1", nil, map[string]int64{"a": 1}, false},
+		// Vector-clock semantics: an event with no recorded clock state
+		// strictly precedes any event with a non-empty clock (missing keys
+		// are treated as zero, and zero < v means progress on that dim).
+		{"empty vc1 vs non-empty vc2", nil, map[string]int64{"a": 1}, true},
+		{"both empty", nil, nil, false},
+		// Asymmetric key sets: vc1 = {a:1}, vc2 = {a:1, b:5}.
+		// vc1 has progressed on `a` but not on `b`; vc2 progressed on
+		// both. vc1 strictly precedes vc2.
+		{"asymmetric vc1 subset", map[string]int64{"a": 1}, map[string]int64{"a": 1, "b": 5}, true},
+		// Reverse: vc1 has b=3 that vc2 doesn't know about. NOT before.
+		{"asymmetric vc1 superset", map[string]int64{"a": 1, "b": 3}, map[string]int64{"a": 1}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

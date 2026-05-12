@@ -206,8 +206,10 @@ type betweenAnchor struct {
 
 // AlwaysExpectation evaluates a predicate after every event and fails
 // immediately on the first false result, scoped to a window between
-// two anchor events. PR 4 ships immediate failure detection; the
-// window-anchor lifecycle integration (string anchors) lands with PR 6.
+// two anchor events. Matcher anchors are checked by polling the event
+// log on each Evaluate; string anchors ("body_start", "body_end",
+// "stable") are signalled by the runtime via SetWindowStarted/Ended
+// at lifecycle transitions.
 type AlwaysExpectation struct {
 	predicate    starlark.Callable
 	betweenStart betweenAnchor
@@ -218,6 +220,42 @@ type AlwaysExpectation struct {
 	violationMsg   string
 	windowStarted  bool
 	windowEnded    bool
+}
+
+// SetWindowStarted is called by the runtime when a lifecycle anchor
+// fires. anchor is one of "body_start" | "body_end" | "stable". If the
+// expectation's start-anchor matches, the window opens and subsequent
+// Evaluate calls run the predicate.
+func (a *AlwaysExpectation) SetWindowStarted(anchor string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.betweenStart.name == anchor {
+		a.windowStarted = true
+	}
+}
+
+// SetWindowEnded mirrors SetWindowStarted for the close anchor. Once
+// ended, future Evaluate calls short-circuit to VerdictPass — the
+// predicate is no longer required to hold past the window.
+func (a *AlwaysExpectation) SetWindowEnded(anchor string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.betweenEnd.name == anchor {
+		a.windowEnded = true
+	}
+}
+
+// hasNamedStartAnchor reports whether the expectation's start anchor is
+// a named lifecycle anchor (rather than a matcher). Used by the runtime
+// to decide whether the default "open immediately" path applies.
+func (a *AlwaysExpectation) hasNamedStartAnchor() bool {
+	return a.betweenStart.name != "" && a.betweenStart.matcher == nil
+}
+
+// hasNamedEndAnchor reports whether the expectation's end anchor is a
+// named lifecycle anchor.
+func (a *AlwaysExpectation) hasNamedEndAnchor() bool {
+	return a.betweenEnd.name != "" && a.betweenEnd.matcher == nil
 }
 
 var _ ExpectationVal = (*AlwaysExpectation)(nil)
@@ -235,22 +273,30 @@ func (a *AlwaysExpectation) Evaluate(thread *starlark.Thread, log *EventLog) (Ve
 	if a.violated {
 		return VerdictFail, a.violationMsg, nil
 	}
-	// Window-start check: if a matcher anchor exists and hasn't been
-	// reached, the window hasn't opened — predicate not yet active.
+	// Window-start check.
 	if !a.windowStarted {
-		if a.betweenStart.matcher != nil {
+		switch {
+		case a.betweenStart.matcher != nil:
+			// Matcher anchor: poll the event log.
 			if _, found := log.FirstMatching(a.betweenStart.matcher); !found {
 				return VerdictPending, "", nil
 			}
+			a.windowStarted = true
+		case a.betweenStart.name == "" || a.betweenStart.name == "body_start":
+			// No anchor or explicit body_start: the runtime signals
+			// body entry via SetWindowStarted("body_start"). Until
+			// that fires (and for legacy tests that never call it),
+			// open immediately on first Evaluate — the body has
+			// already begun running by the time the subscriber fires
+			// the first event.
+			a.windowStarted = true
+		default:
+			// "body_end" / "stable" — wait for the runtime to signal.
+			return VerdictPending, "", nil
 		}
-		// Named "body_start" / "" defaults to immediately active. The
-		// runtime sets windowStarted on body entry via SetWindowStarted
-		// once PR 6 lands; for now we open the window on first eval.
-		a.windowStarted = true
 	}
-	// Window-end check: if a matcher anchor for the end has fired, the
-	// predicate stops being checked.
-	if a.betweenEnd.matcher != nil && !a.windowEnded {
+	// Window-end check.
+	if !a.windowEnded && a.betweenEnd.matcher != nil {
 		if _, found := log.FirstMatching(a.betweenEnd.matcher); found {
 			a.windowEnded = true
 		}
@@ -279,7 +325,10 @@ func (a *AlwaysExpectation) Finalize(thread *starlark.Thread, log *EventLog, cau
 	}
 	// Window-end anchor never reached and Termination via timeout → §5.5
 	// for always says INCONCLUSIVE; we surface pending and the caller maps.
-	if a.betweenEnd.matcher != nil && !a.windowEnded {
+	a.mu.Lock()
+	endPending := !a.windowEnded && (a.betweenEnd.matcher != nil || a.hasNamedEndAnchorLocked())
+	a.mu.Unlock()
+	if endPending {
 		switch cause {
 		case TerminationTimeout:
 			return VerdictPending, "always(" + funcName(a.predicate) + ") end-anchor never reached within timeout"
@@ -290,6 +339,12 @@ func (a *AlwaysExpectation) Finalize(thread *starlark.Thread, log *EventLog, cau
 		}
 	}
 	return VerdictPass, ""
+}
+
+// hasNamedEndAnchorLocked is the lock-already-held variant of
+// hasNamedEndAnchor. The Finalize check above already holds a.mu.
+func (a *AlwaysExpectation) hasNamedEndAnchorLocked() bool {
+	return a.betweenEnd.name != "" && a.betweenEnd.matcher == nil
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +517,9 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 	}
 
 	fullName := "test_" + name
+	if _, dup := rt.testConfigs[fullName]; dup {
+		return nil, fmt.Errorf("test(%q): a test with this name is already registered", name)
+	}
 	// Register the config. DiscoverTests will surface the entry as a
 	// discoverable test name and register the body into rt.globals
 	// (which is nil during the spec-load ExecFile and only populated
@@ -534,4 +592,24 @@ func (rt *Runtime) snapshotExpectations() []ExpectationVal {
 	out := make([]ExpectationVal, len(rt.temporalExpectations))
 	copy(out, rt.temporalExpectations)
 	return out
+}
+
+// signalLifecycleAnchor notifies every registered always() expectation
+// that a named lifecycle anchor has fired ("body_start", "body_end",
+// "stable"). Expectations whose start-anchor matches open their window;
+// those whose end-anchor matches close theirs.
+//
+// This is what makes the string-anchor form `between=("body_start",
+// "stable")` actually do anything — without it the anchors are
+// silently ignored. The runtime calls this at body entry, body exit,
+// and after await_stable returns.
+func (rt *Runtime) signalLifecycleAnchor(anchor string) {
+	for _, exp := range rt.snapshotExpectations() {
+		a, ok := exp.(*AlwaysExpectation)
+		if !ok {
+			continue
+		}
+		a.SetWindowStarted(anchor)
+		a.SetWindowEnded(anchor)
+	}
 }
