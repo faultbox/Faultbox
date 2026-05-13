@@ -575,6 +575,39 @@ func (rt *Runtime) FaultScenarios() map[string]*FaultScenarioDef {
 	return rt.faultScenarios
 }
 
+// FaultAssumptions returns the spec's registered fault_assumption()
+// values keyed by name. Read-only snapshot — callers must not mutate.
+// Used by the plan-tree enumerator (RFC-042) to describe fault axes.
+func (rt *Runtime) FaultAssumptions() map[string]*FaultAssumptionDef {
+	return rt.faultAssumptions
+}
+
+// TestConfigs returns the spec's test() builtin declarations keyed by
+// full test name ("test_<name>"). Read-only; for plan enumeration only.
+func (rt *Runtime) TestConfigs() map[string]*TestConfig {
+	return rt.testConfigs
+}
+
+// PlanSeed returns the spec's deterministic seed if one was set via
+// `determinism(seed=...)` (or its predecessors); nil means unseeded.
+// Plan-tree enumeration uses this as part of the run identity.
+func (rt *Runtime) PlanSeed() *uint64 {
+	return rt.seed
+}
+
+// Determinism returns the active determinism contract: level, runtime,
+// strict-mode flag, and whether the spec explicitly called determinism().
+// RFC-040 + RFC-042 plan output read this.
+func (rt *Runtime) Determinism() (level, runtime string, strict, explicit bool) {
+	return rt.detLevel, rt.detRuntime, rt.detStrict, rt.detExplicit
+}
+
+// RootSpecPath returns the absolute path of the root spec loaded by
+// LoadFile, or "" if the runtime was driven via LoadString.
+func (rt *Runtime) RootSpecPath() string {
+	return rt.rootSpec
+}
+
 // LoadedSpecs returns every local .star file that LoadFile or a
 // transitive `load()` brought in, keyed by the file's bundle-friendly
 // relative path (e.g. "faultbox.star" or "helpers/jwt.star"). The
