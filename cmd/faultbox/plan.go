@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/faultbox/Faultbox/internal/logging"
@@ -21,6 +22,9 @@ import (
 func planCmd(args []string) int {
 	var specFile string
 	format := "text"
+	var coverage, suggest, checkCost bool
+	maxInstances := -1
+	var strategy string
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -32,6 +36,33 @@ func planCmd(args []string) int {
 			format = args[i]
 		case strings.HasPrefix(args[i], "--format="):
 			format = strings.TrimPrefix(args[i], "--format=")
+		case args[i] == "--coverage":
+			coverage = true
+		case args[i] == "--suggest":
+			suggest = true
+			coverage = true // suggestions imply coverage
+		case args[i] == "--strategy" && i+1 < len(args):
+			i++
+			strategy = args[i]
+		case strings.HasPrefix(args[i], "--strategy="):
+			strategy = strings.TrimPrefix(args[i], "--strategy=")
+		case args[i] == "--check-cost":
+			checkCost = true
+		case args[i] == "--max-instances" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: --max-instances must be an integer, got %q\n", args[i])
+				return 1
+			}
+			maxInstances = n
+		case strings.HasPrefix(args[i], "--max-instances="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--max-instances="))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: --max-instances must be an integer\n")
+				return 1
+			}
+			maxInstances = n
 		case strings.HasSuffix(args[i], ".star"):
 			specFile = args[i]
 		default:
@@ -46,6 +77,18 @@ func planCmd(args []string) int {
 		return 1
 	}
 
+	// RFC-042 §8.11 — --strategy=llm is reserved; reject early so users
+	// see the migration path now (v0.14.0 / RFC-043 lands the LLM path
+	// via MCP).
+	if strategy != "" && strategy != "rules" {
+		if strategy == "llm" {
+			fmt.Fprintln(os.Stderr, "error: --strategy=llm requires Faultbox v0.14.0 / RFC-043 MCP bundle ops; not available in this release")
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "error: --strategy=%q not recognized (valid: rules; reserved: llm)\n", strategy)
+		return 1
+	}
+
 	logger := logging.New(logging.Config{Level: slog.LevelWarn})
 	rt := star.New(logger)
 	if err := rt.LoadFile(specFile); err != nil {
@@ -54,10 +97,23 @@ func planCmd(args []string) int {
 	}
 
 	pt := plan.Enumerate(rt)
+	if coverage {
+		if err := plan.WithCoverage(pt, rt); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+	}
 
 	switch format {
 	case "text", "":
 		renderPlanText(os.Stdout, pt)
+		if coverage {
+			plan.WriteCoverageText(os.Stdout, pt)
+		}
+		if suggest {
+			fmt.Fprintln(os.Stdout)
+			plan.WriteSuggestions(os.Stdout, pt)
+		}
 	case "json":
 		if err := plan.WriteJSON(os.Stdout, pt); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -71,6 +127,15 @@ func planCmd(args []string) int {
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown --format=%s (valid: text, json, dot)\n", format)
 		return 1
+	}
+
+	// RFC-042 §8.6 — cost gate. Exit non-zero when instance count
+	// exceeds the user's budget, so CI pre-commit hooks can fail loudly
+	// before launching a multi-hour run.
+	if checkCost && maxInstances >= 0 && pt.Totals.Instances > maxInstances {
+		fmt.Fprintf(os.Stderr, "\ncost gate: plan has %d instances; --max-instances=%d exceeded\n",
+			pt.Totals.Instances, maxInstances)
+		return 2
 	}
 	return 0
 }
@@ -87,10 +152,16 @@ service or executing any test. Useful for:
   • feeding the plan tree to other tools (JSON for jq/LLMs, DOT for graphviz)
 
 Flags:
-  --format=text          Human-readable tree (default)
-  --format=json          Structured JSON (RFC-042 §5.2)
-  --format=dot           Graphviz DOT (pipe into 'dot -Tsvg')
-  -h, --help             Show this help`)
+  --format=text                Human-readable tree (default)
+  --format=json                Structured JSON (RFC-042 §5.2)
+  --format=dot                 Graphviz DOT (pipe into 'dot -Tsvg')
+  --coverage                   Append coverage table: edges, fault tests, gaps
+  --suggest [--strategy=rules] Print copy-pasteable stubs for uncovered edges.
+                               --strategy=llm is reserved for v0.14.0 (RFC-043).
+  --check-cost --max-instances N
+                               Exit non-zero if plan has > N instances.
+                               Useful as a pre-commit / CI cost gate.
+  -h, --help                   Show this help`)
 }
 
 // renderPlanText writes the human-readable plan tree to w. The format

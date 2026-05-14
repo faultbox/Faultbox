@@ -34,6 +34,12 @@ type PlanTree struct {
 	// emits them as zero-valued so the JSON shape is stable from the
 	// start.
 	Topology PlanTopology `json:"topology"`
+	// Coverage is populated by WithCoverage (RFC-042 §5.3, §8.4). Nil
+	// when the caller skipped coverage analysis — Enumerate alone
+	// doesn't compute it, so `faultbox plan` without --coverage and
+	// `faultbox test` (which always includes coverage in plan.json
+	// when enabled) split cleanly.
+	Coverage *PlanCoverage `json:"coverage,omitempty"`
 }
 
 // PlanDeterminism mirrors RFC-040's contract for the run. Plan output

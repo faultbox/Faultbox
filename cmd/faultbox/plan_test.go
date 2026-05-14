@@ -117,6 +117,75 @@ func TestPlanCmd_MissingSpecPrintsUsage(t *testing.T) {
 	}
 }
 
+func TestPlanCmd_CoverageAddsTable(t *testing.T) {
+	spec := writeTempSpec(t, `
+db = service("db", image="busybox", cmd=["sh","-c","sleep 1"])
+api = service("api", image="busybox", cmd=["sh","-c","sleep 1"], depends_on=[db])
+def scenario_x(): pass
+db_down = fault_assumption("db_down", target=db, write=deny("EIO"))
+fault_scenario("api_db_down", scenario=scenario_x, faults=db_down)
+`)
+	out := captureStdout(t, func() int { return planCmd([]string{spec, "--coverage"}) })
+	for _, want := range []string{"Coverage:", "✓ api → db", "faulted in: test_api_db_down"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("coverage output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPlanCmd_SuggestEmitsStubs(t *testing.T) {
+	spec := writeTempSpec(t, `
+db = service("db", image="busybox", cmd=["sh","-c","sleep 1"])
+api = service("api", image="busybox", cmd=["sh","-c","sleep 1"], depends_on=[db])
+def test_x(): return True
+`)
+	out := captureStdout(t, func() int { return planCmd([]string{spec, "--suggest"}) })
+	if !strings.Contains(out, "# Uncovered edge: api → db") {
+		t.Errorf("suggest output missing stub: %s", out)
+	}
+}
+
+func TestPlanCmd_LLMStrategyReserved(t *testing.T) {
+	spec := writeTempSpec(t, `def test_x(): return True`)
+	rc := planCmd([]string{spec, "--suggest", "--strategy=llm"})
+	if rc == 0 {
+		t.Error("--strategy=llm should be rejected until v0.14.0")
+	}
+}
+
+func TestPlanCmd_CheckCostExitsTwoOnExceed(t *testing.T) {
+	spec := writeTempSpec(t, `
+def test_a(): return True
+def test_b(): return True
+def test_c(): return True
+`)
+	rc := planCmd([]string{spec, "--check-cost", "--max-instances=1"})
+	if rc != 2 {
+		t.Errorf("expected exit code 2 when cost gate exceeded, got %d", rc)
+	}
+}
+
+func TestPlanCmd_CheckCostPassesUnderBudget(t *testing.T) {
+	spec := writeTempSpec(t, `def test_a(): return True`)
+	rc := planCmd([]string{spec, "--check-cost", "--max-instances=10"})
+	if rc != 0 {
+		t.Errorf("expected exit 0 under budget, got %d", rc)
+	}
+}
+
+func captureStdout(t *testing.T, fn func() int) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = old
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	return buf.String()
+}
+
 // Compile-time assertion: the package imports are wired correctly so a
 // renderer regression doesn't slip into rc1.
 var _ = plan.SchemaVersion
