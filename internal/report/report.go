@@ -59,7 +59,13 @@ type Data struct {
 	Manifest *bundle.Manifest  `json:"manifest"`
 	Env      *bundle.Env       `json:"env,omitempty"`
 	Trace    json.RawMessage   `json:"trace,omitempty"`
-	Specs    map[string]string `json:"specs,omitempty"`
+	// Plan is the RFC-042 plan tree as written by `faultbox test`.
+	// Absent on pre-RFC-042 bundles (the report falls back to "no
+	// plan data" in the Plan tab). Stored as RawMessage so the
+	// report side doesn't import internal/plan and the JS uses the
+	// JSON shape directly.
+	Plan  json.RawMessage   `json:"plan,omitempty"`
+	Specs map[string]string `json:"specs,omitempty"`
 }
 
 // templateContext carries the values the html/template substitutes.
@@ -419,6 +425,13 @@ func gatherData(r *bundle.Reader) (*Data, error) {
 	// without it (just no drill-down or matrix detail).
 	if raw, err := r.File("trace.json"); err == nil && len(raw) > 0 {
 		d.Trace = json.RawMessage(raw)
+	}
+
+	// plan.json — present on bundles produced by RFC-042 §8.7 callers.
+	// Old bundles omit it; the JS side renders the Plan tab as "no
+	// plan data" so the rest of the report still works.
+	if raw, ok := r.PlanJSON(); ok && len(raw) > 0 {
+		d.Plan = json.RawMessage(raw)
 	}
 
 	// Collect every spec/*.star file so the JS side can render the

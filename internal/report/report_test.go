@@ -143,6 +143,21 @@ func buildTestBundle(t *testing.T) string {
 	if err := w.AddJSON("trace.json", trace); err != nil {
 		t.Fatalf("trace: %v", err)
 	}
+	// RFC-042 plan.json — minimal but realistic. The Plan tab reads
+	// this; older bundle fixtures that omit plan.json should still
+	// render (covered by TestGatherDataOmitsPlanWhenAbsent below).
+	plan := map[string]any{
+		"schema_version": 1,
+		"spec_path":      "poc/mock-demo/faultbox.star",
+		"determinism":    map[string]any{"level": "L1", "strict": true},
+		"tests": []map[string]any{
+			{"name": "test_order_creates_record", "kind": "def", "instances": 1},
+		},
+		"totals": map[string]any{"instances": 1},
+	}
+	if err := w.AddJSON("plan.json", plan); err != nil {
+		t.Fatalf("plan: %v", err)
+	}
 	w.AddFile("replay.sh", []byte("#!/bin/sh\nfaultbox replay run-2026-04-23-42.fb\n"))
 	w.AddFile("spec/faultbox.star", []byte(
 		"orders = service(\"orders\", \"bin/orders\")\n"+
@@ -547,6 +562,50 @@ func TestGzipBytesShrinksRedundantPayload(t *testing.T) {
 // win), the base64'd gzip output must be meaningfully smaller than
 // the raw JSON would have been. Guards against future refactors that
 // accidentally disable compression.
+func TestGatherDataIncludesPlanWhenPresent(t *testing.T) {
+	path := buildTestBundle(t)
+	r, err := bundle.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	data, err := gatherData(r)
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	if len(data.Plan) == 0 {
+		t.Fatal("expected Data.Plan to be populated when plan.json exists")
+	}
+	if !bytes.Contains(data.Plan, []byte(`"schema_version"`)) {
+		t.Errorf("plan payload missing schema_version: %s", data.Plan)
+	}
+}
+
+func TestGatherDataOmitsPlanWhenAbsent(t *testing.T) {
+	// Build a bundle without plan.json.
+	w := bundle.NewWriter()
+	manifest := bundle.Manifest{SchemaVersion: bundle.SchemaVersion, RunID: "x"}
+	if err := w.AddJSON("manifest.json", manifest); err != nil {
+		t.Fatal(err)
+	}
+	w.AddFile("trace.json", []byte(`{"version":1}`))
+	dir := t.TempDir()
+	path := filepath.Join(dir, "noplan.fb")
+	if err := w.WriteTo(path); err != nil {
+		t.Fatal(err)
+	}
+	r, err := bundle.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := gatherData(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Plan) != 0 {
+		t.Errorf("Data.Plan should be empty when plan.json absent, got %d bytes", len(data.Plan))
+	}
+}
+
 func TestBuildGzipShrinksPayload(t *testing.T) {
 	path := buildTestBundle(t)
 	r, err := bundle.Open(path)

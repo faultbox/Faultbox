@@ -1882,6 +1882,67 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
   font-size: 0.72rem;
 }
 
+/* ── Plan tab (RFC-042 §8.10) ─────────────────────────────────── */
+.plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.plan-pill {
+  background: var(--bg-elevated, #f0f0f0);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.78rem;
+}
+.plan-tests {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.plan-test {
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--accent, #4a90e2);
+  margin-bottom: 0.5rem;
+  background: var(--bg-elevated, #fafafa);
+}
+.plan-test-head {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+.plan-test-kind {
+  color: var(--fg-muted);
+  font-size: 0.78rem;
+}
+.plan-test-count {
+  margin-left: auto;
+  font-weight: 600;
+}
+.plan-comp, .plan-faults, .plan-expect, .plan-timeout {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  margin-top: 0.25rem;
+}
+.plan-axis { margin-left: 0.75rem; }
+.plan-coverage { margin-top: 1.25rem; }
+.plan-coverage-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.plan-coverage-table td {
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border, #eee);
+  font-size: 0.85rem;
+}
+.plan-coverage-table tr.uncovered td:first-child::before {
+  content: "⚠ ";
+}
+.plan-coverage-table tr.covered td:first-child::before {
+  content: "✓ ";
+}
+
 /* ── Print (CTOs screenshot sections into decks) ───────────────── */
 @media print {
   .report-header { position: static; }
