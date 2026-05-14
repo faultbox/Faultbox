@@ -476,6 +476,45 @@ Network partitions are generated as standalone `test_*` functions.
 
 ---
 
+### `faultbox plan` (v0.13.0)
+
+Statically enumerate the plan tree for a spec — every test, every
+`fault_matrix` cell, every `fault_scenario` — without launching any
+service or executing any test. RFC-042.
+
+```
+faultbox plan <file.star> [flags]
+```
+
+**Flags**
+
+| Flag | Effect |
+|------|--------|
+| `--format=text` | Human-readable tree (default). |
+| `--format=json` | Structured JSON; same schema as the bundle's `plan.json`. |
+| `--format=dot` | Graphviz DOT — pipe into `dot -Tsvg` for diagrams. |
+| `--coverage` | Append the coverage table (edges, faulting tests, gaps). |
+| `--suggest` | Print copy-pasteable stubs for uncovered edges. Implies `--coverage`. |
+| `--strategy=rules` | Suggestion strategy. `--strategy=llm` is reserved (v0.14.0). |
+| `--check-cost --max-instances N` | Exit 2 if the plan exceeds N instances. CI gate. |
+
+**Examples**
+
+```
+faultbox plan tests/integration.star
+faultbox plan tests/integration.star --format=json | jq '.totals'
+faultbox plan tests/integration.star --coverage --suggest
+faultbox plan tests/integration.star --check-cost --max-instances 50
+```
+
+User guide: [docs/exploration.md](exploration.md).
+
+`faultbox test` writes the same plan tree into every bundle as
+`plan.json`. `--no-plan` on `faultbox test` skips enumeration (debug
+only).
+
+---
+
 ### `faultbox run`
 
 Launch a binary under Faultbox's control with process isolation and optional

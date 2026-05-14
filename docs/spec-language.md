@@ -1348,6 +1348,34 @@ Behaviour:
 Backwards compatible: `default_expect=` still accepts plain Starlark
 lambdas for rows that need custom checks.
 
+#### Plan visualization (v0.13.0)
+
+Every `fault_scenario` / `fault_matrix` declaration shows up as a node
+in the plan tree. Run `faultbox plan <spec>` (RFC-042) to see the
+test count and structure before launching: matrix axes are listed
+explicitly, the total instance count is summarized, and a coverage
+table flags dependency edges that no fault test targets.
+
+```
+$ faultbox plan tests/integration.star --coverage
+Plan tree:
+└── 2 tests
+    ├── test "test_matrix_checkout"  [fault_matrix]
+    │   └── 4 instances
+    │       └── fault_matrix
+    │           ├── scenarios: [checkout]
+    │           ├── faults: [db_down, db_slow, redis_oom, kafka_down]
+    └── test "test_smoke"  [def]
+
+Coverage:
+  ✓ api → db     (faulted in: test_matrix_checkout)
+  ⚠ api → redis  (no fault test)
+```
+
+Useful for catching CI cost surprises before they fire. See
+[docs/exploration.md](exploration.md) for the full plan / coverage /
+`--suggest` / `--check-cost` surface.
+
 #### Outcome taxonomy (v0.11.1)
 
 Every `fault_scenario` / `fault_matrix` row produces one of five

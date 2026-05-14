@@ -160,6 +160,8 @@ make demo
 | [CLI Reference](docs/cli-reference.md) | All commands and flags |
 | [Error Code Reference](docs/errno-reference.md) | Errno values for fault injection |
 | [Determinism Levels](docs/determinism.md) | L0–L5 taxonomy, the L1 contract, escape hatches (RFC-040) |
+| [Temporal Properties](docs/temporal.md) | `eventually` / `always` / `monitor` / `await_*` / `test()` (RFC-041) |
+| [Plan & Coverage](docs/exploration.md) | `faultbox plan`, `plan.json`, coverage, suggestions (RFC-042) |
 
 ### Tutorial Structure
 
