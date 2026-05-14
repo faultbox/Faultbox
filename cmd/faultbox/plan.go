@@ -58,12 +58,16 @@ func planCmd(args []string) int {
 	switch format {
 	case "text", "":
 		renderPlanText(os.Stdout, pt)
-	case "json", "dot":
-		// Reserved here so the flag surface is stable from rc1; PR 3
-		// implements both. Returning early with a clear message keeps
-		// CI integrations from silently getting wrong output.
-		fmt.Fprintf(os.Stderr, "error: --format=%s lands in v0.13.0-rc1 PR 3; only --format=text is available today\n", format)
-		return 1
+	case "json":
+		if err := plan.WriteJSON(os.Stdout, pt); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+	case "dot":
+		if err := plan.WriteDOT(os.Stdout, pt); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown --format=%s (valid: text, json, dot)\n", format)
 		return 1
@@ -80,12 +84,12 @@ service or executing any test. Useful for:
 
   • previewing the test count and structure before running CI
   • diagnosing fault_matrix that exploded into more rows than expected
-  • feeding the plan tree to other tools (JSON/DOT output — PR 3)
+  • feeding the plan tree to other tools (JSON for jq/LLMs, DOT for graphviz)
 
 Flags:
   --format=text          Human-readable tree (default)
-  --format=json          Structured JSON (RFC-042 §5.2) — coming soon
-  --format=dot           Graphviz DOT — coming soon
+  --format=json          Structured JSON (RFC-042 §5.2)
+  --format=dot           Graphviz DOT (pipe into 'dot -Tsvg')
   -h, --help             Show this help`)
 }
 

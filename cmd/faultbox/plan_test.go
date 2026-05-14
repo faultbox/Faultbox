@@ -70,13 +70,43 @@ func TestPlanCmd_RejectsUnknownFormat(t *testing.T) {
 	}
 }
 
-func TestPlanCmd_DeferredFormatsErrorClearly(t *testing.T) {
+func TestPlanCmd_JSONFormatRoundTrips(t *testing.T) {
 	spec := writeTempSpec(t, `def test_x(): return True`)
-	for _, f := range []string{"json", "dot"} {
-		rc := planCmd([]string{spec, "--format=" + f})
-		if rc == 0 {
-			t.Errorf("--format=%s should fail until PR 3 lands", f)
-		}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	rc := planCmd([]string{spec, "--format=json"})
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	if rc != 0 {
+		t.Fatalf("planCmd --format=json exit = %d; output=\n%s", rc, buf.String())
+	}
+	if !strings.Contains(buf.String(), `"schema_version": 1`) {
+		t.Errorf("JSON output missing schema_version: %s", buf.String())
+	}
+}
+
+func TestPlanCmd_DOTFormatHasDigraph(t *testing.T) {
+	spec := writeTempSpec(t, `def test_x(): return True`)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	rc := planCmd([]string{spec, "--format=dot"})
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	if rc != 0 {
+		t.Fatalf("planCmd --format=dot exit = %d; output=\n%s", rc, buf.String())
+	}
+	if !strings.HasPrefix(buf.String(), "digraph plan {") {
+		t.Errorf("DOT output should start with `digraph plan {`: %s", buf.String())
 	}
 }
 
