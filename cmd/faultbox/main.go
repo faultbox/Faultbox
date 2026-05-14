@@ -69,6 +69,8 @@ func run() int {
 		return testCmd(args[1:])
 	case "generate":
 		return generateCmd(args[1:])
+	case "plan":
+		return planCmd(args[1:])
 	case "diff":
 		return diffCmd(args[1:])
 	case "init":
@@ -1824,6 +1826,7 @@ func printUsage() {
   faultbox run [flags] <binary> [args...]    Run a single service
   faultbox test [flags] <file.star>          Run multi-service tests
   faultbox generate <file.star> [flags]     Generate failure scenarios
+  faultbox plan <file.star> [flags]          Enumerate the plan tree (no execution)
   faultbox init [flags] <binary>             Generate starter .star file
   faultbox diff <trace1> <trace2>            Compare normalized traces
   faultbox self-update                       Update to the latest version
