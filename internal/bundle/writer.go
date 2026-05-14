@@ -116,10 +116,10 @@ func (w *Writer) encode() (*bytes.Buffer, error) {
 
 // sortedPaths returns the keys of files in a stable, human-useful
 // order: manifest.json first (so `tar -tf` users see the summary up
-// front), then env.json, trace.json, replay.sh, then everything else
-// alphabetically.
+// front), then env.json, trace.json, plan.json, replay.sh, then
+// everything else alphabetically.
 func sortedPaths(files map[string][]byte) []string {
-	priority := []string{"manifest.json", "env.json", "trace.json", "replay.sh"}
+	priority := []string{"manifest.json", "env.json", "trace.json", "plan.json", "replay.sh"}
 	out := make([]string, 0, len(files))
 	seen := make(map[string]bool)
 	for _, p := range priority {
