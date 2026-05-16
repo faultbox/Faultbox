@@ -11,6 +11,8 @@ import (
 
 func TestHalt_BareReturnsSentinel(t *testing.T) {
 	rt := New(testLogger())
+	rt.inTest.Store(true)
+	defer rt.inTest.Store(false)
 	_, err := rt.builtinHalt(nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("halt() must return an error")
@@ -29,6 +31,8 @@ func TestHalt_BareReturnsSentinel(t *testing.T) {
 
 func TestHalt_WithReason(t *testing.T) {
 	rt := New(testLogger())
+	rt.inTest.Store(true)
+	defer rt.inTest.Store(false)
 	_, err := rt.builtinHalt(nil, nil, starlark.Tuple{starlark.String("invalid combo")}, nil)
 	if err == nil {
 		t.Fatal("expected error")
@@ -44,6 +48,8 @@ func TestHalt_WithReason(t *testing.T) {
 
 func TestHalt_RejectsKwargsAndNonString(t *testing.T) {
 	rt := New(testLogger())
+	rt.inTest.Store(true)
+	defer rt.inTest.Store(false)
 	_, err := rt.builtinHalt(nil, nil, starlark.Tuple{starlark.MakeInt(42)}, nil)
 	if err == nil {
 		t.Error("non-string reason must error")
@@ -75,6 +81,42 @@ func TestHalt_RunTestRecordsHaltedOutcome(t *testing.T) {
 	}
 	if !strings.Contains(tr.Reason, "rare invalid combo") {
 		t.Errorf("Reason should carry the halt() argument; got %q", tr.Reason)
+	}
+}
+
+// §5.8 check: halt() at module top-level rejected at spec load.
+func TestHalt_RejectedAtModuleTopLevel(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("spec.star", `halt("at top level")`)
+	if err == nil {
+		t.Fatal("expected spec-load error for top-level halt()")
+	}
+	if !strings.Contains(err.Error(), "test body") {
+		t.Errorf("error should explain only-in-test-body; got %v", err)
+	}
+}
+
+// §5.8 check: halt() inside setup= also rejected (setup runs before
+// the body enters in-test mode).
+func TestHalt_RejectedInSetup(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def body(): pass
+def setup_fn():
+    halt("setup tried to halt")
+
+test("setup_halt", body=body, setup=setup_fn)
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	_ = rt.DiscoverTests()
+	tr := rt.RunTest(context.Background(), "test_setup_halt")
+	if tr.Result != "fail" {
+		t.Errorf("Result = %q, want fail (setup halt rejected)", tr.Result)
+	}
+	if !strings.Contains(tr.Reason, "test body") {
+		t.Errorf("Reason should explain halt-in-setup error; got %q", tr.Reason)
 	}
 }
 

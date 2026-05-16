@@ -36,7 +36,16 @@ func (e *HaltError) Unwrap() error { return ErrHalt }
 //
 //	halt()                  # bare halt
 //	halt("invalid combo")   # halt with a reason rendered in the report
+//
+// §5.8 check: halt() outside a test body is rejected at spec load.
+// halt() at module top-level (or inside setup=) would terminate spec
+// load itself, which is rarely what the user meant — they almost
+// always meant "prune this plan-tree branch at runtime." Detect via
+// rt.inTest (set by RunTest only while a body is executing).
 func (rt *Runtime) builtinHalt(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if !rt.inTest.Load() {
+		return nil, fmt.Errorf("halt() may only be called inside a test body; got call at module top level (or inside setup=)")
+	}
 	if len(kwargs) > 0 {
 		return nil, fmt.Errorf("halt() takes only an optional positional reason")
 	}
