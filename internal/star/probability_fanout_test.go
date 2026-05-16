@@ -1,6 +1,7 @@
 package star
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -65,6 +66,36 @@ func TestProbabilityFanout_RecordsSiteOnFault(t *testing.T) {
 	rt.resetBodyProbFaults()
 	if got := rt.bodyProbFaults(); len(got) != 0 {
 		t.Errorf("reset should clear sites, got %d", len(got))
+	}
+}
+
+// TestRunAll_MultiLeafBundleShape — running a spec with named
+// choose() fan-out produces a SuiteResult whose TestResults carry
+// LeafID. The CLI's testRowsFromResult mapping is exercised
+// indirectly via this shape — see cmd/faultbox tests for the full
+// manifest round-trip.
+func TestRunAll_MultiLeafBundleShape(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def test_leaves():
+    _ = choose("k", [10, 20])
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	res, err := rt.RunAll(context.Background(), RunConfig{})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if len(res.Tests) != 2 {
+		t.Fatalf("expected 2 leaf rows, got %d", len(res.Tests))
+	}
+	gotIDs := map[string]bool{res.Tests[0].LeafID: true, res.Tests[1].LeafID: true}
+	if !gotIDs["0"] || !gotIDs["1"] {
+		t.Errorf("expected LeafIDs {0,1}, got %v", gotIDs)
+	}
+	if res.Tests[0].Name != res.Tests[1].Name {
+		t.Errorf("leaves should share Name, got %q vs %q", res.Tests[0].Name, res.Tests[1].Name)
 	}
 }
 
