@@ -325,6 +325,12 @@ type Runtime struct {
 	choicesMu sync.Mutex
 	choices   []*ChoiceVal
 
+	// Spec-wide assume() predicates (RFC-043 §5.4). Evaluated at spec
+	// load in rc1 (violations error immediately); rc2 will defer to
+	// per-leaf pruning. Per-test predicates live on TestConfig.Assume
+	// and are evaluated by RunTest.
+	specAssumes []*AssumePredicate
+
 	// Determinism state — RFC-040. Populated by the determinism() top-level
 	// builtin (or defaults to L1 / runtime=default / strict=True if not
 	// called). Detection layer (Phase 3) reads detLevel and detAllow before
@@ -1041,6 +1047,35 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 				Reason:     fmt.Sprintf("setup: %v", err),
 				DurationMs: time.Since(start).Milliseconds(),
 				Events:     rt.events.Events(),
+			}
+		}
+	}
+
+	// RFC-043 §5.4 — per-test assume predicates. Evaluate now against
+	// the current choices snapshot. The first failing predicate halts
+	// the test (Result="halted"); a predicate that raises a Starlark
+	// error fails the test. rc2 will defer this to plan-tree pruning.
+	if testCfg != nil && len(testCfg.Assumes) > 0 {
+		choices := rt.currentChoicesDict()
+		for _, pred := range testCfg.Assumes {
+			ok, msg, err := pred.Evaluate(choices)
+			if err != nil {
+				rt.stopServices()
+				return TestResult{
+					Name: name, Result: "fail",
+					Reason:     err.Error(),
+					DurationMs: time.Since(start).Milliseconds(),
+					Events:     rt.events.Events(),
+				}
+			}
+			if !ok {
+				rt.stopServices()
+				return TestResult{
+					Name: name, Result: "halted",
+					Reason:     msg,
+					DurationMs: time.Since(start).Milliseconds(),
+					Events:     rt.events.Events(),
+				}
 			}
 		}
 	}

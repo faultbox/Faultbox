@@ -57,6 +57,11 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// execution stops at the call site; the test is recorded as
 		// "halted" (not pass/fail/inconclusive).
 		"halt":              starlark.NewBuiltin("halt", rt.builtinHalt),
+		// RFC-043 §5.4 — assume(predicate) spec-wide constraint. rc1
+		// evaluates at spec-load against the current choice snapshot
+		// and errors immediately on violation; rc2 will defer to
+		// per-leaf pruning.
+		"assume":            starlark.NewBuiltin("assume", rt.builtinAssume),
 		"trace":             starlark.NewBuiltin("trace", rt.builtinTrace),
 		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),

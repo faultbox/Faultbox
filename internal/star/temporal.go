@@ -26,6 +26,10 @@ type TestConfig struct {
 	Expect        ExpectationVal
 	Timeout       time.Duration // 0 → use suite default (30s)
 	TerminateWhen ExpectationVal
+	// Assumes are RFC-043 §5.4 per-test predicates. RunTest evaluates
+	// them at body entry against the current choices dict; the first
+	// failing predicate halts the test with Result="halted".
+	Assumes []*AssumePredicate
 }
 
 // Verdict is the three-valued result of evaluating a temporal expectation.
@@ -466,6 +470,7 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 	var setupArg starlark.Value = starlark.None
 	var expectArg starlark.Value = starlark.None
 	var twArg starlark.Value = starlark.None
+	var assumeArg starlark.Value = starlark.None
 	var timeoutStr string
 	var clockStr = "wall"
 	if err := starlark.UnpackArgs("test", args, kwargs,
@@ -475,6 +480,7 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 		"expect?", &expectArg,
 		"timeout?", &timeoutStr,
 		"terminate_when?", &twArg,
+		"assume?", &assumeArg,
 		"clock?", &clockStr,
 	); err != nil {
 		return nil, err
@@ -514,6 +520,23 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 			return nil, fmt.Errorf("test(%q): bad timeout=%q: %w", name, timeoutStr, err)
 		}
 		cfg.Timeout = d
+	}
+	// RFC-043 §5.4 — per-test assume predicates. Accepts a list of
+	// callables (preferred) or bare booleans (constant). RunTest
+	// evaluates them at body entry against the current choices dict;
+	// the first failure halts the test.
+	if assumeArg != starlark.None {
+		list, ok := assumeArg.(*starlark.List)
+		if !ok {
+			return nil, fmt.Errorf("test(%q): assume= must be a list of predicates, got %s", name, assumeArg.Type())
+		}
+		for i := 0; i < list.Len(); i++ {
+			pred, err := assumeFromArg(list.Index(i))
+			if err != nil {
+				return nil, fmt.Errorf("test(%q): assume[%d]: %w", name, i, err)
+			}
+			cfg.Assumes = append(cfg.Assumes, pred)
+		}
 	}
 
 	fullName := "test_" + name
