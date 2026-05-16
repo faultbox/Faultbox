@@ -259,7 +259,7 @@ def test_distinct():
 	axes := []*ChoiceVal{
 		{Name: "retries", Options: []starlark.Value{starlark.MakeInt(0), starlark.MakeInt(1), starlark.MakeInt(3)}},
 	}
-	leaves := enumerateLeaves(axes)
+	leaves := enumerateLeaves(axes, nil)
 	seen := map[int]bool{}
 	for _, l := range leaves {
 		seen[l.Choices["retries"]] = true
@@ -368,7 +368,7 @@ func TestEnumerateLeaves_MixedRadix(t *testing.T) {
 		{Name: "a", Options: []starlark.Value{starlark.MakeInt(0), starlark.MakeInt(1)}},
 		{Name: "b", Options: []starlark.Value{starlark.MakeInt(0), starlark.MakeInt(1), starlark.MakeInt(2)}},
 	}
-	leaves := enumerateLeaves(axes)
+	leaves := enumerateLeaves(axes, nil)
 	if len(leaves) != 6 {
 		t.Fatalf("expected 6 leaves, got %d", len(leaves))
 	}

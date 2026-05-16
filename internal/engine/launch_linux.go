@@ -448,7 +448,20 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 				continue
 			}
 
-			if s.randFloat64() < rule.Probability {
+			// RFC-042 §8.9 — probability fan-out. When the session has a
+			// ProbabilityDecider attached (set by the spec layer from the
+			// current PlanLeaf), consult it first. If the decider pins this
+			// occurrence, use the boolean directly; otherwise fall through
+			// to stochastic RNG. Stochastic-mode rules and rc1 specs with
+			// no decider land in the same RNG path as before.
+			fireDecision := s.randFloat64() < rule.Probability
+			if s.cfg.ProbabilityDecider != nil && rule.Mode != "stochastic" {
+				occ := rule.NextProbabilityOccurrence()
+				if fire, pinned := s.cfg.ProbabilityDecider(&rule, occ); pinned {
+					fireDecision = fire
+				}
+			}
+			if fireDecision {
 				switch rule.Action {
 				case ActionDelay:
 					decision = fmt.Sprintf("delay(%s)", rule.Delay)

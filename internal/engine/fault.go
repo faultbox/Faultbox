@@ -84,9 +84,29 @@ type FaultRule struct {
 	Op string
 	// HoldTag identifies the HoldQueue this rule feeds into (ActionHold only).
 	HoldTag string
+	// MaxFires caps the per-rule probability fan-out (RFC-042 §8.9).
+	// Zero means "unmodeled" — the engine falls back to stochastic
+	// firing with the seeded RNG. Set by the spec layer when the user
+	// passes max_fires= on a fault action; informational at the engine
+	// level (the plan walker drives leaf enumeration, the engine just
+	// consults the decider).
+	MaxFires int
+	// Mode is "exhaustive" (default for new specs) or "stochastic".
+	// Stochastic preserves the legacy RNG-driven path; exhaustive
+	// consults the per-leaf ProbabilityDecider and only falls back to
+	// the RNG when the decider returns unpinned. Empty string is
+	// treated as "exhaustive" by the consulting code so the migration
+	// from rc1 specs is seamless.
+	Mode string
 	// counter tracks matching calls for stateful triggers (thread-safe).
 	// Pointer so FaultRule remains safely copyable.
 	counter *atomic.Int64
+	// probCounter tracks probability-decision occurrences independently
+	// of the stateful-trigger counter so combinations like
+	// (TriggerNth, probability=0.3, max_fires=2) have predictable
+	// occurrence indexing. Incremented inside the probability check
+	// path only; not exposed.
+	probCounter *atomic.Int64
 }
 
 // MatchCount returns the number of times this rule's trigger has been
@@ -115,6 +135,21 @@ func actionName(a FaultAction) string {
 		return "trace"
 	}
 	return "unknown"
+}
+
+// NextProbabilityOccurrence returns the zero-based occurrence index
+// for the next probability-decision consultation against this rule.
+// Each call increments the counter — call exactly once per probability
+// check (RFC-042 §8.9). The index is what callers feed into a leaf's
+// ProbabilityOutcomes vector; under exhaustive mode with max_fires=N,
+// indices 0..N-1 are pinned by the leaf and indices ≥ N fall back to
+// the RNG (best-effort coverage per RFC §8.9 line 347).
+func (r *FaultRule) NextProbabilityOccurrence() int {
+	if r.probCounter == nil {
+		r.probCounter = &atomic.Int64{}
+	}
+	n := r.probCounter.Add(1)
+	return int(n) - 1
 }
 
 // ShouldFire checks stateful triggers and returns true if the fault should

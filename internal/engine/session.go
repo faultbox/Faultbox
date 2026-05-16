@@ -113,6 +113,17 @@ type SessionConfig struct {
 	// ExternalPID is the target process PID (host namespace) when using an
 	// external listener. Used for process memory reads in the notification loop.
 	ExternalPID int
+	// ProbabilityDecider, when non-nil, is consulted for every probability
+	// check before falling back to the seeded RNG (RFC-042 §8.9). Returns
+	// (fire, pinned). When pinned=true the boolean determines firing; when
+	// pinned=false the engine uses the RNG, preserving rc1 stochastic
+	// behavior. Receives the rule pointer and the zero-based occurrence
+	// index produced by FaultRule.NextProbabilityOccurrence.
+	//
+	// The decider is set by the spec layer based on the current PlanLeaf;
+	// nil for tests that don't drive plan-tree fan-out, in which case the
+	// firing path is identical to pre-rc2.
+	ProbabilityDecider func(rule *FaultRule, occurrence int) (fire bool, pinned bool)
 }
 
 // NamespaceConfig controls which Linux namespaces are created.

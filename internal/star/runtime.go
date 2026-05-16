@@ -335,9 +335,18 @@ type Runtime struct {
 	// so the plan walker can distinguish spec-load-time top-level
 	// choose() calls (which persist across tests) from body-time
 	// calls (which reset between leaves of the same test).
-	choicesMu        sync.Mutex
-	choices          []*ChoiceVal
-	specChoiceCount  int
+	choicesMu       sync.Mutex
+	choices         []*ChoiceVal
+	specChoiceCount int
+
+	// probFaults records every probability-fanout-eligible fault
+	// declaration (RFC-042 §8.9) seen during the most recent body
+	// run. The plan walker enumerates one axis per entry with
+	// cardinality 2^MaxFires. Reset between leaves by
+	// resetBodyChoices — keyed identically to choose() recordings
+	// because both are body-time discovery data.
+	probFaultsMu sync.Mutex
+	probFaults   []ProbFaultSite
 
 	// Spec-wide assume() predicates (RFC-043 §5.4). Evaluated at spec
 	// load in rc1 (violations error immediately); rc2 will defer to
@@ -1035,23 +1044,37 @@ func (rt *Runtime) runTestSafelyLeaf(ctx context.Context, name string, leaf *Pla
 // majority case where the axes are leaf-independent.
 func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult {
 	rt.resetBodyChoices()
+	rt.resetBodyProbFaults()
 	leaf0 := &PlanLeaf{Index: 0, Choices: map[string]int{}}
 	tr0 := rt.runTestSafelyLeaf(ctx, name, leaf0)
 
 	axes := collectNamedAxes(rt.bodyChoices())
-	if len(axes) == 0 {
-		// No named multi-option axes — single-leaf result. Strip
-		// the LeafID so the SuiteResult stays shape-identical to
-		// pre-rc2 for tests that don't use choose().
+	probAxes := rt.bodyProbFaults()
+	if len(axes) == 0 && len(probAxes) == 0 {
+		// No fan-out axes — single-leaf result. Strip the LeafID so
+		// the SuiteResult stays shape-identical to pre-rc2 for tests
+		// that don't use choose() or exhaustive probability=.
 		tr0.LeafID = ""
 		return []TestResult{tr0}
 	}
 
-	leaves := enumerateLeaves(axes)
+	leaves := enumerateLeaves(axes, probAxes)
 	results := make([]TestResult, 0, len(leaves))
-	results = append(results, tr0)
+	// Leaf 0's discovery run used the RNG (no ProbabilityDecider
+	// could pin yet because rt.currentLeaf was empty). Re-run leaf 0
+	// with the explicit zero-vector assignment so probability
+	// attribution is consistent across all leaves.
+	if len(probAxes) > 0 {
+		rt.resetBodyChoices()
+		rt.resetBodyProbFaults()
+		leaf := leaves[0]
+		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
+	} else {
+		results = append(results, tr0)
+	}
 	for i := 1; i < len(leaves); i++ {
 		rt.resetBodyChoices()
+		rt.resetBodyProbFaults()
 		leaf := leaves[i]
 		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	}
@@ -2102,6 +2125,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 		Seed:               rt.seed,
 		VirtualTime:        rt.virtualTime,
 		ExternalListenerFd: -1, // not external
+		ProbabilityDecider: rt.probabilityDecider(svcName),
 	}
 
 	_ = stdoutSources // TODO: store for cleanup in stopServices
@@ -2261,6 +2285,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		VirtualTime:        rt.virtualTime,
 		ExternalListenerFd: result.ListenerFd,
 		ExternalPID:        result.HostPID,
+		ProbabilityDecider: rt.probabilityDecider(svcName),
 	}
 
 	return rt.launchSession(ctx, svcName, svc, sessCfg)
@@ -3659,6 +3684,24 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 				Label:       fd.Label,
 				Op:          fd.Op,
 				PathGlob:    fd.PathGlob,
+				MaxFires:    fd.MaxFires,
+				Mode:        fd.Mode,
+			}
+			// Record a probability fan-out site (RFC-042 §8.9) when
+			// this rule opts into exhaustive mode with a max_fires cap.
+			// The plan walker uses these to fan out 2^MaxFires leaves
+			// per site. Stochastic and unmodeled rules are not
+			// recorded — they keep RNG semantics.
+			if fd.Probability < 1.0 && fd.MaxFires > 0 && fd.Mode != "stochastic" {
+				key := fd.Label
+				if key == "" {
+					key = svcName + ":" + sc
+				}
+				rt.recordProbFault(ProbFaultSite{
+					Key:      key,
+					MaxFires: fd.MaxFires,
+					Prob:     fd.Probability,
+				})
 			}
 			switch fd.Action {
 			case "delay":

@@ -671,10 +671,14 @@ func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.T
 	if ls, ok := starKwarg(kwargs, "label"); ok {
 		label, _ = starlark.AsString(ls)
 	}
-	return &FaultDef{Action: "delay", Delay: dur, Probability: prob, Label: label}, nil
+	maxFires, mode, err := parseProbabilityFanoutKwargs("delay", kwargs, prob)
+	if err != nil {
+		return nil, err
+	}
+	return &FaultDef{Action: "delay", Delay: dur, Probability: prob, Label: label, MaxFires: maxFires, Mode: mode}, nil
 }
 
-// deny(errno, probability=, label=)
+// deny(errno, probability=, label=, max_fires=, mode=)
 func builtinDeny(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var errno string
 	if err := starlark.UnpackPositionalArgs("deny", args, nil, 1, &errno); err != nil {
@@ -688,7 +692,57 @@ func builtinDeny(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 	if ls, ok := starKwarg(kwargs, "label"); ok {
 		label, _ = starlark.AsString(ls)
 	}
-	return &FaultDef{Action: "deny", Errno: strings.ToUpper(errno), Probability: prob, Label: label}, nil
+	maxFires, mode, err := parseProbabilityFanoutKwargs("deny", kwargs, prob)
+	if err != nil {
+		return nil, err
+	}
+	return &FaultDef{Action: "deny", Errno: strings.ToUpper(errno), Probability: prob, Label: label, MaxFires: maxFires, Mode: mode}, nil
+}
+
+// parseProbabilityFanoutKwargs reads RFC-042 §8.9's max_fires= and
+// mode= kwargs off a fault-action builtin's argument list. Returns
+// the resolved (maxFires, mode) pair or an error if validation fails.
+//
+// Rules:
+//   - max_fires must be a positive integer; non-int / non-positive is a
+//     spec-load error.
+//   - max_fires is only meaningful with probability < 1 (RFC §8.9
+//     "spec-load validation"). max_fires=N with probability=1 is
+//     rejected — the fault always fires N times, no fan-out possible.
+//   - mode must be "exhaustive" or "stochastic"; empty string maps to
+//     "" (caller treats as default = exhaustive in v0.13.0). Any other
+//     value is a spec-load error.
+//   - max_fires with mode="stochastic" is rejected: max_fires is a
+//     fan-out cap, irrelevant to stochastic firing.
+func parseProbabilityFanoutKwargs(builtinName string, kwargs []starlark.Tuple, prob float64) (int, string, error) {
+	var maxFires int
+	var mode string
+	if mv, ok := starKwarg(kwargs, "max_fires"); ok {
+		n, err := starlark.AsInt32(mv)
+		if err != nil {
+			return 0, "", fmt.Errorf("%s(): max_fires must be an integer, got %s", builtinName, mv.Type())
+		}
+		if n <= 0 {
+			return 0, "", fmt.Errorf("%s(): max_fires must be > 0, got %d", builtinName, n)
+		}
+		if prob >= 1.0 {
+			return 0, "", fmt.Errorf("%s(): max_fires= is only meaningful with probability < 1", builtinName)
+		}
+		maxFires = n
+	}
+	if mv, ok := starKwarg(kwargs, "mode"); ok {
+		s, _ := starlark.AsString(mv)
+		switch s {
+		case "exhaustive", "stochastic":
+			mode = s
+		default:
+			return 0, "", fmt.Errorf("%s(): mode= must be \"exhaustive\" or \"stochastic\", got %q", builtinName, s)
+		}
+	}
+	if maxFires > 0 && mode == "stochastic" {
+		return 0, "", fmt.Errorf("%s(): max_fires= is incompatible with mode=\"stochastic\"", builtinName)
+	}
+	return maxFires, mode, nil
 }
 
 // allow()
