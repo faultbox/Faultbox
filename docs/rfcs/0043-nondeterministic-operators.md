@@ -1,6 +1,6 @@
 # RFC-043: Non-deterministic Spec Operators
 
-> **Status: Draft.** Part of the v0.13.0 epic. Builds on RFC-040 (Determinism Levels) — non-determinism in the spec language only makes sense once we can name what the engine *does* with it. Pairs with RFC-042 (Exploration Plan) which defines the plan-tree machinery this RFC's operators feed into. Subject to RFC-044 (Simplification) — `param()` from RFC-013 will be subsumed by `choose()` defined here.
+> **Status: Implemented (rc1, v0.13.0).** Language surface (§8.1–§8.4, §8.6 partial, §8.8) shipped: `choose()`, `nondet()`, `halt()`, `assume()` are available as Starlark builtins; halt() outside a test body is rejected. rc1 single-leaf semantics — operators return the first option / first leaf; full plan-tree fan-out (§8.5, §8.7 AST sandbox, §8.6 cost-guard) lands with rc2 alongside RFC-042 §8.8. User guide: [docs/nondeterministic-operators.md](../nondeterministic-operators.md).
 
 ## Summary
 
@@ -422,15 +422,15 @@ Per the #84 coverage gate. Goldens for representative scenarios:
 
 | Phase | Scope | Target |
 |-------|-------|--------|
-| 8.1 `nondet()` | Builtin sugar over `choose([True, False])` | v0.13.0-rc1 |
-| 8.2 `choose` | Builtin with one- and two-arity forms | v0.13.0-rc1 |
-| 8.3 `halt` | Body builtin marking current leaf halted | v0.13.0-rc1 |
-| 8.4 `assume` | Top-level builtin + `test(assume=)` kwarg | v0.13.0-rc1 |
-| 8.5 Plan-tree integration | Hook into RFC-042's NonDeterministicChoice | v0.13.0-rc2 |
-| 8.6 Spec-load checks | Static validation per Section 5.8 | v0.13.0-rc2 |
-| 8.7 Restricted sandbox for `assume` | Like monitor predicates (RFC-041) | v0.13.0-rc2 |
-| 8.8 Docs | `docs/nondeterministic-operators.md`, spec-language, manifest, tutorial | v0.13.0-rc2 |
-| 8.9 Tests | Goldens + unit tests + #84 coverage | v0.13.0-rc2 |
+| 8.1 `nondet()` | Builtin sugar over `choose([True, False])` (overloaded against existing `nondet(svc)` form) | ✅ landed (v0.13.0-rc1) |
+| 8.2 `choose` | Builtin with one- and two-arity forms; ChoiceVal value type; rc1 returns first option | ✅ landed (v0.13.0-rc1) |
+| 8.3 `halt` | Body builtin marking current leaf halted; SuiteResult.Halted + bundle outcome | ✅ landed (v0.13.0-rc1) |
+| 8.4 `assume` | Top-level builtin + `test(assume=)` kwarg; sandboxed evaluation thread | ✅ landed (v0.13.0-rc1) |
+| 8.5 Plan-tree integration | Hook into RFC-042's NonDeterministicChoice | 🟡 deferred to rc2 (single-leaf in rc1) |
+| 8.6 Spec-load checks | Static validation per Section 5.8 | 🟡 partial in rc1 (halt() outside body rejected); rest defer to rc2 |
+| 8.7 Restricted sandbox for `assume` | AST walk like monitor predicates (RFC-041) | 🟡 deferred to rc2 (predicates run in tagged thread today; AST walk later) |
+| 8.8 Docs | `docs/nondeterministic-operators.md`, spec-language, manifest | ✅ landed (v0.13.0-rc1; tutorial chapter with rc2) |
+| 8.9 Tests | Unit tests under #84 coverage | ✅ landed (v0.13.0-rc1; testops goldens with rc2 alongside fan-out) |
 | Independence-relation refinement (out of this RFC) | Collapse equivalent branches | RFC-009 |
 | DPOR (out of this RFC) | Runtime branch pruning | RFC-010 |
 | Weighted `choose` (out of this RFC) | `weights=` kwarg | Future, demand-driven |

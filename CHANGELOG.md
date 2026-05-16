@@ -50,8 +50,22 @@ and probability fan-out (§8.9) are deferred to rc2; their flags
 reserved in rc1 with clear "future release" errors so CI integrations
 stay stable. User guide: [docs/exploration.md](docs/exploration.md).
 
-RFC-043 (non-deterministic operators) and RFC-044 (spec-language
-simplification) remain draft RFCs tracked in GitHub issues #112–#113.
+**RFC-043 — non-deterministic operators (rc1).** Four small
+Starlark primitives shipped: `choose([opts])` / `choose("name", [opts])`
+for finite N-way choice, `nondet()` for the non-deterministic boolean
+(sugar for `choose([True, False])`; the pre-existing `nondet(svc)`
+variant for interleaving-control exemption keeps working unchanged),
+`halt(reason="")` for plan-tree branch pruning with a new `"halted"`
+outcome flowing through `SuiteResult`, bundle manifest, and the HTML
+report, and `assume(predicate)` / `test(assume=[...])` for plan-tree
+filtering. rc1 ships the language surface with single-leaf runtime
+semantics — each operator returns the first option / first leaf;
+full plan-tree fan-out and the AST sandbox for assume predicates
+land with rc2 alongside RFC-042 §8.8. User guide:
+[docs/nondeterministic-operators.md](docs/nondeterministic-operators.md).
+
+RFC-044 (spec-language simplification) remains a draft RFC tracked
+in GitHub issue #113.
 RFC-046 carries the post-L1 roadmap (gVisor Path B/C, L4 hermetic
 mode, L5 instruction-boundary research).
 

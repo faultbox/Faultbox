@@ -94,6 +94,9 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | Rule-based `--suggest` for uncovered edges (RFC-042 §8.5) | 2 | `internal/plan/coverage_test.go` (TestWriteSuggestions_*) + `cmd/faultbox/plan_test.go` (TestPlanCmd_SuggestEmitsStubs) | 🟢 | Conservative per-protocol syscall picks; copy-pasteable fault_assumption + fault_scenario stubs; `--strategy=llm` reserved for v0.14.0 |
 | `--check-cost --max-instances N` gate (RFC-042 §8.6) | 2 | `cmd/faultbox/plan_test.go` (TestPlanCmd_CheckCost*) | 🟢 | Exit code 2 when budget exceeded; pre-commit / CI integration |
 | Report Plan tab (RFC-042 §8.10) | 2 | `internal/report/report_test.go` (TestGatherDataIncludesPlanWhenPresent, TestGatherDataOmitsPlanWhenAbsent) | 🟢 | Self-contained HTML render of the plan tree + embedded coverage table; reads `plan.json` from the bundle |
+| `choose([opts])` + `nondet()` (RFC-043 §5.1, §5.2) | 2 | `internal/star/choose_test.go` (arity, empty/non-list rejection, named form, recording, existing nondet(svc) variant) | 🟢 | rc1 single-leaf: returns first option deterministically; ChoiceVal recorded on rt.choices for rc2 plan-tree fan-out |
+| `halt(reason="")` + halted outcome (RFC-043 §5.3) | 2 | `internal/star/halt_test.go` (sentinel, reason, kwarg/arity rejection, top-level rejection, setup rejection, RunTest path) | 🟢 | New SuiteResult.Halted counter + bundle.Summary.Halted + HTML "halted" outcome (grey pill, distinct from pass/fail/inconclusive) |
+| `assume(predicate)` + `test(assume=)` (RFC-043 §5.4) | 2 | `internal/star/assume_test.go` (top-level true/false, lambda choices inspection, type/arity rejection, per-test halt + pass, predicate raise, unnamed-choice skip) | 🟢 | rc1: spec-load evaluation for top-level, body-entry evaluation for per-test; runs in a tagged sandbox starlark.Thread |
 
 ### DX and outputs — Supported / Experimental (proposed)
 
