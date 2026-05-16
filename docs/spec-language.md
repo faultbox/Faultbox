@@ -1388,6 +1388,8 @@ outcomes in `manifest.json` and the HTML report:
 | `expectation_violated` | amber | Body assertions were clean, but the expect predicate disagreed with the result. |
 | `fault_bypassed` | grey | Scenario returned cleanly, but a fault rule was installed and never matched a syscall (only with `require_faults_fire=True`). |
 | `errored` | grey | Scenario raised an untyped error (crash, timeout outside a predicate). |
+| `halted` | grey | RFC-043 `halt()` or `assume=` predicate pruned this branch. No verdict — counted separately from pass/fail. |
+| `inconclusive` | grey | RFC-041 `eventually()` window timed out (or an `await_*` hit its timeout) without producing a verdict. Exit code 3. |
 
 `expectation_violated` is a refinement of `failed` — legacy consumers
 that only know the three-way taxonomy still see the row in the

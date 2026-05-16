@@ -1056,6 +1056,15 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// the test (Result="halted"); a predicate that raises a Starlark
 	// error fails the test. rc2 will defer this to plan-tree pruning.
 	if testCfg != nil && len(testCfg.Assumes) > 0 {
+		// Capture matrix / expectation attribution before the early-exit
+		// returns below so an assume-driven halt/fail is still attributed
+		// to its fault_matrix cell. Without this the matrix column in
+		// reports would be blank for pruned cells (review N4).
+		var preMatrix *MatrixInfo
+		if rt.currentFaultScenario != nil {
+			preMatrix = rt.currentFaultScenario.Matrix
+		}
+		preExpect := rt.expectationName
 		choices := rt.currentChoicesDict()
 		for _, pred := range testCfg.Assumes {
 			ok, msg, err := pred.Evaluate(choices)
@@ -1063,18 +1072,22 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 				rt.stopServices()
 				return TestResult{
 					Name: name, Result: "fail",
-					Reason:     err.Error(),
-					DurationMs: time.Since(start).Milliseconds(),
-					Events:     rt.events.Events(),
+					Reason:          err.Error(),
+					DurationMs:      time.Since(start).Milliseconds(),
+					Events:          rt.events.Events(),
+					Matrix:          preMatrix,
+					ExpectationName: preExpect,
 				}
 			}
 			if !ok {
 				rt.stopServices()
 				return TestResult{
 					Name: name, Result: "halted",
-					Reason:     msg,
-					DurationMs: time.Since(start).Milliseconds(),
-					Events:     rt.events.Events(),
+					Reason:          msg,
+					DurationMs:      time.Since(start).Milliseconds(),
+					Events:          rt.events.Events(),
+					Matrix:          preMatrix,
+					ExpectationName: preExpect,
 				}
 			}
 		}
@@ -1219,10 +1232,17 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 
 	retVal := bo.retVal
 	err := bo.err
-	if err != nil && cause == TerminationNatural {
+	if err != nil && cause == TerminationNatural && !errors.Is(err, ErrHalt) {
 		// Body raised — promote to immediate-fail cause so Finalize
 		// rolls pending eventually's into the failure rather than
 		// trying to evaluate them against an unstable trace.
+		//
+		// halt() is intentionally excluded: it is a clean plan-tree
+		// pruning signal, not a body failure. We want cause to stay
+		// Natural so the halted early-return below fires. If always()
+		// also violated, cause was already set to TerminationImmediateFail
+		// by the select arm above and the halted return won't run —
+		// that's the priority-inversion fix from review B1.
 		cause = TerminationImmediateFail
 	}
 
@@ -1258,7 +1278,13 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		// halted (a plan-tree pruning signal, not a real outcome) so
 		// suite-level pass/fail tallies stay clean. The reason, if
 		// supplied, surfaces in the trace for the report.
-		if errors.Is(err, ErrHalt) {
+		//
+		// Priority: an always() invariant violation (cause ==
+		// TerminationImmediateFail) outranks halt(). A test that both
+		// halts AND violates an invariant must be recorded as "fail";
+		// silently downgrading to "halted" would swallow the verdict.
+		// Convert to halted only on the natural-termination path.
+		if errors.Is(err, ErrHalt) && cause == TerminationNatural {
 			reason := "halt()"
 			var he *HaltError
 			if errors.As(err, &he) && he.Reason != "" {

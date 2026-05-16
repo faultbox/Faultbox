@@ -72,7 +72,8 @@ def body():
 - HTML report row rendered with a grey pill (same palette as `fault_bypassed`)
 
 **Constraints:**
-- `halt()` is rejected outside a test body. Calls at module top-level or inside `setup=` error at spec load with *"halt() may only be called inside a test body."*
+- `halt()` is rejected outside a test body. Module-top-level calls error at spec load. Calls inside `setup=` are rejected at run time (before the body starts; the test is recorded as `"fail"`) with the same message: *"halt() may only be called inside a test body."*
+- `halt()` inside a monitor `check=` / `update=` lambda is also unsupported — `inTest` is set during a test, so the call is reached, but the `*HaltError` propagates as a monitor violation (`Result="fail"`, reason `"monitor violation: halt"`). Treat this as an opaque error; use `assume()` to filter unwanted branches instead.
 - An optional string reason is rendered in the trace/report.
 
 ## `assume(predicate)` and `test(assume=[...])`
@@ -92,6 +93,8 @@ test("ordered_check",
 
 The predicate receives a `choices` dict mapping each named `choose("name", opts)` call to its currently-selected option. Unnamed `choose()` calls are not visible to `assume` predicates.
 
+> **rc1 visibility:** Per-test `assume=` predicates run **before the body** starts, so they only see choices recorded at spec load (top-level `choose(...)` calls). Choices made *inside the body* are recorded after the predicate has already executed and therefore are absent from `choices`. A predicate referencing a body-only key gets a `KeyError` → `Result="fail"`. rc2's per-leaf evaluation makes body-time choices visible.
+
 **rc1 semantics:**
 - Top-level `assume(False)` (or a lambda returning false) **fails spec load** with `"assume(...) violated at spec load."`
 - Per-test `assume=` predicates **halt the test** (outcome `"halted"`) on the first failure.
@@ -99,7 +102,7 @@ The predicate receives a `choices` dict mapping each named `choose("name", opts)
 
 **rc2** will defer evaluation to per-leaf and prune the plan tree instead of erroring at load.
 
-**Predicates run in a sandbox starlark.Thread** (tagged `"assume:<name>"`). rc2 will add a full AST walk that rejects predicates referencing services, faults, or other runtime state — same model as RFC-041's monitor `update`/`check` sandbox.
+**rc1 sandbox status:** predicates execute on a thread tagged `"assume:<name>"`, but **no builtin denylist is yet enforced** — a predicate today can call `fault()`, `service()`, `halt()`, or any runtime builtin. The AST-walk denylist (the same model as RFC-041's monitor `update`/`check` sandbox) lands in rc2 alongside §8.7. Treat predicates as pure functions of `choices` until then.
 
 ## Composition example
 

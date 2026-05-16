@@ -1,6 +1,7 @@
 package star
 
 import (
+	"strings"
 	"testing"
 
 	"go.starlark.net/starlark"
@@ -78,6 +79,27 @@ func TestChoose_NamedFormStringRequired(t *testing.T) {
 	err := rt.LoadString("spec.star", `x = choose(42, [1, 2])`)
 	if err == nil {
 		t.Fatal("expected error when name arg is not a string")
+	}
+}
+
+// Review B2: nondet(svc=x) must not silently bypass the
+// service-exclusion path by taking the zero-arg boolean route.
+// Reject kwargs explicitly so the call surface stays unambiguous.
+func TestNondet_RejectsKwargs(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+nondet(svc=svc)
+`
+	err := rt.LoadString("spec.star", src)
+	if err == nil {
+		t.Fatal("expected error for nondet(svc=...)")
+	}
+	if !strings.Contains(err.Error(), "keyword arguments are not accepted") {
+		t.Errorf("error should mention kwargs are rejected; got %v", err)
+	}
+	if rt.nondetServices["svc"] {
+		t.Error("svc must NOT be marked nondet when call errored")
 	}
 }
 

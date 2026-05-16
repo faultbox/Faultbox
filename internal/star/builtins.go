@@ -1823,14 +1823,22 @@ func (rt *Runtime) builtinFaultMatrix(thread *starlark.Thread, fn *starlark.Buil
 //
 //   - `nondet()` (zero-arg) — RFC-043 §5.1 non-deterministic boolean.
 //     Sugar for `choose([True, False])`; registers as a 2-branch
-//     choice for the plan tree and returns False at runtime in
+//     choice for the plan tree and returns True at runtime in
 //     v0.13.0-rc1 (rc2 will fan out the plan and return the per-leaf
 //     value).
 //   - `nondet(svc, ...)` (variadic) — pre-RFC-043 behavior: marks
 //     services as exempt from interleaving control during parallel().
 //     Existing specs continue to work unchanged. RFC-044 may unify
 //     the two surfaces later.
+//
+// Keyword arguments are rejected to keep the two arities unambiguous:
+// `nondet(svc=x)` would otherwise silently fall through to the
+// zero-arg boolean path and leave the service untagged for
+// interleaving control (review B2).
 func (rt *Runtime) builtinNondet(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(kwargs) > 0 {
+		return nil, fmt.Errorf("nondet(): keyword arguments are not accepted; use nondet(svc) for service exclusion or nondet() for the RFC-043 boolean")
+	}
 	if len(args) == 0 {
 		// RFC-043 §5.1 — non-deterministic boolean.
 		c := &ChoiceVal{Options: []starlark.Value{starlark.True, starlark.False}}
