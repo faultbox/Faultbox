@@ -1199,6 +1199,20 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		// Body completed under its own power. cause stays Natural
 		// unless the body raised; that's classified after we examine
 		// the error below.
+		//
+		// Drain alwaysFired / twFired non-blockingly to disambiguate
+		// the simultaneous-ready case: if both bodyDone and one of the
+		// signals were ready at the same scheduling tick, Go's select
+		// chooses uniformly at random — losing the violation/terminate
+		// signal would silently drop an invariant failure (issue #119).
+		// Mirrors the disambiguation in the bodyCtx.Done() arm.
+		select {
+		case <-alwaysFired:
+			cause = TerminationImmediateFail
+		case <-twFired:
+			cause = TerminationTerminateWhen
+		default:
+		}
 	case <-alwaysFired:
 		// always() invariant violated mid-run. RFC-041 §5.2 — fail
 		// immediately, rolling pending eventually's into the verdict.
