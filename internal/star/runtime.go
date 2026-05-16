@@ -312,6 +312,13 @@ type Runtime struct {
 	mockTLSImpl *mockTLS
 	mockTLSErr  error
 
+	// Recorded choose() call sites (RFC-043 §5.2). rc1 collects them
+	// for plan-tree visibility; rc2 will fan the plan tree out across
+	// the option set. Same locking contract as the other post-load
+	// read-only accessors.
+	choicesMu sync.Mutex
+	choices   []*ChoiceVal
+
 	// Determinism state — RFC-040. Populated by the determinism() top-level
 	// builtin (or defaults to L1 / runtime=default / strict=True if not
 	// called). Detection layer (Phase 3) reads detLevel and detAllow before

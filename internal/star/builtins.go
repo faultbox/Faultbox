@@ -48,6 +48,11 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"monitor":           starlark.NewBuiltin("monitor", rt.builtinMonitor),
 		"partition":         starlark.NewBuiltin("partition", rt.builtinPartition),
 		"nondet":            starlark.NewBuiltin("nondet", rt.builtinNondet),
+		// RFC-043 §5.2 — finite non-deterministic choice. Zero-arg
+		// `nondet()` is sugar for `choose([True, False])`; that
+		// overload is wired in builtinNondet itself to avoid renaming
+		// the existing nondet(service, ...) variant.
+		"choose":            starlark.NewBuiltin("choose", rt.builtinChoose),
 		"trace":             starlark.NewBuiltin("trace", rt.builtinTrace),
 		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
@@ -1805,12 +1810,23 @@ func (rt *Runtime) builtinFaultMatrix(thread *starlark.Thread, fn *starlark.Buil
 	return starlark.None, nil
 }
 
-// nondet(service, ...) — marks one or more services as nondeterministic,
-// excluding them from interleaving control during parallel().
-// Their syscalls proceed immediately.
+// nondet has two arities:
+//
+//   - `nondet()` (zero-arg) — RFC-043 §5.1 non-deterministic boolean.
+//     Sugar for `choose([True, False])`; registers as a 2-branch
+//     choice for the plan tree and returns False at runtime in
+//     v0.13.0-rc1 (rc2 will fan out the plan and return the per-leaf
+//     value).
+//   - `nondet(svc, ...)` (variadic) — pre-RFC-043 behavior: marks
+//     services as exempt from interleaving control during parallel().
+//     Existing specs continue to work unchanged. RFC-044 may unify
+//     the two surfaces later.
 func (rt *Runtime) builtinNondet(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if len(args) < 1 {
-		return nil, fmt.Errorf("nondet() requires at least one service argument")
+	if len(args) == 0 {
+		// RFC-043 §5.1 — non-deterministic boolean.
+		c := &ChoiceVal{Options: []starlark.Value{starlark.True, starlark.False}}
+		rt.recordChoice(c)
+		return c.FirstOption(), nil
 	}
 	if rt.nondetServices == nil {
 		rt.nondetServices = make(map[string]bool)
@@ -1818,7 +1834,7 @@ func (rt *Runtime) builtinNondet(thread *starlark.Thread, fn *starlark.Builtin, 
 	for i, arg := range args {
 		svc, ok := arg.(*ServiceDef)
 		if !ok {
-			return nil, fmt.Errorf("nondet() argument %d must be a service, got %s", i, arg.Type())
+			return nil, fmt.Errorf("nondet() argument %d must be a service (or zero args for the RFC-043 boolean), got %s", i, arg.Type())
 		}
 		rt.nondetServices[svc.Name] = true
 	}
