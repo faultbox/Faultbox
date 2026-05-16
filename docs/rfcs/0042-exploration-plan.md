@@ -1,6 +1,6 @@
 # RFC-042: Exploration Plan & Coverage Engine
 
-> **Status: Draft.** Part of the v0.13.0 epic. Builds on RFC-040 (Determinism Levels) — plan visualization is meaningful only because L0 plan determinism guarantees the same tree on every run. Pairs with RFC-041 (Temporal Properties — to be filed).
+> **Status: Implemented (rc1, v0.13.0).** Analysis surface (§8.1–§8.7, §8.10, §8.11) shipped; execution surface (§8.8 spec-level interleaving fan-out, §8.9 probability fan-out) deferred to rc2. The rc2 work changes runtime semantics — see the per-section status in §8 below. User guide: [docs/exploration.md](../exploration.md).
 
 ## Summary
 
@@ -575,19 +575,19 @@ Per the #84 coverage gate: every new file in `cmd/faultbox/` and `internal/star/
 
 | Phase | Scope | Target |
 |-------|-------|--------|
-| 8.1 CLI skeleton | `faultbox plan` subcommand wiring | v0.13.0-rc1 |
-| 8.2 Plan-tree enumeration | Pure function in `internal/star/`; reused by `test` | v0.13.0-rc1 |
-| 8.3 JSON output | `--format=json` with versioned schema | v0.13.0-rc1 |
-| 8.4 Coverage analysis | Edge × test cross-reference in `internal/generate/` | v0.13.0-rc2 |
-| 8.5 Suggestion output | `--suggest` using existing rule-based codegen | v0.13.0-rc2 |
-| 8.6 Cost gate | `--check-cost --max-instances=N` | v0.13.0-rc2 |
-| 8.7 Bundle integration | `plan.json` written by every `faultbox test` run | v0.13.0-rc1 |
-| 8.8 Spec-level interleaving | Enumeration (kwarg + plan-tree fan-out) + execution (hold-and-release sequencing) | v0.13.0-rc2 (split between rc1 enumeration / rc2 execution) |
-| 8.9 Probability fan-out | Static trigger-count analysis + `max_fires=` / `mode=` kwargs + engine integration | v0.13.0-rc2 |
-| 8.10 Report integration | Plan tab in HTML report (RFC-029 follow-up) | v0.13.0-rc2 |
-| 8.11 Reserved syntax | `--strategy=llm` (LLM suggestions); SUT-internal interleaving exploration flags | v0.13.0-rc1 |
-| 8.12 Docs | `docs/exploration.md`, CLI reference, tutorial, **probability migration note** | v0.13.0-rc2 |
-| 8.13 Tests | Goldens + unit tests + #84 coverage | v0.13.0-rc2 |
+| 8.1 CLI skeleton | `faultbox plan` subcommand wiring | ✅ landed (v0.13.0-rc1) |
+| 8.2 Plan-tree enumeration | Pure function in `internal/plan/Enumerate(rt)`; reused by `test` | ✅ landed (v0.13.0-rc1) |
+| 8.3 JSON output | `--format=json` + `--format=dot` with versioned schema | ✅ landed (v0.13.0-rc1) |
+| 8.4 Coverage analysis | Edge × test cross-reference in `internal/plan/WithCoverage` | ✅ landed (v0.13.0-rc1) |
+| 8.5 Suggestion output | `--suggest` rule-based stub emitter | ✅ landed (v0.13.0-rc1) |
+| 8.6 Cost gate | `--check-cost --max-instances=N` | ✅ landed (v0.13.0-rc1) |
+| 8.7 Bundle integration | `plan.json` written by every `faultbox test` run; `Reader.PlanJSON()` accessor | ✅ landed (v0.13.0-rc1) |
+| 8.8 Spec-level interleaving | Enumeration + execution via hold-and-release sequencing | 🟡 deferred to rc2 (kwarg surface reserved) |
+| 8.9 Probability fan-out | Static trigger-count analysis + `max_fires=` / `mode=` kwargs + engine integration | 🟡 deferred to rc2 (changes runtime semantics) |
+| 8.10 Report integration | Plan tab in HTML report (RFC-029 follow-up) | ✅ landed (v0.13.0-rc1) |
+| 8.11 Reserved syntax | `--strategy=llm` (LLM suggestions); interleavings="dpor"/"sut-internal" | ✅ landed (v0.13.0-rc1) |
+| 8.12 Docs | `docs/exploration.md`, CLI reference, manifest, RFC status | ✅ landed (v0.13.0-rc1) |
+| 8.13 Tests | Unit + CLI tests under the #84 coverage gate; rc2 will add testops goldens | ✅ landed (v0.13.0-rc1; goldens deferred) |
 | LLM-driven suggestions (out of this RFC) | `--strategy=llm` via MCP | v0.14.0 / RFC-043 |
 | Independence-relation refinement (out of this RFC) | Collapse equivalent interleavings via Mazurkiewicz traces | RFC-009 |
 | Runtime DPOR interleaving exploration (out of this RFC) | Deterministically drive each interleaving | RFC-010, post-v2.0 |

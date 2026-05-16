@@ -3355,6 +3355,119 @@
     }
   }
 
+  // RFC-042 §8.10 — Plan tab. Reads data.plan (the plan.json the
+  // bundle carries) and renders the test tree + coverage summary in a
+  // compact, scannable form. Falls back to a "no plan data" note for
+  // pre-RFC-042 bundles so older fixtures still render.
+  function renderPlan(data) {
+    var section = document.getElementById("plan-section");
+    var host = document.getElementById("plan-body");
+    if (!section || !host) return;
+    var plan = data.plan;
+    if (!plan || typeof plan !== "object") {
+      section.hidden = true;
+      return;
+    }
+    section.hidden = false;
+    host.innerHTML = "";
+
+    // Header line: spec / seed / determinism / totals.
+    var head = el("div", { class: "plan-head" });
+    if (plan.spec_path) head.appendChild(el("span", { class: "mono", text: plan.spec_path }));
+    var det = plan.determinism || {};
+    var detText = "Determinism " + (det.level || "?");
+    if (det.strict) detText += " (strict)";
+    head.appendChild(el("span", { class: "plan-pill", text: detText }));
+    var totals = plan.totals || {};
+    head.appendChild(el("span", {
+      class: "plan-pill",
+      text: (totals.instances || 0) + " instance" + ((totals.instances || 0) === 1 ? "" : "s"),
+    }));
+    host.appendChild(head);
+
+    // Test list.
+    var tests = plan.tests || [];
+    if (!tests.length) {
+      host.appendChild(el("p", { class: "plan-empty", text: "No tests discovered." }));
+    } else {
+      var list = el("ul", { class: "plan-tests" });
+      for (var i = 0; i < tests.length; i++) {
+        list.appendChild(renderPlanTest(tests[i]));
+      }
+      host.appendChild(list);
+    }
+
+    // Embedded coverage summary if the bundle carried one.
+    var cov = plan.coverage;
+    if (cov && cov.edges && cov.edges.length) {
+      host.appendChild(renderPlanCoverage(cov));
+    }
+  }
+
+  function renderPlanTest(t) {
+    var item = el("li", { class: "plan-test plan-test-" + (t.kind || "unknown") });
+    var head = el("div", { class: "plan-test-head" });
+    head.appendChild(el("span", { class: "plan-test-name mono", text: t.name }));
+    head.appendChild(el("span", { class: "plan-test-kind", text: "[" + (t.kind || "?") + "]" }));
+    head.appendChild(el("span", { class: "plan-test-count", text: (t.instances || 1) + "x" }));
+    item.appendChild(head);
+
+    if (t.compositions) {
+      for (var ci = 0; ci < t.compositions.length; ci++) {
+        var comp = t.compositions[ci];
+        var compEl = el("div", { class: "plan-comp" });
+        compEl.appendChild(el("span", { class: "plan-comp-kind", text: comp.kind }));
+        for (var ai = 0; ai < (comp.axes || []).length; ai++) {
+          var ax = comp.axes[ai];
+          var vals = (ax.values || []).join(", ");
+          compEl.appendChild(el("span", { class: "plan-axis", text: ax.name + ": [" + vals + "]" }));
+        }
+        item.appendChild(compEl);
+      }
+    }
+    if (t.faults && t.faults.length) {
+      item.appendChild(el("div", { class: "plan-faults", text: "faults: [" + t.faults.join(", ") + "]" }));
+    }
+    if (t.matrix_cells && t.matrix_cells.length) {
+      // Show the individual cell names for a fault_matrix entry. The
+      // tree groups them under one PlanTest; the cell list lets users
+      // see exactly which (scenario, fault) tuples ran.
+      item.appendChild(el("div", {
+        class: "plan-cells",
+        text: "cells: " + t.matrix_cells.join(", "),
+      }));
+    }
+    if (t.expect) {
+      item.appendChild(el("div", { class: "plan-expect", text: "expect: " + t.expect }));
+    }
+    if (t.timeout) {
+      item.appendChild(el("div", { class: "plan-timeout", text: "timeout: " + t.timeout }));
+    }
+    return item;
+  }
+
+  function renderPlanCoverage(cov) {
+    var wrap = el("div", { class: "plan-coverage" });
+    wrap.appendChild(el("h3", { text: "Coverage" }));
+    wrap.appendChild(el("p", {
+      class: "plan-coverage-summary",
+      text: cov.uncovered_edges + " of " + (cov.edges || []).length + " edges without a fault test",
+    }));
+    var table = el("table", { class: "plan-coverage-table" });
+    for (var i = 0; i < cov.edges.length; i++) {
+      var e = cov.edges[i];
+      var row = el("tr", { class: e.fault_tests && e.fault_tests.length ? "covered" : "uncovered" });
+      row.appendChild(el("td", { text: e.from + " → " + e.to }));
+      row.appendChild(el("td", { text: e.protocol || "" }));
+      row.appendChild(el("td", {
+        text: (e.fault_tests && e.fault_tests.length) ? e.fault_tests.join(", ") : "—",
+      }));
+      table.appendChild(row);
+    }
+    wrap.appendChild(table);
+    return wrap;
+  }
+
   function specAnchorId(path, line) {
     return "spec-" + path.replace(/[^a-zA-Z0-9_.-]/g, "_") + "-L" + line;
   }
@@ -3691,6 +3804,7 @@
     // text — the links still render, but they're not actionable.
     renderSpec(data);
     renderCoverage(data);
+    renderPlan(data);
     renderRepro(data);
 
     wireDrillDownClose();

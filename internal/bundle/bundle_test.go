@@ -269,6 +269,75 @@ func TestBuildPopulatesAllCoreFiles(t *testing.T) {
 	}
 }
 
+// TestBuildEmitsPlanJSON checks that BuildInput.Plan lands in the
+// bundle as `plan.json` (RFC-042 §8.7) and survives a round trip
+// through the Reader's PlanJSON accessor. Older bundles without Plan
+// continue to work — see TestBuildPopulatesAllCoreFiles.
+func TestBuildEmitsPlanJSON(t *testing.T) {
+	planBytes := []byte(`{"schema_version":1,"tests":[],"totals":{"instances":0}}`)
+	in := BuildInput{
+		FaultboxVersion: "0.13.0-test",
+		Seed:            7,
+		SpecRoot:        "spec.star",
+		CreatedAt:       time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+		Tests:           []TestRow{{Name: "test_x", Outcome: "passed", DurationMs: 1}},
+		Trace:           []byte(`{"v":1}`),
+		Plan:            planBytes,
+	}
+	w, _, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buf, err := w.encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	contents := readBundleBytes(t, buf.Bytes())
+	got, ok := contents["plan.json"]
+	if !ok {
+		t.Fatalf("plan.json missing from bundle; entries: %v", keysOf(contents))
+	}
+	// Build appends a trailing newline for jq-friendliness; assert the
+	// payload before stripping.
+	if !bytes.HasSuffix(got, []byte("\n")) {
+		t.Errorf("plan.json should end with newline; got %q", got)
+	}
+	if !bytes.Equal(bytes.TrimRight(got, "\n"), planBytes) {
+		t.Errorf("plan.json round-trip mismatch:\n got=%s\nwant=%s", got, planBytes)
+	}
+}
+
+func TestBuildOmitsPlanJSONWhenEmpty(t *testing.T) {
+	in := BuildInput{
+		FaultboxVersion: "0.13.0-test",
+		Seed:            7,
+		SpecRoot:        "spec.star",
+		Tests:           []TestRow{{Name: "test_x", Outcome: "passed"}},
+		Trace:           []byte(`{"v":1}`),
+		// Plan: nil — older callers / --no-plan path.
+	}
+	w, _, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buf, err := w.encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	contents := readBundleBytes(t, buf.Bytes())
+	if _, ok := contents["plan.json"]; ok {
+		t.Error("plan.json should be absent when BuildInput.Plan is nil")
+	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // TestBuildRecordsRemotesInEnvJSON checks that BuildInput.Remotes lands
 // in env.json under the `remotes` field (RFC-036). Empty Remotes omits
 // the field entirely (older readers don't even know it exists).

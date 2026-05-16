@@ -156,6 +156,16 @@ func (r *Reader) File(name string) ([]byte, error) {
 	return b, nil
 }
 
+// PlanJSON returns the raw plan.json bytes, or (nil, false) if the
+// bundle has no plan file. Older bundles emitted before RFC-042 §8.7
+// don't carry one. Callers wanting an unmarshalled tree pass the
+// bytes to plan.PlanTree{}.UnmarshalJSON; we keep this package free
+// of the internal/plan import to avoid a cycle.
+func (r *Reader) PlanJSON() ([]byte, bool) {
+	b, ok := r.files["plan.json"]
+	return b, ok
+}
+
 // Extract writes every entry to dst, preserving the archive's
 // relative layout. dst is created if missing. Re-extraction over an
 // existing directory overwrites matching entries; other files in dst

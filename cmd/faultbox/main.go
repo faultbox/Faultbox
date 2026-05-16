@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,6 +29,7 @@ import (
 	"github.com/faultbox/Faultbox/internal/generate"
 	"github.com/faultbox/Faultbox/internal/logging"
 	"github.com/faultbox/Faultbox/internal/mcp"
+	"github.com/faultbox/Faultbox/internal/plan"
 	"github.com/faultbox/Faultbox/internal/seccomp"
 	"github.com/faultbox/Faultbox/internal/star"
 	"github.com/faultbox/Faultbox/internal/templates"
@@ -69,6 +71,8 @@ func run() int {
 		return testCmd(args[1:])
 	case "generate":
 		return generateCmd(args[1:])
+	case "plan":
+		return planCmd(args[1:])
 	case "diff":
 		return diffCmd(args[1:])
 	case "init":
@@ -193,6 +197,10 @@ func testCmd(args []string) int {
 	// emission entirely (CI opt-out).
 	var bundlePath string
 	var noBundle bool
+	// RFC-042 §8.7 — `faultbox test` enumerates the plan tree as the
+	// first phase and writes it into the bundle as plan.json. --no-plan
+	// skips the enumeration (debug only — adds <100ms for normal specs).
+	var noPlan bool
 	// RFC-040 §8.3 — strict-determinism CLI override. nil = follow the
 	// spec's determinism(strict=...). --strict-determinism / =true forces
 	// strict on; --no-strict-determinism / --strict-determinism=false
@@ -286,6 +294,8 @@ func testCmd(args []string) int {
 			args = args[1:]
 		case args[0] == "--no-bundle":
 			noBundle = true
+		case args[0] == "--no-plan":
+			noPlan = true
 		case strings.HasSuffix(args[0], ".star"):
 			starFile = args[0]
 		case strings.HasSuffix(args[0], ".yaml") || strings.HasSuffix(args[0], ".yml"):
@@ -349,7 +359,7 @@ func testCmd(args []string) int {
 			ExploreMode:       exploreMode,
 			StrictDeterminism: strictDet,
 		}
-		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, formatFlag, logFormat, logLevel, dryRun, bundlePath, noBundle)
+		return testStarCmd(starFile, rcfg, outputPath, shivizPath, normalizePath, formatFlag, logFormat, logLevel, dryRun, bundlePath, noBundle, noPlan)
 	}
 
 	return testYAMLCmd(configPath, specPath, outputPath, logFormat, logLevel)
@@ -359,7 +369,7 @@ func testCmd(args []string) int {
 // bundlePath ("" = default filename) and noBundle control RFC-025
 // archive bundle emission; when noBundle is true the run produces
 // only the legacy --output files and no .fb archive.
-func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level, dryRun bool, bundlePath string, noBundle bool) int {
+func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level, dryRun bool, bundlePath string, noBundle, noPlan bool) int {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
 
@@ -400,6 +410,29 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+
+	// RFC-042 §8.7 — enumerate the plan tree BEFORE RunAll so plan.json
+	// captures the intent (configured seed, declared topology, declared
+	// tests) rather than execution state. RunAll mutates rt.seed (it
+	// captures the per-iteration seed into the field) so a post-RunAll
+	// Enumerate would serialise a stale "seed": 0 for unseeded specs
+	// and the last-iteration seed under --runs=N.
+	var planBytes []byte
+	if !noPlan {
+		pt := plan.Enumerate(rt)
+		// Attach coverage so the bundle's plan.json is self-describing
+		// — the report's Plan tab and any post-hoc analysis see the
+		// "uncovered edges" signal without re-loading the spec.
+		if err := plan.WithCoverage(pt, rt); err != nil {
+			logger.Warn("plan coverage analysis failed", slog.String("error", err.Error()))
+		}
+		var buf bytes.Buffer
+		if err := plan.WriteJSON(&buf, pt); err != nil {
+			logger.Warn("plan enumeration failed", slog.String("error", err.Error()))
+		} else {
+			planBytes = buf.Bytes()
+		}
+	}
 
 	result, err := rt.RunAll(ctx, rcfg)
 	if err != nil {
@@ -461,7 +494,9 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		if rcfg.Seed != nil {
 			seedVal = int64(*rcfg.Seed)
 		}
-		if err := emitBundle(logger, starFile, seedVal, result, bundlePath, rt.LoadedSpecs(), collectRemoteRecords(rt)); err != nil {
+		// planBytes was computed pre-RunAll (above) so it captures
+		// the spec's declared seed instead of RunAll's stale field.
+		if err := emitBundle(logger, starFile, seedVal, result, bundlePath, rt.LoadedSpecs(), collectRemoteRecords(rt), planBytes); err != nil {
 			logger.Error("bundle emit failed", slog.String("error", err.Error()))
 			// Non-fatal: we still want pass/fail status to flow out.
 		}
@@ -1824,6 +1859,7 @@ func printUsage() {
   faultbox run [flags] <binary> [args...]    Run a single service
   faultbox test [flags] <file.star>          Run multi-service tests
   faultbox generate <file.star> [flags]     Generate failure scenarios
+  faultbox plan <file.star> [flags]          Enumerate the plan tree (no execution)
   faultbox init [flags] <binary>             Generate starter .star file
   faultbox diff <trace1> <trace2>            Compare normalized traces
   faultbox self-update                       Update to the latest version
@@ -2142,7 +2178,7 @@ func collectRemoteRecords(rt *star.Runtime) []bundle.RemoteRecord {
 // (RFC-036). Empty when no remote services were used. Threaded through
 // to env.json so `faultbox replay` can detect non-deterministic bundles
 // and warn the user (see RFC-037 for the determinism story).
-func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.SuiteResult, explicitPath string, specs map[string][]byte, remotes []bundle.RemoteRecord) error {
+func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.SuiteResult, explicitPath string, specs map[string][]byte, remotes []bundle.RemoteRecord, planBytes []byte) error {
 	if result == nil {
 		return nil
 	}
@@ -2168,6 +2204,7 @@ func emitBundle(logger *slog.Logger, starFile string, seed int64, result *star.S
 		Trace:           traceBytes,
 		Specs:           specs,
 		Remotes:         remotes,
+		Plan:            planBytes,
 	}
 	if result.Crash != nil {
 		in.Crash = &bundle.CrashInfo{

@@ -57,6 +57,14 @@ type BuildInput struct {
 	// run (RFC-036). Threaded through to env.json. Empty for bundles
 	// that didn't use any `service(remote=...)`.
 	Remotes []RemoteRecord
+
+	// Plan is the pre-marshalled JSON of internal/plan.PlanTree (RFC-042
+	// §8.7). Written into the bundle as `plan.json` when non-empty so
+	// every test run carries "what was supposed to happen" alongside
+	// the trace. The bundle package marshals nothing itself — callers
+	// produce the bytes via plan.WriteJSON — to keep this package
+	// import-clean of internal/star and internal/plan.
+	Plan []byte
 }
 
 // Build assembles a Writer populated with manifest.json, env.json,
@@ -96,6 +104,9 @@ func Build(in BuildInput) (*Writer, string, error) {
 	}
 	if len(in.Trace) > 0 {
 		w.AddFile("trace.json", ensureJSONTrailingNewline(in.Trace))
+	}
+	if len(in.Plan) > 0 {
+		w.AddFile("plan.json", ensureJSONTrailingNewline(in.Plan))
 	}
 	w.AddFile("replay.sh", GenerateReplayScript(filename, in.FaultboxVersion, in.CreatedAt))
 

@@ -4,6 +4,7 @@ package generate
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/faultbox/Faultbox/internal/star"
@@ -88,8 +89,17 @@ func Analyze(rt *star.Runtime) (*Analysis, error) {
 			})
 		}
 
-		// Environment variable wiring — look for references to other services.
-		for _, val := range svc.Env {
+		// Environment variable wiring — look for references to other
+		// services. Iterate keys in sorted order so the resulting edge
+		// order is byte-stable across runs (RFC-042 §8.7 plan.json
+		// determinism guarantee).
+		envKeys := make([]string, 0, len(svc.Env))
+		for k := range svc.Env {
+			envKeys = append(envKeys, k)
+		}
+		sort.Strings(envKeys)
+		for _, k := range envKeys {
+			val := svc.Env[k]
 			lowerVal := strings.ToLower(val)
 			for _, other := range rt.Services() {
 				if other.Name == svc.Name {
@@ -98,9 +108,18 @@ func Analyze(rt *star.Runtime) (*Analysis, error) {
 				lowerName := strings.ToLower(other.Name)
 
 				// Check if env value references another service's address.
+				// Sort interface keys so the "first-match wins" protocol
+				// pick is deterministic across runs (the Interfaces map
+				// has no inherent order). Review note B6.
 				matched := false
 				protocol := ""
-				for _, iface := range other.Interfaces {
+				ifaceKeys := make([]string, 0, len(other.Interfaces))
+				for n := range other.Interfaces {
+					ifaceKeys = append(ifaceKeys, n)
+				}
+				sort.Strings(ifaceKeys)
+				for _, n := range ifaceKeys {
+					iface := other.Interfaces[n]
 					addr := strings.ToLower(fmt.Sprintf("%s:%d", other.Name, iface.Port))
 					if strings.Contains(lowerVal, addr) ||
 						strings.Contains(lowerVal, lowerName+".") {
@@ -119,8 +138,10 @@ func Analyze(rt *star.Runtime) (*Analysis, error) {
 				}
 
 				// Match service.interface.addr patterns (e.g., postgres.db.addr).
+				// Sorted iteration for deterministic first-match (B6).
 				if !matched {
-					for _, iface := range other.Interfaces {
+					for _, n := range ifaceKeys {
+						iface := other.Interfaces[n]
 						ifaceRef := strings.ToLower(fmt.Sprintf("%s.%s.", other.Name, iface.Name))
 						if strings.Contains(lowerVal, ifaceRef) {
 							matched = true

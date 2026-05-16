@@ -36,10 +36,24 @@ verdict (PASS / FAIL / **INCONCLUSIVE**) plus a declarative
 `test(name, body=, timeout=, expect=, terminate_when=)` builtin.
 User guide: [docs/temporal.md](docs/temporal.md).
 
-RFC-042 (exploration plan), RFC-043 (non-deterministic operators),
-and RFC-044 (spec-language simplification) remain draft RFCs tracked
-in GitHub issues #111–#113. RFC-046 carries the post-L1 roadmap
-(gVisor Path B/C, L4 hermetic mode, L5 instruction-boundary research).
+**RFC-042 — exploration plan (rc1).** Static plan-tree enumeration
+shipped: the new `faultbox plan` subcommand walks a loaded spec and
+prints the test instances it will produce, including matrix axes and
+coverage gaps, without launching any service. Every `faultbox test`
+run now writes the same tree to the bundle as `plan.json`, and the
+HTML report gains a Plan tab beside the trace tab. Coverage analysis
+flags uncovered dependency edges; `--suggest` emits copy-pasteable
+fault_assumption + fault_scenario stubs; `--check-cost` is a
+pre-commit / CI cost gate. Spec-level interleaving execution (§8.8)
+and probability fan-out (§8.9) are deferred to rc2; their flags
+(`interleavings=`, `max_fires=`, `mode=`, `--strategy=llm`) are
+reserved in rc1 with clear "future release" errors so CI integrations
+stay stable. User guide: [docs/exploration.md](docs/exploration.md).
+
+RFC-043 (non-deterministic operators) and RFC-044 (spec-language
+simplification) remain draft RFCs tracked in GitHub issues #112–#113.
+RFC-046 carries the post-L1 roadmap (gVisor Path B/C, L4 hermetic
+mode, L5 instruction-boundary research).
 
 ### Added
 
