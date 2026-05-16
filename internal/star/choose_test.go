@@ -1,6 +1,7 @@
 package star
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -116,6 +117,73 @@ nondet(svc)
 	}
 	if !rt.nondetServices["svc"] {
 		t.Errorf("expected svc to be marked nondet, got %v", rt.nondetServices)
+	}
+}
+
+// TestChoose_LeafPinsSelection — when rt.currentLeaf assigns a named
+// choose() axis, builtinChoose returns that option instead of the
+// first. Proves the rc2 fan-out data path is wired end-to-end; the
+// plan-tree enumerator in PR 2 of this slice produces the leaves.
+func TestChoose_LeafPinsSelection(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def test_leaf_pinned():
+    r = choose("retries", [0, 1, 3])
+    assert_eq(r, 3, "leaf-pinned choose should return option index 2")
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	leaf := &PlanLeaf{Index: 7, Choices: map[string]int{"retries": 2}}
+	tr := rt.RunTestLeaf(context.Background(), "test_leaf_pinned", leaf)
+	if tr.Result != "pass" {
+		t.Fatalf("Result = %q (want pass); reason: %s", tr.Result, tr.Reason)
+	}
+	if tr.LeafID != "7" {
+		t.Errorf("LeafID = %q, want %q", tr.LeafID, "7")
+	}
+}
+
+// TestChoose_NilLeafFallsBackToFirstOption — RunTest (the
+// degenerate single-leaf surface) keeps returning the first option,
+// matching rc1 behavior exactly.
+func TestChoose_NilLeafFallsBackToFirstOption(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def test_default_leaf():
+    r = choose("retries", [0, 1, 3])
+    assert_eq(r, 0, "nil leaf must return FirstOption")
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	tr := rt.RunTest(context.Background(), "test_default_leaf")
+	if tr.Result != "pass" {
+		t.Fatalf("Result = %q (want pass); reason: %s", tr.Result, tr.Reason)
+	}
+	if tr.LeafID != "" {
+		t.Errorf("LeafID = %q, want empty for single-leaf execution", tr.LeafID)
+	}
+}
+
+// TestChoose_AnonymousChoiceIgnoresLeaf — choose() without a name is
+// not part of the plan tree; even a non-nil leaf can't pin it, so
+// the returned value remains FirstOption. This is the documented
+// rc2 boundary (`docs/nondeterministic-operators.md`).
+func TestChoose_AnonymousChoiceIgnoresLeaf(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def test_anon():
+    r = choose([7, 8, 9])
+    assert_eq(r, 7, "anonymous choose() must return FirstOption regardless of leaf")
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	leaf := &PlanLeaf{Index: 1, Choices: map[string]int{"retries": 2}}
+	tr := rt.RunTestLeaf(context.Background(), "test_anon", leaf)
+	if tr.Result != "pass" {
+		t.Fatalf("Result = %q (want pass); reason: %s", tr.Result, tr.Reason)
 	}
 }
 

@@ -79,6 +79,14 @@ type TestResult struct {
 	// JSON and surfaced in the report drill-down's Expected vs Actual
 	// block.
 	Assertion *AssertionDetail `json:"assertion,omitempty"`
+
+	// LeafID identifies which plan-tree leaf produced this result when
+	// the test fans out across choose()/probability/interleaving axes
+	// (RFC-042 §8.8/§8.9, RFC-043 §5). Empty for single-leaf
+	// executions, matching the rc1 shape. The format is opaque to
+	// callers — today it's the leaf's ordinal index ("1", "2", ...);
+	// the plan-tree enumerator may grow a richer naming scheme later.
+	LeafID string `json:"leaf_id,omitempty"`
 }
 
 // BypassedRule describes one fault rule that was installed for this
@@ -330,6 +338,13 @@ type Runtime struct {
 	// per-leaf pruning. Per-test predicates live on TestConfig.Assume
 	// and are evaluated by RunTest.
 	specAssumes []*AssumePredicate
+
+	// currentLeaf, when non-nil, pins per-leaf non-deterministic
+	// outcomes (RFC-042 §8.8/§8.9 + RFC-043 §5). Set by RunTestLeaf
+	// before the body executes and cleared on exit. Single-leaf runs
+	// leave this nil so every consultation falls back to the rc1
+	// default (choose()→first option, fault→stochastic).
+	currentLeaf *PlanLeaf
 
 	// Determinism state — RFC-040. Populated by the determinism() top-level
 	// builtin (or defaults to L1 / runtime=default / strict=True if not
@@ -934,8 +949,44 @@ func (rt *Runtime) runTestSafely(ctx context.Context, name string) (tr TestResul
 	return rt.RunTest(ctx, name)
 }
 
-// RunTest executes a single test function with fresh services.
+// RunTest executes a single test function with fresh services under
+// the single-leaf degenerate path — every non-deterministic axis
+// resolves to its rc1 default. Pre-RFC-042-rc2 callers stay on this
+// surface; the plan-tree enumerator (PR 2 of this slice) uses
+// RunTestLeaf to drive multi-leaf execution.
 func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
+	return rt.RunTestLeaf(ctx, name, nil)
+}
+
+// RunTestLeaf executes one plan-tree leaf of a test. A nil leaf is
+// the single-leaf path (identical to pre-rc2 behavior). When leaf is
+// non-nil, rt.currentLeaf is pinned for the duration of the body and
+// every consultation (choose()'s Selected, the engine's fault
+// firing, the interleaving scheduler) reads its per-axis assignment.
+//
+// The leaf is cleared on exit so a subsequent RunTest call on the
+// same runtime falls back to the default path — important because
+// RunAll's plan walker reuses the runtime across leaves.
+//
+// LeafID is populated from leaf.Index when leaf is non-nil so the
+// SuiteResult can disambiguate multi-leaf rows belonging to one
+// test() declaration.
+func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf) TestResult {
+	rt.currentLeaf = leaf
+	defer func() { rt.currentLeaf = nil }()
+	tr := rt.runTestImpl(ctx, name)
+	if leaf != nil {
+		tr.LeafID = fmt.Sprintf("%d", leaf.Index)
+	}
+	return tr
+}
+
+// runTestImpl is the original RunTest body, kept private so the
+// public RunTest/RunTestLeaf surface stays small. Splitting it out
+// avoids threading the leaf through every internal `return TestResult{...}`
+// in the function — those still build the result without LeafID, and
+// RunTestLeaf stamps the leaf ordinal on the final value.
+func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	start := time.Now()
 
 	fn, ok := rt.globals[name].(starlark.Callable)
