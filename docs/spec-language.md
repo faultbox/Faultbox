@@ -1727,15 +1727,16 @@ def test_persist_failure():
 Named operations can include a **path filter** — only syscalls on matching
 files are faulted. The trace shows the operation name: `persist(write) deny(EIO)`.
 
-### `delay(duration, probability=)`
+### `delay(duration, probability=, label=, max_fires=, mode=)`
 
 Delays a syscall by sleeping before allowing it to proceed.
 
 ```python
 delay("500ms")              # 500ms delay, 100% probability
 delay("2s")                 # 2 second delay
-delay("100ms", probability="50%")  # 50% chance of delay
+delay("100ms", probability="50%")  # 50% chance of delay (stochastic)
 delay("500ms", label="slow WAL")   # labeled for diagnostics
+delay("100ms", probability=0.5, max_fires=2, mode="exhaustive")  # RFC-042 §8.9 fan-out
 ```
 
 | Parameter | Type | Default | Description |
@@ -1743,16 +1744,23 @@ delay("500ms", label="slow WAL")   # labeled for diagnostics
 | `duration` | string | — | Go duration: `"500ms"`, `"2s"`, `"100us"` |
 | `probability` | string | `"100%"` | Chance the fault fires |
 | `label` | string | — | Human-readable label shown in trace output |
+| `max_fires` | int | — | RFC-042 §8.9 — exhaustive probability fan-out cap. Only with `probability < 1`. |
+| `mode` | string | `"exhaustive"` | `"exhaustive"` consults per-leaf vector; `"stochastic"` is the legacy RNG path. |
 
-### `deny(errno, probability=, label=)`
+### `deny(errno, probability=, label=, max_fires=, mode=)`
 
 Fails a syscall by returning an error code.
 
 ```python
 deny("ECONNREFUSED")                     # 100% connection refused
-deny("EIO", probability="10%")           # 10% I/O error
+deny("EIO", probability="10%")           # 10% I/O error (stochastic until max_fires= added)
 deny("ENOSPC")                           # disk full
 deny("EIO", label="WAL write")           # labeled for diagnostics
+
+# RFC-042 §8.9 probability fan-out — exhaustive coverage of every
+# fired/not-fired combination across N occurrences. 2^max_fires plan
+# leaves; each leaf is a deterministic execution.
+deny("EIO", probability=0.3, max_fires=3, label="wal", mode="exhaustive")
 ```
 
 | Parameter | Type | Default | Description |
@@ -1760,6 +1768,8 @@ deny("EIO", label="WAL write")           # labeled for diagnostics
 | `errno` | string | — | Error code (see table below) |
 | `probability` | string | `"100%"` | Chance the fault fires |
 | `label` | string | — | Human-readable label shown in trace output |
+| `max_fires` | int | — | RFC-042 §8.9 — exhaustive probability fan-out cap. Only with `probability < 1`. Produces 2^N plan-tree leaves. |
+| `mode` | string | `"exhaustive"` | `"exhaustive"` consults the per-leaf vector; `"stochastic"` keeps the legacy RNG-driven single realization. Required to be `"stochastic"` for specs that rely on the pre-rc2 behavior. |
 
 **Labels in diagnostics:** When a labeled fault fires, the trace output shows
 the label alongside the decision:

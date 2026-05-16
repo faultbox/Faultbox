@@ -1,6 +1,6 @@
 # Non-deterministic Operators
 
-> RFC-043's four operators — `choose()`, `nondet()`, `halt()`, `assume()` — give Faultbox specs the vocabulary P-lang and TLA+ have used for decades to describe a *space of behaviors*. v0.13.0-rc1 ships the **language surface** and the **runtime semantics for the single-leaf case**; rc2 alongside RFC-042 §8.8/§8.9 wires the **plan-tree fan-out** so each operator produces multiple test runs as designed.
+> RFC-043's four operators — `choose()`, `nondet()`, `halt()`, `assume()` — give Faultbox specs the vocabulary P-lang and TLA+ have used for decades to describe a *space of behaviors*. v0.13.0-rc1 shipped the **language surface**; **rc2** wires the **plan-tree fan-out** for named `choose()` axes — each option becomes its own test execution with a stable `LeafID`. Anonymous `choose()` calls still return the first option (no name to address by). `nondet()` is sugar for `choose([True, False])` and inherits the same single-leaf behavior unless given a name. Assume-predicate AST denylist and full body-time choose() visibility to `assume=` predicates are still deferred — see the per-section notes below.
 
 ## Why these primitives
 
@@ -31,7 +31,11 @@ target = choose([primary_db, replica_db])
 fault(target.main, deny=on(connect=True))
 ```
 
-**rc1 semantics:** returns the **first option** at runtime. `plan.json` records the call site and the option set. rc2's body-re-execution will run the body once per option and return the per-leaf selection.
+**Semantics:**
+- **Named form** (`choose("retries", [0, 1, 3])`): the plan walker fans out one test execution per option. Each leaf observes its assigned option; the bundle's manifest carries a `leaf_id` per row.
+- **Anonymous form** (`choose([0, 1, 3])`): returns the first option, no fan-out. There's no key to address the axis by — use the named form when you want plan-tree visibility.
+
+`plan.json` records every call site and option set whether named or not.
 
 **Constraints:**
 - `options` must be a non-empty list literal. Empty lists are rejected at spec load.
@@ -49,7 +53,7 @@ def body():
         api.path_b()
 ```
 
-Sugar for `choose([True, False])`. rc1 returns `True` (the first option) at runtime; rc2 fans out 2 leaves.
+Sugar for `choose([True, False])`. The anonymous form returns `True` (the first option) without fan-out — `nondet()` has no name to address. Use a named choose to get the two-leaf fan-out: `flaky = choose("flaky", [True, False])`.
 
 > **Naming note:** P-lang uses bare `$` as the non-deterministic-boolean operator. Starlark's lexer cannot parse `$`, and forking `go.starlark.net` for one character isn't worth the maintenance cost. `nondet()` is the canonical spelling.
 
@@ -121,11 +125,11 @@ test("matrix", body=scenario, assume=[
 ])
 ```
 
-At rc1 this runs once (single leaf — first options): `retries=0, fault="503"`, no halt, no assume violation. At rc2 it fans out to `3 × 3 = 9` leaves minus halted (`retries=0, fault="timeout"`) and assume-pruned branches.
+At v0.13.0-rc2 this fans out to `3 × 3 = 9` leaves; the halted leaf (`retries=0, fault="timeout"`) is pruned (recorded as a `halted` row in the manifest) and assume-pruned branches show up as `halted` too. Each surviving leaf is a separate test execution with its own bundle row, swim-lane trace, and verdict.
 
 ## Out of scope (deferred)
 
-- **Body re-execution / plan-tree fan-out** — rc2 alongside RFC-042 §8.8.
+- **Body re-execution / plan-tree fan-out for `assume=`** — `assume=` predicates evaluate at body entry against the discovery-run choices only. Per-leaf evaluation pruning the plan tree on false predicates lands in a follow-up.
 - **Weighted `choose([opts], weights=...)`** — probability-driven sampling. Not in v0.13.0.
 - **Symbolic / parametric ranges** — `choose(range(0, MAX_INT))` needs SAT/SMT; indefinitely deferred.
 - **Mazurkiewicz-trace independence** (RFC-009) and **DPOR** (RFC-010) — both operate on the unified plan tree this RFC's operators feed into.

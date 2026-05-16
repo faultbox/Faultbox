@@ -1,6 +1,6 @@
 # RFC-042: Exploration Plan & Coverage Engine
 
-> **Status: Implemented (rc1, v0.13.0).** Analysis surface (§8.1–§8.7, §8.10, §8.11) shipped; execution surface (§8.8 spec-level interleaving fan-out, §8.9 probability fan-out) deferred to rc2. The rc2 work changes runtime semantics — see the per-section status in §8 below. User guide: [docs/exploration.md](../exploration.md).
+> **Status: Implemented (rc2 partial, v0.13.0).** rc1 shipped the analysis surface (§8.1–§8.7, §8.10, §8.11). rc2 ships the body-re-execution engine and probability fan-out: **§8.9 syscall-level probability fan-out** (`max_fires=`, `mode=`) is live; **named `choose()` axes** (RFC-043 §5.2) fan out through the same engine. **§8.8 spec-level interleaving execution** remains deferred to a follow-up slice. Protocol-level (`response()`/`error()`/`drop()`) probability fan-out and static trigger-count analysis are tracked as follow-ups in the per-section status below. User guide: [docs/exploration.md](../exploration.md).
 
 ## Summary
 
@@ -467,6 +467,8 @@ In `internal/generate/.Analyze`, add cross-reference between dependency edges an
 
 ### 8.8 — Spec-level interleaving enumeration AND execution
 
+> **Status: Deferred to a follow-up slice (post-v0.13.0-rc2).** The body-re-execution infrastructure that lands in rc2 (PlanLeaf, RunTestLeaf, runTestFanout, ProbabilityDecider) is the substrate this section will plug into. Interleaving execution adds an `InterleavingID` field on PlanLeaf, extends the hold-and-release engine to drive a specific ordering, and lifts the `interleavings=` kwarg policy onto `wait_all`/`wait_n`/`wait_first`. Tracked as **A2** in the v0.13.0 roadmap; the heaviest engine slice remaining.
+
 For each `wait_all` / `wait_n` / `wait_first` block in the plan tree:
 
 **Enumeration (in plan-tree expansion):**
@@ -490,6 +492,8 @@ Output appears in CLI text format, JSON, and the report's Plan tab.
 **Scope note:** This is the heaviest engine work in this RFC. Estimated 2–3 weeks of focused work. If RFC-041 (Temporal) turns out heavy, sequencing could land enumeration in v0.13.0 (cheap — just plan-tree expansion and the `interleavings=` kwarg) and execution in v0.13.1 (engine work). Worth a sequencing decision; see scope note at top of Section 8.
 
 ### 8.9 — Probability fan-out
+
+> **Status: Implemented (rc2, v0.13.0) for syscall-level faults.** `delay()` / `deny()` accept `max_fires=` and `mode="exhaustive"|"stochastic"`. The runtime records per-rule fan-out sites during the body's discovery run, the plan walker enumerates 2^max_fires leaves per site, and the engine consults the leaf's per-occurrence vector via `SessionConfig.ProbabilityDecider` (falling through to the seeded RNG when unpinned). **Follow-ups:** protocol-level (`response()`/`error()`/`drop()`) probability fan-out, static trigger-count analysis (the rc2 path requires `max_fires=N` — unmodeled rules fall back to stochastic without a plan warning yet), and `unmodeled_fanout` plan diagnostics. Composition with `TriggerNth/TriggerAfter` is supported (occurrence indexing is independent) but not yet covered by tests.
 
 For each `fault(..., probability=p)` declaration:
 
