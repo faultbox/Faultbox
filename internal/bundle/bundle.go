@@ -69,6 +69,9 @@ type Summary struct {
 	// Distinct from Passed and Failed so CI gates can choose to flag,
 	// fail, or ignore them.
 	Inconclusive               int `json:"inconclusive,omitempty"`
+	// Halted counts RFC-043 §5.3 plan-tree pruning — tests whose body
+	// called halt(). Not a verdict; CI typically ignores this column.
+	Halted                     int `json:"halted,omitempty"`
 	ExpectationViolated        int `json:"expectation_violated,omitempty"`
 	FaultBypassed              int `json:"fault_bypassed,omitempty"`
 	StrictDeterminismViolation int `json:"strict_determinism_violation,omitempty"` // RFC-040 §8.3

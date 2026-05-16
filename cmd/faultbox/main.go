@@ -2263,6 +2263,12 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 			// built on the bundle manifest don't misread a stall as
 			// success.
 			outcome = "inconclusive"
+		case "halted":
+			// RFC-043 §5.3 — body called halt(); plan-tree pruning
+			// signal, not a real verdict. Distinct outcome value so
+			// the report can grey-pill the row without inflating
+			// pass/fail counters.
+			outcome = "halted"
 		default:
 			if tr.FaultBypassed {
 				outcome = "fault_bypassed"

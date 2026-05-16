@@ -2,6 +2,7 @@ package star
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -141,6 +142,11 @@ type SuiteResult struct {
 	// to gate on either or both (CLI exit code 3 reflects Inconclusive
 	// > 0 when Fail == 0; exit code 2 is reserved for Fail > 0).
 	Inconclusive int `json:"inconclusive,omitempty"`
+	// Halted counts tests whose body called halt() (RFC-043 §5.3).
+	// Halted leaves are recorded with their choice path but do not
+	// contribute to PASS/FAIL/INCONCLUSIVE counts — they represent
+	// plan-tree pruning, not a test outcome the user cares about.
+	Halted int `json:"halted,omitempty"`
 
 	// Crash, if non-nil, indicates the suite was terminated by a Go
 	// runtime panic — typically inside RunTest. The bundle emitted on
@@ -837,6 +843,17 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 				// 3 (in main.go) reflects Inconclusive > 0 when Fail == 0.
 				suite.Inconclusive++
 				suite.Tests = append(suite.Tests, tr)
+			case "halted":
+				// RFC-043 §5.3 — the test body called halt() (or
+				// `assume(False)` once §5.4 lands). The leaf is
+				// recorded with the choice path that led to it but
+				// does not contribute to PASS/FAIL/INCONCLUSIVE
+				// counts; CI gates that ignore halted runs see a
+				// clean exit.
+				suite.Halted++
+				if !cfg.FailOnly {
+					suite.Tests = append(suite.Tests, tr)
+				}
 			default: // "fail", "error", anything else non-pass
 				suite.Fail++
 				suite.Tests = append(suite.Tests, tr)
@@ -1202,6 +1219,25 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// timeout, FAIL for terminate_when with pending eventually). Skip
 	// the "err → FAIL" return when cause already reflects a cancellation.
 	if err != nil && cause != TerminationTimeout && cause != TerminationTerminateWhen {
+		// RFC-043 §5.3 — the body called halt(). Record the leaf as
+		// halted (a plan-tree pruning signal, not a real outcome) so
+		// suite-level pass/fail tallies stay clean. The reason, if
+		// supplied, surfaces in the trace for the report.
+		if errors.Is(err, ErrHalt) {
+			reason := "halt()"
+			var he *HaltError
+			if errors.As(err, &he) && he.Reason != "" {
+				reason = "halt: " + he.Reason
+			}
+			return TestResult{
+				Name: name, Result: "halted",
+				Reason:          reason,
+				DurationMs:      time.Since(start).Milliseconds(),
+				Events:          events,
+				Matrix:          matrixInfo,
+				ExpectationName: expectName,
+			}
+		}
 		// Distinguish a Go-level panic in the body from a Starlark
 		// error so RunAll's Crash detection (Result=="error") fires.
 		resultKind := "fail"

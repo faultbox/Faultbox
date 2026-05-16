@@ -53,6 +53,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// overload is wired in builtinNondet itself to avoid renaming
 		// the existing nondet(service, ...) variant.
 		"choose":            starlark.NewBuiltin("choose", rt.builtinChoose),
+		// RFC-043 §5.3 — halt the current plan-tree branch. Body
+		// execution stops at the call site; the test is recorded as
+		// "halted" (not pass/fail/inconclusive).
+		"halt":              starlark.NewBuiltin("halt", rt.builtinHalt),
 		"trace":             starlark.NewBuiltin("trace", rt.builtinTrace),
 		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
 		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),

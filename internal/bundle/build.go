@@ -141,6 +141,9 @@ func summaryFromTests(rows []TestRow) Summary {
 		case "inconclusive":
 			// RFC-041 §5.5(c) — distinct bucket from Passed/Failed.
 			s.Inconclusive++
+		case "halted":
+			// RFC-043 §5.3 — plan-tree pruning signal; not a verdict.
+			s.Halted++
 		case "expectation_violated":
 			s.Failed++
 			s.ExpectationViolated++
