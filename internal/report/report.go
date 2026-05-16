@@ -476,18 +476,32 @@ func reportSubtitle(m *bundle.Manifest) string {
 		return ""
 	}
 	s := m.Summary
+	// Halted leaves (RFC-043 §5.3) are no-verdict — exclude them
+	// from the "held under fault" framing so a suite of halted-only
+	// branches doesn't read as universal success.
+	verdictTotal := s.Total - s.Halted
+	suffix := ""
+	if s.Halted > 0 {
+		suffix = fmt.Sprintf(" (%d halted)", s.Halted)
+	}
 	switch {
 	case s.Total == 0:
 		return "No tests ran."
+	case verdictTotal == 0 && s.Halted > 0:
+		branchWord := "branch"
+		if s.Halted != 1 {
+			branchWord = "branches"
+		}
+		return fmt.Sprintf("No verdicts — all %d %s halted.", s.Halted, branchWord)
 	case s.Failed == 0 && s.Errored == 0:
-		return fmt.Sprintf("All %d check%s held up under the injected faults.",
-			s.Total, plural(s.Total))
+		return fmt.Sprintf("All %d check%s held up under the injected faults.%s",
+			verdictTotal, plural(verdictTotal), suffix)
 	case s.Errored > 0:
-		return fmt.Sprintf("%d of %d checks held; %d regressed, %d errored.",
-			s.Passed, s.Total, s.Failed, s.Errored)
+		return fmt.Sprintf("%d of %d checks held; %d regressed, %d errored.%s",
+			s.Passed, verdictTotal, s.Failed, s.Errored, suffix)
 	default:
-		return fmt.Sprintf("%d of %d checks held; %d regressed under fault.",
-			s.Passed, s.Total, s.Failed)
+		return fmt.Sprintf("%d of %d checks held; %d regressed under fault.%s",
+			s.Passed, verdictTotal, s.Failed, suffix)
 	}
 }
 

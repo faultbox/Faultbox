@@ -1388,6 +1388,8 @@ outcomes in `manifest.json` and the HTML report:
 | `expectation_violated` | amber | Body assertions were clean, but the expect predicate disagreed with the result. |
 | `fault_bypassed` | grey | Scenario returned cleanly, but a fault rule was installed and never matched a syscall (only with `require_faults_fire=True`). |
 | `errored` | grey | Scenario raised an untyped error (crash, timeout outside a predicate). |
+| `halted` | grey | RFC-043 `halt()` or `assume=` predicate pruned this branch. No verdict — counted separately from pass/fail. |
+| `inconclusive` | grey | RFC-041 `eventually()` window timed out (or an `await_*` hit its timeout) without producing a verdict. Exit code 3. |
 
 `expectation_violated` is a refinement of `failed` — legacy consumers
 that only know the three-way taxonomy still see the row in the
@@ -2171,19 +2173,69 @@ faultbox test faultbox.star --explore=sample           # 100 random orderings
 faultbox test faultbox.star --seed 42                  # replay exact ordering
 ```
 
-### `nondet(service, ...)`
+### `nondet(service, ...)` / `nondet()`
 
-Excludes one or more services from interleaving control during `parallel()`.
-Their syscalls proceed immediately without being held. Use this for services
-that make nondeterministic background requests (healthchecks, metrics, logging).
+Two arities:
+
+- `nondet(svc1, svc2, ...)` — excludes services from interleaving
+  control during `parallel()`. Their syscalls proceed immediately
+  without being held. Use this for services that make
+  nondeterministic background requests (healthchecks, metrics).
+
+  ```python
+  def test_concurrent_orders():
+      nondet(monitoring_svc, cache_svc)  # exclude from ordering exploration
+      results = parallel(
+          lambda: orders.post(path="/orders", body='...'),
+          lambda: orders.post(path="/orders", body='...'),
+      )
+  ```
+
+- `nondet()` (zero-arg) — RFC-043 §5.1 non-deterministic boolean.
+  Sugar for `choose([True, False])`. rc1 returns the first option
+  (`True`); rc2 fans the plan tree into two leaves.
+
+### `choose(options)` / `choose(name, options)` (v0.13.0)
+
+Finite non-deterministic choice (RFC-043 §5.2). Returns the first
+option in rc1; the plan tree records the call site and option set so
+rc2 can produce one leaf per option.
 
 ```python
-def test_concurrent_orders():
-    nondet(monitoring_svc, cache_svc)  # exclude from ordering exploration
-    results = parallel(
-        lambda: orders.post(path="/orders", body='...'),
-        lambda: orders.post(path="/orders", body='...'),
-    )
+retries = choose([0, 1, 3])              # anonymous
+retries = choose("retries", [0, 1, 3])   # named — visible to assume()
+```
+
+See [docs/nondeterministic-operators.md](nondeterministic-operators.md).
+
+### `halt(reason="")` (v0.13.0)
+
+Prune the current plan-tree branch (RFC-043 §5.3). Body execution
+stops; the test outcome is `"halted"` — distinct from
+pass/fail/inconclusive. Only valid inside a test body.
+
+```python
+def body():
+    retries = choose([0, 1, 3])
+    if retries == 0 and nondet():
+        halt("uninteresting branch")
+    api.run_workflow(retries=retries)
+```
+
+### `assume(predicate)` (v0.13.0)
+
+Filter the plan tree (RFC-043 §5.4). Top-level form evaluates at
+spec load; the `test(assume=[...])` kwarg evaluates per-test at body
+entry. Predicate receives a `choices` dict mapping each named
+`choose("name", opts)` call to its currently-selected option.
+
+```python
+assume(lambda choices: choices["retries"] < 5)
+
+test("guarded",
+    body = body,
+    assume = [lambda choices: choices["fault"] != "timeout"],
+)
 ```
 
 ---

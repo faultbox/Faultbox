@@ -2,6 +2,7 @@ package star
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -141,6 +142,11 @@ type SuiteResult struct {
 	// to gate on either or both (CLI exit code 3 reflects Inconclusive
 	// > 0 when Fail == 0; exit code 2 is reserved for Fail > 0).
 	Inconclusive int `json:"inconclusive,omitempty"`
+	// Halted counts tests whose body called halt() (RFC-043 §5.3).
+	// Halted leaves are recorded with their choice path but do not
+	// contribute to PASS/FAIL/INCONCLUSIVE counts — they represent
+	// plan-tree pruning, not a test outcome the user cares about.
+	Halted int `json:"halted,omitempty"`
 
 	// Crash, if non-nil, indicates the suite was terminated by a Go
 	// runtime panic — typically inside RunTest. The bundle emitted on
@@ -311,6 +317,19 @@ type Runtime struct {
 	mockTLSOnce sync.Once
 	mockTLSImpl *mockTLS
 	mockTLSErr  error
+
+	// Recorded choose() call sites (RFC-043 §5.2). rc1 collects them
+	// for plan-tree visibility; rc2 will fan the plan tree out across
+	// the option set. Same locking contract as the other post-load
+	// read-only accessors.
+	choicesMu sync.Mutex
+	choices   []*ChoiceVal
+
+	// Spec-wide assume() predicates (RFC-043 §5.4). Evaluated at spec
+	// load in rc1 (violations error immediately); rc2 will defer to
+	// per-leaf pruning. Per-test predicates live on TestConfig.Assume
+	// and are evaluated by RunTest.
+	specAssumes []*AssumePredicate
 
 	// Determinism state — RFC-040. Populated by the determinism() top-level
 	// builtin (or defaults to L1 / runtime=default / strict=True if not
@@ -830,6 +849,17 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 				// 3 (in main.go) reflects Inconclusive > 0 when Fail == 0.
 				suite.Inconclusive++
 				suite.Tests = append(suite.Tests, tr)
+			case "halted":
+				// RFC-043 §5.3 — the test body called halt() (or
+				// `assume(False)` once §5.4 lands). The leaf is
+				// recorded with the choice path that led to it but
+				// does not contribute to PASS/FAIL/INCONCLUSIVE
+				// counts; CI gates that ignore halted runs see a
+				// clean exit.
+				suite.Halted++
+				if !cfg.FailOnly {
+					suite.Tests = append(suite.Tests, tr)
+				}
 			default: // "fail", "error", anything else non-pass
 				suite.Fail++
 				suite.Tests = append(suite.Tests, tr)
@@ -1021,6 +1051,48 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 		}
 	}
 
+	// RFC-043 §5.4 — per-test assume predicates. Evaluate now against
+	// the current choices snapshot. The first failing predicate halts
+	// the test (Result="halted"); a predicate that raises a Starlark
+	// error fails the test. rc2 will defer this to plan-tree pruning.
+	if testCfg != nil && len(testCfg.Assumes) > 0 {
+		// Capture matrix / expectation attribution before the early-exit
+		// returns below so an assume-driven halt/fail is still attributed
+		// to its fault_matrix cell. Without this the matrix column in
+		// reports would be blank for pruned cells (review N4).
+		var preMatrix *MatrixInfo
+		if rt.currentFaultScenario != nil {
+			preMatrix = rt.currentFaultScenario.Matrix
+		}
+		preExpect := rt.expectationName
+		choices := rt.currentChoicesDict()
+		for _, pred := range testCfg.Assumes {
+			ok, msg, err := pred.Evaluate(choices)
+			if err != nil {
+				rt.stopServices()
+				return TestResult{
+					Name: name, Result: "fail",
+					Reason:          err.Error(),
+					DurationMs:      time.Since(start).Milliseconds(),
+					Events:          rt.events.Events(),
+					Matrix:          preMatrix,
+					ExpectationName: preExpect,
+				}
+			}
+			if !ok {
+				rt.stopServices()
+				return TestResult{
+					Name: name, Result: "halted",
+					Reason:          msg,
+					DurationMs:      time.Since(start).Milliseconds(),
+					Events:          rt.events.Events(),
+					Matrix:          preMatrix,
+					ExpectationName: preExpect,
+				}
+			}
+		}
+	}
+
 	// RFC-041 §5.2 — install a per-event always() watcher so a violated
 	// always() invariant fails the test the moment it breaks instead of
 	// at body return. The watcher cancels bodyCtx via the shared
@@ -1160,10 +1232,17 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 
 	retVal := bo.retVal
 	err := bo.err
-	if err != nil && cause == TerminationNatural {
+	if err != nil && cause == TerminationNatural && !errors.Is(err, ErrHalt) {
 		// Body raised — promote to immediate-fail cause so Finalize
 		// rolls pending eventually's into the failure rather than
 		// trying to evaluate them against an unstable trace.
+		//
+		// halt() is intentionally excluded: it is a clean plan-tree
+		// pruning signal, not a body failure. We want cause to stay
+		// Natural so the halted early-return below fires. If always()
+		// also violated, cause was already set to TerminationImmediateFail
+		// by the select arm above and the halted return won't run —
+		// that's the priority-inversion fix from review B1.
 		cause = TerminationImmediateFail
 	}
 
@@ -1195,6 +1274,31 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 	// timeout, FAIL for terminate_when with pending eventually). Skip
 	// the "err → FAIL" return when cause already reflects a cancellation.
 	if err != nil && cause != TerminationTimeout && cause != TerminationTerminateWhen {
+		// RFC-043 §5.3 — the body called halt(). Record the leaf as
+		// halted (a plan-tree pruning signal, not a real outcome) so
+		// suite-level pass/fail tallies stay clean. The reason, if
+		// supplied, surfaces in the trace for the report.
+		//
+		// Priority: an always() invariant violation (cause ==
+		// TerminationImmediateFail) outranks halt(). A test that both
+		// halts AND violates an invariant must be recorded as "fail";
+		// silently downgrading to "halted" would swallow the verdict.
+		// Convert to halted only on the natural-termination path.
+		if errors.Is(err, ErrHalt) && cause == TerminationNatural {
+			reason := "halt()"
+			var he *HaltError
+			if errors.As(err, &he) && he.Reason != "" {
+				reason = "halt: " + he.Reason
+			}
+			return TestResult{
+				Name: name, Result: "halted",
+				Reason:          reason,
+				DurationMs:      time.Since(start).Milliseconds(),
+				Events:          events,
+				Matrix:          matrixInfo,
+				ExpectationName: expectName,
+			}
+		}
 		// Distinguish a Go-level panic in the body from a Starlark
 		// error so RunAll's Crash detection (Result=="error") fires.
 		resultKind := "fail"

@@ -502,13 +502,17 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		}
 	}
 
-	// Print summary. Inconclusive count is appended only when >0 so
-	// the line stays unchanged for pre-RFC-041 specs.
+	// Print summary. Inconclusive (RFC-041) and Halted (RFC-043) counts
+	// are appended only when >0 so the line stays unchanged for specs
+	// that don't use either feature.
+	summary := fmt.Sprintf("\n%d passed, %d failed", result.Pass, result.Fail)
 	if result.Inconclusive > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d passed, %d failed, %d inconclusive\n", result.Pass, result.Fail, result.Inconclusive)
-	} else {
-		fmt.Fprintf(os.Stderr, "\n%d passed, %d failed\n", result.Pass, result.Fail)
+		summary += fmt.Sprintf(", %d inconclusive", result.Inconclusive)
 	}
+	if result.Halted > 0 {
+		summary += fmt.Sprintf(", %d halted", result.Halted)
+	}
+	fmt.Fprintln(os.Stderr, summary)
 
 	// Terminal replay hint per failed test (RFC-025 §Observability).
 	// Makes `replay_command` visible without digging into JSON. Skipped
@@ -2263,6 +2267,12 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 			// built on the bundle manifest don't misread a stall as
 			// success.
 			outcome = "inconclusive"
+		case "halted":
+			// RFC-043 §5.3 — body called halt(); plan-tree pruning
+			// signal, not a real verdict. Distinct outcome value so
+			// the report can grey-pill the row without inflating
+			// pass/fail counters.
+			outcome = "halted"
 		default:
 			if tr.FaultBypassed {
 				outcome = "fault_bypassed"

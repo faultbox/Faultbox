@@ -162,6 +162,7 @@ make demo
 | [Determinism Levels](docs/determinism.md) | L0–L5 taxonomy, the L1 contract, escape hatches (RFC-040) |
 | [Temporal Properties](docs/temporal.md) | `eventually` / `always` / `monitor` / `await_*` / `test()` (RFC-041) |
 | [Plan & Coverage](docs/exploration.md) | `faultbox plan`, `plan.json`, coverage, suggestions (RFC-042) |
+| [Non-deterministic Operators](docs/nondeterministic-operators.md) | `choose()` / `nondet()` / `halt()` / `assume()` (RFC-043) |
 
 ### Tutorial Structure
 

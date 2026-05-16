@@ -146,6 +146,9 @@
       case "errored": return "errored";
       // RFC-041 §5.5(c) — timeout with pending temporal expectations.
       case "inconclusive": return "warn";
+      // RFC-043 §5.3 — plan-tree pruning (halt() in the body). Render
+      // alongside fault_bypassed since neither is a verdict.
+      case "halted": return "bypassed";
       default: return "warn";
     }
   }
@@ -356,6 +359,8 @@
       case "errored": icon = "!"; break;
       // RFC-041 §5.5(c) — timeout with pending temporal expectation.
       case "inconclusive": icon = "?"; break;
+      // RFC-043 §5.3 — body called halt().
+      case "halted": icon = "⊘"; break;
       default: icon = "?";
     }
     var title = cell.scenario + " × " + cell.fault + "\n" + outcome;
