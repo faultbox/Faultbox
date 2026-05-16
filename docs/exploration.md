@@ -26,22 +26,22 @@ Determinism: L1 (strict) — default; spec did not call determinism()
 Plan tree:
 └── 4 tests
     ├── test "test_matrix_scenario_browse"  [fault_matrix]
-    │   └── 2 instances
-    │       └── fault_matrix
-    │           ├── scenarios: [scenario_browse]
-    │           ├── faults: [db_down, db_slow]
-    │       └── expect: expect_ok
+    │   ├── 2 instances
+    │   ├── fault_matrix
+    │   │   ├── scenarios: [scenario_browse]
+    │   │   └── faults: [db_down, db_slow]
+    │   └── expect: expect_ok
     ├── test "test_matrix_scenario_checkout"  [fault_matrix]
-    │   └── 2 instances
-    │       └── fault_matrix
-    │           ├── scenarios: [scenario_checkout]
-    │           ├── faults: [db_down, db_slow]
-    │       └── expect: expect_ok
+    │   ├── 2 instances
+    │   ├── fault_matrix
+    │   │   ├── scenarios: [scenario_checkout]
+    │   │   └── faults: [db_down, db_slow]
+    │   └── expect: expect_ok
     ├── test "test_smoke"  [def]
     └── test "test_standalone_check"  [fault_scenario]
-            └── faults: [db_down]
+        └── faults: [db_down]
 
-Total: 5 plan instances
+Total: 6 plan instances
 Services: 1 (svc)
 ```
 
@@ -138,7 +138,7 @@ The HTML report (`faultbox report bundle.fb`) gains a Plan section showing:
 
 - Header: spec path, determinism contract, total instance count.
 - The test tree — one box per `PlanTest` with the composition axes and the per-test metadata (faults, expect, timeout) inline.
-- An embedded coverage table when the bundle carried one — ✓ for covered edges, ⚠ for gaps.
+- An embedded coverage table — ✓ for covered edges, ⚠ for gaps. `faultbox test` calls `WithCoverage` before serialising so every bundle ships with the coverage data; legacy bundles without it render the section as empty.
 
 The Plan tab is read-only and analysis-only. Per-instance toggle between Plan and Trace views layers on after rc2 when interleaving execution makes "this leaf actually ran" meaningful.
 
@@ -187,8 +187,7 @@ Top-level fields are stable from rc1; new fields land in additive places (e.g. `
 
 The RFC's §8.8 (spec-level interleaving fan-out + execution) and §8.9 (probability fan-out with `max_fires=` / `mode=`) are the rc2 work. The flag surface is locked now:
 
-- `wait_all(..., interleavings="all")` / `"critical"` / integer N — accepted but a no-op in rc1 (plans still ship a single leaf per `wait_all`).
-- `wait_all(..., interleavings="dpor")` and `"sut-internal"` — reserved with explicit "future release" errors at spec load.
+- `wait_all` / `wait_n` / `wait_first` builtins are not in the language today; they ship in rc2 together with the `interleavings=` kwarg surface. The accepted values (`1`, `"critical"`, integer `N`, `"all"`) and reserved values (`"dpor"`, `"sut-internal"` — explicit "future release" errors) will land in the same rc2 commit so the kwarg pact is locked the moment the builtins exist.
 - `fault(..., probability=p)` keeps today's stochastic semantics in rc1; the exhaustive fan-out behavior switches on in rc2.
 
 When rc2 lands, existing specs see a behavior change (probability defaults to exhaustive). The migration note will be in the rc2 release entry.

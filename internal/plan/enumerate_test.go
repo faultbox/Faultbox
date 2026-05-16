@@ -239,6 +239,45 @@ def test_x(): return None
 	}
 }
 
+// N2: byte stability through the full Enumerate → WriteJSON path.
+// TestWriteJSON_ByteStableAcrossCalls covers the encoder; this test
+// covers that the encoder's input is itself byte-stable when produced
+// from a live runtime.
+func TestEnumerate_ByteStableAcrossCallsViaJSON(t *testing.T) {
+	rt := newRuntime(t)
+	src := `
+svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+def scenario_a(): pass
+def scenario_b(): pass
+fa1 = fault_assumption("f1", target=svc, write=deny("EIO"))
+fa2 = fault_assumption("f2", target=svc, write=delay("100ms"))
+fault_matrix(scenarios=[scenario_a, scenario_b], faults=[fa1, fa2])
+def test_x(): return None
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	var a, b []byte
+	{
+		var buf strings.Builder
+		_ = WriteJSON(&stringWriter{&buf}, Enumerate(rt))
+		a = []byte(buf.String())
+	}
+	{
+		var buf strings.Builder
+		_ = WriteJSON(&stringWriter{&buf}, Enumerate(rt))
+		b = []byte(buf.String())
+	}
+	if string(a) != string(b) {
+		t.Errorf("Enumerate→WriteJSON not byte-stable; diff:\nfirst=\n%s\nsecond=\n%s", a, b)
+	}
+}
+
+// stringWriter adapts a strings.Builder to io.Writer.
+type stringWriter struct{ b *strings.Builder }
+
+func (s *stringWriter) Write(p []byte) (int, error) { return s.b.Write(p) }
+
 func TestEnumerate_DeterministicAcrossCalls(t *testing.T) {
 	rt := newRuntime(t)
 	src := `

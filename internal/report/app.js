@@ -3428,6 +3428,15 @@
     if (t.faults && t.faults.length) {
       item.appendChild(el("div", { class: "plan-faults", text: "faults: [" + t.faults.join(", ") + "]" }));
     }
+    if (t.matrix_cells && t.matrix_cells.length) {
+      // Show the individual cell names for a fault_matrix entry. The
+      // tree groups them under one PlanTest; the cell list lets users
+      // see exactly which (scenario, fault) tuples ran.
+      item.appendChild(el("div", {
+        class: "plan-cells",
+        text: "cells: " + t.matrix_cells.join(", "),
+      }));
+    }
     if (t.expect) {
       item.appendChild(el("div", { class: "plan-expect", text: "expect: " + t.expect }));
     }

@@ -60,6 +60,75 @@ fault_scenario("api_db_down", scenario=scenario_x, faults=db_down)
 	}
 }
 
+func TestWithCoverage_MatrixCellsAttributedToCollapsedTest(t *testing.T) {
+	rt := newRuntime(t)
+	src := `
+db = service("db", image="busybox", cmd=["sh","-c","sleep 1"])
+api = service("api", image="busybox", cmd=["sh","-c","sleep 1"], depends_on=[db])
+
+def scenario_checkout(): pass
+def scenario_browse(): pass
+
+fa1 = fault_assumption("db_down", target=db, write=deny("EIO"))
+fa2 = fault_assumption("db_slow", target=db, write=delay("100ms"))
+
+fault_matrix(scenarios=[scenario_checkout, scenario_browse], faults=[fa1, fa2])
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	pt := Enumerate(rt)
+	if err := WithCoverage(pt, rt); err != nil {
+		t.Fatalf("WithCoverage: %v", err)
+	}
+
+	// Build a set of PlanTest names so we can verify coverage links
+	// point at rows the user actually sees.
+	visible := map[string]bool{}
+	for _, tr := range pt.Tests {
+		visible[tr.Name] = true
+	}
+
+	var dbEdge *PlanEdge
+	for i, e := range pt.Coverage.Edges {
+		if e.To == "db" {
+			dbEdge = &pt.Coverage.Edges[i]
+		}
+	}
+	if dbEdge == nil {
+		t.Fatalf("expected db edge; got %+v", pt.Coverage.Edges)
+	}
+	if len(dbEdge.FaultTests) == 0 {
+		t.Fatal("db edge should be covered by the fault_matrix")
+	}
+	for _, name := range dbEdge.FaultTests {
+		if !visible[name] {
+			t.Errorf("coverage attribution %q does not match any PlanTest.Name; visible=%v", name, keys(visible))
+		}
+	}
+	// Two scenarios × two faults = 4 cells; both scenarios should attribute.
+	for _, want := range []string{"test_matrix_scenario_browse", "test_matrix_scenario_checkout"} {
+		found := false
+		for _, n := range dbEdge.FaultTests {
+			if n == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("db edge FaultTests missing %q; got %v", want, dbEdge.FaultTests)
+		}
+	}
+}
+
+func keys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestWriteSuggestions_EmitsStubsForUncovered(t *testing.T) {
 	pt := &PlanTree{
 		Coverage: &PlanCoverage{

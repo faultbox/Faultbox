@@ -578,19 +578,54 @@ func (rt *Runtime) FaultScenarios() map[string]*FaultScenarioDef {
 // FaultAssumptions returns the spec's registered fault_assumption()
 // values keyed by name. Read-only snapshot — callers must not mutate.
 // Used by the plan-tree enumerator (RFC-042) to describe fault axes.
+//
+// Safe to call after LoadString/LoadFile completes and before any
+// concurrent RunAll: the underlying map is written only during
+// single-threaded Starlark load.
 func (rt *Runtime) FaultAssumptions() map[string]*FaultAssumptionDef {
 	return rt.faultAssumptions
 }
 
 // TestConfigs returns the spec's test() builtin declarations keyed by
 // full test name ("test_<name>"). Read-only; for plan enumeration only.
+//
+// Same locking contract as FaultAssumptions: post-load, pre-RunAll.
 func (rt *Runtime) TestConfigs() map[string]*TestConfig {
 	return rt.testConfigs
 }
 
-// PlanSeed returns the spec's deterministic seed if one was set via
-// `determinism(seed=...)` (or its predecessors); nil means unseeded.
-// Plan-tree enumeration uses this as part of the run identity.
+// GlobalCallableNames returns the names of every Starlark callable in
+// the post-load globals dict (e.g. `def test_foo()` symbols). Unlike
+// DiscoverTests, this is a pure read — it does not register scenarios
+// or fault_scenarios into the dict as a side effect. The plan-tree
+// enumerator uses this to identify def-form tests without disturbing
+// the globals map.
+//
+// Same locking contract as FaultAssumptions: post-load, pre-RunAll.
+func (rt *Runtime) GlobalCallableNames() []string {
+	var names []string
+	for name, val := range rt.globals {
+		if _, ok := val.(starlark.Callable); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// PlanSeed returns the per-run deterministic seed currently held on
+// the runtime, or nil if no seed is bound. The seed is set by
+// RunAll (per test iteration) and by the explicit `seed()` spec
+// primitive; `determinism()` does not accept a seed kwarg today, so
+// for an unseeded spec PlanSeed() is nil up until the first RunAll
+// pass writes it.
+//
+// Plan enumeration is meant to run BEFORE RunAll — callers that
+// invoke PlanSeed() after RunAll see the last-iteration seed, not
+// the spec-declared one (see RFC-042 §8.7 / cmd/faultbox/main.go).
+//
+// Safe to call after LoadString/LoadFile completes; not protected by
+// rt.mu because the field is written only during single-threaded
+// Starlark load + RunAll's main goroutine.
 func (rt *Runtime) PlanSeed() *uint64 {
 	return rt.seed
 }

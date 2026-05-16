@@ -411,6 +411,29 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	// RFC-042 §8.7 — enumerate the plan tree BEFORE RunAll so plan.json
+	// captures the intent (configured seed, declared topology, declared
+	// tests) rather than execution state. RunAll mutates rt.seed (it
+	// captures the per-iteration seed into the field) so a post-RunAll
+	// Enumerate would serialise a stale "seed": 0 for unseeded specs
+	// and the last-iteration seed under --runs=N.
+	var planBytes []byte
+	if !noPlan {
+		pt := plan.Enumerate(rt)
+		// Attach coverage so the bundle's plan.json is self-describing
+		// — the report's Plan tab and any post-hoc analysis see the
+		// "uncovered edges" signal without re-loading the spec.
+		if err := plan.WithCoverage(pt, rt); err != nil {
+			logger.Warn("plan coverage analysis failed", slog.String("error", err.Error()))
+		}
+		var buf bytes.Buffer
+		if err := plan.WriteJSON(&buf, pt); err != nil {
+			logger.Warn("plan enumeration failed", slog.String("error", err.Error()))
+		} else {
+			planBytes = buf.Bytes()
+		}
+	}
+
 	result, err := rt.RunAll(ctx, rcfg)
 	if err != nil {
 		logger.Error("test suite failed", slog.String("error", err.Error()))
@@ -471,15 +494,8 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		if rcfg.Seed != nil {
 			seedVal = int64(*rcfg.Seed)
 		}
-		var planBytes []byte
-		if !noPlan {
-			var buf bytes.Buffer
-			if err := plan.WriteJSON(&buf, plan.Enumerate(rt)); err != nil {
-				logger.Warn("plan enumeration failed", slog.String("error", err.Error()))
-			} else {
-				planBytes = buf.Bytes()
-			}
-		}
+		// planBytes was computed pre-RunAll (above) so it captures
+		// the spec's declared seed instead of RunAll's stale field.
 		if err := emitBundle(logger, starFile, seedVal, result, bundlePath, rt.LoadedSpecs(), collectRemoteRecords(rt), planBytes); err != nil {
 			logger.Error("bundle emit failed", slog.String("error", err.Error()))
 			// Non-fatal: we still want pass/fail status to flow out.

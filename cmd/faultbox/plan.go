@@ -77,6 +77,13 @@ func planCmd(args []string) int {
 		return 1
 	}
 
+	// --check-cost without --max-instances is a silent CI footgun
+	// (the gate would always pass); fail loudly per review note N1.
+	if checkCost && maxInstances < 0 {
+		fmt.Fprintln(os.Stderr, "error: --check-cost requires --max-instances N (the budget to gate against)")
+		return 1
+	}
+
 	// RFC-042 §8.11 — --strategy=llm is reserved; reject early so users
 	// see the migration path now (v0.14.0 / RFC-043 lands the LLM path
 	// via MCP).
@@ -212,6 +219,11 @@ func renderPlanText(w io.Writer, pt *plan.PlanTree) {
 	}
 }
 
+// renderPlanTest emits one test entry with correct tree-drawing
+// connectors. Each child line of the test (instances count,
+// composition block, faults, expect, timeout) gets `├──` for all but
+// the last, and `└──` for the last — so the rendering survives both
+// a script tail/head and a human eye scan.
 func renderPlanTest(w io.Writer, t plan.PlanTest, isLast bool) {
 	branch := "    ├── "
 	cont := "    │   "
@@ -221,25 +233,55 @@ func renderPlanTest(w io.Writer, t plan.PlanTest, isLast bool) {
 	}
 
 	fmt.Fprintf(w, "%stest %q  [%s]\n", branch, t.Name, t.Kind)
+
+	// Collect children of this test as (label, sublines) pairs so we
+	// can stamp the connector character once at the end.
+	type child struct {
+		label string
+		sub   []string
+	}
+	var children []child
+
 	if t.Instances != 1 {
-		fmt.Fprintf(w, "%s└── %d instances\n", cont, t.Instances)
+		children = append(children, child{label: fmt.Sprintf("%d instances", t.Instances)})
 	}
 	for _, comp := range t.Compositions {
-		fmt.Fprintf(w, "%s    └── %s\n", cont, comp.Kind)
+		var sub []string
 		for _, ax := range comp.Axes {
-			fmt.Fprintf(w, "%s        ├── %s: [%s]\n", cont, ax.Name, strings.Join(ax.Values, ", "))
+			sub = append(sub, fmt.Sprintf("%s: [%s]", ax.Name, strings.Join(ax.Values, ", ")))
 		}
+		children = append(children, child{label: string(comp.Kind), sub: sub})
 	}
 	if len(t.Faults) > 0 {
-		fmt.Fprintf(w, "%s    └── faults: [%s]\n", cont, strings.Join(t.Faults, ", "))
+		children = append(children, child{label: fmt.Sprintf("faults: [%s]", strings.Join(t.Faults, ", "))})
 	}
-	if t.Expect != "" && t.Expect != "(mixed)" {
-		fmt.Fprintf(w, "%s    └── expect: %s\n", cont, t.Expect)
-	} else if t.Expect == "(mixed)" {
-		fmt.Fprintf(w, "%s    └── expect: (mixed — per-cell overrides)\n", cont)
+	switch t.Expect {
+	case "":
+		// no expect
+	case "(mixed)":
+		children = append(children, child{label: "expect: (mixed — per-cell overrides)"})
+	default:
+		children = append(children, child{label: "expect: " + t.Expect})
 	}
 	if t.Timeout != "" {
-		fmt.Fprintf(w, "%s    └── timeout: %s\n", cont, t.Timeout)
+		children = append(children, child{label: "timeout: " + t.Timeout})
+	}
+
+	for i, c := range children {
+		childBranch := "├── "
+		childCont := "│   "
+		if i == len(children)-1 {
+			childBranch = "└── "
+			childCont = "    "
+		}
+		fmt.Fprintf(w, "%s%s%s\n", cont, childBranch, c.label)
+		for j, s := range c.sub {
+			leaf := "├── "
+			if j == len(c.sub)-1 {
+				leaf = "└── "
+			}
+			fmt.Fprintf(w, "%s%s%s%s\n", cont, childCont, leaf, s)
+		}
 	}
 }
 

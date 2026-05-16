@@ -30,9 +30,11 @@ type PlanTree struct {
 	Determinism   PlanDeterminism `json:"determinism"`
 	Tests         []PlanTest      `json:"tests"`
 	Totals        PlanTotals      `json:"totals"`
-	// Topology and Coverage are populated by PR 5 (RFC-042 §8.4). PR 1
-	// emits them as zero-valued so the JSON shape is stable from the
-	// start.
+	// Topology is populated by Enumerate. Coverage attaches via
+	// WithCoverage when the caller wants edge-coverage data — the
+	// CLI's --coverage flag and `faultbox test`'s bundle path both
+	// run it. Plans without coverage have Coverage == nil; the JSON
+	// shape stays stable across both.
 	Topology PlanTopology `json:"topology"`
 	// Coverage is populated by WithCoverage (RFC-042 §5.3, §8.4). Nil
 	// when the caller skipped coverage analysis — Enumerate alone
@@ -137,9 +139,10 @@ type PlanTotals struct {
 	Instances int `json:"instances"`
 }
 
-// PlanTopology snapshots services and dependency edges. rc1 emits the
-// service list only; coverage cross-references and edge enumeration
-// arrive with PR 5 (RFC-042 §8.4).
+// PlanTopology snapshots services. Dependency edges + their coverage
+// links live on PlanTree.Coverage (populated by WithCoverage), kept
+// separate so callers that only want a service inventory pay nothing
+// for the cross-reference walk.
 type PlanTopology struct {
 	Services []PlanService `json:"services,omitempty"`
 }

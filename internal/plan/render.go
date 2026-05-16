@@ -7,6 +7,27 @@ import (
 	"strings"
 )
 
+// dotLabel escapes the characters Graphviz treats specially inside a
+// double-quoted label: backslash, double-quote, and the record-shape
+// metacharacters `|`, `{`, `}`, `<`, `>`. The default shape used by
+// the plan emitter is `box`, which does not parse those metacharacters
+// — but a future shape change (or a downstream pipeline that pipes
+// our DOT through one) could trip on them. Escape unconditionally so
+// the surface stays safe.
+func dotLabel(s string) string {
+	r := strings.NewReplacer(
+		"\\", "\\\\",
+		"\"", "\\\"",
+		"|", "\\|",
+		"{", "\\{",
+		"}", "\\}",
+		"<", "\\<",
+		">", "\\>",
+		"\n", "\\n",
+	)
+	return r.Replace(s)
+}
+
 // MarshalJSON returns the indented JSON encoding of the plan tree per
 // RFC-042 §5.2. Bytes are stable across calls against the same tree
 // because Enumerate sorts every map key during construction.
@@ -52,22 +73,22 @@ func WriteDOT(w io.Writer, pt *PlanTree) error {
 	if pt.SpecPath != "" {
 		rootLabel = pt.SpecPath
 	}
-	fmt.Fprintf(w, "  spec [label=%q, shape=oval];\n", rootLabel)
+	fmt.Fprintf(w, "  spec [label=\"%s\", shape=oval];\n", dotLabel(rootLabel))
 
 	for i, t := range pt.Tests {
 		testID := fmt.Sprintf("t%d", i)
-		label := fmt.Sprintf("%s\\n[%s, %d inst]", t.Name, t.Kind, t.Instances)
-		fmt.Fprintf(w, "  %s [label=%q];\n", testID, label)
+		label := fmt.Sprintf("%s\n[%s, %d inst]", t.Name, t.Kind, t.Instances)
+		fmt.Fprintf(w, "  %s [label=\"%s\"];\n", testID, dotLabel(label))
 		fmt.Fprintf(w, "  spec -> %s;\n", testID)
 
 		for ci, comp := range t.Compositions {
 			compID := fmt.Sprintf("%s_c%d", testID, ci)
-			fmt.Fprintf(w, "  %s [label=%q, shape=ellipse, style=dashed];\n", compID, string(comp.Kind))
+			fmt.Fprintf(w, "  %s [label=\"%s\", shape=ellipse, style=dashed];\n", compID, dotLabel(string(comp.Kind)))
 			fmt.Fprintf(w, "  %s -> %s;\n", testID, compID)
 			for ai, ax := range comp.Axes {
 				axID := fmt.Sprintf("%s_a%d", compID, ai)
 				axLabel := ax.Name + ": " + strings.Join(ax.Values, ", ")
-				fmt.Fprintf(w, "  %s [label=%q, shape=note];\n", axID, axLabel)
+				fmt.Fprintf(w, "  %s [label=\"%s\", shape=note];\n", axID, dotLabel(axLabel))
 				fmt.Fprintf(w, "  %s -> %s;\n", compID, axID)
 			}
 		}

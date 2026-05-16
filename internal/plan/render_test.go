@@ -45,6 +45,43 @@ func TestWriteJSON_ByteStableAcrossCalls(t *testing.T) {
 	}
 }
 
+func TestWriteDOT_EscapesSpecialChars(t *testing.T) {
+	pt := &PlanTree{
+		Tests: []PlanTest{{
+			Name:      "test_brace|pipe",
+			Kind:      KindFaultMatrix,
+			Instances: 1,
+			Compositions: []PlanComposition{{
+				Kind: CompositionFaultMatrix,
+				Axes: []PlanAxis{{
+					Name:   "scenarios",
+					Values: []string{"a{b}", "c<d>", "e|f"},
+				}},
+			}},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := WriteDOT(&buf, pt); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// Negative: bare metacharacters not preceded by a backslash should
+	// not appear inside a label, since Graphviz's record/HTML shapes
+	// could interpret them. Verify the escape (the backslash variant).
+	for _, want := range []string{`\|`, `\{`, `\}`, `\<`, `\>`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("DOT output missing escape sequence %q:\n%s", want, out)
+		}
+	}
+	// Positive: confirm no raw `{b}` / `<d>` / `|f` sequences slip
+	// through (we look for the unescaped trigrams).
+	for _, bad := range []string{"a{b}", "c<d>", "e|f"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("DOT output contains unescaped run %q:\n%s", bad, out)
+		}
+	}
+}
+
 func TestWriteDOT_WellFormed(t *testing.T) {
 	pt := samplePlanTree()
 	var buf bytes.Buffer

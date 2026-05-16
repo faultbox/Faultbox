@@ -1361,10 +1361,10 @@ $ faultbox plan tests/integration.star --coverage
 Plan tree:
 └── 2 tests
     ├── test "test_matrix_checkout"  [fault_matrix]
-    │   └── 4 instances
-    │       └── fault_matrix
-    │           ├── scenarios: [checkout]
-    │           ├── faults: [db_down, db_slow, redis_oom, kafka_down]
+    │   ├── 4 instances
+    │   └── fault_matrix
+    │       ├── scenarios: [checkout]
+    │       └── faults: [db_down, db_slow, redis_oom, kafka_down]
     └── test "test_smoke"  [def]
 
 Coverage:

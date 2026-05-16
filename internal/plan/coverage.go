@@ -112,15 +112,25 @@ func WithCoverage(pt *PlanTree, rt *star.Runtime) error {
 // walking rt.FaultScenarios and rt.FaultAssumptions and recording which
 // service each fault_assumption was bound to (the `target=` kwarg).
 //
-// fault_scenario(faults=fa) → test_<scenario>: faulting fa.Target.
-// fault_matrix cells inherit the same mapping per cell.
+// fault_scenario(faults=fa) → test_<scenario>: faulting fa's targets.
+// fault_matrix cells are attributed to the COLLAPSED PlanTest name
+// "test_matrix_<scenarioName>" (matching what buildTests emits in the
+// tree), not the per-cell name — so coverage links point at the same
+// rows users see in the plan tree.
 func joinTestsToTarget(rt *star.Runtime) map[string][]string {
 	out := make(map[string][]string)
 	for _, fs := range rt.FaultScenarios() {
 		if fs == nil {
 			continue
 		}
-		testName := "test_" + fs.Name
+		// Matrix cells collapse to one PlanTest keyed by scenario; use
+		// the same name here so the link targets are valid (review B4).
+		var testName string
+		if fs.Matrix != nil {
+			testName = "test_matrix_" + fs.Matrix.ScenarioName
+		} else {
+			testName = "test_" + fs.Name
+		}
 		for _, fa := range fs.Faults {
 			if fa == nil {
 				continue

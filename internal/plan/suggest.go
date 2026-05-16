@@ -68,7 +68,12 @@ func writeEdgeSuggestion(w io.Writer, e PlanEdge) {
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s = fault_assumption(%q,\n", faultName, faultName)
-	fmt.Fprintf(w, "    target = %s,\n", e.To)
+	// The service-name token below is the spec's service NAME, not
+	// the Starlark variable it was bound to (those can differ when a
+	// spec writes e.g. `cache = service("redis", ...)`). Users must
+	// replace this with the variable that holds the service() value
+	// before pasting; see RFC-042 §8.5.
+	fmt.Fprintf(w, "    target = %s,  # TODO: replace with the variable that holds service(%q, ...)\n", e.To, e.To)
 	fmt.Fprintf(w, "    %s = deny(%q),\n", syscall, "ECONNREFUSED")
 	fmt.Fprintln(w, ")")
 	fmt.Fprintf(w, "def %s():\n    # TODO: call %s functionality that exercises %s.\n    pass\n",

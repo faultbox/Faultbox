@@ -221,26 +221,38 @@ func faultNames(faults []*star.FaultAssumptionDef) []string {
 }
 
 // defTestNames discovers `def test_*()` callables already loaded into
-// the runtime. DiscoverTests would also include scenario / fault_scenario
-// / test() entries; we split them out for distinct PlanTest kinds.
+// the runtime. It walks the globals dict directly (via the read-only
+// GlobalCallableNames accessor) so Enumerate stays a pure read —
+// DiscoverTests would have written scenario / fault_scenario wrappers
+// back into globals as a side effect, breaking Enumerate's "no
+// mutation" promise.
+//
+// scenario()/fault_scenario()/test() entries are filtered out so this
+// returns only `def test_*()` functions; the other kinds get their
+// own PlanTest entries via buildTests's other passes.
 func defTestNames(rt *star.Runtime) []string {
-	all := rt.DiscoverTests()
 	scenarioNames := indexScenarios(rt)
 	_, freeScenarios := groupFaultScenarios(rt.FaultScenarios())
 	testConfigs := rt.TestConfigs()
 
 	var defs []string
-	for _, name := range all {
-		if _, ok := scenarioNames[strings.TrimPrefix(name, "test_")]; ok {
+	for _, name := range rt.GlobalCallableNames() {
+		if !strings.HasPrefix(name, "test_") {
 			continue
 		}
-		if _, ok := freeScenarios[strings.TrimPrefix(name, "test_")]; ok {
-			continue
-		}
+		// matrix cells (test_matrix_*) and test()-builtin entries
+		// aren't `def test_*()` functions even though their wrappers
+		// may end up in globals later — exclude them here.
 		if strings.HasPrefix(name, "test_matrix_") {
 			continue
 		}
 		if _, ok := testConfigs[name]; ok {
+			continue
+		}
+		if _, ok := scenarioNames[strings.TrimPrefix(name, "test_")]; ok {
+			continue
+		}
+		if _, ok := freeScenarios[strings.TrimPrefix(name, "test_")]; ok {
 			continue
 		}
 		defs = append(defs, name)

@@ -125,7 +125,7 @@ def scenario_x(): pass
 db_down = fault_assumption("db_down", target=db, write=deny("EIO"))
 fault_scenario("api_db_down", scenario=scenario_x, faults=db_down)
 `)
-	out := captureStdout(t, func() int { return planCmd([]string{spec, "--coverage"}) })
+	out := mustCaptureStdout(t, func() int { return planCmd([]string{spec, "--coverage"}) })
 	for _, want := range []string{"Coverage:", "✓ api → db", "faulted in: test_api_db_down"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("coverage output missing %q:\n%s", want, out)
@@ -139,7 +139,7 @@ db = service("db", image="busybox", cmd=["sh","-c","sleep 1"])
 api = service("api", image="busybox", cmd=["sh","-c","sleep 1"], depends_on=[db])
 def test_x(): return True
 `)
-	out := captureStdout(t, func() int { return planCmd([]string{spec, "--suggest"}) })
+	out := mustCaptureStdout(t, func() int { return planCmd([]string{spec, "--suggest"}) })
 	if !strings.Contains(out, "# Uncovered edge: api → db") {
 		t.Errorf("suggest output missing stub: %s", out)
 	}
@@ -173,16 +173,51 @@ func TestPlanCmd_CheckCostPassesUnderBudget(t *testing.T) {
 	}
 }
 
-func captureStdout(t *testing.T, fn func() int) string {
+// N9: boundary — exactly N instances with --max-instances=N must
+// pass (the gate is strictly greater-than).
+func TestPlanCmd_CheckCostBoundaryExactlyEqual(t *testing.T) {
+	spec := writeTempSpec(t, `
+def test_a(): return True
+def test_b(): return True
+def test_c(): return True
+`)
+	rc := planCmd([]string{spec, "--check-cost", "--max-instances=3"})
+	if rc != 0 {
+		t.Errorf("expected exit 0 when instance count equals max-instances, got %d", rc)
+	}
+}
+
+// N1: --check-cost with no --max-instances is a CI footgun; must
+// error rather than silently exiting 0.
+func TestPlanCmd_CheckCostWithoutBudgetErrors(t *testing.T) {
+	spec := writeTempSpec(t, `def test_x(): return True`)
+	rc := planCmd([]string{spec, "--check-cost"})
+	if rc == 0 {
+		t.Error("expected non-zero exit when --check-cost lacks --max-instances")
+	}
+}
+
+// mustCaptureStdout runs fn() with stdout piped into a buffer and
+// fails the test if fn returns a non-zero exit code. Pass any
+// expected exit code via a separate path (call planCmd directly).
+//
+// Note: this swaps os.Stdout globally and is therefore not safe under
+// t.Parallel; callers that want parallelism should refactor planCmd
+// to accept an io.Writer. Kept simple here because the plan tests
+// are quick and serial.
+func mustCaptureStdout(t *testing.T, fn func() int) string {
 	t.Helper()
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	fn()
+	rc := fn()
 	w.Close()
 	os.Stdout = old
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(r)
+	if rc != 0 {
+		t.Fatalf("planCmd exit = %d (expected 0); output=\n%s", rc, buf.String())
+	}
 	return buf.String()
 }
 
