@@ -742,6 +742,14 @@ func parseProbabilityFanoutKwargs(builtinName string, kwargs []starlark.Tuple, p
 	if maxFires > 0 && mode == "stochastic" {
 		return 0, "", fmt.Errorf("%s(): max_fires= is incompatible with mode=\"stochastic\"", builtinName)
 	}
+	// Explicit mode="exhaustive" without max_fires= would silently
+	// degrade to stochastic at runtime (no fan-out site recorded, so
+	// the decider always returns unpinned and the engine falls back
+	// to the RNG). Reject at spec load — review B4 on PR #121 — so
+	// authors don't think exhaustive is in effect when it isn't.
+	if mode == "exhaustive" && maxFires == 0 {
+		return 0, "", fmt.Errorf("%s(): mode=\"exhaustive\" requires max_fires= > 0", builtinName)
+	}
 	return maxFires, mode, nil
 }
 

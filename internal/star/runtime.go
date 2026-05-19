@@ -359,7 +359,15 @@ type Runtime struct {
 	// before the body executes and cleared on exit. Single-leaf runs
 	// leave this nil so every consultation falls back to the rc1
 	// default (choose()→first option, fault→stochastic).
-	currentLeaf *PlanLeaf
+	//
+	// Synchronized by currentLeafMu because the engine's notification
+	// handler reads it from goroutines spawned per seccomp event
+	// (review B1 on PR #121). For reused services the notification
+	// loop stays alive across leaves; writer-locked swap + reader-
+	// locked reads keep occurrence indices and decider results from
+	// drifting at leaf boundaries.
+	currentLeafMu sync.RWMutex
+	currentLeaf   *PlanLeaf
 
 	// Determinism state — RFC-040. Populated by the determinism() top-level
 	// builtin (or defaults to L1 / runtime=default / strict=True if not
@@ -1104,8 +1112,14 @@ func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
 // SuiteResult can disambiguate multi-leaf rows belonging to one
 // test() declaration.
 func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf) TestResult {
+	rt.currentLeafMu.Lock()
 	rt.currentLeaf = leaf
-	defer func() { rt.currentLeaf = nil }()
+	rt.currentLeafMu.Unlock()
+	defer func() {
+		rt.currentLeafMu.Lock()
+		rt.currentLeaf = nil
+		rt.currentLeafMu.Unlock()
+	}()
 	tr := rt.runTestImpl(ctx, name)
 	if leaf != nil {
 		tr.LeafID = fmt.Sprintf("%d", leaf.Index)
@@ -3649,6 +3663,26 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	rt.faults[svcName] = faults
 	rt.faultsMu.Unlock()
 
+	// Record probability fan-out sites BEFORE the nil-session
+	// bail-out so the plan walker sees every fan-out axis regardless
+	// of whether the target has a seccomp session attached. Mock
+	// services and seccomp=False containers can still drive plan-
+	// tree enumeration; runtime execution of the rule is what's
+	// skipped, not the planning visibility (review B3 on PR #121).
+	for syscall, fd := range faults {
+		if fd.Probability < 1.0 && fd.MaxFires > 0 && fd.Mode != "stochastic" {
+			key := fd.Label
+			if key == "" {
+				key = svcName + ":" + syscall
+			}
+			rt.recordProbFault(ProbFaultSite{
+				Key:      key,
+				MaxFires: fd.MaxFires,
+				Prob:     fd.Probability,
+			})
+		}
+	}
+
 	// Convert to engine.FaultRule and inject into running session.
 	rs, ok := rt.sessions[svcName]
 	if !ok {
@@ -3677,6 +3711,9 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	for syscall, fd := range faults {
 		// Expand syscall families: "write" → write, writev, pwrite64
 		syscalls := expandSyscallFamily(syscall)
+		// Probability fan-out site recording happens above the
+		// nil-session bail-out so mock-service tests still get plan
+		// visibility (review B3 on PR #121).
 		for _, sc := range syscalls {
 			rule := engine.FaultRule{
 				Syscall:     sc,
@@ -3687,21 +3724,17 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 				MaxFires:    fd.MaxFires,
 				Mode:        fd.Mode,
 			}
-			// Record a probability fan-out site (RFC-042 §8.9) when
-			// this rule opts into exhaustive mode with a max_fires cap.
-			// The plan walker uses these to fan out 2^MaxFires leaves
-			// per site. Stochastic and unmodeled rules are not
-			// recorded — they keep RNG semantics.
-			if fd.Probability < 1.0 && fd.MaxFires > 0 && fd.Mode != "stochastic" {
-				key := fd.Label
-				if key == "" {
-					key = svcName + ":" + sc
-				}
-				rt.recordProbFault(ProbFaultSite{
-					Key:      key,
-					MaxFires: fd.MaxFires,
-					Prob:     fd.Probability,
-				})
+			// All expanded siblings of one FaultDef share the same
+			// probability decider key (pre-expansion syscall or
+			// label). Without this they'd dispatch to per-syscall
+			// counters and the per-occurrence vector would be split
+			// across siblings; review B3 on PR #121. We override
+			// rule.Label here so the decider's "Label or
+			// service:syscall" key derivation lands on the shared
+			// site key — including the case where the user didn't
+			// set Label themselves.
+			if fd.Probability < 1.0 && fd.MaxFires > 0 && fd.Mode != "stochastic" && fd.Label == "" {
+				rule.Label = svcName + ":" + syscall
 			}
 			switch fd.Action {
 			case "delay":

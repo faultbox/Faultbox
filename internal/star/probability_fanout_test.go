@@ -99,6 +99,35 @@ def test_leaves():
 	}
 }
 
+// TestProbabilityFanout_FamilyExpansionRecordsOneSite — review B3
+// regression: an unlabeled write=deny(probability=0.3, max_fires=2)
+// must record exactly one ProbFaultSite, not one per expanded
+// syscall (write/writev/pwrite64). Otherwise the cross-product
+// would multiply leaf count by 2^N for every sibling.
+func TestProbabilityFanout_FamilyExpansionRecordsOneSite(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+dn = deny("EIO", probability=0.3, max_fires=2)
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	// Drive the recording path: apply the fault as the body would.
+	// applyFaults skips engine work when there's no session, but the
+	// recording branch fires before the engine bail-out.
+	rt.faults = map[string]map[string]*FaultDef{"svc": {"write": rt.globals["dn"].(*FaultDef)}}
+	rt.sessions = map[string]*runningSession{"svc": {session: nil}} // mock-style: no seccomp
+	_ = rt.applyFaults("svc", rt.faults["svc"])
+	sites := rt.bodyProbFaults()
+	if len(sites) != 1 {
+		t.Fatalf("expected 1 site for unlabeled write= fault (family expansion must dedup), got %d: %+v", len(sites), sites)
+	}
+	if sites[0].MaxFires != 2 {
+		t.Errorf("MaxFires = %d, want 2", sites[0].MaxFires)
+	}
+}
+
 // TestProbabilityDecider_ConsultsLeaf — the runtime's decider
 // closure pulls the current leaf's outcomes vector and returns
 // (fire, pinned) matching ProbabilityFire's contract. Falls back to
@@ -185,6 +214,9 @@ func TestProbabilityFanout_RejectsBadKwargs(t *testing.T) {
 		{`d = deny("EIO", probability=1.0, max_fires=3)`, "only meaningful with probability"},
 		{`d = deny("EIO", probability=0.5, mode="random")`, "must be \"exhaustive\" or \"stochastic\""},
 		{`d = deny("EIO", probability=0.5, max_fires=3, mode="stochastic")`, "incompatible with mode"},
+		// Review B4: mode="exhaustive" without max_fires= would
+		// silently degrade to stochastic at runtime. Reject at load.
+		{`d = deny("EIO", probability=0.5, mode="exhaustive")`, "mode=\"exhaustive\" requires max_fires"},
 	}
 	for _, tc := range cases {
 		rt := New(testLogger())

@@ -126,7 +126,13 @@ func (rt *Runtime) builtinChoose(_ *starlark.Thread, _ *starlark.Builtin, args s
 	// this is FirstOption — same shape rc1 callers saw. The rc2
 	// plan-tree enumerator drives multi-leaf execution by setting
 	// rt.currentLeaf per body re-execution.
-	return c.Selected(rt.currentLeaf), nil
+	//
+	// Snapshot the leaf under the RWMutex so the body thread's read
+	// can't race with RunTestLeaf's swap on a reused-service test
+	// (review B1 on PR #121). choose() is body-time only; the
+	// Starlark thread is distinct from the engine notification loop,
+	// but both readers go through the same accessor.
+	return c.Selected(rt.snapshotCurrentLeaf()), nil
 }
 
 // recordChoice tracks every choose() call site for plan-tree

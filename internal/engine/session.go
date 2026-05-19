@@ -256,6 +256,19 @@ func (s *Session) SetDynamicFaultRules(rules []FaultRule) {
 		if nr < 0 {
 			continue
 		}
+		// Pre-initialize the atomic counters so the notification loop
+		// never has to race lazily on first use. The lazy init in
+		// ShouldFire / NextProbabilityOccurrence is benign when the
+		// rule is only ever consulted by one goroutine, but the
+		// notification handler can be invoked from multiple
+		// goroutines for the same rule (issue B2 from the principal
+		// review on PR #121).
+		if rules[i].counter == nil {
+			rules[i].counter = &atomic.Int64{}
+		}
+		if rules[i].probCounter == nil {
+			rules[i].probCounter = &atomic.Int64{}
+		}
 		ruleMap[nr] = append(ruleMap[nr], &rules[i])
 	}
 	s.dynamicRules = ruleMap

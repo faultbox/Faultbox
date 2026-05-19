@@ -113,19 +113,24 @@ The predicate receives a `choices` dict mapping each named `choose("name", opts)
 ```python
 db = service("db", image = "busybox", cmd = ["sh","-c","sleep 1"])
 
+# Top-level choices — visible to assume= at body entry.
+retries_axis = choose("retries", [0, 1, 3])
+fault_axis   = choose("fault",   ["503", "504", "timeout"])
+
 def scenario():
-    retries = choose("retries", [0, 1, 3])
-    fault   = choose("fault",   ["503", "504", "timeout"])
-    if retries == 0 and fault == "timeout":
+    if retries_axis == 0 and fault_axis == "timeout":
         halt("nothing to retry — uninteresting branch")
-    api.run_workflow(retries=retries, expected_fault=fault)
+    api.run_workflow(retries=retries_axis, expected_fault=fault_axis)
 
 test("matrix", body=scenario, assume=[
-    lambda choices: choices["retries"] < 5,
+    # assume= predicates run at body entry against the top-level
+    # choices dict. Body-time choices are NOT visible to predicates
+    # in rc2 — declare the axes at module scope when you need them.
+    lambda choices: choices.get("retries", 0) < 5,
 ])
 ```
 
-At v0.13.0-rc2 this fans out to `3 × 3 = 9` leaves; the halted leaf (`retries=0, fault="timeout"`) is pruned (recorded as a `halted` row in the manifest) and assume-pruned branches show up as `halted` too. Each surviving leaf is a separate test execution with its own bundle row, swim-lane trace, and verdict.
+At v0.13.0-rc2 this fans out to `3 × 3 = 9` leaves; the halted leaf (`retries=0, fault="timeout"`) is pruned (recorded as a `halted` row in the manifest). The `assume=` predicate trivially passes here because all `retries` values are < 5; if it returned False on a leaf, that leaf would be recorded as `halted` too. **rc2 limitation:** per-leaf re-evaluation of `assume=` that prunes false branches as the plan walks each axis is still deferred — see "Out of scope" below. Each surviving leaf is a separate test execution with its own bundle row, swim-lane trace, and verdict.
 
 ## Out of scope (deferred)
 

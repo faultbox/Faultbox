@@ -1,6 +1,6 @@
 # Plan & Coverage
 
-> RFC-042's `faultbox plan` subcommand, the `plan.json` bundle artifact, and the report's Plan tab. v0.13.0-rc1 ships the **analysis** surface: enumerate, render, attach to bundles. The **execution** surface — spec-level interleaving fan-out and probability fan-out — lands in rc2 and is reserved syntactically in rc1 so CI integrations stay stable.
+> RFC-042's `faultbox plan` subcommand, the `plan.json` bundle artifact, and the report's Plan tab. v0.13.0-rc1 shipped the **analysis** surface (enumerate, render, attach to bundles). **rc2** ships the body-re-execution engine: named `choose()` axes (RFC-043) and syscall-level probability fan-out (`max_fires=`/`mode=`) now produce multi-leaf test execution end-to-end. Spec-level interleaving execution (§8.8) and protocol-level probability fan-out are still deferred; see "What's still reserved" below.
 
 ## Why a plan command
 
@@ -183,14 +183,22 @@ The Plan tab is read-only and analysis-only. Per-instance toggle between Plan an
 
 Top-level fields are stable from rc1; new fields land in additive places (e.g. `tests[].probability_fanout` arrives in rc2). The `schema_version` bumps when a backwards-incompatible change ships.
 
-## What's reserved for rc2
+## What landed in rc2
 
-The RFC's §8.8 (spec-level interleaving fan-out + execution) and §8.9 (probability fan-out with `max_fires=` / `mode=`) are the rc2 work. The flag surface is locked now:
+The body-re-execution engine is live. Two new fan-out axes drive multi-leaf test execution from one spec declaration:
 
-- `wait_all` / `wait_n` / `wait_first` builtins are not in the language today; they ship in rc2 together with the `interleavings=` kwarg surface. The accepted values (`1`, `"critical"`, integer `N`, `"all"`) and reserved values (`"dpor"`, `"sut-internal"` — explicit "future release" errors) will land in the same rc2 commit so the kwarg pact is locked the moment the builtins exist.
-- `fault(..., probability=p)` keeps today's stochastic semantics in rc1; the exhaustive fan-out behavior switches on in rc2.
+- **Named `choose("name", [opts])`** (RFC-043 §5.2) — each option becomes one test execution. Anonymous `choose([opts])` remains single-leaf because there's no name to address the axis by. See [docs/nondeterministic-operators.md](nondeterministic-operators.md) for the operator reference.
+- **`fault(..., probability=p, max_fires=N, mode="exhaustive")`** (RFC-042 §8.9, syscall-level) — exhaustive coverage of every fired/not-fired combination across N occurrences. 2^N leaves per rule. Each leaf carries a deterministic per-occurrence vector consulted by the engine instead of the seeded RNG.
 
-When rc2 lands, existing specs see a behavior change (probability defaults to exhaustive). The migration note will be in the rc2 release entry.
+Migration: existing `probability=p` declarations are **unaffected** unless the spec author explicitly adds `max_fires=N`. Bare `probability=p` keeps stochastic semantics; you have to opt into exhaustive fan-out. `mode="exhaustive"` requires `max_fires=N` (spec-load error otherwise — the runtime would otherwise silently fall back to stochastic).
+
+Multi-leaf bundle attribution: each leaf gets a stable `LeafID` in `TestResult` → `bundle.TestRow.LeafID` → the HTML report's tests table (display name suffixed with `[leaf N]`). Single-leaf executions stay byte-identical to rc1 manifests.
+
+## What's still reserved (post-rc2 follow-ups)
+
+- **§8.8 spec-level interleaving fan-out + execution.** `wait_all` / `wait_n` / `wait_first` builtins and the `interleavings=` kwarg surface still ship as one slice — tracked as A2 in the v0.13.0 roadmap. Reserved values (`"dpor"`, `"sut-internal"`) keep producing explicit "future release" errors.
+- **Protocol-level probability fan-out.** `response()` / `error()` / `drop()` still use the legacy stochastic path. The same `max_fires=` / `mode=` surface threads through `ProxyFaultDef` and `internal/proxy` in a follow-up.
+- **Static trigger-count analysis.** rc2 requires `max_fires=N`; rules without it fall back to stochastic without a plan warning. The `unmodeled_fanout` diagnostic surfaces in `faultbox plan` once static analysis lands.
 
 ## Coverage philosophy — beyond manual `fault_matrix`
 

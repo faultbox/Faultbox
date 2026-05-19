@@ -22,9 +22,10 @@ import (
 // through the entire pre-rc2 call surface so existing tests keep
 // passing unmodified.
 type PlanLeaf struct {
-	// Index is the leaf's ordinal in the plan tree, used to derive a
-	// stable LeafID like "test_foo[1]" when the test name alone would
-	// collide across leaves.
+	// Index is the leaf's 0-based ordinal in the plan tree. Used to
+	// derive TestResult.LeafID as a bare integer string ("0", "1",
+	// ...) so multiple rows sharing the same test Name can be
+	// disambiguated by manifest consumers.
 	Index int
 
 	// Choices maps a named choose("name", [...]) call to its selected
@@ -100,8 +101,20 @@ func (rt *Runtime) probabilityDecider(svcName string) func(rule *engine.FaultRul
 		if key == "" {
 			key = svcName + ":" + rule.Syscall
 		}
-		return rt.currentLeaf.ProbabilityFire(key, occurrence)
+		return rt.snapshotCurrentLeaf().ProbabilityFire(key, occurrence)
 	}
+}
+
+// snapshotCurrentLeaf returns the current PlanLeaf pointer under the
+// reader lock. The pointer is stable for the duration of the leaf
+// (RunTestLeaf swaps it under the writer lock around the body), so
+// returning the snapshot to the caller is race-free even though the
+// caller's use is unlocked. The body of a PlanLeaf is treated as
+// effectively immutable once attached.
+func (rt *Runtime) snapshotCurrentLeaf() *PlanLeaf {
+	rt.currentLeafMu.RLock()
+	defer rt.currentLeafMu.RUnlock()
+	return rt.currentLeaf
 }
 // Top-level choose() calls have already executed and recorded into
 // rt.choices; everything past this point is body-time. The plan
@@ -232,13 +245,14 @@ func collectNamedAxes(choices []*ChoiceVal) []*ChoiceVal {
 // 2^MaxFires factor — every per-occurrence fire/no-fire combination
 // becomes a leaf. Stable across runs given the same axes input.
 //
-// Leaf 0's all-zero ProbabilityOutcomes vector encodes "every
-// occurrence fires" because bit 0 = first option which is `true`.
-// Choosing `true` for occurrence 0 mirrors the discovery run's
-// pre-rc2 RNG fallback wherever the discovery happens to fire.
-// Callers shouldn't depend on the exact discovery-vs-leaf-0
-// equivalence at this level; instead they treat leaf 0 as a fresh
-// re-execution like any other leaf for probability axes.
+// Leaf 0's all-zero ProbabilityOutcomes vector encodes "no
+// occurrence fires" — bit 0 of digit=0 is `(0>>0)&1 == 0`. Callers
+// shouldn't depend on the exact discovery-vs-leaf-0 equivalence at
+// this level; instead they treat leaf 0 as a fresh re-execution
+// like any other leaf for probability axes. The discovery run uses
+// the RNG path because the ProbabilityDecider had no leaf attached;
+// leaf 0's deterministic re-execution then overrides that with the
+// all-false vector.
 func enumerateLeaves(axes []*ChoiceVal, probAxes []ProbFaultSite) []PlanLeaf {
 	if len(axes) == 0 && len(probAxes) == 0 {
 		return []PlanLeaf{{Index: 0, Choices: map[string]int{}}}
