@@ -2,6 +2,7 @@ package star
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -237,12 +238,61 @@ func TestInterleavings_Cardinality(t *testing.T) {
 		{ParallelSite{Branches: 5, Policy: InterleavingPolicy{Kind: "n", N: 3}}, 3},   // cap
 		{ParallelSite{Branches: 3, Policy: InterleavingPolicy{Kind: "n", N: 100}}, 6}, // factorial smaller than cap
 		{ParallelSite{Branches: 3, Policy: InterleavingPolicy{Kind: "critical"}}, 5},  // 2*3-1
-		{ParallelSite{Branches: 2, Policy: InterleavingPolicy{Kind: "critical"}}, 3},  // 2*2-1
+		// Review B1: 2-branch "critical" used to return 3, but the
+		// 3rd leaf decoded to the same permutation as the 2nd
+		// (permutationByIndex clamps). Cap at min(2N-1, N!) = 2.
+		{ParallelSite{Branches: 2, Policy: InterleavingPolicy{Kind: "critical"}}, 2},
+		// 4 branches "critical" stays at 2N-1=7 (well below 4!=24).
+		{ParallelSite{Branches: 4, Policy: InterleavingPolicy{Kind: "critical"}}, 7},
 	}
 	for _, tc := range cases {
 		if got := interleavingCardinality(tc.site); got != tc.want {
 			t.Errorf("cardinality(%+v) = %d, want %d", tc.site, got, tc.want)
 		}
+	}
+}
+
+// TestInterleavings_CriticalLeavesAreDistinct — review B1
+// regression: every leaf produced by "critical" must decode to a
+// unique permutation. A clamp in permutationByIndex used to make
+// the last leaf duplicate the second-to-last for 2-branch sites.
+func TestInterleavings_CriticalLeavesAreDistinct(t *testing.T) {
+	for n := 2; n <= 4; n++ {
+		site := ParallelSite{Branches: n, Policy: InterleavingPolicy{Kind: "critical"}}
+		card := interleavingCardinality(site)
+		seen := map[string]bool{}
+		for i := 0; i < card; i++ {
+			ord := interleavingOrdering(site, i)
+			key := fmt.Sprint(ord)
+			if seen[key] {
+				t.Errorf("n=%d: duplicate ordering at idx %d: %v", n, i, ord)
+			}
+			seen[key] = true
+		}
+	}
+}
+
+// TestInterleavings_ParallelRejectsUnknownKwarg — review B2
+// regression: a typo like `interleaving=` (missing s) used to
+// degrade silently to single-leaf. Now rejected with an explicit
+// error.
+func TestInterleavings_ParallelRejectsUnknownKwarg(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def a(): pass
+def b(): pass
+def test_typo():
+    parallel(a, b, interleaving="all")
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	tr := rt.RunTest(context.Background(), "test_typo")
+	if tr.Result != "fail" {
+		t.Fatalf("Result = %q, want fail; reason: %s", tr.Result, tr.Reason)
+	}
+	if !strings.Contains(tr.Reason, "unrecognized keyword argument") || !strings.Contains(tr.Reason, "interleaving") {
+		t.Errorf("Reason should call out the typo; got %q", tr.Reason)
 	}
 }
 
@@ -436,14 +486,11 @@ func TestInterleavings_OrderingByPolicy(t *testing.T) {
 }
 
 // TestRunAll_LeafDrivenBranchOrder — leaves 0 and 1 of a 2-branch
-// parallel fan-out execute the branches in different orders. The
-// body records ordering via a labeled syscall; the test asserts
-// the recorded sequence differs between leaves.
-//
-// Asserted via the leaf's InterleavingIndex through a Go-side
-// observer (the per-leaf launch order is the only visible artifact
-// at this level since we don't emit Starlark side effects from
-// branches in the unit-test environment).
+// parallel fan-out execute under the parallelWithLeaf path. Smoke
+// check; the per-branch invocation order is asserted directly by
+// TestParallelWithLeaf_LaunchesBranchesInOrder below (review N2 on
+// PR #123 — that test addresses the "only guards against panic"
+// concern by observing the ordering through Go-side branches).
 func TestRunAll_LeafDrivenBranchOrder(t *testing.T) {
 	rt := New(testLogger())
 	src := `
@@ -462,11 +509,81 @@ def test_order():
 	if res.Pass != 2 {
 		t.Fatalf("expected 2 pass, got %+v", res)
 	}
-	// Verify the two leaves carry distinct InterleavingIDs and the
-	// engine's parallelWithLeaf path was reached for both. We don't
-	// have a Starlark-visible artifact of the branch order, but the
-	// fact that both leaves passed (no panic, no nil-deref) under
-	// the new ordering-driven path is the regression guard.
+}
+
+// TestParallelWithLeaf_LaunchesBranchesInOrder — direct test of the
+// engine path: pass a known ordering and observe the Go-side
+// branch-invocation sequence. Two calls with different orderings
+// must produce different sequences. Addresses review N2 on PR #123
+// — without this a regression where parallelWithLeaf always used
+// identity ordering would still pass the suite.
+func TestParallelWithLeaf_LaunchesBranchesInOrder(t *testing.T) {
+	rt := New(testLogger())
+	mkBranch := func(seen *[]int, i int) starlark.Callable {
+		idx := i
+		return starlark.NewBuiltin(
+			"b",
+			func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
+				*seen = append(*seen, idx)
+				return starlark.None, nil
+			},
+		)
+	}
+
+	var seenA []int
+	branchesA := []starlark.Callable{mkBranch(&seenA, 0), mkBranch(&seenA, 1), mkBranch(&seenA, 2)}
+	if _, err := rt.parallelWithLeaf(branchesA, []int{2, 0, 1}); err != nil {
+		t.Fatalf("parallelWithLeaf A: %v", err)
+	}
+	wantA := []int{2, 0, 1}
+	if len(seenA) != len(wantA) {
+		t.Fatalf("seenA = %v, want %v", seenA, wantA)
+	}
+	for i := range wantA {
+		if seenA[i] != wantA[i] {
+			t.Fatalf("seenA = %v, want %v", seenA, wantA)
+		}
+	}
+
+	var seenB []int
+	branchesB := []starlark.Callable{mkBranch(&seenB, 0), mkBranch(&seenB, 1), mkBranch(&seenB, 2)}
+	if _, err := rt.parallelWithLeaf(branchesB, []int{1, 2, 0}); err != nil {
+		t.Fatalf("parallelWithLeaf B: %v", err)
+	}
+	wantB := []int{1, 2, 0}
+	if len(seenB) != len(wantB) {
+		t.Fatalf("seenB = %v, want %v", seenB, wantB)
+	}
+	for i := range wantB {
+		if seenB[i] != wantB[i] {
+			t.Fatalf("seenB = %v, want %v", seenB, wantB)
+		}
+	}
+}
+
+// TestParallelWithLeaf_SkipsOutOfRangeIndex — a buggy enumerator
+// passing an out-of-range index must not crash; the bounds check
+// in parallelWithLeaf skips it and the remaining branches run.
+func TestParallelWithLeaf_SkipsOutOfRangeIndex(t *testing.T) {
+	rt := New(testLogger())
+	var seen []int
+	mk := func(i int) starlark.Callable {
+		idx := i
+		return starlark.NewBuiltin(
+			"b",
+			func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
+				seen = append(seen, idx)
+				return starlark.None, nil
+			},
+		)
+	}
+	branches := []starlark.Callable{mk(0), mk(1)}
+	if _, err := rt.parallelWithLeaf(branches, []int{-1, 99, 1, 0}); err != nil {
+		t.Fatalf("parallelWithLeaf: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != 1 || seen[1] != 0 {
+		t.Errorf("seen = %v, want [1 0] (out-of-range skipped)", seen)
+	}
 }
 
 // TestInterleavings_ParallelRejectsBadKwarg — bad value surfaces at

@@ -79,9 +79,11 @@ func (p InterleavingPolicy) String() string {
 // interleavingOrdering to map a leaf's InterleavingIndex back to a
 // concrete branch release sequence.
 //
-// k must be in [0, n!). Callers that pass an out-of-range index
-// get the identity permutation [0..n-1] as a safe fallback so a
-// buggy enumerator can't crash the engine.
+// k must be in [0, n!). Out-of-range k is the caller's
+// responsibility — interleavingOrdering bounds-checks per policy
+// before calling in (review N1 on PR #123). This function clamps
+// the Lehmer-code digit to keep the index decode well-defined
+// (never panics), but the output is undefined for k ≥ n!.
 func permutationByIndex(n, k int) []int {
 	if n <= 0 {
 		return nil
@@ -141,7 +143,17 @@ func interleavingOrdering(site ParallelSite, idx int) []int {
 		}
 		return identityOrdering(n)
 	case "critical":
-		if idx >= 0 && idx < 2*n-1 {
+		// Cap matches interleavingCardinality — for 2 branches that's
+		// min(2N-1, N!) = min(3, 2) = 2 (review B1 on PR #123).
+		factorial := 1
+		for i := 2; i <= n; i++ {
+			factorial *= i
+		}
+		cap := 2*n - 1
+		if cap > factorial {
+			cap = factorial
+		}
+		if idx >= 0 && idx < cap {
 			return permutationByIndex(n, idx)
 		}
 		return identityOrdering(n)

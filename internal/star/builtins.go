@@ -1956,6 +1956,15 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 	if err != nil {
 		return nil, err
 	}
+	// Reject unknown kwargs so typos like `interleaving="all"`
+	// (missing trailing 's') don't silently degrade to single-leaf
+	// behavior (review B2 on PR #123). Mirrors the kwarg-rejection
+	// pattern landed for nondet() in PR #118.
+	for _, kv := range kwargs {
+		if k, _ := starlark.AsString(kv[0]); k != "interleavings" {
+			return nil, fmt.Errorf("parallel(): unrecognized keyword argument %q", k)
+		}
+	}
 	file, line := callerPosition(thread)
 	siteKey := fmt.Sprintf("%s:%d", file, line)
 	site := ParallelSite{Key: siteKey, Branches: len(callables), Policy: policy}

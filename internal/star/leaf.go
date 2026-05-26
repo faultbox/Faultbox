@@ -267,36 +267,34 @@ func collectNamedAxes(choices []*ChoiceVal) []*ChoiceVal {
 //   - "single" → 0 (no axis)
 //   - "all"    → factorial(Branches) — every distinct ordering
 //   - "n"      → min(N, factorial(Branches)) — capped subset
-//   - "critical" → max(2, 2*Branches - 1) — head-to-head + sequential
-//     pairs heuristic. The exact set of orderings each index maps to
-//     lands with the engine wiring in A2 PR 4; the cardinality is
-//     locked here so the cross-product math is stable.
+//   - "critical" → min(2*Branches-1, factorial(Branches)) —
+//     head-to-head + sequential pairs heuristic, capped at the
+//     factorial so 2-branch parallel() doesn't produce a duplicate
+//     leaf (review B1 on PR #123). The exact set of orderings each
+//     index maps to lands with the engine wiring in A2 PR 4; the
+//     cardinality is locked here so the cross-product math is stable.
 func interleavingCardinality(site ParallelSite) int {
 	if site.Branches < 2 {
 		return 0
+	}
+	factorial := 1
+	for i := 2; i <= site.Branches; i++ {
+		factorial *= i
 	}
 	switch site.Policy.Kind {
 	case "single":
 		return 0
 	case "all":
-		c := 1
-		for i := 2; i <= site.Branches; i++ {
-			c *= i
-		}
-		return c
+		return factorial
 	case "n":
-		c := 1
-		for i := 2; i <= site.Branches; i++ {
-			c *= i
-		}
-		if site.Policy.N < c {
+		if site.Policy.N < factorial {
 			return site.Policy.N
 		}
-		return c
+		return factorial
 	case "critical":
 		c := 2*site.Branches - 1
-		if c < 2 {
-			return 2
+		if c > factorial {
+			c = factorial
 		}
 		return c
 	default:
