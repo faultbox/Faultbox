@@ -1957,11 +1957,20 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 		return nil, err
 	}
 	file, line := callerPosition(thread)
-	rt.recordParallelSite(ParallelSite{
-		Key:      fmt.Sprintf("%s:%d", file, line),
-		Branches: len(callables),
-		Policy:   policy,
-	})
+	siteKey := fmt.Sprintf("%s:%d", file, line)
+	site := ParallelSite{Key: siteKey, Branches: len(callables), Policy: policy}
+	rt.recordParallelSite(site)
+
+	// RFC-042 §8.8 — leaf-driven path. When the current PlanLeaf
+	// pins an InterleavingIndex for this site, drive the branches
+	// in the per-leaf ordering. Pre-rc2 specs without a leaf
+	// attached fall through to the existing simple/explore paths.
+	if leaf := rt.snapshotCurrentLeaf(); leaf != nil {
+		if idx, pinned := leaf.InterleavingIndex(siteKey); pinned {
+			ordering := interleavingOrdering(site, idx)
+			return rt.parallelWithLeaf(callables, ordering)
+		}
+	}
 
 	// If explore mode is active, install hold rules and use scheduler.
 	if rt.exploreMode == "all" || rt.exploreMode == "sample" {
@@ -1969,6 +1978,31 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 	}
 
 	return rt.parallelSimple(callables)
+}
+
+// parallelWithLeaf launches branches in the order specified by the
+// current PlanLeaf's InterleavingIndex (RFC-042 §8.8). Each branch
+// runs to completion before the next starts — a strict ordering
+// that's a degenerate subset of true mediated-event interleaving
+// but enough to drive per-leaf determinism for the v0.13.0 fan-out.
+//
+// Mediated-event-level ordering (two branches running concurrently
+// with the engine releasing their syscalls in a specific sequence)
+// is a follow-up that extends RFC-014's hold queue; the kwarg
+// surface and leaf descriptors locked in PRs 1-3 of this slice are
+// the substrate that work plugs into. Documented in the rc2
+// release notes so users know what "interleaving" means today.
+func (rt *Runtime) parallelWithLeaf(callables []starlark.Callable, ordering []int) (starlark.Value, error) {
+	results := make([]parallelResult, len(callables))
+	for _, idx := range ordering {
+		if idx < 0 || idx >= len(callables) {
+			continue
+		}
+		t := &starlark.Thread{Name: fmt.Sprintf("parallel-%d", idx)}
+		val, err := starlark.Call(t, callables[idx], nil, nil)
+		results[idx] = parallelResult{value: val, err: err}
+	}
+	return rt.collectParallelResults(results)
 }
 
 // parallelSimple runs callables concurrently without interleaving control.

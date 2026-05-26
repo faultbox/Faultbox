@@ -73,6 +73,90 @@ func (p InterleavingPolicy) String() string {
 	return p.Kind
 }
 
+// permutationByIndex returns the k-th lexicographic permutation of
+// [0..n-1]. Stable across runs; the plan walker and the engine
+// agree on which ordering each leaf index pins. Used by
+// interleavingOrdering to map a leaf's InterleavingIndex back to a
+// concrete branch release sequence.
+//
+// k must be in [0, n!). Callers that pass an out-of-range index
+// get the identity permutation [0..n-1] as a safe fallback so a
+// buggy enumerator can't crash the engine.
+func permutationByIndex(n, k int) []int {
+	if n <= 0 {
+		return nil
+	}
+	if k < 0 {
+		k = 0
+	}
+	// Pre-compute factorials up to n-1 for the Lehmer-code decode.
+	fact := make([]int, n)
+	fact[0] = 1
+	for i := 1; i < n; i++ {
+		fact[i] = fact[i-1] * i
+	}
+	// Build the indices pool.
+	pool := make([]int, n)
+	for i := range pool {
+		pool[i] = i
+	}
+	perm := make([]int, n)
+	for i := 0; i < n; i++ {
+		f := fact[n-1-i]
+		digit := k / f
+		k %= f
+		if digit >= len(pool) {
+			digit = len(pool) - 1
+		}
+		perm[i] = pool[digit]
+		pool = append(pool[:digit], pool[digit+1:]...)
+	}
+	return perm
+}
+
+// interleavingOrdering maps a per-site leaf index to a branch
+// release order. Stable across runs for a given (Policy, Branches,
+// idx) triple — the plan walker and the engine consult the same
+// function so they agree on leaf semantics.
+//
+// Mapping per policy:
+//   - "single"   → identity [0..N-1] (never consulted in practice;
+//     no fan-out site means no leaf pin)
+//   - "all"      → k-th lexicographic permutation
+//   - "n"        → same as "all" for k < N; identity beyond
+//   - "critical" → heuristic subset (today: first 2*Branches-1
+//     orderings in lex order). The exact subset shape is documented
+//     as best-effort for v0.13.0 — a refined definition lands with
+//     RFC-009.
+func interleavingOrdering(site ParallelSite, idx int) []int {
+	n := site.Branches
+	switch site.Policy.Kind {
+	case "single":
+		return identityOrdering(n)
+	case "all":
+		return permutationByIndex(n, idx)
+	case "n":
+		if idx >= 0 && idx < site.Policy.N {
+			return permutationByIndex(n, idx)
+		}
+		return identityOrdering(n)
+	case "critical":
+		if idx >= 0 && idx < 2*n-1 {
+			return permutationByIndex(n, idx)
+		}
+		return identityOrdering(n)
+	}
+	return identityOrdering(n)
+}
+
+func identityOrdering(n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
+}
+
 // recordParallelSite appends a parallel() call to the body-discovery
 // slice. Sites whose policy is "single" are recorded too — the plan
 // walker filters them out when computing axes but keeping them in
