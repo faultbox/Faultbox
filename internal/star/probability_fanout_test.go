@@ -128,6 +128,100 @@ dn = deny("EIO", probability=0.3, max_fires=2)
 	}
 }
 
+// TestRunAll_LeafProbabilityOutcomesSurfaceOnTestResult — review
+// B1 on PR #124: prove every leaf of a probability fan-out carries
+// its actual fire/no-fire vector through to TestResult. The
+// copyBoolVecMap deep-copy path was untested at the TestResult
+// level before this regression guard.
+func TestRunAll_LeafProbabilityOutcomesSurfaceOnTestResult(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+dn = deny("EIO", probability=0.3, max_fires=2, mode="exhaustive", label="wal")
+def test_prob():
+    fault(svc, write=dn, run=lambda: None)
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	res, err := rt.RunAll(context.Background(), RunConfig{})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if len(res.Tests) != 4 {
+		t.Fatalf("expected 4 leaves (2^max_fires), got %d", len(res.Tests))
+	}
+	seen := map[string]bool{}
+	for _, tr := range res.Tests {
+		if tr.LeafProbabilityOutcomes == nil {
+			t.Errorf("leaf %s: LeafProbabilityOutcomes missing", tr.LeafID)
+			continue
+		}
+		vec, ok := tr.LeafProbabilityOutcomes["wal"]
+		if !ok {
+			t.Errorf("leaf %s: missing wal key; have %v", tr.LeafID, tr.LeafProbabilityOutcomes)
+			continue
+		}
+		if len(vec) != 2 {
+			t.Errorf("leaf %s: vector len = %d, want 2", tr.LeafID, len(vec))
+			continue
+		}
+		key := ""
+		for _, b := range vec {
+			if b {
+				key += "1"
+			} else {
+				key += "0"
+			}
+		}
+		seen[key] = true
+	}
+	for _, want := range []string{"00", "01", "10", "11"} {
+		if !seen[want] {
+			t.Errorf("missing vector %q in leaves; got %v", want, seen)
+		}
+	}
+	// Single-leaf rows must omit the field entirely.
+	rt2 := New(testLogger())
+	_ = rt2.LoadString("spec.star", `def test_plain(): pass`)
+	res2, _ := rt2.RunAll(context.Background(), RunConfig{})
+	if res2.Tests[0].LeafProbabilityOutcomes != nil {
+		t.Errorf("single-leaf result must omit LeafProbabilityOutcomes; got %v", res2.Tests[0].LeafProbabilityOutcomes)
+	}
+}
+
+// TestRunAll_CombinedChooseAndProbCarryBothMaps — composite leaf
+// (choose() × probability) must carry both maps. Guards against a
+// future refactor that copies one kind but not the other.
+func TestRunAll_CombinedChooseAndProbCarryBothMaps(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+dn = deny("EIO", probability=0.3, max_fires=1, mode="exhaustive", label="wal")
+def test_combo():
+    _ = choose("retries", [0, 1])
+    fault(svc, write=dn, run=lambda: None)
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	res, err := rt.RunAll(context.Background(), RunConfig{})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if len(res.Tests) != 4 {
+		t.Fatalf("expected 4 leaves (2 × 2), got %d", len(res.Tests))
+	}
+	for _, tr := range res.Tests {
+		if _, ok := tr.LeafChoices["retries"]; !ok {
+			t.Errorf("leaf %s missing retries in LeafChoices: %v", tr.LeafID, tr.LeafChoices)
+		}
+		if _, ok := tr.LeafProbabilityOutcomes["wal"]; !ok {
+			t.Errorf("leaf %s missing wal in LeafProbabilityOutcomes: %v", tr.LeafID, tr.LeafProbabilityOutcomes)
+		}
+	}
+}
+
 // TestProbabilityDecider_ConsultsLeaf — the runtime's decider
 // closure pulls the current leaf's outcomes vector and returns
 // (fire, pinned) matching ProbabilityFire's contract. Falls back to

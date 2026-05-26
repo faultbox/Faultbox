@@ -590,6 +590,10 @@ func TestParallelWithLeaf_SkipsOutOfRangeIndex(t *testing.T) {
 // axes flow into TestResult.LeafInterleavingIDs (A3 / RFC-042 §8.10).
 // The HTML report's formatLeafAxes() consumes this through the
 // bundle's leaf_interleavings field to render per-leaf labels.
+//
+// Review N3 on PR #124: assert the two leaves carry DISTINCT
+// interleaving indices, not just that each has an entry. A
+// regression to always-index-0 would pass the bare count check.
 func TestRunAll_LeafInterleavingsSurfaceOnTestResult(t *testing.T) {
 	rt := New(testLogger())
 	src := `
@@ -608,9 +612,25 @@ def test_par_axis():
 	if len(res.Tests) != 2 {
 		t.Fatalf("expected 2 leaves, got %d", len(res.Tests))
 	}
+	seenIdx := map[int]bool{}
+	var seenKey string
 	for _, tr := range res.Tests {
 		if len(tr.LeafInterleavingIDs) != 1 {
 			t.Errorf("leaf %s: expected 1 interleaving entry, got %v", tr.LeafID, tr.LeafInterleavingIDs)
+			continue
+		}
+		for k, idx := range tr.LeafInterleavingIDs {
+			if seenKey == "" {
+				seenKey = k
+			} else if k != seenKey {
+				t.Errorf("leaves disagree on parallel site key: %q vs %q", seenKey, k)
+			}
+			seenIdx[idx] = true
+		}
+	}
+	for _, want := range []int{0, 1} {
+		if !seenIdx[want] {
+			t.Errorf("missing interleaving index %d across leaves; got %v", want, seenIdx)
 		}
 	}
 }
