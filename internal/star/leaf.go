@@ -47,6 +47,20 @@ type PlanLeaf struct {
 	// uses the seeded RNG (stochastic mode), preserving rc1
 	// behavior for specs that don't opt into fan-out.
 	ProbabilityOutcomes map[string][]bool
+
+	// InterleavingIDs pins this leaf's choice of mediated-event
+	// ordering for every fan-out-eligible parallel() call
+	// (RFC-042 §8.8). Key is the ParallelSite.Key (file:line);
+	// value is the zero-based index of the ordering in the policy's
+	// enumeration. Engine (A2 PR 4) consumes the index to drive
+	// the hold queue's release order.
+	//
+	// A nil or missing entry means "no leaf-pinning" — the engine
+	// runs parallel() under the existing simple/explore path
+	// (rc1/rc2 PR-1 behavior). Sites with Policy.Kind == "single"
+	// are intentionally never present in this map; they don't fan
+	// out.
+	InterleavingIDs map[string]int
 }
 
 // optionIndex returns (idx, true) when the leaf pins this named
@@ -56,6 +70,19 @@ func (l *PlanLeaf) optionIndex(name string) (int, bool) {
 		return 0, false
 	}
 	i, ok := l.Choices[name]
+	return i, ok
+}
+
+// InterleavingIndex returns (idx, true) when this leaf pins the
+// parallel() site identified by key to a specific ordering index
+// (RFC-042 §8.8). (0, false) means "no pin" — the engine should
+// fall back to the existing parallelSimple / parallelWithExplore
+// path. nil-leaf and unknown-key both report unpinned.
+func (l *PlanLeaf) InterleavingIndex(key string) (int, bool) {
+	if l == nil || key == "" {
+		return 0, false
+	}
+	i, ok := l.InterleavingIDs[key]
 	return i, ok
 }
 
@@ -232,8 +259,53 @@ func collectNamedAxes(choices []*ChoiceVal) []*ChoiceVal {
 	return axes
 }
 
+// interleavingCardinality returns the number of plan-tree leaves a
+// single parallel() site contributes (RFC-042 §8.8). Sites whose
+// policy is "single" don't fan out; they return 0 here so callers
+// can skip them when collecting axes.
+//
+//   - "single" → 0 (no axis)
+//   - "all"    → factorial(Branches) — every distinct ordering
+//   - "n"      → min(N, factorial(Branches)) — capped subset
+//   - "critical" → max(2, 2*Branches - 1) — head-to-head + sequential
+//     pairs heuristic. The exact set of orderings each index maps to
+//     lands with the engine wiring in A2 PR 4; the cardinality is
+//     locked here so the cross-product math is stable.
+func interleavingCardinality(site ParallelSite) int {
+	if site.Branches < 2 {
+		return 0
+	}
+	switch site.Policy.Kind {
+	case "single":
+		return 0
+	case "all":
+		c := 1
+		for i := 2; i <= site.Branches; i++ {
+			c *= i
+		}
+		return c
+	case "n":
+		c := 1
+		for i := 2; i <= site.Branches; i++ {
+			c *= i
+		}
+		if site.Policy.N < c {
+			return site.Policy.N
+		}
+		return c
+	case "critical":
+		c := 2*site.Branches - 1
+		if c < 2 {
+			return 2
+		}
+		return c
+	default:
+		return 0
+	}
+}
+
 // enumerateLeaves expands the cross-product of axes into PlanLeaf
-// values. With no axes of either kind, returns a single degenerate
+// values. With no axes of any kind, returns a single degenerate
 // leaf so callers can use the same iteration shape for fan-out and
 // non-fan-out tests. Leaf 0 is the all-zero assignment, which
 // matches what the discovery run already executed — callers can
@@ -241,20 +313,28 @@ func collectNamedAxes(choices []*ChoiceVal) []*ChoiceVal {
 // 1..N-1.
 //
 // Index assignment uses mixed-radix counting across (choice axes,
-// probability fault sites). Each probability site contributes a
-// 2^MaxFires factor — every per-occurrence fire/no-fire combination
-// becomes a leaf. Stable across runs given the same axes input.
+// probability fault sites, parallel interleaving sites). Each
+// probability site contributes a 2^MaxFires factor; each parallel
+// site with Policy.Kind != "single" contributes
+// interleavingCardinality(site). Stable across runs given the same
+// axes input.
 //
 // Leaf 0's all-zero ProbabilityOutcomes vector encodes "no
-// occurrence fires" — bit 0 of digit=0 is `(0>>0)&1 == 0`. Callers
-// shouldn't depend on the exact discovery-vs-leaf-0 equivalence at
-// this level; instead they treat leaf 0 as a fresh re-execution
-// like any other leaf for probability axes. The discovery run uses
-// the RNG path because the ProbabilityDecider had no leaf attached;
-// leaf 0's deterministic re-execution then overrides that with the
-// all-false vector.
-func enumerateLeaves(axes []*ChoiceVal, probAxes []ProbFaultSite) []PlanLeaf {
-	if len(axes) == 0 && len(probAxes) == 0 {
+// occurrence fires" — bit 0 of digit=0 is `(0>>0)&1 == 0`. Leaf 0's
+// InterleavingIDs map is empty for "single" sites and pins index 0
+// for fan-out sites. Callers shouldn't depend on the exact
+// discovery-vs-leaf-0 equivalence at this level; instead they treat
+// leaf 0 as a fresh re-execution like any other leaf.
+func enumerateLeaves(axes []*ChoiceVal, probAxes []ProbFaultSite, parAxes []ParallelSite) []PlanLeaf {
+	// Filter parallel axes to fan-out-eligible only. Single-policy
+	// sites stay recorded for plan output but don't multiply leaves.
+	var activeParAxes []ParallelSite
+	for _, p := range parAxes {
+		if interleavingCardinality(p) > 0 {
+			activeParAxes = append(activeParAxes, p)
+		}
+	}
+	if len(axes) == 0 && len(probAxes) == 0 && len(activeParAxes) == 0 {
 		return []PlanLeaf{{Index: 0, Choices: map[string]int{}}}
 	}
 	total := 1
@@ -264,10 +344,14 @@ func enumerateLeaves(axes []*ChoiceVal, probAxes []ProbFaultSite) []PlanLeaf {
 	for _, p := range probAxes {
 		total *= 1 << p.MaxFires
 	}
+	for _, p := range activeParAxes {
+		total *= interleavingCardinality(p)
+	}
 	leaves := make([]PlanLeaf, 0, total)
 	for i := 0; i < total; i++ {
 		choices := make(map[string]int, len(axes))
 		probs := make(map[string][]bool, len(probAxes))
+		interleavings := make(map[string]int, len(activeParAxes))
 		rem := i
 		for _, a := range axes {
 			n := len(a.Options)
@@ -284,9 +368,17 @@ func enumerateLeaves(axes []*ChoiceVal, probAxes []ProbFaultSite) []PlanLeaf {
 			}
 			probs[p.Key] = vec
 		}
+		for _, p := range activeParAxes {
+			card := interleavingCardinality(p)
+			interleavings[p.Key] = rem % card
+			rem /= card
+		}
 		leaf := PlanLeaf{Index: i, Choices: choices}
 		if len(probs) > 0 {
 			leaf.ProbabilityOutcomes = probs
+		}
+		if len(interleavings) > 0 {
+			leaf.InterleavingIDs = interleavings
 		}
 		leaves = append(leaves, leaf)
 	}

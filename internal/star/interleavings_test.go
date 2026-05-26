@@ -222,6 +222,171 @@ def test_reset():
 	}
 }
 
+// TestInterleavings_Cardinality — per-policy leaf counts the plan
+// walker uses to size the cross-product.
+func TestInterleavings_Cardinality(t *testing.T) {
+	cases := []struct {
+		site ParallelSite
+		want int
+	}{
+		{ParallelSite{Branches: 2, Policy: InterleavingPolicy{Kind: "single"}}, 0},
+		{ParallelSite{Branches: 1, Policy: InterleavingPolicy{Kind: "all"}}, 0},
+		{ParallelSite{Branches: 2, Policy: InterleavingPolicy{Kind: "all"}}, 2}, // 2!
+		{ParallelSite{Branches: 3, Policy: InterleavingPolicy{Kind: "all"}}, 6}, // 3!
+		{ParallelSite{Branches: 4, Policy: InterleavingPolicy{Kind: "all"}}, 24},
+		{ParallelSite{Branches: 5, Policy: InterleavingPolicy{Kind: "n", N: 3}}, 3},   // cap
+		{ParallelSite{Branches: 3, Policy: InterleavingPolicy{Kind: "n", N: 100}}, 6}, // factorial smaller than cap
+		{ParallelSite{Branches: 3, Policy: InterleavingPolicy{Kind: "critical"}}, 5},  // 2*3-1
+		{ParallelSite{Branches: 2, Policy: InterleavingPolicy{Kind: "critical"}}, 3},  // 2*2-1
+	}
+	for _, tc := range cases {
+		if got := interleavingCardinality(tc.site); got != tc.want {
+			t.Errorf("cardinality(%+v) = %d, want %d", tc.site, got, tc.want)
+		}
+	}
+}
+
+// TestEnumerateLeaves_ParallelOnly — one parallel site with
+// interleavings="all", 3 branches → 6 leaves with distinct
+// InterleavingIDs.
+func TestEnumerateLeaves_ParallelOnly(t *testing.T) {
+	par := []ParallelSite{{
+		Key: "spec.star:5", Branches: 3,
+		Policy: InterleavingPolicy{Kind: "all"},
+	}}
+	leaves := enumerateLeaves(nil, nil, par)
+	if len(leaves) != 6 {
+		t.Fatalf("expected 6 leaves (3!), got %d", len(leaves))
+	}
+	seen := make(map[int]bool)
+	for _, l := range leaves {
+		idx, ok := l.InterleavingIndex("spec.star:5")
+		if !ok {
+			t.Errorf("leaf %d missing interleaving id", l.Index)
+			continue
+		}
+		seen[idx] = true
+	}
+	if len(seen) != 6 {
+		t.Errorf("expected 6 distinct interleaving indices, got %d: %v", len(seen), seen)
+	}
+}
+
+// TestEnumerateLeaves_ChoiceProbAndParCrossProduct — full
+// cross-product: 2 choices × 4 prob leaves × 3 interleavings = 24
+// leaves.
+func TestEnumerateLeaves_ChoiceProbAndParCrossProduct(t *testing.T) {
+	axes := []*ChoiceVal{
+		{Name: "k", Options: []starlark.Value{starlark.MakeInt(0), starlark.MakeInt(1)}},
+	}
+	prob := []ProbFaultSite{{Key: "wal", MaxFires: 2, Prob: 0.3}}
+	par := []ParallelSite{{
+		Key: "spec.star:7", Branches: 3,
+		Policy: InterleavingPolicy{Kind: "n", N: 3},
+	}}
+	leaves := enumerateLeaves(axes, prob, par)
+	if len(leaves) != 24 {
+		t.Errorf("2 × 4 × 3 = 24, got %d", len(leaves))
+	}
+}
+
+// TestEnumerateLeaves_SinglePolicyParAxisCollapses — a single-policy
+// parallel site doesn't multiply leaf count, even when other axes
+// fan out.
+func TestEnumerateLeaves_SinglePolicyParAxisCollapses(t *testing.T) {
+	axes := []*ChoiceVal{
+		{Name: "k", Options: []starlark.Value{starlark.MakeInt(0), starlark.MakeInt(1)}},
+	}
+	par := []ParallelSite{{
+		Key: "spec.star:9", Branches: 5,
+		Policy: InterleavingPolicy{Kind: "single"},
+	}}
+	leaves := enumerateLeaves(axes, nil, par)
+	if len(leaves) != 2 {
+		t.Fatalf("single-policy par axis must not multiply leaves, got %d", len(leaves))
+	}
+	if _, ok := leaves[0].InterleavingIndex("spec.star:9"); ok {
+		t.Error("single-policy site must not produce an interleaving pin in the leaf")
+	}
+}
+
+// TestPlanLeaf_InterleavingIndex — accessor contract.
+func TestPlanLeaf_InterleavingIndex(t *testing.T) {
+	leaf := &PlanLeaf{InterleavingIDs: map[string]int{"k1": 3}}
+	if got, ok := leaf.InterleavingIndex("k1"); !ok || got != 3 {
+		t.Errorf("got %d/%v, want 3/true", got, ok)
+	}
+	if _, ok := leaf.InterleavingIndex("missing"); ok {
+		t.Error("missing key must report unpinned")
+	}
+	var nilLeaf *PlanLeaf
+	if _, ok := nilLeaf.InterleavingIndex("k1"); ok {
+		t.Error("nil leaf must report unpinned")
+	}
+}
+
+// TestRunAll_ParallelInterleavingsFansOut — running a spec whose
+// body calls parallel(a, b, interleavings="all") with 2 branches
+// produces 2 leaves (2!). Each leaf carries a distinct LeafID and
+// the engine-execution sees a different InterleavingID assignment
+// in PR 4 of this slice; for now the recording + enumeration is
+// enough to drive RunAll's leaf loop.
+func TestRunAll_ParallelInterleavingsFansOut(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def a(): pass
+def b(): pass
+def test_par_fanout():
+    parallel(a, b, interleavings="all")
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	res, err := rt.RunAll(context.Background(), RunConfig{})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if res.Pass != 2 {
+		t.Errorf("expected 2 pass (2!), got %+v", res)
+	}
+	if len(res.Tests) != 2 {
+		t.Fatalf("expected 2 leaf rows, got %d", len(res.Tests))
+	}
+	leafIDs := map[string]bool{}
+	for _, tr := range res.Tests {
+		leafIDs[tr.LeafID] = true
+	}
+	if !leafIDs["0"] || !leafIDs["1"] {
+		t.Errorf("expected LeafIDs {0, 1}, got %v", leafIDs)
+	}
+}
+
+// TestRunAll_ParallelSingleStaysOneLeaf — without interleavings= or
+// with the default policy, parallel() runs once, producing one
+// TestResult with empty LeafID (rc2 PR-1 behavior preserved).
+func TestRunAll_ParallelSingleStaysOneLeaf(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def a(): pass
+def b(): pass
+def test_single():
+    parallel(a, b)
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	res, err := rt.RunAll(context.Background(), RunConfig{})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if res.Pass != 1 || len(res.Tests) != 1 {
+		t.Fatalf("expected 1 pass / 1 result, got %+v", res)
+	}
+	if res.Tests[0].LeafID != "" {
+		t.Errorf("LeafID = %q, want empty (no fan-out)", res.Tests[0].LeafID)
+	}
+}
+
 // TestInterleavings_ParallelRejectsBadKwarg — bad value surfaces at
 // runtime (parallel() is body-time, not load-time).
 func TestInterleavings_ParallelRejectsBadKwarg(t *testing.T) {

@@ -1069,23 +1069,38 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 
 	axes := collectNamedAxes(rt.bodyChoices())
 	probAxes := rt.bodyProbFaults()
-	if len(axes) == 0 && len(probAxes) == 0 {
+	parAxes := rt.bodyParallelSites()
+	// Active parallel axes (Policy != "single") drive fan-out; the
+	// enumerator does the same filter internally, but checking here
+	// keeps the single-leaf short-circuit honest for callers that
+	// have only "single"-policy parallel() recordings.
+	hasActiveParAxes := false
+	for _, p := range parAxes {
+		if interleavingCardinality(p) > 0 {
+			hasActiveParAxes = true
+			break
+		}
+	}
+	if len(axes) == 0 && len(probAxes) == 0 && !hasActiveParAxes {
 		// No fan-out axes — single-leaf result. Strip the LeafID so
 		// the SuiteResult stays shape-identical to pre-rc2 for tests
-		// that don't use choose() or exhaustive probability=.
+		// that don't use choose() / exhaustive probability= /
+		// interleavings= fan-out.
 		tr0.LeafID = ""
 		return []TestResult{tr0}
 	}
 
-	leaves := enumerateLeaves(axes, probAxes)
+	leaves := enumerateLeaves(axes, probAxes, parAxes)
 	results := make([]TestResult, 0, len(leaves))
-	// Leaf 0's discovery run used the RNG (no ProbabilityDecider
-	// could pin yet because rt.currentLeaf was empty). Re-run leaf 0
-	// with the explicit zero-vector assignment so probability
-	// attribution is consistent across all leaves.
-	if len(probAxes) > 0 {
+	// Leaf 0's discovery run used the RNG / single-ordering path (no
+	// PlanLeaf attached). Re-run leaf 0 with the explicit
+	// zero-vector / zero-ordering assignment so attribution is
+	// consistent across all leaves whenever any fan-out kind is
+	// active.
+	if len(probAxes) > 0 || hasActiveParAxes {
 		rt.resetBodyChoices()
 		rt.resetBodyProbFaults()
+		rt.resetBodyParallelSites()
 		leaf := leaves[0]
 		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	} else {
@@ -1094,6 +1109,7 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 	for i := 1; i < len(leaves); i++ {
 		rt.resetBodyChoices()
 		rt.resetBodyProbFaults()
+		rt.resetBodyParallelSites()
 		leaf := leaves[i]
 		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	}
