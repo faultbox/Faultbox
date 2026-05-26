@@ -348,6 +348,16 @@ type Runtime struct {
 	probFaultsMu sync.Mutex
 	probFaults   []ProbFaultSite
 
+	// parallelSites records every parallel() call observed during
+	// the most recent body run (RFC-042 §8.8). The plan walker
+	// turns each site whose Policy.Kind != "single" into an
+	// interleaving axis. Reset between leaves by
+	// resetBodyParallelSites; recording is dedup'd on Key (the
+	// call site's file:line) so the same parallel() statement
+	// reached via different code paths still contributes one axis.
+	parallelSitesMu sync.Mutex
+	parallelSites   []ParallelSite
+
 	// Spec-wide assume() predicates (RFC-043 §5.4). Evaluated at spec
 	// load in rc1 (violations error immediately); rc2 will defer to
 	// per-leaf pruning. Per-test predicates live on TestConfig.Assume
@@ -1053,28 +1063,44 @@ func (rt *Runtime) runTestSafelyLeaf(ctx context.Context, name string, leaf *Pla
 func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult {
 	rt.resetBodyChoices()
 	rt.resetBodyProbFaults()
+	rt.resetBodyParallelSites()
 	leaf0 := &PlanLeaf{Index: 0, Choices: map[string]int{}}
 	tr0 := rt.runTestSafelyLeaf(ctx, name, leaf0)
 
 	axes := collectNamedAxes(rt.bodyChoices())
 	probAxes := rt.bodyProbFaults()
-	if len(axes) == 0 && len(probAxes) == 0 {
+	parAxes := rt.bodyParallelSites()
+	// Active parallel axes (Policy != "single") drive fan-out; the
+	// enumerator does the same filter internally, but checking here
+	// keeps the single-leaf short-circuit honest for callers that
+	// have only "single"-policy parallel() recordings.
+	hasActiveParAxes := false
+	for _, p := range parAxes {
+		if interleavingCardinality(p) > 0 {
+			hasActiveParAxes = true
+			break
+		}
+	}
+	if len(axes) == 0 && len(probAxes) == 0 && !hasActiveParAxes {
 		// No fan-out axes — single-leaf result. Strip the LeafID so
 		// the SuiteResult stays shape-identical to pre-rc2 for tests
-		// that don't use choose() or exhaustive probability=.
+		// that don't use choose() / exhaustive probability= /
+		// interleavings= fan-out.
 		tr0.LeafID = ""
 		return []TestResult{tr0}
 	}
 
-	leaves := enumerateLeaves(axes, probAxes)
+	leaves := enumerateLeaves(axes, probAxes, parAxes)
 	results := make([]TestResult, 0, len(leaves))
-	// Leaf 0's discovery run used the RNG (no ProbabilityDecider
-	// could pin yet because rt.currentLeaf was empty). Re-run leaf 0
-	// with the explicit zero-vector assignment so probability
-	// attribution is consistent across all leaves.
-	if len(probAxes) > 0 {
+	// Leaf 0's discovery run used the RNG / single-ordering path (no
+	// PlanLeaf attached). Re-run leaf 0 with the explicit
+	// zero-vector / zero-ordering assignment so attribution is
+	// consistent across all leaves whenever any fan-out kind is
+	// active.
+	if len(probAxes) > 0 || hasActiveParAxes {
 		rt.resetBodyChoices()
 		rt.resetBodyProbFaults()
+		rt.resetBodyParallelSites()
 		leaf := leaves[0]
 		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	} else {
@@ -1083,6 +1109,7 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 	for i := 1; i < len(leaves); i++ {
 		rt.resetBodyChoices()
 		rt.resetBodyProbFaults()
+		rt.resetBodyParallelSites()
 		leaf := leaves[i]
 		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	}

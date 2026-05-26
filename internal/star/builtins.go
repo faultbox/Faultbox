@@ -1944,12 +1944,74 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 		callables[i] = c
 	}
 
+	// RFC-042 §8.8 — parse the interleavings= policy and record this
+	// parallel() call site for plan-tree discovery. The site is keyed
+	// on file:line so re-entering the same parallel() statement
+	// across leaves doesn't double the cardinality. The plan walker
+	// (PR 3 of this slice) consumes the recording to fan out one
+	// leaf per interleaving when policy.Kind != "single". Today
+	// recording only — execution still uses the existing parallel
+	// path so policy.Kind == "single" preserves rc1 semantics.
+	policy, err := parseInterleavingsKwarg("parallel", kwargs)
+	if err != nil {
+		return nil, err
+	}
+	// Reject unknown kwargs so typos like `interleaving="all"`
+	// (missing trailing 's') don't silently degrade to single-leaf
+	// behavior (review B2 on PR #123). Mirrors the kwarg-rejection
+	// pattern landed for nondet() in PR #118.
+	for _, kv := range kwargs {
+		if k, _ := starlark.AsString(kv[0]); k != "interleavings" {
+			return nil, fmt.Errorf("parallel(): unrecognized keyword argument %q", k)
+		}
+	}
+	file, line := callerPosition(thread)
+	siteKey := fmt.Sprintf("%s:%d", file, line)
+	site := ParallelSite{Key: siteKey, Branches: len(callables), Policy: policy}
+	rt.recordParallelSite(site)
+
+	// RFC-042 §8.8 — leaf-driven path. When the current PlanLeaf
+	// pins an InterleavingIndex for this site, drive the branches
+	// in the per-leaf ordering. Pre-rc2 specs without a leaf
+	// attached fall through to the existing simple/explore paths.
+	if leaf := rt.snapshotCurrentLeaf(); leaf != nil {
+		if idx, pinned := leaf.InterleavingIndex(siteKey); pinned {
+			ordering := interleavingOrdering(site, idx)
+			return rt.parallelWithLeaf(callables, ordering)
+		}
+	}
+
 	// If explore mode is active, install hold rules and use scheduler.
 	if rt.exploreMode == "all" || rt.exploreMode == "sample" {
 		return rt.parallelWithExplore(callables)
 	}
 
 	return rt.parallelSimple(callables)
+}
+
+// parallelWithLeaf launches branches in the order specified by the
+// current PlanLeaf's InterleavingIndex (RFC-042 §8.8). Each branch
+// runs to completion before the next starts — a strict ordering
+// that's a degenerate subset of true mediated-event interleaving
+// but enough to drive per-leaf determinism for the v0.13.0 fan-out.
+//
+// Mediated-event-level ordering (two branches running concurrently
+// with the engine releasing their syscalls in a specific sequence)
+// is a follow-up that extends RFC-014's hold queue; the kwarg
+// surface and leaf descriptors locked in PRs 1-3 of this slice are
+// the substrate that work plugs into. Documented in the rc2
+// release notes so users know what "interleaving" means today.
+func (rt *Runtime) parallelWithLeaf(callables []starlark.Callable, ordering []int) (starlark.Value, error) {
+	results := make([]parallelResult, len(callables))
+	for _, idx := range ordering {
+		if idx < 0 || idx >= len(callables) {
+			continue
+		}
+		t := &starlark.Thread{Name: fmt.Sprintf("parallel-%d", idx)}
+		val, err := starlark.Call(t, callables[idx], nil, nil)
+		results[idx] = parallelResult{value: val, err: err}
+	}
+	return rt.collectParallelResults(results)
 }
 
 // parallelSimple runs callables concurrently without interleaving control.

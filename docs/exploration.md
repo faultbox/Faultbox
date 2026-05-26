@@ -189,14 +189,16 @@ The body-re-execution engine is live. Two new fan-out axes drive multi-leaf test
 
 - **Named `choose("name", [opts])`** (RFC-043 §5.2) — each option becomes one test execution. Anonymous `choose([opts])` remains single-leaf because there's no name to address the axis by. See [docs/nondeterministic-operators.md](nondeterministic-operators.md) for the operator reference.
 - **`fault(..., probability=p, max_fires=N, mode="exhaustive")`** (RFC-042 §8.9, syscall-level) — exhaustive coverage of every fired/not-fired combination across N occurrences. 2^N leaves per rule. Each leaf carries a deterministic per-occurrence vector consulted by the engine instead of the seeded RNG.
+- **`parallel(fn1, fn2, ..., interleavings=)`** (RFC-042 §8.8) — each interleaving becomes one test execution. Policies: `1` (default, single execution), `"all"` (full factorial of branch orderings), `"n"` (capped subset), `"critical"` (heuristic 2N-1 boundary orderings). **Scope limit:** today's "interleaving" is **launch ordering** — branches launch sequentially in the per-leaf order. Mediated-event-level ordering (concurrent branches with the engine releasing syscalls in a specific sequence) is a follow-up; the kwarg surface + leaf descriptors are the substrate that work plugs into.
 
-Migration: existing `probability=p` declarations are **unaffected** unless the spec author explicitly adds `max_fires=N`. Bare `probability=p` keeps stochastic semantics; you have to opt into exhaustive fan-out. `mode="exhaustive"` requires `max_fires=N` (spec-load error otherwise — the runtime would otherwise silently fall back to stochastic).
+Migration: existing `probability=p` declarations are **unaffected** unless the spec author explicitly adds `max_fires=N`. Bare `probability=p` keeps stochastic semantics; you have to opt into exhaustive fan-out. `mode="exhaustive"` requires `max_fires=N` (spec-load error otherwise — the runtime would otherwise silently fall back to stochastic). Existing `parallel(...)` calls without `interleavings=` keep the rc1 single-execution behavior.
 
 Multi-leaf bundle attribution: each leaf gets a stable `LeafID` in `TestResult` → `bundle.TestRow.LeafID` → the HTML report's tests table (display name suffixed with `[leaf N]`). Single-leaf executions stay byte-identical to rc1 manifests.
 
 ## What's still reserved (post-rc2 follow-ups)
 
-- **§8.8 spec-level interleaving fan-out + execution.** `wait_all` / `wait_n` / `wait_first` builtins and the `interleavings=` kwarg surface still ship as one slice — tracked as A2 in the v0.13.0 roadmap. Reserved values (`"dpor"`, `"sut-internal"`) keep producing explicit "future release" errors.
+- **Mediated-event-level interleaving execution.** Today's `parallel(interleavings=)` ships **launch ordering** — branches launch sequentially in the per-leaf order. True mediated-event interleaving (concurrent branches with the engine releasing syscalls in a specific sequence via RFC-014's hold queue) is a follow-up. The PlanLeaf/site/decider substrate is in place; the follow-up extends the hold queue.
+- **`wait_all` / `wait_n` / `wait_first` builtins.** Not in the language today; `parallel()` is the rc2 surface. Likely lands with RFC-044 spec language simplification.
 - **Protocol-level probability fan-out.** `response()` / `error()` / `drop()` still use the legacy stochastic path. The same `max_fires=` / `mode=` surface threads through `ProxyFaultDef` and `internal/proxy` in a follow-up.
 - **Static trigger-count analysis.** rc2 requires `max_fires=N`; rules without it fall back to stochastic without a plan warning. The `unmodeled_fanout` diagnostic surfaces in `faultbox plan` once static analysis lands.
 

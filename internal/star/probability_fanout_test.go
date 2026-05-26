@@ -14,7 +14,7 @@ import (
 // vector is the binary encoding of its index.
 func TestEnumerateLeaves_ProbabilityAxes(t *testing.T) {
 	probAxes := []ProbFaultSite{{Key: "wal", MaxFires: 2, Prob: 0.3}}
-	leaves := enumerateLeaves(nil, probAxes)
+	leaves := enumerateLeaves(nil, probAxes, nil)
 	if len(leaves) != 4 {
 		t.Fatalf("expected 4 leaves (2^max_fires), got %d", len(leaves))
 	}
@@ -40,7 +40,7 @@ func TestEnumerateLeaves_ChoiceAndProbCrossProduct(t *testing.T) {
 		{Name: "k", Options: []starlark.Value{starlark.MakeInt(0), starlark.MakeInt(1), starlark.MakeInt(2)}},
 	}
 	prob := []ProbFaultSite{{Key: "wal", MaxFires: 2, Prob: 0.3}}
-	leaves := enumerateLeaves(axes, prob)
+	leaves := enumerateLeaves(axes, prob, nil)
 	if len(leaves) != 12 {
 		t.Errorf("3 choices x 4 prob-leaves = 12, got %d", len(leaves))
 	}
