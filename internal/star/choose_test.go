@@ -294,6 +294,54 @@ def test_cross():
 	}
 }
 
+// TestRunAll_LeafChoicesSurfaceOnTestResult — each leaf's TestResult
+// carries the actual per-leaf choose() axis assignment in
+// LeafChoices, so the bundle manifest and HTML report can render
+// what every leaf actually saw (RFC-042 §8.10 Plan-tab integration,
+// A3).
+func TestRunAll_LeafChoicesSurfaceOnTestResult(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def test_axis():
+    _ = choose("retries", [0, 1, 3])
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	res, err := rt.RunAll(context.Background(), RunConfig{})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if len(res.Tests) != 3 {
+		t.Fatalf("expected 3 leaves, got %d", len(res.Tests))
+	}
+	seen := map[int]bool{}
+	for _, tr := range res.Tests {
+		if tr.LeafChoices == nil {
+			t.Errorf("leaf %s: LeafChoices missing", tr.LeafID)
+			continue
+		}
+		idx, ok := tr.LeafChoices["retries"]
+		if !ok {
+			t.Errorf("leaf %s: missing retries axis; have %v", tr.LeafID, tr.LeafChoices)
+			continue
+		}
+		seen[idx] = true
+	}
+	for _, want := range []int{0, 1, 2} {
+		if !seen[want] {
+			t.Errorf("missing retries option index %d in leaves; got %v", want, seen)
+		}
+	}
+	// Single-leaf rows omit LeafChoices entirely.
+	rt2 := New(testLogger())
+	_ = rt2.LoadString("spec.star", `def test_plain(): pass`)
+	res2, _ := rt2.RunAll(context.Background(), RunConfig{})
+	if res2.Tests[0].LeafChoices != nil {
+		t.Errorf("single-leaf result must omit LeafChoices; got %v", res2.Tests[0].LeafChoices)
+	}
+}
+
 // TestRunAll_NoChoiceStaysSingleLeaf — a test that doesn't call
 // choose() at all keeps the rc1 shape: one TestResult per test, no
 // LeafID set. This guards backwards-compatibility for the entire

@@ -2289,17 +2289,59 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 			})
 		}
 
+		// Copy the per-leaf axis maps rather than aliasing TestResult's
+		// references. RunTestLeaf already deep-copies them off the
+		// PlanLeaf; we copy here too so a future refactor of
+		// TestResult lifecycle can't introduce a shared-mutation bug
+		// across the manifest row and the suite-result row (review
+		// N2 on PR #124).
 		rows = append(rows, bundle.TestRow{
-			Name:          tr.Name,
-			Outcome:       outcome,
-			DurationMs:    tr.DurationMs,
-			Seed:          tr.Seed,
-			Expectation:   tr.ExpectationName,
-			BypassedRules: bypassed,
-			LeafID:        tr.LeafID,
+			Name:                    tr.Name,
+			Outcome:                 outcome,
+			DurationMs:              tr.DurationMs,
+			Seed:                    tr.Seed,
+			Expectation:             tr.ExpectationName,
+			BypassedRules:           bypassed,
+			LeafID:                  tr.LeafID,
+			LeafChoices:             copyIntMapForRow(tr.LeafChoices),
+			LeafProbabilityOutcomes: copyBoolVecMapForRow(tr.LeafProbabilityOutcomes),
+			LeafInterleavingIDs:     copyIntMapForRow(tr.LeafInterleavingIDs),
 		})
 	}
 	return rows
+}
+
+// copyIntMapForRow returns nil for an empty or nil source so the
+// omitempty JSON contract on TestRow.LeafChoices /
+// LeafInterleavingIDs is preserved. Otherwise allocates a fresh map
+// — testRowsFromResult avoids aliasing the SuiteResult's maps so a
+// downstream mutator can't drift both row sets in lockstep (review
+// N2 on PR #124).
+func copyIntMapForRow(m map[string]int) map[string]int {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// copyBoolVecMapForRow mirrors copyIntMapForRow for the per-leaf
+// probability outcomes map. The bool vectors are also deep-copied
+// since they're the load-bearing structure for engine consultation.
+func copyBoolVecMapForRow(m map[string][]bool) map[string][]bool {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string][]bool, len(m))
+	for k, v := range m {
+		cp := make([]bool, len(v))
+		copy(cp, v)
+		out[k] = cp
+	}
+	return out
 }
 
 // printReplayHints emits a `Replay: faultbox replay …` line per failed

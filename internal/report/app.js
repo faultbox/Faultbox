@@ -159,6 +159,34 @@
   // place so the drill-down header, the tests table, and the matrix
   // stay in lockstep. Precedence mirrors cmd/faultbox/main.go:
   // failed/errored > expectation_violated > fault_bypassed > passed.
+  // formatLeafAxes turns a TestRow's leaf_choices / leaf_probability_outcomes
+  // / leaf_interleavings maps into a compact display string for the
+  // tests table (RFC-042 §8.10 Plan-tab integration). Returns "" when
+  // the row has no leaf-axis data, so the caller can fall back to the
+  // bare LeafID display. Output is intentionally terse — the
+  // drill-down panel surfaces the full structure for deeper inspection.
+  function formatLeafAxes(row) {
+    var parts = [];
+    var ch = row.leaf_choices || {};
+    Object.keys(ch).sort().forEach(function (k) {
+      parts.push(k + "=" + ch[k]);
+    });
+    var prob = row.leaf_probability_outcomes || {};
+    Object.keys(prob).sort().forEach(function (k) {
+      var vec = prob[k] || [];
+      var bits = vec.map(function (b) { return b ? "1" : "0"; }).join("");
+      parts.push(k + "[" + bits + "]");
+    });
+    var inter = row.leaf_interleavings || {};
+    Object.keys(inter).sort().forEach(function (k) {
+      // Show only the file:line basename to keep the chip short —
+      // full path is in the JSON for tooling.
+      var short = k.split("/").pop();
+      parts.push(short + "#" + inter[k]);
+    });
+    return parts.join(", ");
+  }
+
   function outcomeFromTrace(test) {
     if (!test) return "";
     if (test.result === "pass") {
@@ -489,11 +517,16 @@
       var pillClass = outcomeClass(r.outcome);
       var fa = (r.fault_assumptions || []).join(", ");
       // RFC-042 §8.8 / RFC-043 §5.2 multi-leaf rendering: when a test
-      // fans out across choose() / probability axes, every leaf shares
-      // the test name. Suffix the display name with the leaf ordinal
-      // so the table doesn't read as N duplicates. Single-leaf rows
-      // (LeafID empty) keep the rc1 shape.
-      var displayName = r.leaf_id ? r.name + " [leaf " + r.leaf_id + "]" : r.name;
+      // fans out across choose() / probability / interleaving axes,
+      // every leaf shares the test name. Suffix the display name with
+      // the leaf ordinal + the leaf's axis assignments so the table
+      // shows what each leaf actually saw. Single-leaf rows (LeafID
+      // empty) keep the rc1 shape.
+      var displayName = r.name;
+      if (r.leaf_id) {
+        var axes = formatLeafAxes(r);
+        displayName = r.name + " [leaf " + r.leaf_id + (axes ? " — " + axes : "") + "]";
+      }
       var tr = el("tr", {
         "data-test": r.name,
         onclick: (function (n) { return function () { openDrillDown(n); }; })(r.name),

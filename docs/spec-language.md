@@ -1400,6 +1400,26 @@ fault never fired. The predicate name (e.g. `expect_success`,
 `manifest.tests[].expectation` and surfaces alongside the pill in the
 report's tests table and drill-down header.
 
+#### Per-leaf axis attribution (v0.13.0 rc2)
+
+Multi-leaf rows from `choose()` / `probability=`/ `interleavings=`
+fan-out carry their axis assignments on the manifest row:
+
+- `leaf_choices` — map of named choose() axes to the **option index**
+  (zero-based) the leaf selected. The HTML report's tests table
+  renders this as `retries=2`, which means *"option at index 2"* —
+  NOT the literal value. For `choose("retries", [0, 1, 3])`, leaf 2
+  observes the value `3`; the display shows `retries=2`. The full
+  spec (axis values) lives in `plan.json`'s recorded choices.
+- `leaf_probability_outcomes` — per-rule fire/no-fire bit vector
+  (`wal[10]` = first occurrence fires, second does not).
+- `leaf_interleavings` — per `parallel()` call site, the
+  ordering-index the leaf executed (`spec.star:7#3` = site at
+  spec.star:7, ordering index 3).
+
+The omitempty contract holds: single-leaf rows omit all three fields,
+preserving the rc1 manifest shape.
+
 #### `require_faults_fire=True` on `fault_matrix()` (v0.11.1)
 
 Opt-in gate that demotes rows where at least one installed fault rule
