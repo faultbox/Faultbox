@@ -1944,6 +1944,18 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 		callables[i] = c
 	}
 
+	// RFC-042 §8.8 — parse the interleavings= policy. Today only the
+	// policy validation lives here; the plan walker that consumes it
+	// to fan out one leaf per interleaving lands in PR 3 of this
+	// slice. With policy.Kind == "single" parallel() runs exactly
+	// once (rc1 behavior), so existing specs that don't opt in keep
+	// their semantics unchanged.
+	policy, err := parseInterleavingsKwarg("parallel", kwargs)
+	if err != nil {
+		return nil, err
+	}
+	_ = policy // consumed by recordParallelSite in PR 2 of this slice
+
 	// If explore mode is active, install hold rules and use scheduler.
 	if rt.exploreMode == "all" || rt.exploreMode == "sample" {
 		return rt.parallelWithExplore(callables)
