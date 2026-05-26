@@ -2159,11 +2159,9 @@ wal_ops = events(service="inventory", path="/tmp/inventory.wal")
 
 ## Concurrency
 
-### `parallel(fn1, fn2, ...)`
+### `parallel(fn1, fn2, ..., interleavings=)`
 
 Runs multiple step callables concurrently. Returns results in argument order.
-Use with `--runs N` to explore different interleavings — each seed produces
-a different scheduling order.
 
 ```python
 def test_concurrent_orders():
@@ -2176,8 +2174,26 @@ def test_concurrent_orders():
     assert_eq(ok_count, 1, "exactly one order should succeed")
 ```
 
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| positional | callable... | — | Two or more callables to run. |
+| `interleavings` | int or string | `1` | RFC-042 §8.8 plan-tree fan-out policy. `1` (default) runs one interleaving; `"all"` fans out to N! leaves; `"critical"` to a 2N-1 heuristic subset; integer N caps to first N orderings. Reserved values (`"dpor"`, `"sut-internal"`) error explicitly. |
+
+```python
+# Fan out the plan tree across every ordering — N! test executions.
+def test_all_interleavings():
+    parallel(
+        lambda: a.post("/op1"),
+        lambda: b.post("/op2"),
+        lambda: c.post("/op3"),
+        interleavings = "all",   # 3! = 6 leaves
+    )
+```
+
+**Scope limit (rc2):** today's "interleaving" is **launch ordering** — branches launch sequentially in the per-leaf order. Mediated-event-level ordering (two branches running concurrently with the engine releasing their syscalls in a specific sequence) is a follow-up; the kwarg surface and leaf descriptors are in place for that work to plug into.
+
 ```bash
-faultbox test faultbox.star --runs 100 --show fail   # random interleavings
+faultbox test faultbox.star --runs 100 --show fail   # random interleavings (legacy)
 faultbox test faultbox.star --explore=all             # exhaustive: ALL permutations
 faultbox test faultbox.star --explore=sample           # 100 random orderings
 faultbox test faultbox.star --seed 42                  # replay exact ordering

@@ -36,25 +36,29 @@ verdict (PASS / FAIL / **INCONCLUSIVE**) plus a declarative
 `test(name, body=, timeout=, expect=, terminate_when=)` builtin.
 User guide: [docs/temporal.md](docs/temporal.md).
 
-**RFC-042 — exploration plan (rc1 + rc2 partial).** rc1 shipped the
-static plan-tree enumeration surface: `faultbox plan`, `plan.json` in
-every bundle, the HTML report's Plan tab, coverage analysis, `--suggest`,
-and the `--check-cost` gate. **rc2** adds the body-re-execution engine:
-named `choose("name", [opts])` axes (RFC-043 §5.2) now actually fan
-out — one test execution per option, each carrying a stable `LeafID`
-through TestResult and the bundle manifest. **§8.9 syscall-level
-probability fan-out** is live: `delay()` and `deny()` accept
-`probability=`, `max_fires=N` and `mode="exhaustive"|"stochastic"`;
-exhaustive mode (the new default) fans the plan tree out to 2^N
-leaves per rule and a per-leaf fire/no-fire vector replaces the
-seeded-RNG decision; stochastic mode preserves the legacy behavior
-verbatim. Engine consultation runs through a new
-`SessionConfig.ProbabilityDecider` closure set per-leaf. **Deferred to
-A2 / follow-ups:** §8.8 spec-level interleaving execution
-(`interleavings=` kwarg still reserved-with-error), protocol-level
-probability fan-out (response/error/drop), static trigger-count
-analysis, the `unmodeled_fanout` plan warning. User guide:
-[docs/exploration.md](docs/exploration.md).
+**RFC-042 — exploration plan (rc1 + rc2).** rc1 shipped the static
+plan-tree enumeration surface: `faultbox plan`, `plan.json` in every
+bundle, the HTML report's Plan tab, coverage analysis, `--suggest`,
+and the `--check-cost` gate. **rc2** adds the body-re-execution
+engine plus three fan-out axes: (1) named `choose("name", [opts])`
+(RFC-043 §5.2) — one execution per option. (2) **§8.9 syscall-level
+probability fan-out** — `delay()` / `deny()` accept `max_fires=N`
+and `mode="exhaustive"|"stochastic"`; exhaustive mode fans out to
+2^N leaves per rule with a per-leaf fire/no-fire vector consulted
+via `SessionConfig.ProbabilityDecider`. (3) **§8.8
+`parallel(interleavings=)`** — `1` (default), `"all"`, `"critical"`,
+integer `N`; reserved values (`"dpor"`, `"sut-internal"`) keep
+producing explicit "future release" errors. Each interleaving runs
+as a separate test execution; **scope limit:** the rc2 engine ships
+*launch ordering* (sequential per-leaf branch order), not
+mediated-event-level interleaving — the kwarg surface + leaf
+descriptors are the substrate the latter plugs into. Every fan-out
+axis attributes via `TestResult.LeafID` → `bundle.TestRow.LeafID`
+→ HTML report. **Deferred follow-ups:** mediated-event-level
+interleaving execution, protocol-level probability fan-out
+(`response()`/`error()`/`drop()`), static trigger-count analysis,
+the `unmodeled_fanout` plan warning, `wait_all`/`wait_n`/`wait_first`
+builtins. User guide: [docs/exploration.md](docs/exploration.md).
 
 **RFC-043 — non-deterministic operators (rc1).** Four small
 Starlark primitives shipped: `choose([opts])` / `choose("name", [opts])`

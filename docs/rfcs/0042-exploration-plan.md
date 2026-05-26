@@ -1,6 +1,6 @@
 # RFC-042: Exploration Plan & Coverage Engine
 
-> **Status: Implemented (rc2 partial, v0.13.0).** rc1 shipped the analysis surface (§8.1–§8.7, §8.10, §8.11). rc2 ships the body-re-execution engine and probability fan-out: **§8.9 syscall-level probability fan-out** (`max_fires=`, `mode=`) is live; **named `choose()` axes** (RFC-043 §5.2) fan out through the same engine. **§8.8 spec-level interleaving execution** remains deferred to a follow-up slice. Protocol-level (`response()`/`error()`/`drop()`) probability fan-out and static trigger-count analysis are tracked as follow-ups in the per-section status below. User guide: [docs/exploration.md](../exploration.md).
+> **Status: Implemented (rc2, v0.13.0).** rc1 shipped the analysis surface (§8.1–§8.7, §8.10, §8.11). rc2 ships the body-re-execution engine and three fan-out axes: **named `choose()` axes** (RFC-043 §5.2), **§8.9 syscall-level probability fan-out** (`max_fires=`, `mode=`), and **§8.8 `parallel(interleavings=)`** (launch-ordering today; mediated-event-level ordering is a follow-up). Protocol-level (`response()`/`error()`/`drop()`) probability fan-out, static trigger-count analysis, and mediated-event-level interleaving execution are tracked as follow-ups in the per-section status below. User guide: [docs/exploration.md](../exploration.md).
 
 ## Summary
 
@@ -467,7 +467,7 @@ In `internal/generate/.Analyze`, add cross-reference between dependency edges an
 
 ### 8.8 — Spec-level interleaving enumeration AND execution
 
-> **Status: Deferred to a follow-up slice (post-v0.13.0-rc2).** The body-re-execution infrastructure that lands in rc2 (PlanLeaf, RunTestLeaf, runTestFanout, ProbabilityDecider) is the substrate this section will plug into. Interleaving execution adds an `InterleavingID` field on PlanLeaf, extends the hold-and-release engine to drive a specific ordering, and lifts the `interleavings=` kwarg policy onto `wait_all`/`wait_n`/`wait_first`. Tracked as **A2** in the v0.13.0 roadmap; the heaviest engine slice remaining.
+> **Status: Implemented (rc2 partial, v0.13.0) for `parallel()`.** `parallel(fn1, ..., interleavings=)` accepts `1` / `"all"` / `"critical"` / integer `N`; reserved values `"dpor"` and `"sut-internal"` surface explicit "future release" errors. The plan walker records each `parallel()` call site, computes per-policy cardinality (`factorial(N)` for `"all"`, capped for `"n"`, `2N-1` heuristic for `"critical"`), and fans the plan tree out via `PlanLeaf.InterleavingIDs`. The engine consults the leaf's per-site index and routes to `parallelWithLeaf`, which launches branches in the per-leaf order. **Scope limit:** today's "interleaving" is **launch ordering** — branches launch sequentially in the per-leaf order. **Mediated-event-level ordering** (two branches running concurrently with the engine releasing their syscalls in a specific sequence via RFC-014's hold queue) is a follow-up that plugs into the existing PlanLeaf/site/decider substrate. `wait_all` / `wait_n` / `wait_first` builtins remain reserved for a later slice (likely RFC-044).
 
 For each `wait_all` / `wait_n` / `wait_first` block in the plan tree:
 
