@@ -60,18 +60,28 @@ interleaving execution, protocol-level probability fan-out
 the `unmodeled_fanout` plan warning, `wait_all`/`wait_n`/`wait_first`
 builtins. User guide: [docs/exploration.md](docs/exploration.md).
 
-**RFC-043 — non-deterministic operators (rc1).** Four small
-Starlark primitives shipped: `choose([opts])` / `choose("name", [opts])`
+**RFC-043 — non-deterministic operators (rc1 + rc2).** rc1 shipped
+four small Starlark primitives: `choose([opts])` / `choose("name", [opts])`
 for finite N-way choice, `nondet()` for the non-deterministic boolean
 (sugar for `choose([True, False])`; the pre-existing `nondet(svc)`
 variant for interleaving-control exemption keeps working unchanged),
 `halt(reason="")` for plan-tree branch pruning with a new `"halted"`
 outcome flowing through `SuiteResult`, bundle manifest, and the HTML
 report, and `assume(predicate)` / `test(assume=[...])` for plan-tree
-filtering. rc1 ships the language surface with single-leaf runtime
-semantics — each operator returns the first option / first leaf;
-full plan-tree fan-out and the AST sandbox for assume predicates
-land with rc2 alongside RFC-042 §8.8. User guide:
+filtering. **rc2** wires the operators into RFC-042's body-
+re-execution engine: named `choose()` axes fan out one execution per
+option; per-test `assume=` predicates evaluate at body entry against
+the current leaf's axis assignment (body-time `choose()` calls
+included), with predicate Starlark errors mapping to `Result="error"`
+rather than `"fail"` (distinguishing spec-authoring bugs from SUT
+behavioral failures); the §8.7 AST denylist for assume() lambda
+predicates is enforced at spec load (matching the monitor sandbox
+model — named `def` predicates slip past the static walk).
+`mode="exhaustive"` on probability faults is now normalized at
+parse-time so the internal representation matches the documented
+default. **Deferred:** §8.5 plan-walker-time `assume=` pruning
+(halt-at-body-entry today; lifting into the enumerator is a
+follow-up) and §8.6 cost-guard. User guide:
 [docs/nondeterministic-operators.md](docs/nondeterministic-operators.md).
 
 RFC-044 (spec-language simplification) remains a draft RFC tracked

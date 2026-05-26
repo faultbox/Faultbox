@@ -48,6 +48,14 @@ type PlanLeaf struct {
 	// behavior for specs that don't opt into fan-out.
 	ProbabilityOutcomes map[string][]bool
 
+	// IsDiscovery flags the synthetic leaf used for the runTestFanout
+	// discovery pass. The body runs to record choose() / probability
+	// / parallel() sites; assume= evaluation is skipped because the
+	// choices dict can't be populated yet (axis schema is what we're
+	// discovering). Leaves built by enumerateLeaves never have this
+	// flag set — only the leaf0 sentinel in runTestFanout.
+	IsDiscovery bool
+
 	// InterleavingIDs pins this leaf's choice of mediated-event
 	// ordering for every fan-out-eligible parallel() call
 	// (RFC-042 §8.8). Key is the ParallelSite.Key (file:line);

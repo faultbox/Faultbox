@@ -750,6 +750,16 @@ func parseProbabilityFanoutKwargs(builtinName string, kwargs []starlark.Tuple, p
 	if mode == "exhaustive" && maxFires == 0 {
 		return 0, "", fmt.Errorf("%s(): mode=\"exhaustive\" requires max_fires= > 0", builtinName)
 	}
+	// RFC-043 Q2 (PR #118 follow-up): normalize empty mode to
+	// "exhaustive" when max_fires > 0 so the internal contract
+	// matches the documented default. Downstream code can then
+	// equality-check Mode == "exhaustive" rather than the looser
+	// Mode != "stochastic". Empty Mode remains for specs with no
+	// fan-out at all (probability<1 with no max_fires — stochastic
+	// path) so existing rc1 specs keep their representation.
+	if mode == "" && maxFires > 0 {
+		mode = "exhaustive"
+	}
 	return maxFires, mode, nil
 }
 

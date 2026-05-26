@@ -367,6 +367,13 @@ type Runtime struct {
 	probFaultsMu sync.Mutex
 	probFaults   []ProbFaultSite
 
+	// planAxes is the named-choose() schema captured after a test's
+	// discovery run. Persists across leaves so per-leaf assume=
+	// predicates can resolve axis names to option values even
+	// when rt.choices has been reset between leaves. nil between
+	// tests; populated by runTestFanout when fan-out applies.
+	planAxes []*ChoiceVal
+
 	// parallelSites records every parallel() call observed during
 	// the most recent body run (RFC-042 §8.8). The plan walker
 	// turns each site whose Policy.Kind != "single" into an
@@ -483,6 +490,10 @@ func (rt *Runtime) LoadFile(path string) error {
 	if err := validateMonitorLambdasInSource(path, string(src)); err != nil {
 		return fmt.Errorf("load %s: %w", path, err)
 	}
+	// RFC-043 §8.7 — same model for assume() predicates.
+	if err := validateAssumeLambdasInSource(path, string(src)); err != nil {
+		return fmt.Errorf("load %s: %w", path, err)
+	}
 
 	thread := &starlark.Thread{Name: "load"}
 	thread.Load = rt.makeLoadFunc()
@@ -502,6 +513,10 @@ func (rt *Runtime) LoadString(name, src string) error {
 	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
 	// violations surface as load errors instead of mid-test panics.
 	if err := validateMonitorLambdasInSource(name, src); err != nil {
+		return fmt.Errorf("load: %w", err)
+	}
+	// RFC-043 §8.7 — same model for assume() predicates.
+	if err := validateAssumeLambdasInSource(name, src); err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
 	thread := &starlark.Thread{Name: "load"}
@@ -1083,12 +1098,19 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 	rt.resetBodyChoices()
 	rt.resetBodyProbFaults()
 	rt.resetBodyParallelSites()
-	leaf0 := &PlanLeaf{Index: 0, Choices: map[string]int{}}
+	leaf0 := &PlanLeaf{Index: 0, Choices: map[string]int{}, IsDiscovery: true}
 	tr0 := rt.runTestSafelyLeaf(ctx, name, leaf0)
 
 	axes := collectNamedAxes(rt.bodyChoices())
 	probAxes := rt.bodyProbFaults()
 	parAxes := rt.bodyParallelSites()
+	// Persist the axis schema for per-leaf assume= evaluation. The
+	// body's choose() recordings are reset between leaves so each
+	// leaf can rediscover, but assume= predicates need the schema
+	// at body-ENTRY before the leaf's body has run. Cleared at the
+	// end of runTestFanout so a subsequent test starts clean.
+	rt.planAxes = axes
+	defer func() { rt.planAxes = nil }()
 	// Active parallel axes (Policy != "single") drive fan-out; the
 	// enumerator does the same filter internally, but checking here
 	// keeps the single-leaf short-circuit honest for callers that
@@ -1116,7 +1138,15 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 	// zero-vector / zero-ordering assignment so attribution is
 	// consistent across all leaves whenever any fan-out kind is
 	// active.
-	if len(probAxes) > 0 || hasActiveParAxes {
+	// Re-execute leaf 0 with explicit assignment when ANY fan-out
+	// axis is present. Previously this only triggered for prob/par
+	// fan-out, but per-leaf assume= predicates (RFC-043 §5.4 rc2)
+	// need to see the leaf's actual choices at body entry — the
+	// discovery run evaluated assume= against an empty dict, which
+	// would fail on any predicate that indexed a body-time choice
+	// key. Re-running leaf 0 with the enumerated assignment unifies
+	// the path.
+	if len(axes) > 0 || len(probAxes) > 0 || hasActiveParAxes {
 		rt.resetBodyChoices()
 		rt.resetBodyProbFaults()
 		rt.resetBodyParallelSites()
@@ -1346,7 +1376,17 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// the current choices snapshot. The first failing predicate halts
 	// the test (Result="halted"); a predicate that raises a Starlark
 	// error fails the test. rc2 will defer this to plan-tree pruning.
-	if testCfg != nil && len(testCfg.Assumes) > 0 {
+	// Skip assume= evaluation on the discovery pass — the axis
+	// schema isn't recorded until the body runs once, so the
+	// choices dict would be empty and predicates that index
+	// body-time keys would error spuriously (RFC-043 §5.4 rc2).
+	// The enumerated leaves get the full evaluation after
+	// discovery completes.
+	skipAssumes := false
+	if leaf := rt.snapshotCurrentLeaf(); leaf != nil && leaf.IsDiscovery {
+		skipAssumes = true
+	}
+	if testCfg != nil && len(testCfg.Assumes) > 0 && !skipAssumes {
 		// Capture matrix / expectation attribution before the early-exit
 		// returns below so an assume-driven halt/fail is still attributed
 		// to its fault_matrix cell. Without this the matrix column in
@@ -1360,9 +1400,15 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 		for _, pred := range testCfg.Assumes {
 			ok, msg, err := pred.Evaluate(choices)
 			if err != nil {
+				// RFC-043 Q3 (PR #118 follow-up): a Starlark error
+				// inside an assume= predicate is a spec-authoring bug
+				// (wrong choices key, type mismatch, etc.) — not a
+				// behavioral failure of the SUT. Classify as "error"
+				// so CI gates that distinguish predicate authoring
+				// bugs from real failures can act on the difference.
 				rt.stopServices()
 				return TestResult{
-					Name: name, Result: "fail",
+					Name: name, Result: "error",
 					Reason:          err.Error(),
 					DurationMs:      time.Since(start).Milliseconds(),
 					Events:          rt.events.Events(),
