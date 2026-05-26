@@ -2290,13 +2290,16 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 		}
 
 		rows = append(rows, bundle.TestRow{
-			Name:          tr.Name,
-			Outcome:       outcome,
-			DurationMs:    tr.DurationMs,
-			Seed:          tr.Seed,
-			Expectation:   tr.ExpectationName,
-			BypassedRules: bypassed,
-			LeafID:        tr.LeafID,
+			Name:                    tr.Name,
+			Outcome:                 outcome,
+			DurationMs:              tr.DurationMs,
+			Seed:                    tr.Seed,
+			Expectation:             tr.ExpectationName,
+			BypassedRules:           bypassed,
+			LeafID:                  tr.LeafID,
+			LeafChoices:             tr.LeafChoices,
+			LeafProbabilityOutcomes: tr.LeafProbabilityOutcomes,
+			LeafInterleavingIDs:     tr.LeafInterleavingIDs,
 		})
 	}
 	return rows

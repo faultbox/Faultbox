@@ -87,6 +87,25 @@ type TestResult struct {
 	// callers — today it's the leaf's ordinal index ("1", "2", ...);
 	// the plan-tree enumerator may grow a richer naming scheme later.
 	LeafID string `json:"leaf_id,omitempty"`
+
+	// LeafChoices snapshots the leaf's named choose() axis assignments
+	// (RFC-043 §5.2). Key is the axis name; value is the selected
+	// option index into ChoiceVal.Options. nil for single-leaf
+	// executions.
+	LeafChoices map[string]int `json:"leaf_choices,omitempty"`
+
+	// LeafProbabilityOutcomes mirrors PlanLeaf.ProbabilityOutcomes for
+	// the bundle / report (RFC-042 §8.9). Key is the fault rule's
+	// label or "<service>:<syscall>"; vector is the per-occurrence
+	// fired/not-fired sequence consulted by the engine. nil for
+	// single-leaf and stochastic-mode rules.
+	LeafProbabilityOutcomes map[string][]bool `json:"leaf_probability_outcomes,omitempty"`
+
+	// LeafInterleavingIDs mirrors PlanLeaf.InterleavingIDs (RFC-042 §8.8).
+	// Key is the parallel() call site (file:line); value is the
+	// zero-based ordering index. nil for single-leaf and
+	// single-policy sites.
+	LeafInterleavingIDs map[string]int `json:"leaf_interleavings,omitempty"`
 }
 
 // BypassedRule describes one fault rule that was installed for this
@@ -1104,6 +1123,22 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 		leaf := leaves[0]
 		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	} else {
+		// Reuse the discovery run as leaf 0, but stamp the leaf's
+		// actual axis assignments onto the result so the bundle
+		// manifest and HTML report can render the per-leaf data
+		// (A3 / RFC-042 §8.10). The discovery run used leaf0 with
+		// an empty Choices map; the enumerated leaf 0 has the
+		// all-option-0 assignment for every named axis, which is
+		// semantically what the discovery run observed.
+		if len(leaves[0].Choices) > 0 {
+			tr0.LeafChoices = copyIntMap(leaves[0].Choices)
+		}
+		if len(leaves[0].ProbabilityOutcomes) > 0 {
+			tr0.LeafProbabilityOutcomes = copyBoolVecMap(leaves[0].ProbabilityOutcomes)
+		}
+		if len(leaves[0].InterleavingIDs) > 0 {
+			tr0.LeafInterleavingIDs = copyIntMap(leaves[0].InterleavingIDs)
+		}
 		results = append(results, tr0)
 	}
 	for i := 1; i < len(leaves); i++ {
@@ -1150,8 +1185,40 @@ func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf)
 	tr := rt.runTestImpl(ctx, name)
 	if leaf != nil {
 		tr.LeafID = fmt.Sprintf("%d", leaf.Index)
+		// Snapshot per-leaf axis assignments so the bundle manifest
+		// and HTML report can render exactly what each leaf saw
+		// (RFC-042 §8.10 Plan-tab integration). Maps are passed by
+		// reference into the leaf at construction time; copy them
+		// here so a later mutation can't drift the recorded result.
+		if len(leaf.Choices) > 0 {
+			tr.LeafChoices = copyIntMap(leaf.Choices)
+		}
+		if len(leaf.ProbabilityOutcomes) > 0 {
+			tr.LeafProbabilityOutcomes = copyBoolVecMap(leaf.ProbabilityOutcomes)
+		}
+		if len(leaf.InterleavingIDs) > 0 {
+			tr.LeafInterleavingIDs = copyIntMap(leaf.InterleavingIDs)
+		}
 	}
 	return tr
+}
+
+func copyIntMap(m map[string]int) map[string]int {
+	out := make(map[string]int, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyBoolVecMap(m map[string][]bool) map[string][]bool {
+	out := make(map[string][]bool, len(m))
+	for k, v := range m {
+		cp := make([]bool, len(v))
+		copy(cp, v)
+		out[k] = cp
+	}
+	return out
 }
 
 // runTestImpl is the original RunTest body, kept private so the

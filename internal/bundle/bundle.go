@@ -111,6 +111,18 @@ type TestRow struct {
 	// have distinct LeafID values; consumers can group on Name and
 	// disambiguate by LeafID.
 	LeafID string `json:"leaf_id,omitempty"`
+
+	// LeafChoices snapshots the named choose() option indices this
+	// leaf observed (RFC-043 §5.2). nil for single-leaf rows.
+	LeafChoices map[string]int `json:"leaf_choices,omitempty"`
+	// LeafProbabilityOutcomes records the per-rule fired/not-fired
+	// vector the engine drove for this leaf (RFC-042 §8.9). nil for
+	// single-leaf and stochastic-mode rules.
+	LeafProbabilityOutcomes map[string][]bool `json:"leaf_probability_outcomes,omitempty"`
+	// LeafInterleavingIDs records the per-parallel-site ordering
+	// index this leaf executed (RFC-042 §8.8). nil for single-leaf
+	// and single-policy sites.
+	LeafInterleavingIDs map[string]int `json:"leaf_interleavings,omitempty"`
 }
 
 // BypassedRule mirrors star.BypassedRule for the manifest — we don't

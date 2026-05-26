@@ -586,6 +586,35 @@ func TestParallelWithLeaf_SkipsOutOfRangeIndex(t *testing.T) {
 	}
 }
 
+// TestRunAll_LeafInterleavingsSurfaceOnTestResult — interleaving
+// axes flow into TestResult.LeafInterleavingIDs (A3 / RFC-042 §8.10).
+// The HTML report's formatLeafAxes() consumes this through the
+// bundle's leaf_interleavings field to render per-leaf labels.
+func TestRunAll_LeafInterleavingsSurfaceOnTestResult(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def a(): pass
+def b(): pass
+def test_par_axis():
+    parallel(a, b, interleavings="all")
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	res, err := rt.RunAll(context.Background(), RunConfig{})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if len(res.Tests) != 2 {
+		t.Fatalf("expected 2 leaves, got %d", len(res.Tests))
+	}
+	for _, tr := range res.Tests {
+		if len(tr.LeafInterleavingIDs) != 1 {
+			t.Errorf("leaf %s: expected 1 interleaving entry, got %v", tr.LeafID, tr.LeafInterleavingIDs)
+		}
+	}
+}
+
 // TestInterleavings_ParallelRejectsBadKwarg — bad value surfaces at
 // runtime (parallel() is body-time, not load-time).
 func TestInterleavings_ParallelRejectsBadKwarg(t *testing.T) {
