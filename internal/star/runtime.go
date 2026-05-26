@@ -79,6 +79,14 @@ type TestResult struct {
 	// JSON and surfaced in the report drill-down's Expected vs Actual
 	// block.
 	Assertion *AssertionDetail `json:"assertion,omitempty"`
+
+	// LeafID identifies which plan-tree leaf produced this result when
+	// the test fans out across choose()/probability/interleaving axes
+	// (RFC-042 §8.8/§8.9, RFC-043 §5). Empty for single-leaf
+	// executions, matching the rc1 shape. The format is opaque to
+	// callers — today it's the leaf's ordinal index ("1", "2", ...);
+	// the plan-tree enumerator may grow a richer naming scheme later.
+	LeafID string `json:"leaf_id,omitempty"`
 }
 
 // BypassedRule describes one fault rule that was installed for this
@@ -319,17 +327,47 @@ type Runtime struct {
 	mockTLSErr  error
 
 	// Recorded choose() call sites (RFC-043 §5.2). rc1 collects them
-	// for plan-tree visibility; rc2 will fan the plan tree out across
+	// for plan-tree visibility; rc2 fans the plan tree out across
 	// the option set. Same locking contract as the other post-load
 	// read-only accessors.
-	choicesMu sync.Mutex
-	choices   []*ChoiceVal
+	//
+	// specChoiceCount snapshots len(choices) at the end of LoadString
+	// so the plan walker can distinguish spec-load-time top-level
+	// choose() calls (which persist across tests) from body-time
+	// calls (which reset between leaves of the same test).
+	choicesMu       sync.Mutex
+	choices         []*ChoiceVal
+	specChoiceCount int
+
+	// probFaults records every probability-fanout-eligible fault
+	// declaration (RFC-042 §8.9) seen during the most recent body
+	// run. The plan walker enumerates one axis per entry with
+	// cardinality 2^MaxFires. Reset between leaves by
+	// resetBodyChoices — keyed identically to choose() recordings
+	// because both are body-time discovery data.
+	probFaultsMu sync.Mutex
+	probFaults   []ProbFaultSite
 
 	// Spec-wide assume() predicates (RFC-043 §5.4). Evaluated at spec
 	// load in rc1 (violations error immediately); rc2 will defer to
 	// per-leaf pruning. Per-test predicates live on TestConfig.Assume
 	// and are evaluated by RunTest.
 	specAssumes []*AssumePredicate
+
+	// currentLeaf, when non-nil, pins per-leaf non-deterministic
+	// outcomes (RFC-042 §8.8/§8.9 + RFC-043 §5). Set by RunTestLeaf
+	// before the body executes and cleared on exit. Single-leaf runs
+	// leave this nil so every consultation falls back to the rc1
+	// default (choose()→first option, fault→stochastic).
+	//
+	// Synchronized by currentLeafMu because the engine's notification
+	// handler reads it from goroutines spawned per seccomp event
+	// (review B1 on PR #121). For reused services the notification
+	// loop stays alive across leaves; writer-locked swap + reader-
+	// locked reads keep occurrence indices and decider results from
+	// drifting at leaf boundaries.
+	currentLeafMu sync.RWMutex
+	currentLeaf   *PlanLeaf
 
 	// Determinism state — RFC-040. Populated by the determinism() top-level
 	// builtin (or defaults to L1 / runtime=default / strict=True if not
@@ -426,6 +464,7 @@ func (rt *Runtime) LoadFile(path string) error {
 	}
 
 	rt.globals = globals
+	rt.snapshotSpecChoices()
 	return nil
 }
 
@@ -444,6 +483,7 @@ func (rt *Runtime) LoadString(name, src string) error {
 		return fmt.Errorf("load: %w", err)
 	}
 	rt.globals = globals
+	rt.snapshotSpecChoices()
 	return nil
 }
 
@@ -801,16 +841,39 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 			}
 			rt.log.Info("running test", slog.String("test", runLabel))
 
-			tr := rt.runTestSafely(ctx, name)
-			tr.Seed = seed
-			// Crashes are recorded once per suite — they're a
-			// process-level fault and dwarf any later test signal.
-			if tr.Result == "error" && suite.Crash == nil && tr.Reason != "" {
-				suite.Crash = &CrashInfo{
-					Panic:    tr.Reason,
-					LastTest: name,
+			// RFC-042 §8.8 / RFC-043 §5.2 — fan out the test across
+			// named choose() axes. For tests with no axes this returns
+			// a single result and the SuiteResult shape stays identical
+			// to pre-rc2; for tests with axes one TestResult per leaf
+			// is produced and each goes through the per-result switch
+			// below independently (each leaf gets its own pass/fail
+			// counter and Seed stamp).
+			leafResults := rt.runTestFanout(ctx, name)
+			if len(leafResults) == 0 {
+				// runTestFanout always returns at least one result;
+				// this branch is defensive only.
+				continue
+			}
+
+			// Track crash from the first leaf that errored — same
+			// semantics as before, but applied to leaf-level results.
+			for i := range leafResults {
+				leafResults[i].Seed = seed
+				lr := leafResults[i]
+				if lr.Result == "error" && suite.Crash == nil && lr.Reason != "" {
+					suite.Crash = &CrashInfo{
+						Panic:    lr.Reason,
+						LastTest: name,
+					}
 				}
 			}
+
+			// The legacy explore-mode bookkeeping and per-test
+			// completion log read the first leaf's result. Multi-leaf
+			// runs still log per-leaf inside the switch below; this
+			// `tr` variable preserves the existing logging shape for
+			// the test-level summary.
+			tr := leafResults[0]
 
 			// After first run with --explore=all (auto), calculate total permutations.
 			if autoExplore && run == 0 && rt.exploreHeldN > 0 {
@@ -837,41 +900,49 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 				)
 			}
 
-			switch tr.Result {
-			case "pass":
-				suite.Pass++
-				if !cfg.FailOnly {
-					suite.Tests = append(suite.Tests, tr)
+			// Aggregate per-leaf results into the suite counters. Each
+			// leaf is an independent verdict; the legacy multi-run
+			// "stop on first failure" gate operates at the (test, seed)
+			// level — if any leaf in this run failed and we're in
+			// stress mode, the next seed is skipped.
+			anyFailed := false
+			for _, lr := range leafResults {
+				switch lr.Result {
+				case "pass":
+					suite.Pass++
+					if !cfg.FailOnly {
+						suite.Tests = append(suite.Tests, lr)
+					}
+				case "inconclusive":
+					// RFC-041 §5.5(c). Tracked separately from Fail so CI
+					// can choose to gate on either or both; CLI exit code
+					// 3 (in main.go) reflects Inconclusive > 0 when Fail == 0.
+					suite.Inconclusive++
+					suite.Tests = append(suite.Tests, lr)
+				case "halted":
+					// RFC-043 §5.3 — the test body called halt() (or
+					// assume(False) at body entry). The leaf is
+					// recorded with the choice path that led to it but
+					// does not contribute to PASS/FAIL/INCONCLUSIVE
+					// counts; CI gates that ignore halted runs see a
+					// clean exit.
+					suite.Halted++
+					if !cfg.FailOnly {
+						suite.Tests = append(suite.Tests, lr)
+					}
+				default: // "fail", "error", anything else non-pass
+					suite.Fail++
+					suite.Tests = append(suite.Tests, lr)
+					anyFailed = true
 				}
-			case "inconclusive":
-				// RFC-041 §5.5(c). Tracked separately from Fail so CI
-				// can choose to gate on either or both; CLI exit code
-				// 3 (in main.go) reflects Inconclusive > 0 when Fail == 0.
-				suite.Inconclusive++
-				suite.Tests = append(suite.Tests, tr)
-			case "halted":
-				// RFC-043 §5.3 — the test body called halt() (or
-				// `assume(False)` once §5.4 lands). The leaf is
-				// recorded with the choice path that led to it but
-				// does not contribute to PASS/FAIL/INCONCLUSIVE
-				// counts; CI gates that ignore halted runs see a
-				// clean exit.
-				suite.Halted++
-				if !cfg.FailOnly {
-					suite.Tests = append(suite.Tests, tr)
-				}
-			default: // "fail", "error", anything else non-pass
-				suite.Fail++
-				suite.Tests = append(suite.Tests, tr)
-				// In multi-run mode, stop this test on first failure.
-				if testRuns > 1 {
-					rt.log.Warn("failure found, stopping runs for this test",
-						slog.String("test", name),
-						slog.Uint64("seed", seed),
-						slog.Int("run", run+1),
-					)
-					break
-				}
+			}
+			if testRuns > 1 && anyFailed {
+				rt.log.Warn("failure found, stopping runs for this test",
+					slog.String("test", name),
+					slog.Uint64("seed", seed),
+					slog.Int("run", run+1),
+				)
+				break
 			}
 		}
 	}
@@ -934,8 +1005,134 @@ func (rt *Runtime) runTestSafely(ctx context.Context, name string) (tr TestResul
 	return rt.RunTest(ctx, name)
 }
 
-// RunTest executes a single test function with fresh services.
+// runTestSafelyLeaf is the leaf-aware sibling of runTestSafely.
+// Same panic-to-error contract, but threads a PlanLeaf through to
+// RunTestLeaf so the plan walker can drive multi-leaf execution.
+// A nil leaf collapses to the same code path as runTestSafely.
+func (rt *Runtime) runTestSafelyLeaf(ctx context.Context, name string, leaf *PlanLeaf) (tr TestResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			rt.log.Error("test panicked",
+				slog.String("test", name),
+				slog.Any("panic", r),
+			)
+			tr = TestResult{
+				Name:       name,
+				Result:     "error",
+				Reason:     fmt.Sprintf("panic: %v\n\n%s", r, debug.Stack()),
+				DurationMs: 0,
+			}
+			if leaf != nil {
+				tr.LeafID = fmt.Sprintf("%d", leaf.Index)
+			}
+		}
+	}()
+	return rt.RunTestLeaf(ctx, name, leaf)
+}
+
+// runTestFanout runs one test as one or more plan-tree leaves
+// (RFC-042 §8.8 / RFC-043 §5.2 — named choose() axes today;
+// probability and interleaving axes wire in later PRs of this
+// slice). Returns one TestResult per leaf; tests with no
+// fan-out-eligible axes produce a single result indistinguishable
+// from the pre-rc2 path.
+//
+// Execution model: leaf 0 runs first as the *discovery* run with
+// an empty choices map. That run's recorded body-time choose()
+// calls are inspected to derive axes. If any named, multi-option
+// axes appear, the cross-product is enumerated and leaves 1..N
+// run in order. The discovery run's result is kept as leaf 0
+// because the all-option-0 assignment is what it produced.
+//
+// Limitation: axes that only appear in some branches of the body
+// (conditional choose() calls) are best-effort. The plan walker
+// records leaf.Choices entries the body may or may not consult;
+// missing axes silently fall back to FirstOption inside Selected.
+// This is the documented rc2 boundary — RFC-042 §8.8 covers the
+// majority case where the axes are leaf-independent.
+func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult {
+	rt.resetBodyChoices()
+	rt.resetBodyProbFaults()
+	leaf0 := &PlanLeaf{Index: 0, Choices: map[string]int{}}
+	tr0 := rt.runTestSafelyLeaf(ctx, name, leaf0)
+
+	axes := collectNamedAxes(rt.bodyChoices())
+	probAxes := rt.bodyProbFaults()
+	if len(axes) == 0 && len(probAxes) == 0 {
+		// No fan-out axes — single-leaf result. Strip the LeafID so
+		// the SuiteResult stays shape-identical to pre-rc2 for tests
+		// that don't use choose() or exhaustive probability=.
+		tr0.LeafID = ""
+		return []TestResult{tr0}
+	}
+
+	leaves := enumerateLeaves(axes, probAxes)
+	results := make([]TestResult, 0, len(leaves))
+	// Leaf 0's discovery run used the RNG (no ProbabilityDecider
+	// could pin yet because rt.currentLeaf was empty). Re-run leaf 0
+	// with the explicit zero-vector assignment so probability
+	// attribution is consistent across all leaves.
+	if len(probAxes) > 0 {
+		rt.resetBodyChoices()
+		rt.resetBodyProbFaults()
+		leaf := leaves[0]
+		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
+	} else {
+		results = append(results, tr0)
+	}
+	for i := 1; i < len(leaves); i++ {
+		rt.resetBodyChoices()
+		rt.resetBodyProbFaults()
+		leaf := leaves[i]
+		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
+	}
+	return results
+}
+
+// RunTest executes a single test function with fresh services under
+// the single-leaf degenerate path — every non-deterministic axis
+// resolves to its rc1 default. Pre-RFC-042-rc2 callers stay on this
+// surface; the plan-tree enumerator (PR 2 of this slice) uses
+// RunTestLeaf to drive multi-leaf execution.
 func (rt *Runtime) RunTest(ctx context.Context, name string) TestResult {
+	return rt.RunTestLeaf(ctx, name, nil)
+}
+
+// RunTestLeaf executes one plan-tree leaf of a test. A nil leaf is
+// the single-leaf path (identical to pre-rc2 behavior). When leaf is
+// non-nil, rt.currentLeaf is pinned for the duration of the body and
+// every consultation (choose()'s Selected, the engine's fault
+// firing, the interleaving scheduler) reads its per-axis assignment.
+//
+// The leaf is cleared on exit so a subsequent RunTest call on the
+// same runtime falls back to the default path — important because
+// RunAll's plan walker reuses the runtime across leaves.
+//
+// LeafID is populated from leaf.Index when leaf is non-nil so the
+// SuiteResult can disambiguate multi-leaf rows belonging to one
+// test() declaration.
+func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf) TestResult {
+	rt.currentLeafMu.Lock()
+	rt.currentLeaf = leaf
+	rt.currentLeafMu.Unlock()
+	defer func() {
+		rt.currentLeafMu.Lock()
+		rt.currentLeaf = nil
+		rt.currentLeafMu.Unlock()
+	}()
+	tr := rt.runTestImpl(ctx, name)
+	if leaf != nil {
+		tr.LeafID = fmt.Sprintf("%d", leaf.Index)
+	}
+	return tr
+}
+
+// runTestImpl is the original RunTest body, kept private so the
+// public RunTest/RunTestLeaf surface stays small. Splitting it out
+// avoids threading the leaf through every internal `return TestResult{...}`
+// in the function — those still build the result without LeafID, and
+// RunTestLeaf stamps the leaf ordinal on the final value.
+func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	start := time.Now()
 
 	fn, ok := rt.globals[name].(starlark.Callable)
@@ -1942,6 +2139,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 		Seed:               rt.seed,
 		VirtualTime:        rt.virtualTime,
 		ExternalListenerFd: -1, // not external
+		ProbabilityDecider: rt.probabilityDecider(svcName),
 	}
 
 	_ = stdoutSources // TODO: store for cleanup in stopServices
@@ -2101,6 +2299,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		VirtualTime:        rt.virtualTime,
 		ExternalListenerFd: result.ListenerFd,
 		ExternalPID:        result.HostPID,
+		ProbabilityDecider: rt.probabilityDecider(svcName),
 	}
 
 	return rt.launchSession(ctx, svcName, svc, sessCfg)
@@ -3464,6 +3663,26 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	rt.faults[svcName] = faults
 	rt.faultsMu.Unlock()
 
+	// Record probability fan-out sites BEFORE the nil-session
+	// bail-out so the plan walker sees every fan-out axis regardless
+	// of whether the target has a seccomp session attached. Mock
+	// services and seccomp=False containers can still drive plan-
+	// tree enumeration; runtime execution of the rule is what's
+	// skipped, not the planning visibility (review B3 on PR #121).
+	for syscall, fd := range faults {
+		if fd.Probability < 1.0 && fd.MaxFires > 0 && fd.Mode != "stochastic" {
+			key := fd.Label
+			if key == "" {
+				key = svcName + ":" + syscall
+			}
+			rt.recordProbFault(ProbFaultSite{
+				Key:      key,
+				MaxFires: fd.MaxFires,
+				Prob:     fd.Probability,
+			})
+		}
+	}
+
 	// Convert to engine.FaultRule and inject into running session.
 	rs, ok := rt.sessions[svcName]
 	if !ok {
@@ -3492,6 +3711,9 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	for syscall, fd := range faults {
 		// Expand syscall families: "write" → write, writev, pwrite64
 		syscalls := expandSyscallFamily(syscall)
+		// Probability fan-out site recording happens above the
+		// nil-session bail-out so mock-service tests still get plan
+		// visibility (review B3 on PR #121).
 		for _, sc := range syscalls {
 			rule := engine.FaultRule{
 				Syscall:     sc,
@@ -3499,6 +3721,20 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 				Label:       fd.Label,
 				Op:          fd.Op,
 				PathGlob:    fd.PathGlob,
+				MaxFires:    fd.MaxFires,
+				Mode:        fd.Mode,
+			}
+			// All expanded siblings of one FaultDef share the same
+			// probability decider key (pre-expansion syscall or
+			// label). Without this they'd dispatch to per-syscall
+			// counters and the per-occurrence vector would be split
+			// across siblings; review B3 on PR #121. We override
+			// rule.Label here so the decider's "Label or
+			// service:syscall" key derivation lands on the shared
+			// site key — including the case where the user didn't
+			// set Label themselves.
+			if fd.Probability < 1.0 && fd.MaxFires > 0 && fd.Mode != "stochastic" && fd.Label == "" {
+				rule.Label = svcName + ":" + syscall
 			}
 			switch fd.Action {
 			case "delay":

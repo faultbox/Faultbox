@@ -36,19 +36,25 @@ verdict (PASS / FAIL / **INCONCLUSIVE**) plus a declarative
 `test(name, body=, timeout=, expect=, terminate_when=)` builtin.
 User guide: [docs/temporal.md](docs/temporal.md).
 
-**RFC-042 — exploration plan (rc1).** Static plan-tree enumeration
-shipped: the new `faultbox plan` subcommand walks a loaded spec and
-prints the test instances it will produce, including matrix axes and
-coverage gaps, without launching any service. Every `faultbox test`
-run now writes the same tree to the bundle as `plan.json`, and the
-HTML report gains a Plan tab beside the trace tab. Coverage analysis
-flags uncovered dependency edges; `--suggest` emits copy-pasteable
-fault_assumption + fault_scenario stubs; `--check-cost` is a
-pre-commit / CI cost gate. Spec-level interleaving execution (§8.8)
-and probability fan-out (§8.9) are deferred to rc2; their flags
-(`interleavings=`, `max_fires=`, `mode=`, `--strategy=llm`) are
-reserved in rc1 with clear "future release" errors so CI integrations
-stay stable. User guide: [docs/exploration.md](docs/exploration.md).
+**RFC-042 — exploration plan (rc1 + rc2 partial).** rc1 shipped the
+static plan-tree enumeration surface: `faultbox plan`, `plan.json` in
+every bundle, the HTML report's Plan tab, coverage analysis, `--suggest`,
+and the `--check-cost` gate. **rc2** adds the body-re-execution engine:
+named `choose("name", [opts])` axes (RFC-043 §5.2) now actually fan
+out — one test execution per option, each carrying a stable `LeafID`
+through TestResult and the bundle manifest. **§8.9 syscall-level
+probability fan-out** is live: `delay()` and `deny()` accept
+`probability=`, `max_fires=N` and `mode="exhaustive"|"stochastic"`;
+exhaustive mode (the new default) fans the plan tree out to 2^N
+leaves per rule and a per-leaf fire/no-fire vector replaces the
+seeded-RNG decision; stochastic mode preserves the legacy behavior
+verbatim. Engine consultation runs through a new
+`SessionConfig.ProbabilityDecider` closure set per-leaf. **Deferred to
+A2 / follow-ups:** §8.8 spec-level interleaving execution
+(`interleavings=` kwarg still reserved-with-error), protocol-level
+probability fan-out (response/error/drop), static trigger-count
+analysis, the `unmodeled_fanout` plan warning. User guide:
+[docs/exploration.md](docs/exploration.md).
 
 **RFC-043 — non-deterministic operators (rc1).** Four small
 Starlark primitives shipped: `choose([opts])` / `choose("name", [opts])`

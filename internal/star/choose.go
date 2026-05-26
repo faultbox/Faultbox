@@ -25,13 +25,27 @@ type ChoiceVal struct {
 var _ starlark.Value = (*ChoiceVal)(nil)
 
 // FirstOption returns the option chosen for runtime execution under
-// rc1's degenerate-single-leaf semantics. rc2 will reassign this per
-// plan-tree leaf when fan-out lands.
+// the single-leaf degenerate path (no PlanLeaf attached) — anonymous
+// choose() calls and rc1 callers always hit this.
 func (c *ChoiceVal) FirstOption() starlark.Value {
 	if len(c.Options) == 0 {
 		return starlark.None
 	}
 	return c.Options[0]
+}
+
+// Selected returns the option this choice resolves to under the
+// current leaf. A nil or non-pinning leaf falls back to FirstOption,
+// so anonymous choose() calls and tests that don't drive plan-tree
+// fan-out behave exactly as in rc1. Out-of-range indices recorded by
+// a buggy enumerator are clamped to FirstOption rather than panicking;
+// the plan walker is supposed to keep indices in bounds.
+func (c *ChoiceVal) Selected(leaf *PlanLeaf) starlark.Value {
+	idx, ok := leaf.optionIndex(c.Name)
+	if !ok || idx < 0 || idx >= len(c.Options) {
+		return c.FirstOption()
+	}
+	return c.Options[idx]
 }
 
 func (c *ChoiceVal) String() string {
@@ -107,12 +121,18 @@ func (rt *Runtime) builtinChoose(_ *starlark.Thread, _ *starlark.Builtin, args s
 		c.Options = append(c.Options, v)
 	}
 	rt.recordChoice(c)
-	// rc1 single-leaf: return the first option directly so users get
-	// concrete values (an int from `choose([0,1,3])` instead of a
-	// wrapper). When rc2 wires fan-out, callers will receive the
-	// leaf-selected option through the same return path — no spec
-	// changes required at the call site.
-	return c.FirstOption(), nil
+	// Return the option selected by the current plan leaf. With no
+	// leaf attached (single-leaf execution, anonymous choose() calls)
+	// this is FirstOption — same shape rc1 callers saw. The rc2
+	// plan-tree enumerator drives multi-leaf execution by setting
+	// rt.currentLeaf per body re-execution.
+	//
+	// Snapshot the leaf under the RWMutex so the body thread's read
+	// can't race with RunTestLeaf's swap on a reused-service test
+	// (review B1 on PR #121). choose() is body-time only; the
+	// Starlark thread is distinct from the engine notification loop,
+	// but both readers go through the same accessor.
+	return c.Selected(rt.snapshotCurrentLeaf()), nil
 }
 
 // recordChoice tracks every choose() call site for plan-tree

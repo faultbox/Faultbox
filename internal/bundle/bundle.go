@@ -97,12 +97,20 @@ type Summary struct {
 //     the HTML report.
 type TestRow struct {
 	Name             string         `json:"name"`
-	Outcome          string         `json:"outcome"` // passed | failed | errored | expectation_violated | fault_bypassed | strict_determinism_violation
+	Outcome          string         `json:"outcome"` // passed | failed | errored | expectation_violated | fault_bypassed | strict_determinism_violation | halted
 	DurationMs       int64          `json:"duration_ms"`
 	Seed             uint64         `json:"seed,omitempty"`
 	FaultAssumptions []string       `json:"fault_assumptions,omitempty"`
 	Expectation      string         `json:"expectation,omitempty"`
 	BypassedRules    []BypassedRule `json:"bypassed_rules,omitempty"`
+	// LeafID identifies the plan-tree leaf this row belongs to when
+	// the test fans out across named choose() axes or probability
+	// occurrences (RFC-042 §8.8/§8.9, RFC-043 §5.2). Empty for
+	// single-leaf executions, preserving the rc1 manifest shape.
+	// Rows belonging to the same test() declaration share Name but
+	// have distinct LeafID values; consumers can group on Name and
+	// disambiguate by LeafID.
+	LeafID string `json:"leaf_id,omitempty"`
 }
 
 // BypassedRule mirrors star.BypassedRule for the manifest — we don't

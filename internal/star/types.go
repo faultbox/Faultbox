@@ -462,6 +462,21 @@ type FaultDef struct {
 	Label       string // optional human-readable label (e.g., "WAL write")
 	Op          string // operation name (set when expanded from ops=)
 	PathGlob    string // path glob (set when expanded from ops=)
+
+	// MaxFires caps the per-rule trigger count the plan walker fans
+	// out across when probability < 1 (RFC-042 §8.9). Zero means
+	// "unset" — at exhaustive mode the engine falls back to a single
+	// stochastic realization with an unmodeled_fanout warning at
+	// plan time. Required when the user wants exhaustive probability
+	// fan-out without static-trigger-count analysis.
+	MaxFires int
+	// Mode controls the runtime semantics of probability < 1:
+	// "exhaustive" (default for v0.13.0) makes the plan tree fan
+	// out 2-way per occurrence and the engine consults the leaf's
+	// ProbabilityOutcomes vector; "stochastic" preserves the legacy
+	// single-realization behavior driven by the seeded RNG.
+	// Empty string means "default" — exhaustive for new specs.
+	Mode string
 }
 
 // ProxyFaultDef describes a protocol-level fault rule.

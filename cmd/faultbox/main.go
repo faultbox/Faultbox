@@ -2296,6 +2296,7 @@ func testRowsFromResult(result *star.SuiteResult) []bundle.TestRow {
 			Seed:          tr.Seed,
 			Expectation:   tr.ExpectationName,
 			BypassedRules: bypassed,
+			LeafID:        tr.LeafID,
 		})
 	}
 	return rows

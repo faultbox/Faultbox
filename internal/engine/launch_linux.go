@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -152,8 +153,16 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	s.log.Info("target started", logFields...)
 
 	// Build rule lookup: syscall nr → applicable rules (pointers for atomic counters).
+	// Pre-initialize the atomic counters so the notification loop's
+	// concurrent handlers never race lazily on first use (review B2).
 	ruleMap := make(map[int32][]*FaultRule)
 	for i := range rules {
+		if rules[i].rule.counter == nil {
+			rules[i].rule.counter = &atomic.Int64{}
+		}
+		if rules[i].rule.probCounter == nil {
+			rules[i].rule.probCounter = &atomic.Int64{}
+		}
 		ruleMap[rules[i].nr] = append(ruleMap[rules[i].nr], &rules[i].rule)
 	}
 
@@ -448,7 +457,20 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 				continue
 			}
 
-			if s.randFloat64() < rule.Probability {
+			// RFC-042 §8.9 — probability fan-out. When the session has a
+			// ProbabilityDecider attached (set by the spec layer from the
+			// current PlanLeaf), consult it first. If the decider pins this
+			// occurrence, use the boolean directly; otherwise fall through
+			// to stochastic RNG. Stochastic-mode rules and rc1 specs with
+			// no decider land in the same RNG path as before.
+			fireDecision := s.randFloat64() < rule.Probability
+			if s.cfg.ProbabilityDecider != nil && rule.Mode != "stochastic" {
+				occ := rule.NextProbabilityOccurrence()
+				if fire, pinned := s.cfg.ProbabilityDecider(rule, occ); pinned {
+					fireDecision = fire
+				}
+			}
+			if fireDecision {
 				switch rule.Action {
 				case ActionDelay:
 					decision = fmt.Sprintf("delay(%s)", rule.Delay)

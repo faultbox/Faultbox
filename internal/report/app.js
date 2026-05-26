@@ -488,11 +488,17 @@
       var r = manifest.tests[i];
       var pillClass = outcomeClass(r.outcome);
       var fa = (r.fault_assumptions || []).join(", ");
+      // RFC-042 §8.8 / RFC-043 §5.2 multi-leaf rendering: when a test
+      // fans out across choose() / probability axes, every leaf shares
+      // the test name. Suffix the display name with the leaf ordinal
+      // so the table doesn't read as N duplicates. Single-leaf rows
+      // (LeafID empty) keep the rc1 shape.
+      var displayName = r.leaf_id ? r.name + " [leaf " + r.leaf_id + "]" : r.name;
       var tr = el("tr", {
         "data-test": r.name,
         onclick: (function (n) { return function () { openDrillDown(n); }; })(r.name),
       }, [
-        el("td", { text: r.name }),
+        el("td", { text: displayName }),
         el("td", { class: "outcome" }, [el("span", { class: "pill " + pillClass, text: r.outcome })]),
         el("td", { text: fmtDuration(r.duration_ms) }),
         el("td", { text: r.expectation || "" }),
