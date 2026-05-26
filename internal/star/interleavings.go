@@ -6,6 +6,37 @@ import (
 	"go.starlark.net/starlark"
 )
 
+// ParallelSite records one parallel() call discovered during a body
+// run (RFC-042 §8.8). The plan walker uses these to fan out the plan
+// tree across the interleaving axis — one leaf per distinct
+// mediated-event ordering when Policy.Kind != "single", a single
+// leaf otherwise. Stored on rt.parallelSites with the same
+// reset-between-leaves contract as rt.choices and rt.probFaults.
+//
+// The site captures the policy as authored and the branch count
+// (len(args) to parallel()) so the enumerator knows the upper-bound
+// interleaving count without re-executing the body. Actual ordering
+// enumeration uses the recorded mediated-event log from the
+// discovery run (PR 3) plus the policy to decide which orderings
+// become leaves.
+type ParallelSite struct {
+	// Key uniquely identifies this parallel() call across leaves of
+	// the same test. Derived from the call site (file:line — see
+	// recordParallelSite) so two parallel() calls in the same body
+	// stay distinct in the plan tree even when they have the same
+	// branch count. Stable across runs given the spec doesn't
+	// change.
+	Key string
+	// Branches is the count of callables passed to parallel(). The
+	// enumerator uses this to compute the upper-bound ordering
+	// count (factorial(N) for "all", capped subset for "critical"
+	// or "n").
+	Branches int
+	// Policy is the parsed interleavings= kwarg. Drives the plan
+	// walker's per-site fan-out cardinality in PR 3.
+	Policy InterleavingPolicy
+}
+
 // InterleavingPolicy describes how many parallel() interleavings the
 // plan tree should fan out (RFC-042 §8.8). The actual leaf count is
 // computed by the enumerator given the participating branches; the
@@ -40,6 +71,54 @@ func (p InterleavingPolicy) String() string {
 		return fmt.Sprintf("%d", p.N)
 	}
 	return p.Kind
+}
+
+// recordParallelSite appends a parallel() call to the body-discovery
+// slice. Sites whose policy is "single" are recorded too — the plan
+// walker filters them out when computing axes but keeping them in
+// the slice lets the plan-output debug surface "parallel(N
+// branches, interleavings=1)" lines for every call so users can see
+// which parallel() calls fanned out and which didn't.
+//
+// Dedup on Key: re-entering the same parallel() statement (e.g. via
+// a loop or per-leaf re-execution) keeps the first recording so the
+// cardinality doesn't double across leaves. The key is the call
+// site's file:line, which is stable across runs given the spec.
+func (rt *Runtime) recordParallelSite(site ParallelSite) {
+	if site.Key == "" || site.Branches < 2 {
+		return
+	}
+	rt.parallelSitesMu.Lock()
+	defer rt.parallelSitesMu.Unlock()
+	for _, s := range rt.parallelSites {
+		if s.Key == site.Key {
+			return
+		}
+	}
+	rt.parallelSites = append(rt.parallelSites, site)
+}
+
+// resetBodyParallelSites clears the per-body parallel() recording
+// slice. Called alongside resetBodyChoices / resetBodyProbFaults at
+// the top of each leaf so the next leaf's discovery starts clean.
+func (rt *Runtime) resetBodyParallelSites() {
+	rt.parallelSitesMu.Lock()
+	defer rt.parallelSitesMu.Unlock()
+	rt.parallelSites = nil
+}
+
+// bodyParallelSites returns a snapshot of the parallel() sites
+// recorded during the most recent body run, in insertion order.
+// The plan walker consumes this in PR 3.
+func (rt *Runtime) bodyParallelSites() []ParallelSite {
+	rt.parallelSitesMu.Lock()
+	defer rt.parallelSitesMu.Unlock()
+	if len(rt.parallelSites) == 0 {
+		return nil
+	}
+	out := make([]ParallelSite, len(rt.parallelSites))
+	copy(out, rt.parallelSites)
+	return out
 }
 
 // parseInterleavingsKwarg reads RFC-042 §8.8's interleavings= kwarg

@@ -348,6 +348,16 @@ type Runtime struct {
 	probFaultsMu sync.Mutex
 	probFaults   []ProbFaultSite
 
+	// parallelSites records every parallel() call observed during
+	// the most recent body run (RFC-042 §8.8). The plan walker
+	// turns each site whose Policy.Kind != "single" into an
+	// interleaving axis. Reset between leaves by
+	// resetBodyParallelSites; recording is dedup'd on Key (the
+	// call site's file:line) so the same parallel() statement
+	// reached via different code paths still contributes one axis.
+	parallelSitesMu sync.Mutex
+	parallelSites   []ParallelSite
+
 	// Spec-wide assume() predicates (RFC-043 §5.4). Evaluated at spec
 	// load in rc1 (violations error immediately); rc2 will defer to
 	// per-leaf pruning. Per-test predicates live on TestConfig.Assume
@@ -1053,6 +1063,7 @@ func (rt *Runtime) runTestSafelyLeaf(ctx context.Context, name string, leaf *Pla
 func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult {
 	rt.resetBodyChoices()
 	rt.resetBodyProbFaults()
+	rt.resetBodyParallelSites()
 	leaf0 := &PlanLeaf{Index: 0, Choices: map[string]int{}}
 	tr0 := rt.runTestSafelyLeaf(ctx, name, leaf0)
 
