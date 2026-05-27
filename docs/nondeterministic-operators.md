@@ -97,7 +97,7 @@ test("ordered_check",
 
 The predicate receives a `choices` dict mapping each named `choose("name", opts)` call to its currently-selected option. Unnamed `choose()` calls are not visible to `assume` predicates.
 
-> **rc1 visibility:** Per-test `assume=` predicates run **before the body** starts, so they only see choices recorded at spec load (top-level `choose(...)` calls). Choices made *inside the body* are recorded after the predicate has already executed and therefore are absent from `choices`. A predicate referencing a body-only key gets a `KeyError` → `Result="fail"`. rc2's per-leaf evaluation makes body-time choices visible.
+> **Per-leaf visibility (rc2):** Per-test `assume=` predicates evaluate at body entry with the **current leaf's** axis assignment in the `choices` dict — including body-time `choose()` calls discovered on the first pass. The plan walker re-executes every leaf (including leaf 0) with explicit choices so predicates see what each leaf actually observed. Predicate Starlark errors (e.g. indexing a missing key) map to `Result="error"`, distinct from `Result="fail"` for SUT behavioral failures.
 
 **rc1 semantics:**
 - Top-level `assume(False)` (or a lambda returning false) **fails spec load** with `"assume(...) violated at spec load."`
@@ -106,7 +106,7 @@ The predicate receives a `choices` dict mapping each named `choose("name", opts)
 
 **rc2** will defer evaluation to per-leaf and prune the plan tree instead of erroring at load.
 
-**rc1 sandbox status:** predicates execute on a thread tagged `"assume:<name>"`, but **no builtin denylist is yet enforced** — a predicate today can call `fault()`, `service()`, `halt()`, or any runtime builtin. The AST-walk denylist (the same model as RFC-041's monitor `update`/`check` sandbox) lands in rc2 alongside §8.7. Treat predicates as pure functions of `choices` until then.
+**Sandbox (rc2):** predicates execute on a thread tagged `"assume:<name>"`, and an AST denylist is enforced at spec load for lambda bodies (`fault()`, `service()`, `halt()`, `parallel()`, monitor/temporal registrations, and async/blocking builtins are rejected). Named `def` predicates pass through the static walk because Starlark's syntax tree doesn't expose function bodies through the same call-expression path — same limitation as monitor predicates. Treat predicates as pure functions of `choices`.
 
 ## Composition example
 
@@ -134,7 +134,7 @@ At v0.13.0-rc2 this fans out to `3 × 3 = 9` leaves; the halted leaf (`retries=0
 
 ## Out of scope (deferred)
 
-- **Body re-execution / plan-tree fan-out for `assume=`** — `assume=` predicates evaluate at body entry against the discovery-run choices only. Per-leaf evaluation pruning the plan tree on false predicates lands in a follow-up.
+- **Plan-tree pruning by `assume=` at enumeration time.** Today's per-leaf evaluation runs at body entry and halts the leaf when the predicate returns false (`Result="halted"`); the plan tree still contains the pruned leaf. Lifting the pruning into the enumerator itself (so cost-budgeted runs see fewer leaves total) is a follow-up.
 - **Weighted `choose([opts], weights=...)`** — probability-driven sampling. Not in v0.13.0.
 - **Symbolic / parametric ranges** — `choose(range(0, MAX_INT))` needs SAT/SMT; indefinitely deferred.
 - **Mazurkiewicz-trace independence** (RFC-009) and **DPOR** (RFC-010) — both operate on the unified plan tree this RFC's operators feed into.

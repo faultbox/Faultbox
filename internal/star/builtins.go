@@ -709,11 +709,16 @@ func builtinDeny(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 //   - max_fires is only meaningful with probability < 1 (RFC §8.9
 //     "spec-load validation"). max_fires=N with probability=1 is
 //     rejected — the fault always fires N times, no fan-out possible.
-//   - mode must be "exhaustive" or "stochastic"; empty string maps to
-//     "" (caller treats as default = exhaustive in v0.13.0). Any other
-//     value is a spec-load error.
+//   - mode must be "exhaustive" or "stochastic". Omitted mode= with
+//     max_fires > 0 normalizes to "exhaustive" so the internal
+//     representation matches the documented default (Q2 polish on
+//     PR #118). Omitted mode= with no max_fires stays "" — the
+//     no-fan-out / stochastic path. Any other value is a spec-load
+//     error.
 //   - max_fires with mode="stochastic" is rejected: max_fires is a
 //     fan-out cap, irrelevant to stochastic firing.
+//   - mode="exhaustive" without max_fires is rejected: would
+//     silently degrade to stochastic at runtime (B4 on PR #121).
 func parseProbabilityFanoutKwargs(builtinName string, kwargs []starlark.Tuple, prob float64) (int, string, error) {
 	var maxFires int
 	var mode string
@@ -749,6 +754,16 @@ func parseProbabilityFanoutKwargs(builtinName string, kwargs []starlark.Tuple, p
 	// authors don't think exhaustive is in effect when it isn't.
 	if mode == "exhaustive" && maxFires == 0 {
 		return 0, "", fmt.Errorf("%s(): mode=\"exhaustive\" requires max_fires= > 0", builtinName)
+	}
+	// RFC-043 Q2 (PR #118 follow-up): normalize empty mode to
+	// "exhaustive" when max_fires > 0 so the internal contract
+	// matches the documented default. Downstream code can then
+	// equality-check Mode == "exhaustive" rather than the looser
+	// Mode != "stochastic". Empty Mode remains for specs with no
+	// fan-out at all (probability<1 with no max_fires — stochastic
+	// path) so existing rc1 specs keep their representation.
+	if mode == "" && maxFires > 0 {
+		mode = "exhaustive"
 	}
 	return maxFires, mode, nil
 }

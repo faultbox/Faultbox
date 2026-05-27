@@ -117,8 +117,97 @@ test("raises", body=body, assume=[lambda choices: choices["missing_key"] == 0])
 	}
 	_ = rt.DiscoverTests()
 	tr := rt.RunTest(context.Background(), "test_raises")
-	if tr.Result != "fail" {
-		t.Errorf("Result = %q, want fail (predicate raised); reason=%s", tr.Result, tr.Reason)
+	// RFC-043 Q3 (PR #118 follow-up): predicate Starlark errors map
+	// to "error", not "fail". A predicate-authoring bug is
+	// morphologically a runtime crash, not a behavioral failure of
+	// the SUT.
+	if tr.Result != "error" {
+		t.Errorf("Result = %q, want error (predicate raised); reason=%s", tr.Result, tr.Reason)
+	}
+}
+
+// TestAssume_PerLeafChoicesVisible — RFC-043 §5.4 rc2: per-test
+// assume= predicates see the *current leaf's* axis values, not the
+// discovery-run defaults. A predicate that filters on
+// choices["retries"] < 5 trims the 9-leaf cross-product down to the
+// surviving subset.
+func TestAssume_PerLeafChoicesVisible(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def body():
+    _ = choose("retries", [1, 7])
+    _ = choose("backoff", [10, 100])
+
+# The predicate halts any leaf where retries == 7.
+test("filtered", body=body, assume=[lambda choices: choices["retries"] != 7])
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	res, err := rt.RunAll(context.Background(), RunConfig{})
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	// 4 total leaves (2 × 2). Half should be halted (retries == 7),
+	// half should pass.
+	if res.Pass+res.Halted != 4 {
+		for _, tr := range res.Tests {
+			t.Logf("  leaf %s: result=%s reason=%s", tr.LeafID, tr.Result, tr.Reason)
+		}
+		t.Errorf("expected 4 total verdicts, got pass=%d halted=%d fail=%d (%d rows)",
+			res.Pass, res.Halted, res.Fail, len(res.Tests))
+	}
+	if res.Halted != 2 {
+		t.Errorf("expected 2 halted (retries=7 leaves), got %d", res.Halted)
+	}
+	if res.Pass != 2 {
+		t.Errorf("expected 2 pass (retries=1 leaves), got %d", res.Pass)
+	}
+}
+
+// TestAssume_SandboxRejectsFaultCall — RFC-043 §8.7: assume()
+// predicates referencing fault() (or any other runtime-mutating
+// builtin) are rejected at spec load. Same model as the monitor
+// sandbox.
+func TestAssume_SandboxRejectsFaultCall(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def body(): pass
+test("bad", body=body, assume=[lambda c: fault])
+`
+	err := rt.LoadString("spec.star", src)
+	if err == nil {
+		t.Fatal("expected spec-load error for assume predicate referencing fault()")
+	}
+	if !strings.Contains(err.Error(), "fault") || !strings.Contains(err.Error(), "disallowed") {
+		t.Errorf("error should call out disallowed fault reference; got: %v", err)
+	}
+}
+
+// TestAssume_SandboxRejectsTopLevelAssumeWithDeniedBuiltin —
+// top-level `assume(...)` predicates go through the same sandbox.
+func TestAssume_SandboxRejectsTopLevelAssumeWithDeniedBuiltin(t *testing.T) {
+	rt := New(testLogger())
+	src := `assume(lambda c: parallel)`
+	err := rt.LoadString("spec.star", src)
+	if err == nil {
+		t.Fatal("expected spec-load error for top-level assume referencing parallel")
+	}
+	if !strings.Contains(err.Error(), "parallel") {
+		t.Errorf("error should call out parallel; got: %v", err)
+	}
+}
+
+// TestAssume_SandboxAllowsChoicesDictReads — predicates can read
+// the `choices` argument freely; only Faultbox builtins are denied.
+func TestAssume_SandboxAllowsChoicesDictReads(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+def body(): pass
+test("ok", body=body, assume=[lambda c: c.get("anything", 0) == 0])
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString should succeed; got %v", err)
 	}
 }
 

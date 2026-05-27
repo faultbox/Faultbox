@@ -118,14 +118,29 @@ func assumeFromArg(v starlark.Value) (*AssumePredicate, error) {
 // currentChoicesDict snapshots every recorded choose("name", opts)
 // call into a Starlark dict the predicate can read. Unnamed choose()
 // calls are skipped — they have no key the predicate could match on.
+//
+// When rt.currentLeaf is set (rc2 plan-tree fan-out), each named
+// axis resolves to the leaf's pinned option index instead of the
+// first option. This is what makes per-leaf assume= evaluation
+// meaningful: predicates see what *this* leaf actually observed,
+// not what the discovery run happened to use.
 func (rt *Runtime) currentChoicesDict() *starlark.Dict {
+	leaf := rt.snapshotCurrentLeaf()
 	d := starlark.NewDict(0)
-	for _, c := range rt.Choices() {
-		if c.Name == "" {
+	// Prefer the persisted plan-axes schema when available — that
+	// covers body-time choose() calls across re-executed leaves
+	// where rt.choices has been reset for the upcoming body run.
+	axes := rt.planAxes
+	if len(axes) == 0 {
+		axes = rt.Choices()
+	}
+	seen := make(map[string]bool, len(axes))
+	for _, c := range axes {
+		if c.Name == "" || seen[c.Name] {
 			continue
 		}
-		// rc1: first option is always selected.
-		_ = d.SetKey(starlark.String(c.Name), c.FirstOption())
+		seen[c.Name] = true
+		_ = d.SetKey(starlark.String(c.Name), c.Selected(leaf))
 	}
 	return d
 }

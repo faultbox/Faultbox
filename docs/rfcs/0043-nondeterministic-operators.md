@@ -1,6 +1,6 @@
 # RFC-043: Non-deterministic Spec Operators
 
-> **Status: Implemented (rc1, v0.13.0).** Language surface (§8.1–§8.4, §8.6 partial, §8.8) shipped: `choose()`, `nondet()`, `halt()`, `assume()` are available as Starlark builtins; halt() outside a test body is rejected. rc1 single-leaf semantics — operators return the first option / first leaf; full plan-tree fan-out (§8.5, §8.7 AST sandbox, §8.6 cost-guard) lands with rc2 alongside RFC-042 §8.8. User guide: [docs/nondeterministic-operators.md](../nondeterministic-operators.md).
+> **Status: Implemented (rc2, v0.13.0).** rc1 shipped the language surface (§8.1–§8.4, §8.6 partial, §8.8). **rc2** wires the operators into plan-tree fan-out via RFC-042's body-re-execution engine: named `choose("name", [...])` axes produce one execution per option; per-test `assume=` predicates evaluate at body entry against the current leaf's axis assignment (body-time `choose()` calls included), with predicate Starlark errors mapping to `Result="error"`; §8.7 AST denylist is enforced at spec load for lambda predicates (named `def`s slip past the static walk — same limitation as monitor predicates). **Deferred:** §8.5 plan-walker-time `assume=` pruning (rc2 halts at body entry; lifting pruning into the enumerator to shrink the plan tree up front is a follow-up) and §8.6 cost-guard for fan-out budgets. User guide: [docs/nondeterministic-operators.md](../nondeterministic-operators.md).
 
 ## Summary
 

@@ -272,15 +272,23 @@ func TestProbabilityFanout_MaxFiresParses(t *testing.T) {
 }
 
 // TestProbabilityFanout_ModeParses — mode="exhaustive" / "stochastic"
-// flow through to FaultDef.Mode.
+// flow through to FaultDef.Mode. RFC-043 Q2 (PR #125 N4): omitted
+// mode= with max_fires>0 normalizes to "exhaustive" so the internal
+// representation matches the documented default. Omitted mode= with
+// no max_fires stays "" (no-fan-out / stochastic path).
 func TestProbabilityFanout_ModeParses(t *testing.T) {
 	cases := []struct {
 		src  string
 		want string
+		note string
 	}{
-		{`d = deny("EIO", probability=0.5, mode="exhaustive", max_fires=3)`, "exhaustive"},
-		{`d = deny("EIO", probability=0.5, mode="stochastic")`, "stochastic"},
-		{`d = deny("EIO", probability=0.5)`, ""},
+		{`d = deny("EIO", probability=0.5, mode="exhaustive", max_fires=3)`, "exhaustive", "explicit exhaustive"},
+		{`d = deny("EIO", probability=0.5, mode="stochastic")`, "stochastic", "explicit stochastic"},
+		{`d = deny("EIO", probability=0.5)`, "", "no fan-out: stays empty"},
+		// Q2 normalization: max_fires implies exhaustive even when
+		// mode= is omitted.
+		{`d = deny("EIO", probability=0.5, max_fires=2)`, "exhaustive", "Q2 normalization"},
+		{`d = deny("EIO", probability=0.3, max_fires=5)`, "exhaustive", "Q2 normalization, larger N"},
 	}
 	for _, tc := range cases {
 		rt := New(testLogger())
@@ -289,7 +297,7 @@ func TestProbabilityFanout_ModeParses(t *testing.T) {
 		}
 		d := rt.globals["d"].(*FaultDef)
 		if d.Mode != tc.want {
-			t.Errorf("Mode for %q = %q, want %q", tc.src, d.Mode, tc.want)
+			t.Errorf("[%s] Mode for %q = %q, want %q", tc.note, tc.src, d.Mode, tc.want)
 		}
 	}
 }
