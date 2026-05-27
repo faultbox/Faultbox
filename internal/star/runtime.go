@@ -1133,44 +1133,20 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 
 	leaves := enumerateLeaves(axes, probAxes, parAxes)
 	results := make([]TestResult, 0, len(leaves))
-	// Leaf 0's discovery run used the RNG / single-ordering path (no
-	// PlanLeaf attached). Re-run leaf 0 with the explicit
-	// zero-vector / zero-ordering assignment so attribution is
-	// consistent across all leaves whenever any fan-out kind is
-	// active.
-	// Re-execute leaf 0 with explicit assignment when ANY fan-out
-	// axis is present. Previously this only triggered for prob/par
-	// fan-out, but per-leaf assume= predicates (RFC-043 §5.4 rc2)
-	// need to see the leaf's actual choices at body entry — the
-	// discovery run evaluated assume= against an empty dict, which
-	// would fail on any predicate that indexed a body-time choice
-	// key. Re-running leaf 0 with the enumerated assignment unifies
-	// the path.
-	if len(axes) > 0 || len(probAxes) > 0 || hasActiveParAxes {
-		rt.resetBodyChoices()
-		rt.resetBodyProbFaults()
-		rt.resetBodyParallelSites()
-		leaf := leaves[0]
-		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
-	} else {
-		// Reuse the discovery run as leaf 0, but stamp the leaf's
-		// actual axis assignments onto the result so the bundle
-		// manifest and HTML report can render the per-leaf data
-		// (A3 / RFC-042 §8.10). The discovery run used leaf0 with
-		// an empty Choices map; the enumerated leaf 0 has the
-		// all-option-0 assignment for every named axis, which is
-		// semantically what the discovery run observed.
-		if len(leaves[0].Choices) > 0 {
-			tr0.LeafChoices = copyIntMap(leaves[0].Choices)
-		}
-		if len(leaves[0].ProbabilityOutcomes) > 0 {
-			tr0.LeafProbabilityOutcomes = copyBoolVecMap(leaves[0].ProbabilityOutcomes)
-		}
-		if len(leaves[0].InterleavingIDs) > 0 {
-			tr0.LeafInterleavingIDs = copyIntMap(leaves[0].InterleavingIDs)
-		}
-		results = append(results, tr0)
-	}
+	// Always re-execute leaf 0 with its explicit axis assignment.
+	// The discovery run produced tr0 against a synthetic IsDiscovery
+	// leaf with no axes pinned and assume= evaluation suppressed; the
+	// real leaf 0 needs to run through the same path as the rest of
+	// the leaves so attribution stays consistent and per-leaf
+	// assume= predicates (RFC-043 §5.4 rc2) evaluate against the
+	// actual choices. By construction we're past the single-leaf
+	// short-circuit above, so at least one axis is in play.
+	_ = tr0 // discovery result is consumed by the planner above only
+	rt.resetBodyChoices()
+	rt.resetBodyProbFaults()
+	rt.resetBodyParallelSites()
+	leaf := leaves[0]
+	results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	for i := 1; i < len(leaves); i++ {
 		rt.resetBodyChoices()
 		rt.resetBodyProbFaults()
