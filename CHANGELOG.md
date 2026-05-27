@@ -84,8 +84,20 @@ default. **Deferred:** §8.5 plan-walker-time `assume=` pruning
 follow-up) and §8.6 cost-guard. User guide:
 [docs/nondeterministic-operators.md](docs/nondeterministic-operators.md).
 
-RFC-044 (spec-language simplification) remains a draft RFC tracked
-in GitHub issue #113.
+**RFC-044 — spec language simplification (partial).** First slice
+(§8.1 + §8.3 + §8.4 + §8.5) — the docs-and-deprecations bundle:
+RFC-013 (`param()`) formally **withdrawn** and the
+`docs/rfcs/0013-parameterized-scenarios.md` header updated with a
+rationale paragraph pointing users to RFC-043 `choose("name",
+[opts])`; RFC-002 (`domain()`) formally **withdrawn** via a new
+`docs/rfcs/0002-domain.md` stub; `faultbox generate` deprecated in
+favor of `faultbox plan --suggest` with a one-time stderr warning
+and a CLI-reference callout (removal in v0.14.0); a new
+"Feature interactions — what caps below L4" subsection in
+`docs/spec-language.md` documents the determinism ceilings for
+`service(remote=…)`, `service(reuse=True, …)`, and `mock_service(…)`.
+Remaining RFC-044 sections (§8.2 unified fan-out machinery, §8.6
+`observe.*`, §8.7 `decoder()`) tracked as follow-up slices.
 RFC-046 carries the post-L1 roadmap (gVisor Path B/C, L4 hermetic
 mode, L5 instruction-boundary research).
 

@@ -1271,6 +1271,12 @@ MCP server (auto-configured in .mcp.json):
 
 // generateCmd handles: faultbox generate <file.star> [flags]
 func generateCmd(args []string) int {
+	// RFC-044 §8.3 — `faultbox generate` is deprecated in favor of
+	// `faultbox plan --suggest`. Emit a one-time warning on stderr
+	// so existing scripts keep working while we steer users to the
+	// new surface; the command will be removed in v0.14.0.
+	fmt.Fprintln(os.Stderr, "warning: `faultbox generate` is deprecated; use `faultbox plan --suggest` instead. Removal in v0.14.0.")
+
 	var starFile, output, scenarioFilter, serviceFilter, category string
 	dryRun := false
 

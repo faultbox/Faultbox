@@ -1,8 +1,24 @@
 # RFC-013: Parameterized Scenarios & Value Generators
 
-- **Status:** Draft
+- **Status:** Withdrawn (RFC-044 §8.1, v0.13.0)
 - **Author:** Boris Glebov, Claude Opus 4.6
 - **Created:** 2026-04-13
+
+## Withdrawal rationale
+
+RFC-013's `param("retries", choices=[0, 1, 3])` and RFC-043's
+`choose("retries", [0, 1, 3])` are the same primitive with two
+names. RFC-013 was never shipped — `param()` was specified but no
+builtin landed. v0.13.0-rc2 made `choose()` the unified surface
+(named axes drive plan-tree fan-out; the report renders the
+`name=` annotation), so a separate `param()` builtin would be
+duplicate vocabulary with no semantic difference.
+
+Spec authors who would have written `param("retries", choices=[0, 1, 3])`
+should write `choose("retries", [0, 1, 3])` — same arity, same
+output, integrated with the rc2 body-re-execution engine.
+
+The rest of this document is preserved for historical context.
 - **Branch:** `rfc/013-parameterized-scenarios`
 - **Depends On:** RFC-001 (Scenarios as Probes)
 

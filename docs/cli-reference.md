@@ -412,7 +412,9 @@ faultbox diff run1.norm run2.norm
 
 ---
 
-### `faultbox generate`
+### `faultbox generate` *(deprecated — use `faultbox plan --suggest`)*
+
+> **Deprecated as of v0.13.0 (RFC-044 §8.3).** Prints a deprecation warning on stderr; will be removed in v0.14.0. New users should reach for `faultbox plan --suggest`, which performs the same topology-driven mutation analysis through the unified plan-tree pipeline.
 
 Generate failure scenarios from registered `scenario()` functions.
 
