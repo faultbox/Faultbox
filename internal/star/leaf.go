@@ -311,82 +311,22 @@ func interleavingCardinality(site ParallelSite) int {
 }
 
 // enumerateLeaves expands the cross-product of axes into PlanLeaf
-// values. With no axes of any kind, returns a single degenerate
-// leaf so callers can use the same iteration shape for fan-out and
-// non-fan-out tests. Leaf 0 is the all-zero assignment, which
-// matches what the discovery run already executed — callers can
-// reuse that run's result for leaf 0 and only re-execute leaves
-// 1..N-1.
+// values. Thin wrapper over expandLeaves (RFC-044 §8.2 unified
+// fan-out machinery) that flattens the three axis-kind slices
+// into a homogeneous []NonDeterministicChoice and forwards to the
+// generic walker.
 //
-// Index assignment uses mixed-radix counting across (choice axes,
-// probability fault sites, parallel interleaving sites). Each
-// probability site contributes a 2^MaxFires factor; each parallel
-// site with Policy.Kind != "single" contributes
-// interleavingCardinality(site). Stable across runs given the same
-// axes input.
+// The signature stays as (axes, probAxes, parAxes) so the dozen
+// existing callers (runTime, tests) don't churn — the unification
+// is an internal contract. New axis kinds added in the future
+// just implement NonDeterministicChoice and join the slice; no
+// per-kind branching in the enumerator.
 //
-// Leaf 0's all-zero ProbabilityOutcomes vector encodes "no
-// occurrence fires" — bit 0 of digit=0 is `(0>>0)&1 == 0`. Leaf 0's
-// InterleavingIDs map is empty for "single" sites and pins index 0
-// for fan-out sites. Callers shouldn't depend on the exact
-// discovery-vs-leaf-0 equivalence at this level; instead they treat
-// leaf 0 as a fresh re-execution like any other leaf.
+// With no fan-out-eligible axes, returns a single degenerate leaf
+// so callers can iterate uniformly regardless of fan-out status.
+// Leaf 0 is the all-zero assignment which matches the discovery
+// run's behavior — see runTestFanout for the re-execution
+// contract.
 func enumerateLeaves(axes []*ChoiceVal, probAxes []ProbFaultSite, parAxes []ParallelSite) []PlanLeaf {
-	// Filter parallel axes to fan-out-eligible only. Single-policy
-	// sites stay recorded for plan output but don't multiply leaves.
-	var activeParAxes []ParallelSite
-	for _, p := range parAxes {
-		if interleavingCardinality(p) > 0 {
-			activeParAxes = append(activeParAxes, p)
-		}
-	}
-	if len(axes) == 0 && len(probAxes) == 0 && len(activeParAxes) == 0 {
-		return []PlanLeaf{{Index: 0, Choices: map[string]int{}}}
-	}
-	total := 1
-	for _, a := range axes {
-		total *= len(a.Options)
-	}
-	for _, p := range probAxes {
-		total *= 1 << p.MaxFires
-	}
-	for _, p := range activeParAxes {
-		total *= interleavingCardinality(p)
-	}
-	leaves := make([]PlanLeaf, 0, total)
-	for i := 0; i < total; i++ {
-		choices := make(map[string]int, len(axes))
-		probs := make(map[string][]bool, len(probAxes))
-		interleavings := make(map[string]int, len(activeParAxes))
-		rem := i
-		for _, a := range axes {
-			n := len(a.Options)
-			choices[a.Name] = rem % n
-			rem /= n
-		}
-		for _, p := range probAxes {
-			card := 1 << p.MaxFires
-			digit := rem % card
-			rem /= card
-			vec := make([]bool, p.MaxFires)
-			for b := 0; b < p.MaxFires; b++ {
-				vec[b] = (digit>>b)&1 == 1
-			}
-			probs[p.Key] = vec
-		}
-		for _, p := range activeParAxes {
-			card := interleavingCardinality(p)
-			interleavings[p.Key] = rem % card
-			rem /= card
-		}
-		leaf := PlanLeaf{Index: i, Choices: choices}
-		if len(probs) > 0 {
-			leaf.ProbabilityOutcomes = probs
-		}
-		if len(interleavings) > 0 {
-			leaf.InterleavingIDs = interleavings
-		}
-		leaves = append(leaves, leaf)
-	}
-	return leaves
+	return expandLeaves(collectChoices(axes, probAxes, parAxes))
 }

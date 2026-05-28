@@ -84,20 +84,26 @@ default. **Deferred:** §8.5 plan-walker-time `assume=` pruning
 follow-up) and §8.6 cost-guard. User guide:
 [docs/nondeterministic-operators.md](docs/nondeterministic-operators.md).
 
-**RFC-044 — spec language simplification (partial).** First slice
-(§8.1 + §8.3 + §8.4 + §8.5) — the docs-and-deprecations bundle:
-RFC-013 (`param()`) formally **withdrawn** and the
-`docs/rfcs/0013-parameterized-scenarios.md` header updated with a
-rationale paragraph pointing users to RFC-043 `choose("name",
-[opts])`; RFC-002 (`domain()`) formally **withdrawn** via a new
-`docs/rfcs/0002-domain.md` stub; `faultbox generate` deprecated in
-favor of `faultbox plan --suggest` with a one-time stderr warning
-and a CLI-reference callout (removal in v0.14.0); a new
-"Feature interactions — what caps below L4" subsection in
+**RFC-044 — spec language simplification (§8.1 + §8.2 + §8.3 +
+§8.4 + §8.5).** C1 shipped the docs-and-deprecations bundle: RFC-013
+(`param()`) formally **withdrawn** (superseded by RFC-043
+`choose("name", [opts])`); RFC-002 (`domain()`) formally
+**withdrawn** via a new `docs/rfcs/0002-domain.md` stub; `faultbox
+generate` deprecated in favor of `faultbox plan --suggest` with a
+one-time stderr warning (removal in v0.14.0); a "Feature
+interactions — what caps below L4" subsection in
 `docs/spec-language.md` documents the determinism ceilings for
-`service(remote=…)`, `service(reuse=True, …)`, and `mock_service(…)`.
-Remaining RFC-044 sections (§8.2 unified fan-out machinery, §8.6
-`observe.*`, §8.7 `decoder()`) tracked as follow-up slices.
+`service(remote=…)` and `service(reuse=True, …)`. **C2** ships the
+unified fan-out machinery (§8.2): the three plan-tree axis kinds
+(`ChoiceVal`, `ProbFaultSite`, `ParallelSite`) now implement a
+single `NonDeterministicChoice` interface in
+`internal/star/nondet.go` with `Cardinality()` / `Apply(leaf, digit)`
+methods; `enumerateLeaves` is a thin wrapper over a generic
+mixed-radix walker `expandLeaves`. Adding a new axis kind in the
+future requires only implementing the two-method contract — no
+per-kind branching in the enumerator. All pre-existing testops
+goldens unchanged. Remaining RFC-044 sections (§8.6 `observe.*`,
+§8.7 `decoder()`) tracked as follow-up slices.
 RFC-046 carries the post-L1 roadmap (gVisor Path B/C, L4 hermetic
 mode, L5 instruction-boundary research).
 
