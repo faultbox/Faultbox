@@ -113,6 +113,20 @@ stderr warning per process and route through the canonical
 implementation — DecoderVal construction has a single source of
 truth, so a future decoder bug fix lands in one place. Removal
 of the aliases is scheduled for v0.14.0.
+
+**Tutorial — RFC-042/043 chapters.** Part 4 (Safety & Verification)
+gains two new chapters covering the v0.13.0-rc2 fan-out vocabulary:
+**Ch 25 — Non-deterministic Operators (`choose` / `assume` /
+`halt` / `nondet`)** walks the four RFC-043 operators end-to-end
+from the "one test, 18 leaves" motivating problem through the
+sandbox semantics and the discovery-run mental model; **Ch 26 —
+Plan-Tree Fan-Out** covers the RFC-042 plan tree, probability
+fan-out with `max_fires=`/`mode=`, `parallel(interleavings=)`, the
+`faultbox plan --check-cost` gate, and the cross-product
+composition rules. Both chapters include exercises and the
+`Result="error"` vs `"fail"` distinction for predicate Starlark
+errors.
+
 RFC-046 carries the post-L1 roadmap (gVisor Path B/C, L4 hermetic
 mode, L5 instruction-boundary research).
 
