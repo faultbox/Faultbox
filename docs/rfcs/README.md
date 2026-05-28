@@ -23,7 +23,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | RFC | Title | Status | Depends On |
 |-----|-------|--------|------------|
 | [RFC-001](0001-scenario-probes.md) | Scenarios as Probes & Fault Scenario Composition | Implemented | — |
-| RFC-002 | `domain()` Primitive & Multi-Service Grouping | — | — |
+| [RFC-002](0002-domain.md) | `domain()` Primitive & Multi-Service Grouping | Withdrawn (RFC-044 §8.4) — service()/interface() supersede | — |
 | RFC-003 | Parallel Composition: `wait_all`, `wait_first`, `wait_n` | — | RFC-001 |
 
 ### Phase 2: Modularity & Tooling
@@ -40,7 +40,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 
 | RFC | Title | Status | Depends On |
 |-----|-------|--------|------------|
-| [RFC-013](0013-parameterized-scenarios.md) | Parameterized Scenarios & Value Generators | Draft | RFC-001 |
+| [RFC-013](0013-parameterized-scenarios.md) | Parameterized Scenarios & Value Generators | Withdrawn (RFC-044 §8.1) — superseded by RFC-043 `choose()` | RFC-001 |
 
 ### Infrastructure
 
