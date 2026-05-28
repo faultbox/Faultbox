@@ -3,6 +3,7 @@
 - **Status:** Withdrawn (RFC-044 §8.1, v0.13.0)
 - **Author:** Boris Glebov, Claude Opus 4.6
 - **Created:** 2026-04-13
+- **Depends On:** RFC-001 (Scenarios as Probes)
 
 ## Withdrawal rationale
 
@@ -19,8 +20,6 @@ should write `choose("retries", [0, 1, 3])` — same arity, same
 output, integrated with the rc2 body-re-execution engine.
 
 The rest of this document is preserved for historical context.
-- **Branch:** `rfc/013-parameterized-scenarios`
-- **Depends On:** RFC-001 (Scenarios as Probes)
 
 ## Summary
 

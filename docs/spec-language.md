@@ -2357,9 +2357,10 @@ Some service-level features bound the achievable determinism level even when the
 |---|---|---|
 | `service(remote=...)` (RFC-036) | **L1** | Faultbox does not own the remote process, so unmediated I/O on the remote side is invisible to the runtime. Strict mode still gates the local code path; the remote stays best-effort. |
 | `service(reuse=True, …)` (RFC-015) | **L1** | Container state carried across tests breaks the per-test determinism contract that L2+ requires (seed-only reset isn't equivalent to a fresh process). Use the default `reuse=False` for L2+ specs. |
-| `mock_service(...)` (RFC-017) | L1 (matches default runtime) | Mock services are in-process stubs and don't run a separate process; nothing to mediate. They're compatible with all spec-level fan-out kinds but never raise the determinism ceiling. |
 
 L4 and L5 levels are reserved (`docs/determinism.md`) — for now any spec declaring them errors at spec load. When L4 lands, `service(remote=...)` and `service(reuse=True, ...)` will be rejected at that level with an error pointing to the documented cap above.
+
+**`mock_service(...)` (RFC-017) does not cap the determinism ceiling.** Mock services are in-process stubs with no separate process to mediate, so they're compatible with every level the spec declares. They're listed here for completeness but stay outside the cap table.
 
 ### Per-service tolerance: `nondeterministic_ok=`
 
