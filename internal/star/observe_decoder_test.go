@@ -122,6 +122,38 @@ r = regex_decoder(pattern="x")
 	}
 }
 
+// TestDecoder_LegacyAliasesRejectUnknownKwargs — review N3 on PR
+// #128: this is an intentional behavior change. Pre-rc2,
+// json_decoder(foo="bar") silently accepted (and ignored) the
+// extra kwarg because the old implementation didn't iterate
+// kwargs at all. After C3, all three legacy builtins delegate
+// to the unified builtinDecoder, which rejects unknown kwargs
+// to match the new dispatcher's contract — json/logfmt take no
+// kwargs at all, and regex accepts only `pattern=`. This test
+// pins the new strictness so a future "compatibility" patch
+// can't loosen it back without an explicit decision.
+func TestDecoder_LegacyAliasesRejectUnknownKwargs(t *testing.T) {
+	cases := []struct {
+		src      string
+		wantSubs string
+	}{
+		{`d = json_decoder(foo="bar")`, "no kwargs"},
+		{`d = logfmt_decoder(pattern="x")`, "no kwargs"},
+		{`d = regex_decoder()`, "requires pattern"},
+	}
+	for _, tc := range cases {
+		rt := New(testLogger())
+		err := rt.LoadString("spec.star", tc.src)
+		if err == nil {
+			t.Errorf("expected error for %q (rc2 contract: legacy aliases route through builtinDecoder)", tc.src)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.wantSubs) {
+			t.Errorf("for %q, want error containing %q, got %v", tc.src, tc.wantSubs, err)
+		}
+	}
+}
+
 // TestObserve_DeprecationWarning — calling a deprecated builtin
 // emits a one-time stderr line naming the replacement. A second
 // call doesn't re-warn.

@@ -1140,7 +1140,7 @@ observe=[observe.stdout(decoder=decoder("logfmt"))]
 observe=[observe.stdout(decoder=decoder("regex", pattern=r"WAL: (?P<action>\w+) (?P<path>.+)"))]
 ```
 
-> **RFC-044 §8.6 + §8.7 migration:** v0.13.0 introduces the `observe` namespace (`observe.stdout`, `observe.stderr`) and the unified `decoder("name", ...)` dispatcher. The pre-rc2 top-level `stdout()` / `stderr()` and the three `*_decoder()` builtins remain registered as deprecated aliases that emit a one-time stderr warning per spec load; they will be removed in **v0.14.0**. New specs should use the namespaced form; existing specs migrate by mechanical substitution.
+> **RFC-044 §8.6 + §8.7 migration:** v0.13.0 introduces the `observe` namespace (`observe.stdout`, `observe.stderr`) and the unified `decoder("name", ...)` dispatcher. The pre-rc2 top-level `stdout()` / `stderr()` and the three `*_decoder()` builtins remain registered as deprecated aliases that emit a one-time stderr warning **per process** (not per spec — a test harness that loads multiple specs sequentially sees the warning once total); they will be removed in **v0.14.0**. New specs should use the namespaced form; existing specs migrate by mechanical substitution.
 
 ### Querying Event Source Events
 

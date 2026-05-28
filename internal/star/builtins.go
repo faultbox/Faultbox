@@ -2762,12 +2762,6 @@ func builtinStderrSource(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	return &ObserveSourceVal{Config: cfg}, nil
 }
 
-// (Pre-RFC-044 decoder builtins lived here. They were folded into
-// the unified builtinDecoder dispatcher in observe_decoder.go;
-// the three legacy names — json_decoder, logfmt_decoder,
-// regex_decoder — are still registered above as deprecated
-// aliases that route through the new dispatcher.)
-
 // isFaultableSyscall returns true if the given name is a known faultable syscall.
 func isFaultableSyscall(name string) bool {
 	for _, sc := range faultableSyscalls {

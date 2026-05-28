@@ -67,11 +67,14 @@ func resetDeprecationWarnings() {
 // factories (topic, tail, wal_stream, poll) plug in here as
 // they're implemented.
 //
-// The struct constructor name is "observe" so error messages
-// reading `<observe.stdout>` are clear about the namespace.
+// The constructor identifier is `starlark.String("observe")` so the
+// value prints as `observe(...)` rather than the default `struct(...)`
+// (the starlarkstruct.Default sentinel) — keeps the namespace
+// identity visible in error messages and `print()` output (review
+// N2 on PR #128).
 func makeObserveModule() *starlarkstruct.Struct {
 	return starlarkstruct.FromStringDict(
-		starlarkstruct.Default,
+		starlark.String("observe"),
 		starlark.StringDict{
 			"stdout": starlark.NewBuiltin("observe.stdout", builtinStdoutSource),
 			"stderr": starlark.NewBuiltin("observe.stderr", builtinStderrSource),
