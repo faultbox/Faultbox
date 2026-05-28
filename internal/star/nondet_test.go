@@ -151,6 +151,16 @@ func TestNonDet_ExpandLeavesIdenticalToEnumerateLeaves(t *testing.T) {
 	if got[wantLen-1].InterleavingIDs["spec:5"] != 5 {
 		t.Errorf("leaf %d interleaving = %v, want 5", wantLen-1, got[wantLen-1].InterleavingIDs)
 	}
+	// Review N2 on PR #127 — complete the byte-identical claim by
+	// also asserting on ProbabilityOutcomes. Leaf 0 has digit=0 →
+	// [false, false]; leaf wantLen-1 has digit=3 → [true, true]
+	// (binary 11 across 2 max_fires).
+	if got := got[0].ProbabilityOutcomes["wal"]; !reflect.DeepEqual(got, []bool{false, false}) {
+		t.Errorf("leaf 0 wal vector = %v, want [false, false]", got)
+	}
+	if got := got[wantLen-1].ProbabilityOutcomes["wal"]; !reflect.DeepEqual(got, []bool{true, true}) {
+		t.Errorf("leaf %d wal vector = %v, want [true, true]", wantLen-1, got)
+	}
 	// Leaf indices must be 0..wantLen-1 with no gaps.
 	indices := make([]int, len(got))
 	for i, l := range got {

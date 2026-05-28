@@ -148,6 +148,15 @@ func collectChoices(
 // []NonDeterministicChoice. Returns one PlanLeaf per cross-product
 // cell. The empty-axes case returns one degenerate leaf so
 // callers can iterate uniformly regardless of fan-out status.
+//
+// **Precondition:** every element of `choices` must have
+// Cardinality() ≥ 1. A zero-cardinality entry would fold `total`
+// to 0 and yield an empty slice — semantically wrong (callers
+// expect at least the degenerate leaf). The canonical entry point
+// `collectChoices` filters zero-cardinality axes out, so the
+// normal call path is safe; this precondition pins the contract
+// for any future caller that builds the slice by hand (review N1
+// on PR #127).
 func expandLeaves(choices []NonDeterministicChoice) []PlanLeaf {
 	if len(choices) == 0 {
 		return []PlanLeaf{{Index: 0, Choices: map[string]int{}}}
