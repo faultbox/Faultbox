@@ -74,11 +74,22 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"error":             starlark.NewBuiltin("error", builtinProxyError),
 		"drop":              starlark.NewBuiltin("drop", builtinProxyDrop),
 		"duplicate":         starlark.NewBuiltin("duplicate", builtinProxyDuplicate),
-		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutSource),
-		"stderr":            starlark.NewBuiltin("stderr", builtinStderrSource),
-		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoder),
-		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoder),
-		"regex_decoder":     starlark.NewBuiltin("regex_decoder", builtinRegexDecoder),
+		// RFC-044 §8.6 — `observe` module is the canonical surface for
+		// event-source factories. Legacy top-level stdout/stderr remain
+		// registered as deprecated aliases that emit a one-time stderr
+		// warning before producing the same value the new form does.
+		// Removal in v0.14.0.
+		"observe":           makeObserveModule(),
+		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutDeprecated),
+		"stderr":            starlark.NewBuiltin("stderr", builtinStderrDeprecated),
+		// RFC-044 §8.7 — `decoder("name", ...)` is the unified
+		// dispatcher; the three legacy names are deprecated aliases.
+		// All four routes converge in builtinDecoder so DecoderVal
+		// construction has a single source of truth.
+		"decoder":           starlark.NewBuiltin("decoder", builtinDecoder),
+		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoderDeprecated),
+		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoderDeprecated),
+		"regex_decoder":     starlark.NewBuiltin("regex_decoder", builtinRegexDecoderDeprecated),
 		// struct(**kwargs) — namespace objects. Used by recipe modules so
 		// protocol-specific helpers don't collide on common names (e.g.
 		// mongodb.disk_full vs postgres.disk_full).
@@ -2751,29 +2762,11 @@ func builtinStderrSource(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	return &ObserveSourceVal{Config: cfg}, nil
 }
 
-// json_decoder() — creates a JSON decoder config.
-func builtinJSONDecoder(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	return &DecoderVal{Name: "json"}, nil
-}
-
-// logfmt_decoder() — creates a logfmt decoder config.
-func builtinLogfmtDecoder(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	return &DecoderVal{Name: "logfmt"}, nil
-}
-
-// regex_decoder(pattern=) — creates a regex decoder config.
-func builtinRegexDecoder(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	params := make(map[string]string)
-	for _, kv := range kwargs {
-		key, _ := starlark.AsString(kv[0])
-		val, _ := starlark.AsString(kv[1])
-		params[key] = val
-	}
-	if _, ok := params["pattern"]; !ok {
-		return nil, fmt.Errorf("regex_decoder() requires pattern= argument")
-	}
-	return &DecoderVal{Name: "regex", Params: params}, nil
-}
+// (Pre-RFC-044 decoder builtins lived here. They were folded into
+// the unified builtinDecoder dispatcher in observe_decoder.go;
+// the three legacy names — json_decoder, logfmt_decoder,
+// regex_decoder — are still registered above as deprecated
+// aliases that route through the new dispatcher.)
 
 // isFaultableSyscall returns true if the given name is a known faultable syscall.
 func isFaultableSyscall(name string) bool {

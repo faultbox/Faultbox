@@ -1,6 +1,6 @@
 # RFC-044: Spec Language Simplification
 
-> **Status: Implemented partial (v0.13.0).** §8.1 (RFC-013 withdrawal) + §8.3 (`faultbox generate` deprecation) + §8.4 (RFC-002 withdrawal) + §8.5 (L1-cap documentation) shipped in C1 (#126). §8.2 (unified fan-out machinery) shipped in C2 — the three plan-tree fan-out axis kinds (`ChoiceVal`, `ProbFaultSite`, `ParallelSite`) now implement a single `NonDeterministicChoice` interface (`internal/star/nondet.go`); `enumerateLeaves` is a thin wrapper over a generic mixed-radix walker. **Deferred:** §8.6 `observe.*` and §8.7 `decoder()` module unifications.
+> **Status: Implemented (v0.13.0).** All eight sub-sections shipped: §8.1 (RFC-013 withdrawal) + §8.3 (`faultbox generate` deprecation) + §8.4 (RFC-002 withdrawal) + §8.5 (L1-cap documentation) in C1 (#126); §8.2 (unified fan-out machinery — `NonDeterministicChoice` interface in `internal/star/nondet.go`) in C2 (#127); §8.6 (`observe.*` namespace) + §8.7 (`decoder("name", ...)` dispatcher) in C3, with deprecated aliases for the pre-rc2 surface that emit a one-time stderr warning and route through the canonical implementation. Removal of the deprecated aliases is scheduled for v0.14.0.
 
 ## Summary
 
@@ -246,17 +246,11 @@ Original sequence (kept for historical context):
 
 ### 8.6 — `observe.*` unification
 
-- New Starlark module `observe` in `internal/star/builtins.go` exposing factories as attributes.
-- Existing `stdout()`, `stderr()`, `topic()`, `tail()`, `wal_stream()`, `poll()` stay registered as deprecated aliases that emit a one-time warning.
-- Update tutorials and example specs to the new form.
-- Update `docs/spec-language.md`.
+> **Status: Implemented (C3, v0.13.0).** New Starlark module `observe` (a `starlarkstruct.Struct`) exposes `observe.stdout` and `observe.stderr` as attributes (`internal/star/observe_decoder.go::makeObserveModule`). Top-level `stdout()` / `stderr()` remain registered as deprecated aliases (`builtinStdoutDeprecated` / `builtinStderrDeprecated`) that emit a one-time stderr warning per process and delegate to the canonical implementation. **Scope correction:** the RFC originally listed `topic()`, `tail()`, `wal_stream()`, `poll()` as additional factories to unify, but those were never top-level builtins — only the event source plugins ship under those names (loaded via `observe=` lists on `service()`). Future Starlark-level factories plug into `makeObserveModule()` as additional attributes.
 
 ### 8.7 — `decoder("name", ...)` unification
 
-- New `decoder()` Starlark builtin dispatching by registered name.
-- Existing `json_decoder()`, `logfmt_decoder()`, `regex_decoder()` stay registered as deprecated aliases.
-- RFC-045 (Protobuf decoder) ships directly under the new form (no alias needed since it's new).
-- Update `docs/spec-language.md`.
+> **Status: Implemented (C3, v0.13.0).** Unified `decoder(name, ...)` dispatcher in `internal/star/observe_decoder.go::builtinDecoder` handles `"json"`, `"logfmt"`, and `"regex"`. Legacy `json_decoder()` / `logfmt_decoder()` / `regex_decoder()` remain registered as deprecated aliases that emit a one-time stderr warning and route through the new dispatcher — DecoderVal construction has a single source of truth. RFC-045 (Protobuf decoder) will plug in as `case "proto":` in the dispatcher.
 
 ### 8.8 — Tests
 
