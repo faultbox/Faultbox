@@ -128,8 +128,8 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 
 | Feature | Tier | Mechanism | Status | Notes |
 |---|---|---|---|---|
-| Event sources (stdout, wal_stream, topic, tail, poll) | 2 | `internal/eventsource/*_test.go` | 🟢 | |
-| Decoders (json, logfmt, regex) | 2 | `internal/eventsource/decoder` unit tests | 🟢 | |
+| Event sources (stdout, wal_stream, topic, tail, poll) | 2 | `internal/eventsource/*_test.go` + `internal/star/observe_decoder_test.go` (RFC-044 `observe.*` namespace + deprecated aliases) | 🟢 | RFC-044 §8.6: top-level `stdout()` / `stderr()` deprecated → `observe.stdout` / `observe.stderr`; one-time stderr warning per process, removal v0.14.0. |
+| Decoders (json, logfmt, regex) | 2 | `internal/eventsource/decoder` unit tests + `internal/star/observe_decoder_test.go` (unified dispatcher + deprecated aliases) | 🟢 | RFC-044 §8.7: unified `decoder("name", ...)` dispatcher; `json_decoder()` / `logfmt_decoder()` / `regex_decoder()` deprecated, removal v0.14.0. |
 | Container reuse (`reuse=True`) | 2 | No coverage | 🔴 | |
 | Lima VM dev environment | 3 | Manual (`make env-verify`) | 🟡 | |
 

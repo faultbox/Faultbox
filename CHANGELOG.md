@@ -102,8 +102,17 @@ methods; `enumerateLeaves` is a thin wrapper over a generic
 mixed-radix walker `expandLeaves`. Adding a new axis kind in the
 future requires only implementing the two-method contract — no
 per-kind branching in the enumerator. All pre-existing testops
-goldens unchanged. Remaining RFC-044 sections (§8.6 `observe.*`,
-§8.7 `decoder()`) tracked as follow-up slices.
+goldens unchanged. **C3** ships the namespace unifications
+(§8.6 + §8.7): a new `observe` Starlark struct exposes
+`observe.stdout` and `observe.stderr` as attributes; a unified
+`decoder("name", ...)` dispatcher handles `"json"`, `"logfmt"`,
+and `"regex"`. The pre-rc2 top-level `stdout()` / `stderr()` /
+`json_decoder()` / `logfmt_decoder()` / `regex_decoder()` builtins
+remain registered as deprecated aliases that emit a one-time
+stderr warning per process and route through the canonical
+implementation — DecoderVal construction has a single source of
+truth, so a future decoder bug fix lands in one place. Removal
+of the aliases is scheduled for v0.14.0.
 RFC-046 carries the post-L1 roadmap (gVisor Path B/C, L4 hermetic
 mode, L5 instruction-boundary research).
 

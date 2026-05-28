@@ -1123,22 +1123,24 @@ Decoders parse raw bytes (a line of output, a message payload) into
 structured event fields. The `"data"` field is auto-decoded on
 `StarlarkEvent.data` — no `json.decode()` needed.
 
-| Decoder | Constructor | Parses |
-|---------|------------|--------|
-| json | `json_decoder()` | JSON objects — top-level keys become fields |
-| logfmt | `logfmt_decoder()` | `key=value key2="value 2"` pairs |
-| regex | `regex_decoder(pattern=)` | Named capture groups from regex |
+| Decoder | Constructor (RFC-044) | Legacy alias (deprecated, removed in v0.14.0) | Parses |
+|---------|----------------------|-----------------------------------------------|--------|
+| json | `decoder("json")` | `json_decoder()` | JSON objects — top-level keys become fields |
+| logfmt | `decoder("logfmt")` | `logfmt_decoder()` | `key=value key2="value 2"` pairs |
+| regex | `decoder("regex", pattern=...)` | `regex_decoder(pattern=...)` | Named capture groups from regex |
 
 ```python
 # JSON: {"level":"INFO","msg":"started"} → e.data["level"] == "INFO"
-observe=[stdout(decoder=json_decoder())]
+observe=[observe.stdout(decoder=decoder("json"))]
 
 # Logfmt: level=INFO msg="started" → e.data["msg"] == "started"
-observe=[stdout(decoder=logfmt_decoder())]
+observe=[observe.stdout(decoder=decoder("logfmt"))]
 
 # Regex: WAL: fsync /data/wal/001 → e.data["action"] == "fsync"
-observe=[stdout(decoder=regex_decoder(pattern=r"WAL: (?P<action>\w+) (?P<path>.+)"))]
+observe=[observe.stdout(decoder=decoder("regex", pattern=r"WAL: (?P<action>\w+) (?P<path>.+)"))]
 ```
+
+> **RFC-044 §8.6 + §8.7 migration:** v0.13.0 introduces the `observe` namespace (`observe.stdout`, `observe.stderr`) and the unified `decoder("name", ...)` dispatcher. The pre-rc2 top-level `stdout()` / `stderr()` and the three `*_decoder()` builtins remain registered as deprecated aliases that emit a one-time stderr warning **per process** (not per spec — a test harness that loads multiple specs sequentially sees the warning once total); they will be removed in **v0.14.0**. New specs should use the namespaced form; existing specs migrate by mechanical substitution.
 
 ### Querying Event Source Events
 
