@@ -1,6 +1,6 @@
 # RFC-044: Spec Language Simplification
 
-> **Status: Draft.** Final RFC of the v0.13.0 epic. Designed alongside RFC-040 / RFC-041 / RFC-042 / RFC-043 to serve as the *design north star* for those implementations, but **implemented last** — after the four preceding RFCs land in v0.13.0-rc1/rc2. Captures cleanups and unifications enabled by the new determinism + non-determinism vocabulary.
+> **Status: Implemented partial (v0.13.0).** §8.1 (RFC-013 withdrawal) + §8.3 (`faultbox generate` deprecation) + §8.4 (RFC-002 withdrawal) + §8.5 (L1-cap documentation) shipped in C1 (#126). §8.2 (unified fan-out machinery) shipped in C2 — the three plan-tree fan-out axis kinds (`ChoiceVal`, `ProbFaultSite`, `ParallelSite`) now implement a single `NonDeterministicChoice` interface (`internal/star/nondet.go`); `enumerateLeaves` is a thin wrapper over a generic mixed-radix walker. **Deferred:** §8.6 `observe.*` and §8.7 `decoder()` module unifications.
 
 ## Summary
 
@@ -213,17 +213,17 @@ The committed v0.13.0 work for this RFC, **scheduled last in the epic**:
 
 ### 8.2 — Unified fan-out machinery
 
-Largest item in this RFC. Pure refactor; no user-facing API change. Sequence:
+> **Status: Implemented (C2, v0.13.0).** `NonDeterministicChoice` interface lives in `internal/star/nondet.go` with `Cardinality()` and `Apply(leaf, digit)` methods. `ChoiceVal`, `ProbFaultSite`, and `ParallelSite` implement the interface; `enumerateLeaves` is now a thin wrapper that flattens its three source slices into a homogeneous `[]NonDeterministicChoice` via `collectChoices` and forwards to a generic mixed-radix walker `expandLeaves`. All pre-existing testops goldens unchanged (the user-facing plan-tree shape is byte-identical to the rc2 implementation). **Scope note:** `fault_matrix` is intentionally NOT a NonDeterministicChoice — it produces discrete *test* entries at spec load time via `internal/plan/`, not *leaves* of one test at body time. The five-code-paths claim in the original RFC overstated the situation post-rc2 (only one path needed unifying — the others already went through `enumerateLeaves`).
+
+Original sequence (kept for historical context):
 
 1. Define `NonDeterministicChoice` and `Branch` types in `internal/star/nondet.go`.
-2. Refactor `fault_matrix` expansion to produce `[]NonDeterministicChoice` (was: list of dicts).
-3. Refactor RFC-043's `choose` and `nondet()` to produce same.
-4. Refactor RFC-042's `interleavings=` expansion to produce same.
-5. Refactor RFC-042's `probability=` expansion to produce same.
-6. Replace specialized cartesian product code in `internal/engine/` with a single recursive expansion over `[]NonDeterministicChoice`.
-7. Verify all pre-existing goldens unchanged (the user-facing plan tree must be byte-identical to before refactor).
-
-Estimated 1–2 weeks of focused work. **Implemented last because it's a refactor of all the producers** — easier to consolidate stable code than to consolidate moving targets.
+2. Refactor `fault_matrix` expansion to produce `[]NonDeterministicChoice` (was: list of dicts). — *NOT done; fault_matrix is a test fan-out, not a leaf fan-out.*
+3. Refactor RFC-043's `choose` and `nondet()` to produce same. — *done.*
+4. Refactor RFC-042's `interleavings=` expansion to produce same. — *done.*
+5. Refactor RFC-042's `probability=` expansion to produce same. — *done.*
+6. Replace specialized cartesian product code in `internal/engine/` with a single recursive expansion over `[]NonDeterministicChoice`. — *done in `internal/star/nondet.go::expandLeaves`; engine never had its own expansion code.*
+7. Verify all pre-existing goldens unchanged (the user-facing plan tree must be byte-identical to before refactor). — *done.*
 
 ### 8.3 — `faultbox generate` deprecation
 
