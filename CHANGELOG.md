@@ -13,9 +13,9 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
-## [0.13.0] - unreleased
+## [0.13.0] - 2026-05-29
 
-Two RFCs ship in v0.13.0:
+Five RFCs ship in v0.13.0:
 
 **RFC-040 — determinism levels.** Makes **L1 (mediated-event
 determinism) a contract**: every spec runs at L1 with strict mode on
@@ -2257,7 +2257,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.12.29...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.0...HEAD
+[0.13.0]: https://github.com/faultbox/Faultbox/compare/release-0.12.29...release-0.13.0
 [0.12.29]: https://github.com/faultbox/Faultbox/compare/release-0.12.28...release-0.12.29
 [0.12.28]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
 [0.12.27]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28
