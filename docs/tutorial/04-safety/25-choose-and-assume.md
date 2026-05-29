@@ -102,7 +102,7 @@ test("checkout",
 )
 ```
 
-The `assume=` kwarg on `test()` takes a list of predicates. Each predicate receives a `choices` dict mapping axis names to the leaf's selected option index. Leaves where any predicate returns False are recorded as **halted** — they don't contribute to pass/fail.
+The `assume=` kwarg on `test()` takes a list of predicates. Each predicate receives a `choices` dict mapping axis names to the leaf's selected option **value** (not the index — the dict carries what the body would observe from `choose()`, so a predicate that reads `choices["retries"]` against `choose("retries", [0, 1, 3])` sees one of `0`, `1`, `3` directly). Leaves where any predicate returns False are recorded as **halted** — they don't contribute to pass/fail.
 
 > **Visibility:** Per-test `assume=` predicates evaluate at body entry. They see the leaf's axis assignment for any `choose()` call recorded during the discovery run (the first body execution; see below). Conditional choose() calls — axes that only appear in some branches — may not show up in `choices` for every leaf. Best practice: declare all axes unconditionally at the start of the body.
 

@@ -194,7 +194,7 @@ For test design: pick the smallest axis count that exercises the failure modes y
 
 2. **Cost gate.** Add the `faultbox plan --check-cost --max-instances 50` invocation to your repo's pre-commit hook. Add an axis that pushes the count over 50 and confirm the hook blocks the commit.
 
-3. **Exhaustive WAL coverage.** Take an existing spec that uses `probability=0.3` on a WAL write. Add `max_fires=3, mode="exhaustive"` and observe the four-times-larger plan tree in `faultbox plan`. Find the leaf where every WAL write fired — what does the trace look like compared to the all-passed leaf?
+3. **Exhaustive WAL coverage.** Take an existing spec that uses `probability=0.3` on a WAL write. Add `max_fires=3, mode="exhaustive"` and observe the eight-leaf plan tree (2³) in `faultbox plan`. Find the leaf where every WAL write fired — what does the trace look like compared to the all-passed leaf?
 
 4. **Interleaving identity.** Compare `parallel(a, b, interleavings=1)` and `parallel(a, b, interleavings="all")` plans. The first should produce 1 leaf, the second 2. Verify with `faultbox plan`.
 
