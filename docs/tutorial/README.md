@@ -62,6 +62,8 @@ make lima-create && make lima-build                 # macOS (one-time)
 | 15 | [Monitors & Temporal Properties](04-safety/15-monitors.md) | 30 min |
 | 16 | [Network Partitions](04-safety/16-partitions.md) | 20 min |
 | 24 | [Determinism & the L1 Contract](04-safety/24-determinism.md) | 25 min |
+| 25 | [Non-deterministic Operators — `choose`, `assume`, `halt`](04-safety/25-choose-and-assume.md) | 30 min |
+| 26 | [Plan-Tree Fan-Out — `faultbox plan`, probability, interleavings](04-safety/26-plan-fanout.md) | 30 min |
 
 ## Part 5: Advanced Features
 
