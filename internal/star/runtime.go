@@ -3785,7 +3785,22 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 	// services and seccomp=False containers can still drive plan-
 	// tree enumeration; runtime execution of the rule is what's
 	// skipped, not the planning visibility (review B3 on PR #121).
-	for syscall, fd := range faults {
+	//
+	// Iterate in sorted-syscall order (issue #122) — Go's map range
+	// is unordered, so two probabilistic faults on the same service
+	// would record sites in random order across runs. The plan
+	// walker assigns mixed-radix digits to leaves based on site
+	// order, which means an unstable iteration would produce
+	// stable cardinality but unstable LeafID → axis mapping, and
+	// `faultbox plan` could disagree with `faultbox test` on the
+	// same spec.
+	syscalls := make([]string, 0, len(faults))
+	for s := range faults {
+		syscalls = append(syscalls, s)
+	}
+	sort.Strings(syscalls)
+	for _, syscall := range syscalls {
+		fd := faults[syscall]
 		if fd.Probability < 1.0 && fd.MaxFires > 0 && fd.Mode != "stochastic" {
 			key := fd.Label
 			if key == "" {
