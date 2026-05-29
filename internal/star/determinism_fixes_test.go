@@ -82,12 +82,6 @@ log_d = deny("EIO", probability=0.3, max_fires=2, mode="exhaustive", label="log"
 // regression that removed the drain would fail deterministically.
 func TestIssue119_BodyDoneDrainsAlwaysFired(t *testing.T) {
 	rt := New(testLogger())
-	// always(lambda t: False) registered as a per-test expect makes
-	// the first event arrival close alwaysFired. The body does
-	// nothing visible — but await_event below blocks long enough
-	// for the synthetic event we emit afterwards to land before
-	// body return, so by the time bodyDone is ready, alwaysFired
-	// is also ready.
 	src := `
 def body():
     pass
