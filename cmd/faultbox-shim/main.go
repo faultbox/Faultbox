@@ -223,8 +223,12 @@ func run() error {
 	// Exec the original entrypoint — seccomp filter survives exec.
 	// This is the final phase of the shim — after unix.Exec succeeds, stderr
 	// belongs to the real entrypoint and the shim's logger is gone.
+	// unix.Exec only returns on failure; name the binary in the error so
+	// "no such file or directory" points at the target, not the shim (F-2).
 	phaseStart("exec", "binary", binary, "argv_len", len(execArgs))
-	return unix.Exec(binary, execArgs, cleanEnv)
+	err = unix.Exec(binary, execArgs, cleanEnv)
+	phaseError("exec", err, "binary", binary)
+	return fmt.Errorf("exec %s: %w", binary, err)
 }
 
 // sendFdOnConn sends the seccomp listener fd over a pre-connected

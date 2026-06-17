@@ -1,14 +1,16 @@
 .PHONY: build test clean lint fmt vet run \
        demo demo-build demo-container \
-       testops-prep \
+       testops-prep install-lima \
        env-create env-start env-stop env-destroy env-shell env-exec env-status env-verify
 
 APP_NAME := faultbox
 BIN_DIR  := bin
 LIMA_VM  := faultbox-dev
 LIMA_CFG := lima/faultbox-dev.yaml
-# Project path inside VM (~ is mounted at /host-home via lima/faultbox-dev.yaml)
-VM_PROJECT := /host-home/git/Faultbox
+# Project path inside VM (~ is mounted at /host-home via lima/faultbox-dev.yaml).
+# Must match the real checkout path, case included — the Linux guest mount is
+# case-sensitive even though the macOS host isn't.
+VM_PROJECT := /host-home/git/faultbox/faultbox
 
 # ─── Build & Test (host) ───────────────────────────────────────────
 
@@ -83,6 +85,25 @@ testops-prep:
 	else \
 		echo "Skipping faultbox-shim: not Linux ($$(uname -s)) — Docker container mode requires Lima/Linux" ; \
 	fi
+
+# ─── Install from source into the Lima VM ──────────────────────────
+#
+# Container mode needs BOTH `faultbox` and `faultbox-shim`, built
+# linux-native and living in the same directory: the shim is the
+# container entrypoint (bind-mounted in), and the runtime's
+# findShimPath() falls back to alongside-the-binary. `make build`
+# produces only the host `faultbox`, so a from-source Lima run used to
+# mean hand-building the shim and copying it in by hand — the F-4
+# discovery loop from the v0.13.0 eval. This target does both in one
+# step, installing into the VM's /usr/local/bin (on PATH).
+install-lima:
+	@echo "Cross-compiling faultbox + faultbox-shim for linux/arm64..."
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/faultbox      ./cmd/faultbox/
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o $(LINUX_BIN)/faultbox-shim ./cmd/faultbox-shim/
+	@echo "Installing into $(LIMA_VM):/usr/local/bin (sudo)..."
+	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- sudo install -m 0755 $(LINUX_BIN)/faultbox      /usr/local/bin/faultbox
+	limactl shell --workdir $(VM_PROJECT) $(LIMA_VM) -- sudo install -m 0755 $(LINUX_BIN)/faultbox-shim /usr/local/bin/faultbox-shim
+	@echo "Installed. Verify with: make env-exec CMD='faultbox version'"
 
 # ─── Linux Dev Environment (Lima) ──────────────────────────────────
 

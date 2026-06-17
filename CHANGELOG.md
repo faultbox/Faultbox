@@ -13,6 +13,52 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.13.1] - 2026-06-18
+
+Fixes from the first field evaluation of v0.13.0 against a real
+service (truck-api). The evaluation surfaced five rough edges; four
+are fixed here (the fifth, the `monitor()` signature change, is an
+accepted breaking change and keeps its hard error).
+
+### Fixed
+
+- **`--test` no longer fails silent (F-6).** A `--test` pattern that
+  matches no tests now exits **1** (was 0 — a typo read as a green
+  suite in CI) and prints the available names. A collapsed
+  `fault_matrix` name (`test_matrix_create_order`, the name `faultbox
+  plan` prints) now selects every expanded cell under it, instead of
+  matching nothing. The CLI exit-code table (incl. the previously
+  undocumented INCONCLUSIVE exit 3) is now in
+  [docs/cli-reference.md](docs/cli-reference.md).
+- **Missing/unstartable target fails fast with the cause (F-2).** A
+  service whose binary can't be exec'd now fails immediately with
+  `exited before becoming ready: exec <path>: no such file or
+  directory`, naming the path. Previously the exec failure was hidden
+  behind a generic `context deadline exceeded` a full healthcheck
+  timeout later, with a misleading `exit_code=0` in the session log.
+  Both the binary-mode launch (`internal/seccomp`) and the container
+  shim now carry the target path in the error, and the healthcheck
+  races against session exit so a dead service surfaces at once.
+
+### Added
+
+- **Non-2xx response bodies on the trace (F-3).** `step_recv` events
+  now record the response `body` (truncated to 2 KB) for non-2xx HTTP
+  responses, so debugging a 400/500 reads off the trace or HTML report
+  instead of an edit-assert-rerun loop. 2xx bodies are omitted to keep
+  bundles small; the full body stays on the in-test `Response` object.
+- **`make install-lima` (F-4).** Cross-compiles **both** `faultbox`
+  and `faultbox-shim` and installs them into the Lima VM's
+  `/usr/local/bin` — container mode needs both side by side, which
+  `make build` alone didn't provide. Documented under
+  [README → Build from source](README.md#build-from-source).
+
+### Changed
+
+- `findShimPath()` no longer probes a hardcoded developer path that
+  could silently win over the alongside-the-binary fallback; it logs
+  the chosen shim path at debug level (F-4).
+
 ## [0.13.0] - 2026-05-29
 
 Five RFCs ship in v0.13.0:
@@ -2257,7 +2303,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.0...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.1...HEAD
+[0.13.1]: https://github.com/faultbox/Faultbox/compare/release-0.13.0...release-0.13.1
 [0.13.0]: https://github.com/faultbox/Faultbox/compare/release-0.12.29...release-0.13.0
 [0.12.29]: https://github.com/faultbox/Faultbox/compare/release-0.12.28...release-0.12.29
 [0.12.28]: https://github.com/faultbox/Faultbox/compare/release-0.12.16...release-0.12.28

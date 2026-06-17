@@ -141,6 +141,15 @@ make env-start      # Start VM
 make demo-build     # Cross-compile faultbox + demo binaries
 ```
 
+> **Container mode needs `faultbox-shim` too.** `make build` produces only
+> the host `faultbox` binary. Docker container mode also requires
+> `faultbox-shim` (the container entrypoint), built linux-native and living
+> in the same directory as `faultbox` — the release `install.sh` does this
+> for you, but a from-source Lima setup does not. Run `make install-lima` to
+> cross-compile **both** binaries and install them into the VM's
+> `/usr/local/bin`. Building the main binary alone surfaces later as a
+> container that never becomes ready.
+
 ### Run the Demo
 
 ```bash

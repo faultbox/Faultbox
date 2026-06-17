@@ -246,6 +246,33 @@ where it's still a placeholder. Use the separate `proxy_host` /
 See [recipes.md → Wiring SUTs to the proxy](recipes.md#wiring-suts-to-the-proxy)
 for more context. Fixed in v0.12.12 (RFC-033).
 
+## 12. "Service exited before becoming ready" / missing-binary launch
+
+Symptom (binary mode): the test fails fast with
+`service "truck-api" exited before becoming ready: exec /tmp/truck-api: no such file or directory`.
+
+Cause: the target binary path in your spec doesn't exist, isn't
+executable, or wasn't built for the VM's architecture. Before v0.13.0
+this surfaced as a misleading `context deadline exceeded` a full
+healthcheck-timeout later (often 60s), with `exit_code=0` in the
+session log — the exec failure was invisible. v0.13.0 resolves and
+verifies the target before signaling readiness, so the launch now fails
+immediately and names the path that couldn't be exec'd.
+
+Fix:
+
+1. Confirm the path in your `service(...)` declaration exists in the VM
+   and is executable: `make env-exec CMD='ls -l /tmp/truck-api'`.
+2. Rebuild for the VM arch if it's a cross-compile
+   (`GOOS=linux GOARCH=arm64`). A host-built (darwin) binary copied into
+   the VM produces an exec format error here.
+
+Related, for **container mode**: if the `faultbox-shim` binary is
+missing alongside `faultbox`, container services never reach
+`service_ready`. Build and install both with `make install-lima` (see
+[README → Build from source](../README.md#build-from-source)). The shim
+is the container entrypoint; without it the container can't start.
+
 ## See also
 
 - [bundles.md](bundles.md) — bundle inspection (`faultbox inspect`)

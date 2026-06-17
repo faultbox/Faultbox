@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -38,14 +39,28 @@ func IsShimChild() bool {
 }
 
 // RunShimChild is called in the child process. It:
-// 1. Optionally installs the seccomp filter
-// 2. Writes the listener fd (or "0" if no filter) to the parent via pipe
-// 3. Execs the target binary
+// 1. Resolves and verifies the target binary
+// 2. Optionally installs the seccomp filter
+// 3. Writes the listener fd (or "0" if no filter) to the parent via pipe
+// 4. Execs the target binary
 func RunShimChild() error {
 	configJSON := os.Getenv(ShimEnvKey)
 	var cfg ShimConfig
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return fmt.Errorf("parse shim config: %w", err)
+	}
+
+	// Resolve and verify the target BEFORE signaling the parent. The
+	// exec happens after the pipe write, so without this check a
+	// missing binary used to surface as exit_code=0 + a healthcheck
+	// timeout 60s later instead of an immediate, named error
+	// (F-2, v0.13.0 eval). LookPath also covers bare names — unix.Exec
+	// does not search PATH on its own.
+	binary, err := exec.LookPath(cfg.TargetBinary)
+	if err != nil {
+		err = fmt.Errorf("exec %s: %w", cfg.TargetBinary, err)
+		writePipeError(cfg.PipeFd, err)
+		return err
 	}
 
 	// Lock to OS thread — seccomp filters are per-thread, and we need
@@ -93,8 +108,43 @@ func RunShimChild() error {
 	}
 
 	// Exec the target binary — the seccomp filter (if any) survives exec().
-	// This replaces the current process.
-	return unix.Exec(cfg.TargetBinary, append([]string{cfg.TargetBinary}, cfg.TargetArgs...), cleanEnv)
+	// This replaces the current process; unix.Exec only returns on failure.
+	err = unix.Exec(binary, append([]string{cfg.TargetBinary}, cfg.TargetArgs...), cleanEnv)
+	return fmt.Errorf("exec %s: %w", binary, err)
+}
+
+// writePipeError sends an "ERR <message>" line to the parent over the
+// signaling pipe so launch fails immediately with the root cause
+// instead of a downstream healthcheck timeout. Best-effort: if the
+// write fails the parent still sees pipe EOF and reports a generic
+// child-exit error.
+func writePipeError(pipeFd int, err error) {
+	msg := "ERR " + strings.ReplaceAll(err.Error(), "\n", " ") + "\n"
+	unix.Write(pipeFd, []byte(msg))
+	unix.Close(pipeFd)
+}
+
+// parseShimSignal interprets the child's pipe message. The protocol
+// has two shapes:
+//
+//	"<fd>\n"          — setup succeeded; fd is the seccomp listener
+//	                    (0 = no filter installed)
+//	"ERR <message>\n" — the child failed before exec; message is the
+//	                    root cause (e.g. "exec /tmp/svc: no such file
+//	                    or directory")
+//
+// Split out of Launch so the protocol is unit-testable without a
+// fork+re-exec round trip.
+func parseShimSignal(raw string) (listenerFd int, childErr error) {
+	s := strings.TrimSpace(raw)
+	if msg, ok := strings.CutPrefix(s, "ERR "); ok {
+		return -1, fmt.Errorf("launch target: %s", msg)
+	}
+	fd, err := strconv.Atoi(s)
+	if err != nil {
+		return -1, fmt.Errorf("parse listener fd %q: %w", s, err)
+	}
+	return fd, nil
 }
 
 // Launch starts the target binary via the re-exec shim pattern.
@@ -186,7 +236,7 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 	// Parent: close write end of pipe, read child's message.
 	unix.Close(pipeW)
 
-	buf := make([]byte, 32)
+	buf := make([]byte, 512)
 	n, err := unix.Read(pipeR, buf)
 	if err != nil {
 		return childPid, -1, fmt.Errorf("read from child shim: %w", err)
@@ -195,10 +245,13 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 		return childPid, -1, fmt.Errorf("child shim exited before signaling (check child stderr)")
 	}
 
-	fdStr := strings.TrimSpace(string(buf[:n]))
-	childListenerFd, err := strconv.Atoi(fdStr)
-	if err != nil {
-		return childPid, -1, fmt.Errorf("parse listener fd %q: %w", fdStr, err)
+	childListenerFd, childErr := parseShimSignal(string(buf[:n]))
+	if childErr != nil {
+		// The child failed before exec (e.g. target binary missing)
+		// and reported the root cause over the pipe. Reap it and fail
+		// the launch immediately with that message (F-2).
+		unix.Wait4(childPid, nil, 0, nil)
+		return childPid, -1, childErr
 	}
 
 	// "0" means no seccomp filter was installed.

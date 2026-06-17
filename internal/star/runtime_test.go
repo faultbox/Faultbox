@@ -15,12 +15,29 @@ import (
 
 	"go.starlark.net/starlark"
 
+	"github.com/faultbox/Faultbox/internal/container"
 	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/proxy"
 )
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+}
+
+// skipIfNoDocker skips a test that drives RunAll against container
+// services (image=...) when no Docker daemon is reachable. Without a
+// daemon the discovery run's startServices fails, the test body never
+// executes, and any assertion on fan-out leaf count or per-leaf
+// attribution fails misleadingly (e.g. "expected 4 leaves, got 1").
+// Linux CI has Docker so coverage is unchanged; this only keeps
+// `make test` green on a Docker-less dev host (macOS without a VM).
+func skipIfNoDocker(t *testing.T) {
+	t.Helper()
+	cli, err := container.NewClient(context.Background(), testLogger())
+	if err != nil {
+		t.Skipf("skipping: no Docker daemon reachable (%v)", err)
+	}
+	cli.Close()
 }
 
 func TestLoadAndDiscoverTests(t *testing.T) {
@@ -2189,12 +2206,16 @@ fault_matrix(
 // reaches every generated FaultScenarioDef, and the spec stays loadable
 // when it's omitted (default stays false so existing matrices keep
 // their current semantics).
-// TestMatchTestFilter exercises the three --test matching modes
-// shipped in v0.11.2 per the inDrive Freight ask: exact, glob
-// (`*` / `?` / `[]`), and regex (`~<pattern>`). Exact-match
-// behaviour from v0.9.x is preserved so existing CI jobs keep
-// working after the upgrade.
+// TestMatchTestFilter exercises the four --test matching modes:
+// exact, matrix-group (collapsed fault_matrix name selects all its
+// cells — F-6a, v0.13.0 eval), glob (`*` / `?` / `[]`), and regex
+// (`~<pattern>`). Exact-match behaviour from v0.9.x is preserved so
+// existing CI jobs keep working after the upgrade.
 func TestMatchTestFilter(t *testing.T) {
+	// Collapsed matrix names as RunAll derives them from
+	// FaultScenarioDef.Matrix.ScenarioName.
+	bases := map[string]bool{"test_matrix_create_order": true}
+
 	cases := []struct {
 		name   string
 		test   string
@@ -2204,6 +2225,12 @@ func TestMatchTestFilter(t *testing.T) {
 		{"exact long", "test_health", "test_health", true},
 		{"exact short", "test_health", "health", true},
 		{"no match", "test_health", "test_orders", false},
+
+		{"matrix group long", "test_matrix_create_order_db_down", "test_matrix_create_order", true},
+		{"matrix group short", "test_matrix_create_order_db_down", "matrix_create_order", true},
+		{"matrix group other cell", "test_matrix_create_order_disk_full", "test_matrix_create_order", true},
+		{"matrix group wrong matrix", "test_matrix_health_db_down", "test_matrix_create_order", false},
+		{"matrix prefix is not generic", "test_create_order_extra", "test_create_order", false},
 
 		{"glob suffix", "test_matrix_health_db_down", "test_matrix_health_*", true},
 		{"glob shorthand", "test_matrix_health_db_down", "matrix_health_*", true},
@@ -2217,7 +2244,7 @@ func TestMatchTestFilter(t *testing.T) {
 		{"regex invalid falls back", "test_health", "~(((", false},
 	}
 	for _, tc := range cases {
-		if got := matchTestFilter(tc.test, tc.filter); got != tc.want {
+		if got := matchTestFilter(tc.test, tc.filter, bases); got != tc.want {
 			t.Errorf("matchTestFilter(%q, %q) = %v, want %v — %s",
 				tc.test, tc.filter, got, tc.want, tc.name)
 		}
