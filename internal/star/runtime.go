@@ -175,6 +175,13 @@ type SuiteResult struct {
 	// plan-tree pruning, not a test outcome the user cares about.
 	Halted int `json:"halted,omitempty"`
 
+	// Matched counts discovered test names that survived the --test
+	// filter (equal to the number of discovered tests when no filter
+	// is set). A filtered run with Matched == 0 is a usage error, not
+	// a green suite — the CLI exits non-zero on it so a filter typo
+	// can't read as "suite passed" in CI.
+	Matched int `json:"matched"`
+
 	// Crash, if non-nil, indicates the suite was terminated by a Go
 	// runtime panic — typically inside RunTest. The bundle emitted on
 	// the way out is marked partial so downstream tools (and humans)
@@ -801,22 +808,35 @@ type RunConfig struct {
 }
 
 // matchTestFilter resolves `--test <filter>` against a discovered
-// test name. Three match modes, tried in order:
+// test name. Four match modes, tried in order:
 //
 //  1. Exact match on either the raw name ("test_foo") or the
 //     shorthand ("foo") — preserves v0.9.x behaviour.
-//  2. Glob match if the filter contains * or ? (e.g.
+//  2. Matrix-group match: a collapsed fault_matrix name (the one
+//     `faultbox plan` prints, e.g. "test_matrix_create_order")
+//     selects every expanded per-cell test under it
+//     ("test_matrix_create_order_db_down", ...). matrixBases holds
+//     the collapsed names; nil disables this mode.
+//  3. Glob match if the filter contains * or ? (e.g.
 //     "test_matrix_health_*"). Glob is POSIX-ish via path.Match —
 //     good enough for test-name partitioning.
-//  3. Regex match if the filter begins with "~" or looks like a
+//  4. Regex match if the filter begins with "~" or looks like a
 //     parenthesised alternation. Lets power users write
 //     "~test_(matrix|smoke)_.*" without fighting shell escaping.
 //
 // Invalid patterns fall back to no-match rather than erroring out so
 // an accidental "?" doesn't abort the whole suite silently.
-func matchTestFilter(testName, filter string) bool {
+func matchTestFilter(testName, filter string, matrixBases map[string]bool) bool {
 	if testName == filter || testName == "test_"+filter {
 		return true
+	}
+	// Collapsed matrix name selects the whole cell group. Both the
+	// full form ("test_matrix_foo") and the shorthand ("matrix_foo")
+	// are accepted, mirroring mode 1.
+	for _, base := range []string{filter, "test_" + filter} {
+		if matrixBases[base] && strings.HasPrefix(testName, base+"_") {
+			return true
+		}
 	}
 	if strings.HasPrefix(filter, "~") {
 		re, err := regexp.Compile(filter[1:])
@@ -856,13 +876,24 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 		Tests: make([]TestResult, 0, len(tests)*runs),
 	}
 
+	// Collapsed fault_matrix names ("test_matrix_<scenario>") — lets
+	// --test select a whole cell group by the name `faultbox plan`
+	// prints (F-6a, v0.13.0 eval).
+	matrixBases := make(map[string]bool)
+	for _, fs := range rt.faultScenarios {
+		if fs.Matrix != nil {
+			matrixBases["test_matrix_"+fs.Matrix.ScenarioName] = true
+		}
+	}
+
 	// Auto-calculate permutation count for --explore=all without --runs.
 	autoExplore := cfg.ExploreMode == "all" && cfg.Runs <= 0
 
 	for _, name := range tests {
-		if cfg.Filter != "" && !matchTestFilter(name, cfg.Filter) {
+		if cfg.Filter != "" && !matchTestFilter(name, cfg.Filter, matrixBases) {
 			continue
 		}
+		suite.Matched++
 
 		testRuns := runs
 		for run := 0; run < testRuns; run++ {
@@ -993,10 +1024,13 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 
 	suite.DurationMs = time.Since(start).Milliseconds()
 
-	// Warn if filter matched no tests.
-	if cfg.Filter != "" && len(suite.Tests) == 0 {
+	// Surface a zero-match filter loudly. Matched (not len(suite.Tests))
+	// is the right signal: --fail-only leaves passing tests out of the
+	// Tests slice. The CLI turns Matched == 0 into a non-zero exit so a
+	// filter typo can't read as "suite green" in CI (F-6b).
+	if cfg.Filter != "" && suite.Matched == 0 {
 		available := strings.Join(tests, ", ")
-		fmt.Fprintf(os.Stderr, "WARNING: no test matched filter %q (available: %s)\n", cfg.Filter, available)
+		fmt.Fprintf(os.Stderr, "ERROR: no test matched filter %q (available: %s)\n", cfg.Filter, available)
 	}
 
 	// Clean up Docker resources after all tests.
@@ -2502,8 +2536,29 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 		hcTest := rt.resolveHealthcheck(svc)
 		hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
 		defer hcCancel()
-		if err := waitReady(hcCtx, hcTest, timeout); err != nil {
-			return fmt.Errorf("service %q not ready: %w", svcName, err)
+
+		// Race the healthcheck against session exit: a service that
+		// dies before becoming ready (exec failure, instant crash)
+		// must fail with its root cause NOW, not as a generic
+		// "context deadline exceeded" a full timeout later (F-2,
+		// v0.13.0 eval).
+		hcErrCh := make(chan error, 1)
+		go func() { hcErrCh <- waitReady(hcCtx, hcTest, timeout) }()
+		select {
+		case err := <-hcErrCh:
+			if err != nil {
+				return fmt.Errorf("service %q not ready: %w", svcName, err)
+			}
+		case r := <-done:
+			done <- r // put back: stopServices selects on this channel during teardown
+			if r != nil && r.Error != nil {
+				return fmt.Errorf("service %q exited before becoming ready: %w", svcName, r.Error)
+			}
+			exitCode := -1
+			if r != nil {
+				exitCode = r.ExitCode
+			}
+			return fmt.Errorf("service %q exited before becoming ready (exit code %d)", svcName, exitCode)
 		}
 		rt.events.Emit("service_ready", svcName, nil)
 		svcLog.Info("service ready", slog.String("check", hcTest))
@@ -2719,28 +2774,33 @@ func sortedInterfaceNames(svc *ServiceDef) []string {
 	return out
 }
 
-// findShimPath locates the faultbox-shim binary.
+// findShimPath locates the faultbox-shim binary. Dev locations
+// (/tmp from `make testops-build`, the in-repo bin/ dir) are probed
+// first so a freshly built shim wins during iteration; the
+// alongside-the-binary fallback covers release installs (install.sh
+// places both binaries in the same directory). The chosen path is
+// logged at debug level so a stale shim is diagnosable.
 func (rt *Runtime) findShimPath() string {
-	// Try common locations.
 	candidates := []string{
 		"/tmp/faultbox-shim",
 		"bin/linux-arm64/faultbox-shim",
-		"/host-home/git/Faultbox/bin/linux-arm64/faultbox-shim",
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			// Docker bind mounts require absolute paths.
 			if abs, err := filepath.Abs(p); err == nil {
-				return abs
+				p = abs
 			}
+			rt.log.Debug("using faultbox-shim", slog.String("path", p))
 			return p
 		}
 	}
 	// Fallback: assume it's alongside the faultbox binary.
 	exe, _ := os.Executable()
 	if exe != "" {
-		dir := filepath.Dir(exe)
-		return filepath.Join(dir, "faultbox-shim")
+		p := filepath.Join(filepath.Dir(exe), "faultbox-shim")
+		rt.log.Debug("using faultbox-shim", slog.String("path", p))
+		return p
 	}
 	return "faultbox-shim"
 }
@@ -3998,6 +4058,24 @@ func (rt *Runtime) mergeClocksForNetworkCall(svcName string) {
 	}
 }
 
+// errorBodyForTrace decides whether a step's response body should be
+// recorded on its step_recv trace event (F-3, v0.13.0 eval). It returns
+// the truncated body and true only for non-2xx responses with a
+// non-empty body — 2xx bodies are omitted to keep bundles small (the
+// full body is always available on the in-test Response object). A zero
+// status code (non-HTTP protocols, transport failures) is treated as
+// "no HTTP status" and skipped; those paths surface via the `error`
+// field instead.
+func errorBodyForTrace(statusCode int, body string) (string, bool) {
+	if body == "" || statusCode == 0 {
+		return "", false
+	}
+	if statusCode >= 200 && statusCode < 300 {
+		return "", false
+	}
+	return truncate(body, 2048), true
+}
+
 // executeStep runs an HTTP or TCP step against a running service.
 func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, method string, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	port := ref.Interface.Port
@@ -4073,6 +4151,13 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	if stepResult != nil {
 		if stepResult.StatusCode != 0 {
 			recvFields["status_code"] = fmt.Sprintf("%d", stepResult.StatusCode)
+		}
+		// Record the response body on non-2xx so debugging a 400/500
+		// reads straight off the trace instead of an edit-assert-rerun
+		// loop (F-3, v0.13.0 eval). 2KB cap keeps bundles small; the
+		// full body is still on the in-test Response object.
+		if body, ok := errorBodyForTrace(stepResult.StatusCode, stepResult.Body); ok {
+			recvFields["body"] = body
 		}
 		recvFields["duration_ms"] = fmt.Sprintf("%d", stepResult.DurationMs)
 		recvFields["success"] = fmt.Sprintf("%t", stepResult.Success)

@@ -49,7 +49,7 @@ func main() {
 }
 
 // version is set via -ldflags at build time.
-var version = "0.13.0"
+var version = "0.13.1"
 
 func run() int {
 	args := os.Args[1:]
@@ -543,6 +543,10 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 
 	// Exit code convention:
 	//   0 — all tests passed
+	//   1 — usage error: --test filter matched no tests (RunAll already
+	//       printed the available names to stderr). Without this a
+	//       filter typo runs zero tests and exits 0 — reads as "suite
+	//       green" in CI (F-6b, v0.13.0 eval).
 	//   2 — at least one test failed (long-standing project convention;
 	//       RFC-041 §8.6 nominally specs this as 1 but the codebase's
 	//       existing CI integrations gate on 2 so we keep it stable)
@@ -550,6 +554,9 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	//       can choose to gate on 3 or treat it as warning per the
 	//       "(CI integrations can choose to gate on either or both)"
 	//       clause in §8.6.
+	if rcfg.Filter != "" && result.Matched == 0 {
+		return 1
+	}
 	if result.Fail > 0 {
 		return 2
 	}
@@ -1893,8 +1900,10 @@ Test flags:
   --test <pattern>         Run only matching tests. Accepts:
                              · exact name         --test=test_health
                              · short form         --test=health
+                             · matrix group       --test=test_matrix_create_order (all cells)
                              · glob               --test='test_matrix_*'
                              · regex (with ~)     --test='~test_(matrix|smoke)_.*'
+                           Exits 1 if the pattern matches no tests.
   --runs <N>               Run each test N times (compact summary, stop on first failure)
   --seed <N>               Deterministic seed for replay
   --show all|fail          Filter output (default: all)

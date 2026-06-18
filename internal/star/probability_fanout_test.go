@@ -134,6 +134,7 @@ dn = deny("EIO", probability=0.3, max_fires=2)
 // copyBoolVecMap deep-copy path was untested at the TestResult
 // level before this regression guard.
 func TestRunAll_LeafProbabilityOutcomesSurfaceOnTestResult(t *testing.T) {
+	skipIfNoDocker(t)
 	rt := New(testLogger())
 	src := `
 svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
@@ -194,6 +195,7 @@ def test_prob():
 // (choose() × probability) must carry both maps. Guards against a
 // future refactor that copies one kind but not the other.
 func TestRunAll_CombinedChooseAndProbCarryBothMaps(t *testing.T) {
+	skipIfNoDocker(t)
 	rt := New(testLogger())
 	src := `
 svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])

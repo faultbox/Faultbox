@@ -12,7 +12,7 @@ faultbox test [flags] <file.star>
 
 | Flag | Description |
 |------|-------------|
-| `--test <name>` | Run only the matching test function |
+| `--test <pattern>` | Run only matching tests. Accepts an exact name (`test_health` / `health`), a collapsed `fault_matrix` name that selects all its cells (`test_matrix_create_order`), a glob (`test_matrix_*`), or a regex (`~test_(matrix\|smoke)_.*`). **Exits 1 if the pattern matches no tests** — a typo no longer reads as a green suite in CI (since v0.13.0). |
 | `--runs <N>` | Run each test N times (stops on first failure per test) |
 | `--seed <N>` | Use specific seed for deterministic replay. Since v0.9.8 every run persists its seed to `.faultbox/last-seed` next to the spec; subsequent no-flag runs reuse it. Stderr prints `Seed: N (cli\|cached\|generated)` to show which tier fired. |
 | `--show all\|fail` | Filter output: `all` (default) or `fail` (only failures) |
@@ -993,8 +993,13 @@ Prints the source of a recipe file. Useful for:
 | Code | Meaning |
 |---|---|
 | 0 | All tests passed / traces identical |
-| 1 | Faultbox error (bad config, load failure, etc.) |
+| 1 | Faultbox error (bad config, load failure, etc.) — also when `--test` matched no tests (since v0.13.0) |
 | 2 | One or more tests failed / traces differ |
+| 3 | One or more tests INCONCLUSIVE (temporal assertion still pending at timeout) with no outright failures (RFC-041). CI may gate on this or treat it as a warning. |
+
+A `--test` pattern that matches nothing exits **1**, not 0 — so a typo
+or a renamed test can't masquerade as a passing suite in CI. The
+available test names are printed to stderr.
 
 ### `faultbox run`
 

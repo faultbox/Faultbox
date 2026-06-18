@@ -3126,6 +3126,16 @@ Events use dotted `event_type` for PObserve compatibility:
 The `partition_key` field (default: service name) enables routing events to
 per-service PObserve monitor instances.
 
+**`step_recv` fields.** Each `step_recv.<service>` event carries
+`status_code`, `duration_ms`, `success`, and a human `summary`, plus any
+protocol-specific fields (e.g. `rows`, `collection`). On a **non-2xx HTTP
+response** the event also carries `body` — the response body, truncated to
+2 KB (since v0.13.0). This lets you read why a 400/500 happened straight
+from the trace or HTML report instead of re-running with the body inlined
+into an assert message. 2xx bodies are omitted to keep bundles small; the
+full, untruncated body is always available on the in-test
+[`Response`](#type-response) object (`resp.body`).
+
 ### ShiViz Visualization (`--shiviz trace.shiviz`)
 
 Produces a [ShiViz](https://bestchai.bitbucket.io/shiviz/)-compatible trace
