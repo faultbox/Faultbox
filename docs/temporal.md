@@ -239,12 +239,30 @@ Final verdict per cause:
 |-------|----------------------------|-------------------------------|
 | (a) Natural | PASS | **FAIL** (contradiction — natural completion requires every `eventually` already satisfied) |
 | (b) terminate_when | PASS | **FAIL** (system reached its declared final state without `p` ever holding) |
-| (c) timeout | PASS | **INCONCLUSIVE** (more time might have helped) |
+| (c) timeout | **INCONCLUSIVE** | **INCONCLUSIVE** (more time might have helped) |
 | (d) Immediate failure | n/a | **FAIL** |
 
 `always` violations and `monitor` errors are always FAIL regardless of
 cause. INCONCLUSIVE is a deliberate third state — CI integrations can
 choose to gate on it via [exit codes](#cli-exit-codes).
+
+**Timeout is always INCONCLUSIVE, never PASS (RFC-049).** A test that ends by
+hitting its `timeout` is INCONCLUSIVE even if every `eventually` it declared
+was already satisfied — the body did not reach a declared completion (natural
+return or `terminate_when`), so the run is a *truncated prefix* and a green
+verdict would over-claim. This is deliberate and conservative: a hung or
+overrunning body is not a clean PASS just because its assertions happened to
+hold before the deadline. To get a definitive PASS from a long-running or
+`reuse=True` service, declare a `terminate_when=` so the test has a real
+end-of-trace (cause b) rather than relying on the deadline.
+
+This rule is also why per-property verdicts at timeout surface as pending:
+a never-violated *unbounded* `always(p)` (no `between=` window) finalizes to
+INCONCLUSIVE under timeout — a safety property merely *not yet violated* on a
+truncated prefix is not established. At natural completion or `terminate_when`
+the same `always` is a definitive PASS. Bounded `always(p, between=(a,b))` is
+unaffected: once `b` is observed the window is decided, and an *unreached*
+end-anchor at timeout was already INCONCLUSIVE.
 
 ### Why declare `terminate_when=`?
 

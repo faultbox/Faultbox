@@ -174,6 +174,211 @@ func TestAlways_NoViolation(t *testing.T) {
 	}
 }
 
+// TestVerdictOracle_FinalizeMatrix is the RFC-049 step-2/3 oracle: it encodes
+// the re-derived LTL₃/LTL_f per-property verdict table as the source of truth
+// and diffs every (property-state × termination-cause) cell against what the
+// engine's Finalize actually returns. A future divergence in any cell is
+// either a latent bug or a docs drift — this matrix is where it surfaces.
+//
+// Scope: per-property (Finalize-level) verdicts. The test-level aggregation —
+// notably "any timeout → INCONCLUSIVE" via the runtime catch-all — is guarded
+// at the RunTest level (see lifecycle_test.go TestLifecycle_*Timeout*).
+func TestVerdictOracle_FinalizeMatrix(t *testing.T) {
+	allCauses := []TerminationCause{
+		TerminationNatural, TerminationTerminateWhen, TerminationTimeout, TerminationImmediateFail,
+	}
+	P := VerdictPass
+	F := VerdictFail
+	I := VerdictPending // "?" at the property level; the runner maps to INCONCLUSIVE
+
+	// Each scenario builds a fresh expectation already driven into a known
+	// state, plus the log to Finalize against. The oracle is the expected
+	// verdict per cause.
+	type scenario struct {
+		name  string
+		build func() (ExpectationVal, *EventLog)
+		want  map[TerminationCause]Verdict
+	}
+
+	truePred := func() starlark.Callable { return makePredicate("p", func(*TraceVal) bool { return true }) }
+	falsePred := func() starlark.Callable { return makePredicate("p", func(*TraceVal) bool { return false }) }
+	thread := &starlark.Thread{Name: "oracle"}
+
+	scenarios := []scenario{
+		{
+			// eventually satisfied — co-safety ⊤ latches; PASS under every cause.
+			name: "eventually/satisfied",
+			build: func() (ExpectationVal, *EventLog) {
+				log := NewEventLog()
+				log.Emit("ok", "svc", nil)
+				e := &EventuallyExpectation{predicate: truePred()}
+				_, _, _ = e.Evaluate(thread, log) // latch satisfied
+				return e, log
+			},
+			want: map[TerminationCause]Verdict{
+				TerminationNatural: P, TerminationTerminateWhen: P, TerminationTimeout: P, TerminationImmediateFail: P,
+			},
+		},
+		{
+			// eventually never satisfied — FAIL at a real end-of-trace
+			// (natural / terminate_when / immediate-fail), INCONCLUSIVE only
+			// under timeout (more time might have helped).
+			name: "eventually/unsatisfied",
+			build: func() (ExpectationVal, *EventLog) {
+				log := NewEventLog()
+				log.Emit("ok", "svc", nil)
+				return &EventuallyExpectation{predicate: falsePred()}, log
+			},
+			want: map[TerminationCause]Verdict{
+				TerminationNatural: F, TerminationTerminateWhen: F, TerminationTimeout: I, TerminationImmediateFail: F,
+			},
+		},
+		{
+			// unbounded always, never violated — PASS at a real end-of-trace,
+			// INCONCLUSIVE under timeout (RFC-049 Discrepancy 1).
+			name: "always/unbounded/ok",
+			build: func() (ExpectationVal, *EventLog) {
+				log := NewEventLog()
+				log.Emit("ok", "svc", nil)
+				return &AlwaysExpectation{predicate: truePred()}, log
+			},
+			want: map[TerminationCause]Verdict{
+				TerminationNatural: P, TerminationTerminateWhen: P, TerminationTimeout: I, TerminationImmediateFail: P,
+			},
+		},
+		{
+			// bounded always whose end-anchor closed before termination — the
+			// window is definitively decided; PASS under every cause.
+			name: "always/bounded/closed",
+			build: func() (ExpectationVal, *EventLog) {
+				log := NewEventLog()
+				end := &MatcherVal{matchFn: func(ev Event) bool { return ev.Type == "stop" }}
+				a := &AlwaysExpectation{predicate: truePred(), betweenEnd: betweenAnchor{matcher: end}}
+				log.Emit("normal", "svc", nil)
+				_, _, _ = a.Evaluate(thread, log)
+				log.Emit("stop", "svc", nil)
+				_, _, _ = a.Evaluate(thread, log) // closes window
+				return a, log
+			},
+			want: map[TerminationCause]Verdict{
+				TerminationNatural: P, TerminationTerminateWhen: P, TerminationTimeout: P, TerminationImmediateFail: P,
+			},
+		},
+		{
+			// bounded always whose end-anchor never arrived — open interval;
+			// INCONCLUSIVE under timeout, PASS when a real end-of-trace closes
+			// the test around it.
+			name: "always/bounded/open",
+			build: func() (ExpectationVal, *EventLog) {
+				log := NewEventLog()
+				end := &MatcherVal{matchFn: func(ev Event) bool { return ev.Type == "stop" }}
+				a := &AlwaysExpectation{predicate: truePred(), betweenEnd: betweenAnchor{matcher: end}}
+				log.Emit("normal", "svc", nil)
+				_, _, _ = a.Evaluate(thread, log) // pending, window still open
+				return a, log
+			},
+			want: map[TerminationCause]Verdict{
+				TerminationNatural: P, TerminationTerminateWhen: P, TerminationTimeout: I, TerminationImmediateFail: P,
+			},
+		},
+		{
+			// any violated always — FAIL under every cause.
+			name: "always/violated",
+			build: func() (ExpectationVal, *EventLog) {
+				log := NewEventLog()
+				log.Emit("bad", "svc", nil)
+				a := &AlwaysExpectation{predicate: falsePred()}
+				_, _, _ = a.Evaluate(thread, log) // latch violation
+				return a, log
+			},
+			want: map[TerminationCause]Verdict{
+				TerminationNatural: F, TerminationTerminateWhen: F, TerminationTimeout: F, TerminationImmediateFail: F,
+			},
+		},
+	}
+
+	for _, sc := range scenarios {
+		for _, cause := range allCauses {
+			exp, log := sc.build()
+			got, _ := exp.Finalize(thread, log, cause)
+			if want := sc.want[cause]; got != want {
+				t.Errorf("oracle mismatch [%s × %v]: got %v, want %v", sc.name, cause, got, want)
+			}
+		}
+	}
+}
+
+// TestAlways_Unbounded_TimeoutIsInconclusive is the RFC-049 Discrepancy 1
+// regression guard: an unbounded always(p) (no between=) that was never
+// violated must finalize to PENDING (→ INCONCLUSIVE) under a timeout — the
+// trace is a truncated LTL₃ prefix, so "never violated yet" is not a
+// definitive PASS. Before the fix this returned VerdictPass.
+func TestAlways_Unbounded_TimeoutIsInconclusive(t *testing.T) {
+	log := NewEventLog()
+	log.Emit("ok", "svc", nil)
+
+	exp := &AlwaysExpectation{
+		predicate: makePredicate("p", func(*TraceVal) bool { return true }),
+	}
+	thread := &starlark.Thread{Name: "test"}
+
+	if v, _, _ := exp.Evaluate(thread, log); v != VerdictPending {
+		t.Fatalf("precondition: expected pending pre-termination, got %v", v)
+	}
+
+	v, msg := exp.Finalize(thread, log, TerminationTimeout)
+	if v != VerdictPending {
+		t.Errorf("unbounded always at timeout must be PENDING (→INCONCLUSIVE), got %v", v)
+	}
+	if !strings.Contains(msg, "truncated") {
+		t.Errorf("message should explain the truncated-prefix reason, got %q", msg)
+	}
+}
+
+// TestAlways_Unbounded_DefiniteAtEndOfTrace guards the other side: at a real
+// end-of-trace (natural completion or terminate_when — both LTL_f), an
+// unbounded never-violated always stays a definitive PASS. Only timeout is
+// inconclusive.
+func TestAlways_Unbounded_DefiniteAtEndOfTrace(t *testing.T) {
+	thread := &starlark.Thread{Name: "test"}
+	for _, cause := range []TerminationCause{TerminationNatural, TerminationTerminateWhen} {
+		log := NewEventLog()
+		log.Emit("ok", "svc", nil)
+		exp := &AlwaysExpectation{
+			predicate: makePredicate("p", func(*TraceVal) bool { return true }),
+		}
+		_, _, _ = exp.Evaluate(thread, log)
+		if v, _ := exp.Finalize(thread, log, cause); v != VerdictPass {
+			t.Errorf("cause %v: unbounded never-violated always must be PASS at end-of-trace, got %v", cause, v)
+		}
+	}
+}
+
+// TestAlways_BoundedClosedWindow_TimeoutStaysPass guards that the Discrepancy 1
+// fix did not over-reach: a *bounded* always whose end-anchor closed before
+// the timeout has a definitively-decided window and stays PASS at timeout —
+// the unbounded-truncation rule must not apply to it.
+func TestAlways_BoundedClosedWindow_TimeoutStaysPass(t *testing.T) {
+	log := NewEventLog()
+	endMatcher := &MatcherVal{matchFn: func(ev Event) bool { return ev.Type == "stop" }}
+	exp := &AlwaysExpectation{
+		predicate:  makePredicate("p", func(*TraceVal) bool { return true }),
+		betweenEnd: betweenAnchor{matcher: endMatcher},
+	}
+	thread := &starlark.Thread{Name: "test"}
+
+	log.Emit("normal", "svc", nil)
+	_, _, _ = exp.Evaluate(thread, log)
+	log.Emit("stop", "svc", nil) // closes the window
+	if v, _, _ := exp.Evaluate(thread, log); v != VerdictPass {
+		t.Fatalf("precondition: window should close to PASS, got %v", v)
+	}
+
+	if v, _ := exp.Finalize(thread, log, TerminationTimeout); v != VerdictPass {
+		t.Errorf("bounded always with a closed window must stay PASS at timeout, got %v", v)
+	}
+}
+
 func TestAlways_ViolationIsImmediate(t *testing.T) {
 	log := NewEventLog()
 	log.Emit("bad", "svc", nil)

@@ -331,6 +331,14 @@ func (a *AlwaysExpectation) Finalize(thread *starlark.Thread, log *EventLog, cau
 	// for always says INCONCLUSIVE; we surface pending and the caller maps.
 	a.mu.Lock()
 	endPending := !a.windowEnded && (a.betweenEnd.matcher != nil || a.hasNamedEndAnchorLocked())
+	// An always() with no closing anchor at all (unbounded `always(p)`, no
+	// between=) is a safety property over the whole trace. RFC-049
+	// Discrepancy 1: a timeout truncates the trace (LTL₃ prefix), so a
+	// never-violated unbounded safety property is INCONCLUSIVE, not PASS — a
+	// longer trace could still violate it. At natural completion /
+	// terminate_when (LTL_f end-of-trace) it stays a definitive PASS, which
+	// the fall-through below preserves.
+	unbounded := a.betweenEnd.matcher == nil && a.betweenEnd.name == ""
 	a.mu.Unlock()
 	if endPending {
 		switch cause {
@@ -341,6 +349,9 @@ func (a *AlwaysExpectation) Finalize(thread *starlark.Thread, log *EventLog, cau
 			// effectively spans the entire test, predicate held throughout → PASS.
 			return VerdictPass, ""
 		}
+	}
+	if unbounded && cause == TerminationTimeout {
+		return VerdictPending, "always(" + funcName(a.predicate) + ") held through a truncated (timed-out) prefix — safety not definitively established (RFC-049)"
 	}
 	return VerdictPass, ""
 }

@@ -1768,11 +1768,19 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 		}
 	}
 
-	// Timeout with no temporal expectations to gate on — INCONCLUSIVE
-	// rather than PASS, because we couldn't observe the body's verdict.
-	// (Legacy synchronous tests never reach this branch because their
-	// only timeout is the 3-minute infrastructure ctx, and they'd have
-	// returned via err != nil instead.)
+	// A test that ended by TIMEOUT is INCONCLUSIVE — never PASS — and this
+	// is intentional for ALL timeouts, not just the no-expectations case
+	// (RFC-049). Reaching here means no expectation FAILed and none is still
+	// pending (a satisfied eventually finalized to Pass and fell through);
+	// even so, the body did not reach a declared completion (natural return
+	// or terminate_when), so the run is a truncated prefix and a green
+	// verdict would over-claim. Conservative by design: a hung or overrunning
+	// body is not a clean PASS just because its assertions happened to hold
+	// before the deadline. Long-running / reuse=True specs that want a
+	// definite PASS must declare terminate_when= (cause b) rather than lean
+	// on the deadline. (Legacy synchronous tests never reach this branch —
+	// their only timeout is the 3-minute infra ctx, and they'd have returned
+	// via err != nil instead.)
 	if cause == TerminationTimeout {
 		return TestResult{
 			Name: name, Result: "inconclusive",
