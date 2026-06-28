@@ -1739,6 +1739,16 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 		anyPending := false
 		for _, exp := range expectations {
 			v, msg := exp.Finalize(finThread, rt.events, cause)
+			// RFC-049 vacuity resolution: an always() whose between= start
+			// anchor never fired is vacuously satisfied (verdict unchanged),
+			// but the predicate was never actually checked — emit a warning so
+			// a typo'd anchor surfaces in the trace instead of a silent green.
+			if vw, ok := exp.(interface{ VacuousWindow() bool }); ok && vw.VacuousWindow() {
+				rt.events.Emit("vacuous_property", "test", map[string]string{
+					"property": exp.Name(),
+					"reason":   "between= start anchor never fired; window never opened — verify the anchor",
+				})
+			}
 			switch v {
 			case VerdictFail:
 				return TestResult{

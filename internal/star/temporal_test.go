@@ -174,6 +174,48 @@ func TestAlways_NoViolation(t *testing.T) {
 	}
 }
 
+// TestAlways_VacuousWindow is the RFC-049 vacuity guard: an always() whose
+// between= start anchor never fires never opened its window, so the predicate
+// was never checked. VacuousWindow() reports this (the runtime emits a
+// vacuous_property warning), while the verdict stays a vacuous PASS.
+func TestAlways_VacuousWindow(t *testing.T) {
+	thread := &starlark.Thread{Name: "test"}
+	truePred := makePredicate("p", func(*TraceVal) bool { return true })
+	startNever := &MatcherVal{matchFn: func(ev Event) bool { return ev.Type == "go" }}
+
+	// Start anchor never fires → vacuous.
+	log := NewEventLog()
+	log.Emit("other", "svc", nil) // not "go"
+	vac := &AlwaysExpectation{predicate: truePred, betweenStart: betweenAnchor{matcher: startNever}}
+	if v, _, _ := vac.Evaluate(thread, log); v != VerdictPending {
+		t.Fatalf("precondition: window should be closed (pending), got %v", v)
+	}
+	if !vac.VacuousWindow() {
+		t.Error("start anchor never fired → expected VacuousWindow() true")
+	}
+	if v, _ := vac.Finalize(thread, log, TerminationNatural); v != VerdictPass {
+		t.Errorf("vacuous always should still finalize PASS, got %v", v)
+	}
+
+	// Start anchor fires → window opens → not vacuous.
+	log2 := NewEventLog()
+	opened := &AlwaysExpectation{predicate: truePred, betweenStart: betweenAnchor{matcher: startNever}}
+	log2.Emit("go", "svc", nil)
+	_, _, _ = opened.Evaluate(thread, log2)
+	if opened.VacuousWindow() {
+		t.Error("start anchor fired → expected VacuousWindow() false")
+	}
+
+	// Unbounded always opens immediately → never vacuous.
+	log3 := NewEventLog()
+	unb := &AlwaysExpectation{predicate: truePred}
+	log3.Emit("x", "svc", nil)
+	_, _, _ = unb.Evaluate(thread, log3)
+	if unb.VacuousWindow() {
+		t.Error("unbounded always opens immediately → expected VacuousWindow() false")
+	}
+}
+
 // TestVerdictOracle_FinalizeMatrix is the RFC-049 step-2/3 oracle: it encodes
 // the re-derived LTL₃/LTL_f per-property verdict table as the source of truth
 // and diffs every (property-state × termination-cause) cell against what the
