@@ -1,6 +1,6 @@
 # RFC-049: Finite-Trace Verdict Semantics — Pinning the Monitor Table to LTL₃ / LTL_f
 
-> **Status: Draft.** Specification RFC (Direction 4 of [RFC-047](https://github.com/faultbox/Faultbox/issues/132)). Refines RFC-041 (Temporal Properties) — does not add surface, it *grounds* the existing verdict logic. **First in the agreed research-epic sequence (D4 → D3 → RFC-048 DPOR+LDFI):** despite the higher RFC number, this lands first because it gates the trustworthiness of every verdict the later epics emit.
+> **Status: Accepted** (implemented in PR [#133](https://github.com/faultbox/Faultbox/pull/133), merged 2026-07-05). Specification RFC (Direction 4 of [RFC-047](https://github.com/faultbox/Faultbox/issues/132)). Refines RFC-041 (Temporal Properties) — does not add surface, it *grounds* the existing verdict logic. **First in the agreed research-epic sequence (D4 → D3 → RFC-048 DPOR+LDFI):** despite the higher RFC number, this lands first because it gates the trustworthiness of every verdict the later epics emit.
 >
 > In-tree document: `docs/rfcs/0049-finite-trace-verdict-semantics.md`.
 
