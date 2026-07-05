@@ -331,6 +331,14 @@ func (a *AlwaysExpectation) Finalize(thread *starlark.Thread, log *EventLog, cau
 	// for always says INCONCLUSIVE; we surface pending and the caller maps.
 	a.mu.Lock()
 	endPending := !a.windowEnded && (a.betweenEnd.matcher != nil || a.hasNamedEndAnchorLocked())
+	// An always() with no closing anchor at all (unbounded `always(p)`, no
+	// between=) is a safety property over the whole trace. RFC-049
+	// Discrepancy 1: a timeout truncates the trace (LTL₃ prefix), so a
+	// never-violated unbounded safety property is INCONCLUSIVE, not PASS — a
+	// longer trace could still violate it. At natural completion /
+	// terminate_when (LTL_f end-of-trace) it stays a definitive PASS, which
+	// the fall-through below preserves.
+	unbounded := a.betweenEnd.matcher == nil && a.betweenEnd.name == ""
 	a.mu.Unlock()
 	if endPending {
 		switch cause {
@@ -342,7 +350,28 @@ func (a *AlwaysExpectation) Finalize(thread *starlark.Thread, log *EventLog, cau
 			return VerdictPass, ""
 		}
 	}
+	if unbounded && cause == TerminationTimeout {
+		return VerdictPending, "always(" + funcName(a.predicate) + ") held through a truncated (timed-out) prefix — safety not definitively established (RFC-049)"
+	}
 	return VerdictPass, ""
+}
+
+// VacuousWindow reports whether this always() had a real start anchor that
+// never fired, so the window never opened and the predicate was never actually
+// evaluated. Such a property is vacuously satisfied (PASS is preserved — the
+// window may be legitimately untriggered, e.g. between=(error, recovery) in a
+// run with no error), but a never-firing start anchor is just as often a
+// typo'd / misnamed anchor that would otherwise hide as a silent green. The
+// runtime emits a `vacuous_property` warning when this is true so the case
+// surfaces in the trace (RFC-049 vacuity resolution). An always() that was
+// violated is not vacuous; an unbounded always (no anchor, opens immediately)
+// never is.
+func (a *AlwaysExpectation) VacuousWindow() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	hasStartAnchor := a.betweenStart.matcher != nil ||
+		(a.betweenStart.name != "" && a.betweenStart.name != "body_start")
+	return hasStartAnchor && !a.windowStarted && !a.violated
 }
 
 // hasNamedEndAnchorLocked is the lock-already-held variant of
