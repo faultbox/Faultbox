@@ -198,6 +198,37 @@ by design — independent tests are parallelizable and debuggable.
 3. How do I know they're ready?
 4. What should happen when I interact with them?
 
+## You just tested at the boundary
+
+Notice what your spec actually contains: a system under test plus a
+**stand-in dependency**. `mock-db` is not a production database — it is
+a small, protocol-faithful simulation that Faultbox fully controls.
+
+This is Faultbox's core adoption pattern, and it scales all the way up.
+In real projects, the one real thing in the spec is *your* service —
+the image you already have — while the dependencies you can't run
+(another team's API, a paid SaaS, the company Kafka) are simulated with
+`mock_service()`, `redis.server(state=...)`, or OpenAPI-generated stubs
+([Chapter 17](../05-advanced/17-mock-services.md)). You never need the
+whole company's system on your laptop to test how your service survives
+its dependencies failing.
+
+## Your first report
+
+Every `faultbox test` run writes a `.fb` bundle — a self-contained
+archive of the run: spec, environment, event trace, replay script. Turn
+the latest one into a shareable HTML report:
+
+```bash
+faultbox report run-*.fb
+# → wrote report.html
+```
+
+Open `report.html` in a browser: a swim-lane trace of every service and
+every operation in your test. [Chapter 23](../05-advanced/23-reports.md)
+teaches you to read it in depth; for now, remember that any run can
+become an artifact you attach to a PR or an incident ticket.
+
 ## What's next
 
 You can now write tests for the happy path — "when everything works, here's

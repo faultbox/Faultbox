@@ -5,21 +5,28 @@
 
 ## Goals & Purpose
 
-Every program trusts the operating system. When your code calls `write()`,
-it assumes the bytes reach the disk. When it calls `connect()`, it assumes
-the network is there. But in production, these assumptions break: disks
-fill up, networks partition, I/O errors corrupt data.
+Most production outages are not exotic. They are ordinary failures — a
+full disk, a refused connection, a slow reply — hitting error-handling
+code that has never once executed. The study that named this pattern
+("Simple Testing Can Prevent Most Critical Failures", OSDI 2014) found
+that the large majority of catastrophic distributed-system failures came
+from incorrect handling of ordinary, non-fatal errors. Those are the
+bugs this tutorial teaches you to close — one
+[bug class](https://faultbox.io/docs/concepts/bug-classes) at a time,
+starting with the smallest possible demonstration: one program, one
+injected failure.
+
+The core intuition of this chapter: **the OS is an API, and like any
+API, it can return errors**. When your code calls `write()`, it assumes
+the bytes reach the disk. When it calls `connect()`, it assumes the
+network is there. Faultbox intercepts that API at the kernel level, so
+your program has no way to avoid or detect the interception. This is
+not mocking — it's real.
 
 **The question you should be asking:** *"What happens to my program when
-the OS returns an error it doesn't expect?"*
-
-Most teams discover the answer in production — at 3am, during a traffic
-spike. Faultbox lets you discover it now, on your laptop.
-
-In this chapter you'll build the core intuition: **the OS is an API, and
-like any API, it can return errors**. Faultbox intercepts that API at the
-kernel level, so your program has no way to avoid or detect the interception.
-This is not mocking — it's real.
+an ordinary operation returns an ordinary error?"* Most teams discover
+the answer in production — at 3am, during a traffic spike. Faultbox lets
+you discover it now, on your laptop.
 
 ## How it works
 
