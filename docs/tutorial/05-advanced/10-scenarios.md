@@ -9,6 +9,16 @@
 [Chapter 6](../02-syscall-level/06-domain-model.md) introduced the domain-centric
 model - separating scenarios, fault assumptions, and oracles into three
 independent layers. This chapter builds on that with `faultbox generate`:
+
+> **Deprecation note (v0.13.0).** `faultbox generate` still works in
+> v0.13.x but is deprecated and will be removed in v0.14.0 (RFC-044).
+> The modern equivalent is `faultbox plan --suggest` - the same
+> topology-driven analysis through the plan-tree pipeline, printing
+> copy-pasteable stubs for uncovered edges instead of writing files
+> (see [Chapter 26](../04-safety/26-plan-fanout.md)). Everything this
+> chapter teaches about scenarios, fault assumptions, and the fault
+> matrix is unchanged - only the generation command is moving.
+
 automatic failure discovery that outputs the domain-centric format.
 
 **The question:** "Have I tested every way this system can break?"
@@ -369,6 +379,7 @@ gets `no_db_traffic` automatically.
 
 - `scenario(fn)` registers a probe - runs as test + available for composition
 - `faultbox generate` creates `fault_assumption()` + `fault_matrix()` per scenario
+- `faultbox generate` is deprecated: `faultbox plan --suggest` is the forward path
 - `fault_assumption()` names and reuses fault configurations
 - `fault_scenario()` composes probe + fault + expect oracle
 - `fault_matrix()` generates the cross-product of scenarios × faults

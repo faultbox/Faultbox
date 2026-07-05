@@ -1,9 +1,9 @@
-# Gamedev — multiplayer backends, anti-cheat, MMORPG live ops
+# Gamedev - multiplayer backends, anti-cheat, MMORPG live ops
 
 A multiplayer game is one of the most asymmetric distributed systems in the
 industry. The hot path runs at 30-60Hz over custom UDP. Around it sits a
-backend zoo — matchmaker, auth, leaderboards, persistent world, anti-cheat,
-player store, social, telemetry — every one of which can ruin a session if it
+backend zoo - matchmaker, auth, leaderboards, persistent world, anti-cheat,
+player store, social, telemetry - every one of which can ruin a session if it
 misbehaves. Engineers running these backends need to know what happens when
 the matchmaker gets slow, when the anti-cheat backend disappears mid-match,
 when Postgres drops a write at the moment a raid loot drops.
@@ -31,22 +31,22 @@ and message queues, which is exactly what Faultbox already faults.
   03:14 last Tuesday."
 - **Matchmaker degradation** under load isn't itself a Faultbox question
   (load testers handle that), but matchmaker behaviour when its *upstream*
-  player-rating service is slow is — and that's where the real outages
+  player-rating service is slow is - and that's where the real outages
   start.
 
 ## How Faultbox helps
 
 | Need | Primitive | Read |
 |---|---|---|
-| Real cluster pods (k8s) without distributing dep images | `service(remote=...)` | [Spec language — Remote Services](/docs/reference/spec-language#remote-services) |
+| Real cluster pods (k8s) without distributing dep images | `service(remote=...)` | [Spec language - Remote Services](/docs/reference/spec-language#remote-services) |
 | Anti-cheat / store / billing HTTPS upstream faults | `tls=tls_cert(...)` + `error()` on the interface | [TLS upstreams](/docs/guides/connectivity#tls-upstreams-rfc-038) |
-| Network partitions across game-server replicas | `partition()` | [Tutorial 16 — Partitions](/docs/tutorial/04-safety/16-partitions) |
-| Persistent-world write failures (`EIO`, `ENOSPC`, partial) | syscall `write=deny()` / `pwrite=delay()` | [Tutorial 03 — Fault injection](/docs/tutorial/02-syscall-level/03-fault-injection) |
-| Auth / JWKS mocks for offline tests | `@faultbox/mocks/jwt.star` | [Tutorial 21 — JWT mocks](/docs/tutorial/05-advanced/21-jwt-mocks) |
-| Reproduce production incidents from any machine | `.fb` bundles + `faultbox replay` | [Tutorial 20 — Bundles](/docs/tutorial/05-advanced/20-bundles) |
-| Verify retry / circuit-breaker / timeout code fires | `assert_eventually()` / `assert_never()` | [Tutorial 14 — Invariants](/docs/tutorial/04-safety/14-invariants) |
+| Network partitions across game-server replicas | `partition()` | [Tutorial 16 - Partitions](/docs/tutorial/04-safety/16-partitions) |
+| Persistent-world write failures (`EIO`, `ENOSPC`, partial) | syscall `write=deny()` / `pwrite=delay()` | [Tutorial 03 - Fault injection](/docs/tutorial/02-syscall-level/03-fault-injection) |
+| Auth / JWKS mocks for offline tests | `@faultbox/mocks/jwt.star` | [Tutorial 21 - JWT mocks](/docs/tutorial/05-advanced/21-jwt-mocks) |
+| Reproduce production incidents from any machine | `.fb` bundles + `faultbox replay` | [Tutorial 20 - Bundles](/docs/tutorial/05-advanced/20-bundles) |
+| Verify retry / circuit-breaker / timeout code fires | `assert_eventually()` / `assert_never()` | [Tutorial 14 - Invariants](/docs/tutorial/04-safety/14-invariants) |
 
-## A real scenario — anti-cheat fail-open under unreachable telemetry
+## A real scenario - anti-cheat fail-open under unreachable telemetry
 
 The single most security-critical decision in a multiplayer-game backend:
 what happens when the anti-cheat vendor's telemetry endpoint is unreachable?
@@ -168,25 +168,25 @@ artifact instead of a stack trace screenshot.
 
 ## More scenarios this shape covers
 
-- **Cross-shard trade rollback** — `partition()` between two `game-server`
+- **Cross-shard trade rollback** - `partition()` between two `game-server`
   containers, inject `error()` on the trade-completion gRPC mid-flight,
   assert both sides agree on the rollback state.
-- **Save-game write failures** — `write=deny("ENOSPC")` on the persistence
+- **Save-game write failures** - `write=deny("ENOSPC")` on the persistence
   service during a raid completion, verify the loot ends up in the correct
   state (granted-and-recovered, not lost-and-charged).
-- **JWKS rotation** — swap the JWT mock's signing key during a scenario,
+- **JWKS rotation** - swap the JWT mock's signing key during a scenario,
   verify the SUT picks up the new public key on the next request and
   doesn't return cached 403s.
-- **Matchmaker degraded upstream** — slow the player-rating service by 2s,
+- **Matchmaker degraded upstream** - slow the player-rating service by 2s,
   verify matchmaker either times out gracefully or falls back to an open
   rating bracket. (Pure HTTP+DB, no gaming-specific primitives.)
-- **Anti-cheat full outage drill** — combine `anti_cheat_unreachable` with
+- **Anti-cheat full outage drill** - combine `anti_cheat_unreachable` with
   `db.write=deny()` to test the worst-case path: anti-cheat down AND the
   audit event can't be persisted. What does the game do?
 
 ## Read next
 
-- [Tutorial — Containers and real services](/docs/tutorial/05-advanced/09-containers) — the Docker-mode mechanics behind `image=`
-- [Tutorial — Mock services](/docs/tutorial/05-advanced/17-mock-services) — for the auth-stub / leaderboard-stub patterns
-- [Tutorial — End-to-end Go microservice](/docs/tutorial/05-advanced/22-go-microservice-end-to-end) — the closest existing tutorial to a full game-backend shape
-- [Spec language reference](/docs/reference/spec-language) — every primitive in one page
+- [Tutorial - Containers and real services](/docs/tutorial/05-advanced/09-containers) - the Docker-mode mechanics behind `image=`
+- [Tutorial - Mock services](/docs/tutorial/05-advanced/17-mock-services) - for the auth-stub / leaderboard-stub patterns
+- [Tutorial - End-to-end Go microservice](/docs/tutorial/05-advanced/22-go-microservice-end-to-end) - the closest existing tutorial to a full game-backend shape
+- [Spec language reference](/docs/reference/spec-language) - every primitive in one page

@@ -5,7 +5,7 @@
 ## The Problem
 
 Anna owns an order service that talks to Postgres, Redis, and a payment
-gateway. Last month, a 30-second Postgres failover caused double-charges —
+gateway. Last month, a 30-second Postgres failover caused double-charges -
 the retry logic didn't check idempotency keys.
 
 The team added a fix, but nobody could prove it worked. The only way to test
@@ -36,7 +36,7 @@ def test_payment_retry_on_db_failure():
     # First payment succeeds.
     api.post(path="/payments", body='{"amount": 100, "idempotency_key": "abc"}')
 
-    # DB fails — retry with same idempotency key.
+    # DB fails - retry with same idempotency key.
     def db_dies():
         resp = api.post(path="/payments", body='{"amount": 100, "idempotency_key": "abc"}')
         assert_eq(resp.status, 200)  # retry should succeed
@@ -49,20 +49,20 @@ def test_payment_retry_on_db_failure():
 
 ## What She Gets
 
-Proof that the double-charge bug is fixed. She adds this to CI — it runs on
+Proof that the double-charge bug is fixed. She adds this to CI - it runs on
 every PR. The next Postgres failover is a non-event.
 
 ## Growth Path
 
-- **Week 2:** Adds `--explore=all` for concurrent payment tests — two
+- **Week 2:** Adds `--explore=all` for concurrent payment tests - two
   payments for the same order arriving simultaneously.
 - **Month 2:** Uses `observe=[wal_stream(...)]` to monitor Postgres WAL
   events and verify transaction isolation.
 - **Month 3:** Builds a full failure matrix: Postgres down, Redis down,
-  payment gateway timeout, disk full — each is a test case in CI.
+  payment gateway timeout, disk full - each is a test case in CI.
 
 ## Key Value
 
 Anna gets **proof, not hope**. The assertion either passes or shows her
-exactly what went wrong — with syscall traces, ShiViz diagrams, and
+exactly what went wrong - with syscall traces, ShiViz diagrams, and
 replay seeds for deterministic reproduction.

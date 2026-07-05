@@ -5,7 +5,7 @@
 ## The Problem
 
 Priya's app talks to a BFF (backend-for-frontend) that aggregates data
-from 3 microservices. Users report "infinite loading" when on bad network —
+from 3 microservices. Users report "infinite loading" when on bad network -
 the app doesn't handle partial API failures because nobody documented what
 the BFF returns when a downstream service is down.
 
@@ -14,7 +14,7 @@ exact JSON shape to build the right loading states.
 
 ## Day 1 with Faultbox
 
-Priya doesn't test the app directly — she tests the BFF's behavior under
+Priya doesn't test the app directly - she tests the BFF's behavior under
 failure so she knows what responses to expect:
 
 ```python
@@ -67,24 +67,24 @@ def test_all_services_down():
 
 ## What She Gets
 
-A contract for how the BFF behaves under failure — she knows exactly what
+A contract for how the BFF behaves under failure - she knows exactly what
 JSON shape her app will receive when services are degraded. She codes the
 iOS loading states to match.
 
 ## Growth Path
 
-- **Week 1:** Adds tests for every "infinite loading" user report — each
+- **Week 1:** Adds tests for every "infinite loading" user report - each
   becomes a Faultbox spec that reproduces the exact failure mode.
 - **Week 2:** Backend team fixes the BFF based on her specs. Faultbox
   verifies each fix.
 - **Month 1:** Uses `print(resp.data)` during development to discover
   response shapes, then turns discoveries into assertions.
-- **Month 2:** Shares specs with the Android team — same failure contracts,
+- **Month 2:** Shares specs with the Android team - same failure contracts,
   same expectations.
 
 ## Key Value
 
-Priya uses Faultbox as a **contract testing tool** — she doesn't test her
+Priya uses Faultbox as a **contract testing tool** - she doesn't test her
 app, she tests the backend's promises. When the BFF says "we handle partial
 failures gracefully," she has specs that prove it. The "infinite loading"
 reports stop.
