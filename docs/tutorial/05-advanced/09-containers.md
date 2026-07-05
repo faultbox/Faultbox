@@ -283,14 +283,12 @@ real Postgres.
 
 ## What's next
 
-You can test real infrastructure. But writing failure tests by hand is
-slow - Chapter 10 shows how to auto-generate them.
+You can now run your service against real infrastructure. Part 5 turns to
+the question that makes all of this pay off: what must ALWAYS hold, no
+matter which fault fires?
 
-**Continue:**
-- [Chapter 10: Scenarios & Generation](10-scenarios.md) - register
-  happy paths with `scenario()`, auto-generate fault mutations
-- [Chapter 11: Event Sources & Observability](11-event-sources.md) - capture
-  stdout, WAL changes, Kafka messages as trace events
+**Continue:** [Chapter 14: Invariants & Safety Properties](../04-safety/14-invariants.md) -
+the properties your system must never violate, under every fault in the matrix.
 
 **Reference:**
 - [Spec Language Reference](../../spec-language.md) - complete API

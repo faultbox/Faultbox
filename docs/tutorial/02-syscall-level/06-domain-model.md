@@ -30,11 +30,11 @@ def test_slow_network():
 
 This works. But look at what happened:
 
-1. **The scenario is duplicated three times** — `api.post(path="/data/key", body="value")`
+1. **The scenario is duplicated three times** - `api.post(path="/data/key", body="value")`
    appears in every test, copied and pasted.
-2. **The faults are inlined** — `connect=deny("ECONNREFUSED")` has no name. When you
+2. **The faults are inlined** - `connect=deny("ECONNREFUSED")` has no name. When you
    need "db down" in another test, you type it again.
-3. **The assertions are embedded** — if you add a fourth fault, you copy-paste again.
+3. **The assertions are embedded** - if you add a fourth fault, you copy-paste again.
 
 With 5 scenarios and 4 fault modes, you have 20 hand-written test functions.
 With 10 scenarios and 8 fault modes, you have 80. The approach doesn't scale.
@@ -82,7 +82,7 @@ Each layer is **defined once, reused everywhere**:
 
 ## Scenarios as probes
 
-A scenario is a **probe** — it exercises the system and returns an observable
+A scenario is a **probe** - it exercises the system and returns an observable
 result. No assertions inside.
 
 ```python
@@ -101,14 +101,14 @@ api = service("api", BIN + "/mock-api",
 )
 
 def order_flow():
-    """Place an order — return the response for external validation."""
+    """Place an order - return the response for external validation."""
     api.post(path="/data/mykey", body="myvalue")
     return api.get(path="/data/mykey")
 
 scenario(order_flow)
 
 def health_check():
-    """Check API health — return the response."""
+    """Check API health - return the response."""
     return api.get(path="/health")
 
 scenario(health_check)
@@ -121,7 +121,7 @@ faults with different expected outcomes:
 - Under `db_down`: `status >= 500`
 - Under `slow_network`: `status == 200` but `duration_ms > 400`
 
-The scenario doesn't judge — it just reports what happened.
+The scenario doesn't judge - it just reports what happened.
 
 ## Named fault assumptions
 
@@ -149,7 +149,7 @@ A fault assumption is a **reusable failure mode**. It carries:
 - A target service
 - The syscall-level faults to apply
 
-You can also attach **monitors** — invariants that must hold whenever this
+You can also attach **monitors** - invariants that must hold whenever this
 fault is active:
 
 ```python
@@ -168,7 +168,7 @@ db_down = fault_assumption("db_down",
 Now every test that uses `db_down` automatically verifies that no traffic
 reaches the DB. You write the invariant once.
 
-## Fault scenarios — one scenario, one fault, one oracle
+## Fault scenarios - one scenario, one fault, one oracle
 
 The simplest composition: pair one scenario with one fault assumption and
 an `expect` oracle that validates the result:
@@ -184,7 +184,7 @@ fault_scenario("order_db_down",
 This registers `test_order_db_down`. When it runs:
 1. Installs `db_down` fault rules (and its monitors)
 2. Calls `order_flow()`, captures the return value
-3. Passes the return value to `expect` — which asserts on it
+3. Passes the return value to `expect` - which asserts on it
 4. Cleans up
 
 **No fault (happy path oracle):**
@@ -199,7 +199,7 @@ fault_scenario("order_happy",
 )
 ```
 
-Without `faults=`, the scenario runs under normal conditions — useful for
+Without `faults=`, the scenario runs under normal conditions - useful for
 validating the happy path with explicit expectations.
 
 **Smoke test (no oracle):**
@@ -212,7 +212,7 @@ fault_scenario("order_disk_full_smoke",
 ```
 
 Without `expect=`, the test passes as long as the scenario completes
-without crashing. Good for initial discovery — "does it survive this fault?"
+without crashing. Good for initial discovery - "does it survive this fault?"
 
 **Multiple faults simultaneously:**
 
@@ -231,7 +231,7 @@ fault_scenario("order_cascade",
 `fault_scenario()` is the right tool when you have **one specific combination**
 to test. When you have many scenarios × many faults, use `fault_matrix()`.
 
-## The fault matrix — the cross-product
+## The fault matrix - the cross-product
 
 When you have multiple scenarios and multiple fault assumptions, the matrix
 generates all combinations automatically:
@@ -265,12 +265,12 @@ health_check        │ PASS (206ms)  │ PASS (205ms)  │ PASS (705ms)
 Result: 6/6 passed
 ```
 
-**Cells without overrides** use `default_expect` — a baseline check
+**Cells without overrides** use `default_expect` - a baseline check
 ("must return something"). Cells with overrides use the specific oracle.
 
 ## When to use which approach
 
-The domain-centric model doesn't replace the test-centric model — it builds
+The domain-centric model doesn't replace the test-centric model - it builds
 on top of it:
 
 | Approach | When to use | Example |
@@ -281,11 +281,11 @@ on top of it:
 | `fault_matrix()` | Systematic coverage: many scenarios × many faults | 5 scenarios × 4 faults = 20 tests |
 | `faultbox generate` | Discovery: let Faultbox propose failure modes | Auto-generates assumptions + matrix |
 
-**Most users start with `fault_scenario()`** — it's the workhorse for
+**Most users start with `fault_scenario()`** - it's the workhorse for
 individual fault tests. **Graduate to `fault_matrix()`** when you have
 multiple scenarios and faults that should be cross-tested.
 
-## Composition — combining fault assumptions
+## Composition - combining fault assumptions
 
 Fault assumptions compose. Define simple ones and combine them:
 
@@ -402,7 +402,7 @@ assumptions. Add a third fault and you get 6 matrix tests automatically.
 
 - **Test-centric** works for small specs but duplicates scenario + fault + assertion
 - **Domain-centric** separates WHAT (scenarios), WHAT BREAKS (assumptions), WHAT'S CORRECT (oracles)
-- `scenario(fn)` registers a probe — returns observables, no assertions
+- `scenario(fn)` registers a probe - returns observables, no assertions
 - `fault_assumption()` names a reusable failure mode
 - `fault_matrix()` generates the cross-product
 - Monitors on assumptions enforce invariants across all tests
@@ -411,10 +411,10 @@ assumptions. Add a third fault and you get 6 matrix tests automatically.
 ## What's next
 
 **From here forward, all tutorial examples use the domain-centric model.**
-When you see a scenario, a fault assumption, or a matrix — that's the
+When you see a scenario, a fault assumption, or a matrix - that's the
 standard approach for writing Faultbox specs.
 
 Continue to:
-- [Part 3: Protocol-Level Faults](../03-protocol-level/07-http-redis.md) — HTTP, database, broker faults
-- [Part 4: Safety & Verification](../04-safety/14-invariants.md) — invariants, monitors, partitions
-- [Part 5: Advanced Features](../05-advanced/09-containers.md) — containers, generation, event sources
+- [Part 3: Simulate the Boundary](../05-advanced/17-mock-services.md) - mock the dependencies you can't run
+- [Part 4: Real Infrastructure](../03-protocol-level/07-http-redis.md) - protocol faults on real HTTP, databases, containers
+- [Part 5: Safety & Verification](../04-safety/14-invariants.md) - invariants, monitors, partitions

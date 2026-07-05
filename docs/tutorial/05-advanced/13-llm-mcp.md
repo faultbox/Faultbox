@@ -10,7 +10,7 @@ title: "Chapter 13: LLM Agents & MCP Integration"
 ## Goals & Purpose
 
 Faultbox is designed for two types of users: **human engineers** and
-**LLM agents**. Both write specs, run tests, and fix code — but LLM agents
+**LLM agents**. Both write specs, run tests, and fix code - but LLM agents
 need structured output and tool integration instead of human-readable text.
 
 This chapter teaches you to:
@@ -45,7 +45,7 @@ available immediately.
 
 ## Custom slash commands
 
-### `/fault-test` — Run tests
+### `/fault-test` - Run tests
 
 Type `/fault-test` in Claude Code. It finds your `.star` spec, runs all
 tests with `--format json`, and reports:
@@ -53,14 +53,14 @@ tests with `--format json`, and reports:
 - Failure reasons with replay commands
 - Diagnostics with fix suggestions
 
-### `/fault-generate` — Generate specs
+### `/fault-generate` - Generate specs
 
 Type `/fault-generate`. It detects your project setup:
 - Has `docker-compose.yml`? Generates spec from compose
 - Has a Go/Node/Python service? Generates a starter spec
 - Has an existing spec? Runs `faultbox generate` for failure scenarios
 
-### `/fault-diagnose` — Analyze failures
+### `/fault-diagnose` - Analyze failures
 
 Type `/fault-diagnose` after a test failure. It reads the JSON output,
 finds the relevant source code, and suggests specific fixes based on
@@ -68,7 +68,7 @@ the diagnostic codes:
 
 | Diagnostic | What it means |
 |-----------|---------------|
-| `FAULT_FIRED_BUT_SUCCESS` | Fault hit but service didn't return error — missing error handling |
+| `FAULT_FIRED_BUT_SUCCESS` | Fault hit but service didn't return error - missing error handling |
 | `FAULT_NOT_FIRED` | Wrong syscall variant or path filter |
 | `SERVICE_CRASHED` | Unhandled error caused panic |
 | `TIMEOUT_DURING_FAULT` | Possible infinite retry loop |
@@ -253,8 +253,9 @@ For editors other than Claude Code, configure the MCP server manually.
 
 ## What's next
 
-You've completed the Faultbox tutorial. You now know how to:
+You've covered the core of the Faultbox tutorial. You now know how to:
 - Inject syscall-level and protocol-level faults
+- Mock the dependencies you can't run
 - Write temporal assertions on internal behavior
 - Explore concurrent interleavings
 - Monitor invariants across all tests
@@ -262,8 +263,12 @@ You've completed the Faultbox tutorial. You now know how to:
 - Generate failure scenarios automatically
 - Integrate with LLM agents for automated testing
 
+**Remaining chapters:** [.fb Bundles](20-bundles.md), the
+[end-to-end Go microservice walkthrough](22-go-microservice-end-to-end.md),
+and [Reading Reports](23-reports.md).
+
 **Next steps:**
 - Add Faultbox to your CI pipeline
 - Write scenario() functions for your critical paths
-- Run `faultbox generate` to discover untested failure modes
+- Run `faultbox plan --suggest` to discover untested failure modes
 - Use `/fault-diagnose` to fix issues found by the generator
