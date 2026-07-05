@@ -260,6 +260,11 @@ def reset_db():
 
 Without reuse: 11 tests × 20s = 220s. With reuse: 20s + 11 × 0.5s = **25s**.
 
+> Seed and reset do more than speed things up — they are how a real
+> service gets its schema, migrations, and fixtures in place at all.
+> The full decision table (init scripts vs migrations vs fixtures vs
+> mock state) is in [Seeding Data & Initial State](../../guides/seeding-data.md).
+
 ## What you learned
 
 - `image=` pulls Docker images, `build=` builds from Dockerfile
