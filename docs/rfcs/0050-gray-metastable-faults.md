@@ -1,6 +1,8 @@
 # RFC-050: Gray & Metastable Faults — Closing the Fault-Model Gaps
 
-> **Status: Draft.** Feature RFC (Direction 3 of [RFC-047](https://github.com/faultbox/Faultbox/issues/132)). **Second in the agreed research-epic sequence (D4 → D3 → RFC-048 DPOR+LDFI).** Builds on RFC-041 (Temporal Properties — the recovery property), the fault lifecycle (`fault_start`/`fault_stop`), and the protocol proxy (`response`/`error`/`drop`/`delay`, path matching). Feeds RFC-048: the primitives defined here enter LDFI's modeled fault space.
+> **Status: Draft (rev. 2).** Feature RFC (Direction 3 of [RFC-047](https://github.com/faultbox/Faultbox/issues/132)). **Second in the agreed research-epic sequence (D4 → D3 → RFC-048 DPOR+LDFI).** Builds on **RFC-049** (accepted — the verdict framework the bounded-recovery operator plugs into, and whose MTL deferral this RFC narrowly reopens), the fault lifecycle (`fault_start`/`fault_stop`), and the protocol proxy (`response`/`error`/`drop`/`delay`, path matching). Feeds RFC-048: **`degrade` only** enters LDFI's modeled fault space (`transient`/metastability is a different verification shape LDFI does not subsume — see Impact).
+>
+> Rev. 2 (2026-07-05) reworks the first draft after review: adds the `load(...)` traffic driver (metastability is load-induced; the original under-addressed this), scopes the gray-failure claim honestly (proxy-routed healthcheck only; no modeled failure-detector consequence), makes the bounded-recovery operator an explicit new-surface item rather than "composes for free," and scopes "recovered" to boundary-observable signals.
 >
 > In-tree document: `docs/rfcs/0050-gray-metastable-faults.md`.
 
@@ -32,7 +34,7 @@ Gray and metastable failures are *the* modes that survive positive-path QA and c
 | **Gray (differential observability)** | `delay` + `response` + path matching, by hand | ⚠️ no first-class form |
 | **Metastable (non-recovery)** | `fault_start` → `fault_stop` + `eventually`, by hand | ⚠️ no idiom |
 
-The two gaps are not missing *mechanism* — the proxy can already slow, rewrite, and path-match, and the fault lifecycle can already trigger-then-withdraw. They are missing a **first-class name and the paired verification**, which is what turns "a fault you could hand-assemble" into "a failure class Faultbox tests and reports as such."
+The two gaps differ in how much is missing. **Gray** is mostly a *naming + paired-verification* gap: the proxy can already slow, rewrite, and path-match, so `degrade` is largely a first-class name (plus the health-path exemption) over existing mechanism. **Metastable** is a genuine *mechanism* gap: reproducing a load-induced latch needs sustained traffic Faultbox cannot generate today (`load(...)`) and a bounded-recovery deadline the temporal layer does not yet have (`eventually(after=, within=)`). Calling both "just missing a name" would be wrong — and is the trap the first draft fell into.
 
 ### `degrade(...)` — gray failure as a primitive
 
