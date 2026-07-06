@@ -6,7 +6,7 @@
 ## Goals & Purpose
 
 In chapter 1 you injected faults manually. That's useful for exploration,
-but not for building confidence. You need **repeatable specifications** —
+but not for building confidence. You need **repeatable specifications** -
 files that describe your system and what "working" means.
 
 The key insight: **a distributed system's behavior is defined by its topology
@@ -14,10 +14,10 @@ The key insight: **a distributed system's behavior is defined by its topology
 write both down, you can test them automatically.
 
 This chapter teaches you to think in terms of:
-- **Services** — the components of your system
-- **Interfaces** — how they communicate
-- **Healthchecks** — what "ready" means
-- **Test functions** — what "correct" means
+- **Services** - the components of your system
+- **Interfaces** - how they communicate
+- **Healthchecks** - what "ready" means
+- **Test functions** - what "correct" means
 
 After this chapter, you'll have a mental framework for specifying any
 system: "these services exist, they talk over these protocols, and when I
@@ -25,7 +25,7 @@ do X, I expect Y."
 
 ## Starlark
 
-Faultbox uses Starlark — a Python dialect designed for configuration.
+Faultbox uses Starlark - a Python dialect designed for configuration.
 If you know Python, you know Starlark. No imports, no classes, no exceptions.
 Just functions, variables, and data. Configuration is code.
 
@@ -69,7 +69,7 @@ Let's break this down:
 connections."
 
 **The test function** says: "when I send PING, I expect PONG." That's your
-specification — a concrete, executable claim about system behavior.
+specification - a concrete, executable claim about system behavior.
 
 ## Run it
 
@@ -102,7 +102,7 @@ For each `test_*` function, Faultbox:
 5. Report result + syscall trace
 ```
 
-Every test gets **fresh instances** — services are restarted between tests.
+Every test gets **fresh instances** - services are restarted between tests.
 No state leaks. This is critical: if test A's data affected test B's result,
 your specs would be unreliable.
 
@@ -118,7 +118,7 @@ db = service("db", "/tmp/mock-db",
 
 | Parameter | What it means | Why it matters |
 |-----------|---------------|----------------|
-| `"db"` | Service name | Appears in logs and traces — you'll use it to filter events |
+| `"db"` | Service name | Appears in logs and traces - you'll use it to filter events |
 | `"/tmp/mock-db"` | Binary path | The actual program to run |
 | `interface("main", "tcp", 5432)` | Communication endpoint | Declares how other services connect |
 | `env = {...}` | Environment variables | Configure the process without changing code |
@@ -146,7 +146,7 @@ For HTTP interfaces (chapter 3), you get `.get()`, `.post()`, etc.
 
 ## Assertions
 
-Two basic assertions — simple but powerful:
+Two basic assertions - simple but powerful:
 
 ```python
 assert_eq(actual, expected)           # equality check
@@ -154,7 +154,7 @@ assert_true(condition, "message")     # boolean check
 ```
 
 They fail the test immediately with a clear error message. No fuzzy matching,
-no eventual consistency — did the value match or not?
+no eventual consistency - did the value match or not?
 
 ## Adding more tests
 
@@ -181,7 +181,7 @@ faultbox test my-first-test.star --test set_and_get
 
 **Each test is independent.** The database restarts between tests, so
 `test_set_and_get` doesn't depend on `test_ping` having run first. This is
-by design — independent tests are parallelizable and debuggable.
+by design - independent tests are parallelizable and debuggable.
 
 ## What you learned
 
@@ -198,16 +198,47 @@ by design — independent tests are parallelizable and debuggable.
 3. How do I know they're ready?
 4. What should happen when I interact with them?
 
+## You just tested at the boundary
+
+Notice what your spec actually contains: a system under test plus a
+**stand-in dependency**. `mock-db` is not a production database - it is
+a small, protocol-faithful simulation that Faultbox fully controls.
+
+This is Faultbox's core adoption pattern, and it scales all the way up.
+In real projects, the one real thing in the spec is *your* service -
+the image you already have - while the dependencies you can't run
+(another team's API, a paid SaaS, the company Kafka) are simulated with
+`mock_service()`, `redis.server(state=...)`, or OpenAPI-generated stubs
+([Chapter 17](../05-advanced/17-mock-services.md)). You never need the
+whole company's system on your laptop to test how your service survives
+its dependencies failing.
+
+## Your first report
+
+Every `faultbox test` run writes a `.fb` bundle - a self-contained
+archive of the run: spec, environment, event trace, replay script. Turn
+the latest one into a shareable HTML report:
+
+```bash
+faultbox report run-*.fb
+# → wrote report.html
+```
+
+Open `report.html` in a browser: a swim-lane trace of every service and
+every operation in your test. [Chapter 23](../05-advanced/23-reports.md)
+teaches you to read it in depth; for now, remember that any run can
+become an artifact you attach to a PR or an incident ticket.
+
 ## What's next
 
-You can now write tests for the happy path — "when everything works, here's
+You can now write tests for the happy path - "when everything works, here's
 what I expect." But the interesting questions are about failure:
 
 - What happens when the database can't write to disk?
 - What happens when the API can't reach the database?
 - What happens when writes are slow?
 
-Chapter 3 introduces `fault()` — a way to inject specific failures into
+Chapter 3 introduces `fault()` - a way to inject specific failures into
 specific services during specific test scenarios.
 
 ## Exercises
@@ -216,7 +247,7 @@ specific services during specific test scenarios.
    `GET mykey`, and asserts the result is `"myvalue"`.
 
 2. **Missing key**: Add a test that does `GET nonexistent` and asserts
-   the result is `"NOT_FOUND"`. (This tests the error path — just as
+   the result is `"NOT_FOUND"`. (This tests the error path - just as
    important as the happy path.)
 
 3. **Overwrite**: Add a test that sets the same key twice with different

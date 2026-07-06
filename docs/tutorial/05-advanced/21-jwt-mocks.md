@@ -1,4 +1,4 @@
-# Chapter 21: JWT/JWKS Mocks — Stub Auth-Protected Services
+# Chapter 21: JWT/JWKS Mocks - Stub Auth-Protected Services
 
 **Duration:** 12 minutes
 **Prerequisites:** [Chapter 17 (Mock Services)](17-mock-services.md), familiarity with JWT bearer tokens
@@ -10,7 +10,7 @@ problem when it lands on a fault-injection harness: **the SUT verifies
 JWT signatures against a JWKS endpoint that doesn't exist in the test
 environment.** Customers reaching for Faultbox ended up writing their
 own `jwtgen` Go tool, building a separate HTTP service, threading
-private keys around — same shape every time.
+private keys around - same shape every time.
 
 `@faultbox/mocks/jwt.star` (shipped in v0.9.9) collapses all of that
 to one constructor. It auto-generates an Ed25519 keypair at spec-load
@@ -23,7 +23,7 @@ This chapter teaches you to:
 - **Stand up a JWKS-publishing mock** with one Starlark call.
 - **Mint tokens** in the test driver and pass them as
   `Authorization: Bearer …`.
-- **Compose with other Faultbox primitives** — fault the JWKS
+- **Compose with other Faultbox primitives** - fault the JWKS
   endpoint to test client-side caching, or run JWT-protected requests
   through the data-path proxy from RFC-024.
 
@@ -51,7 +51,7 @@ api = service("api", "/tmp/your-app",
 Two things are different from a plain `mock_service`:
 
 - `auth` is a **struct**, not a `ServiceDef`. The actual service is
-  at `auth.service` — that's what you pass to `depends_on=` and use
+  at `auth.service` - that's what you pass to `depends_on=` and use
   for env wiring.
 - The struct also carries `auth.sign(claims=…)` and `auth.jwks` so
   your tests can mint tokens and (if needed) inspect the published
@@ -68,7 +68,7 @@ for:
 | `GET /.well-known/jwks.json` | JWKS document with the published Ed25519 public key |
 | `GET /jwks` | Alias for clients that hit a non-standard path |
 
-The discovery doc points `jwks_uri` at the issuer string you passed —
+The discovery doc points `jwks_uri` at the issuer string you passed -
 **make sure that URL resolves to the mock from inside the SUT**. In
 binary mode, `auth.service.main.addr` is `localhost:8090`. In
 container mode, the proxy data-path (RFC-024) points the SUT at
@@ -96,11 +96,11 @@ def test_authorised_request():
 Notes on claims:
 
 - **All fields pass through verbatim.** `iat`, `exp`, `aud`, `iss` are
-  yours to set — the mock doesn't auto-populate timestamps so spec
+  yours to set - the mock doesn't auto-populate timestamps so spec
   authors stay in control of token expiry semantics.
 - **Common claim names:** `sub` (subject), `iat`/`exp` (Unix
   timestamps), `aud` (audience), `iss` (issuer URL). Check what your
-  app's middleware actually validates — the inDrive PoC lost hours
+  app's middleware actually validates - the inDrive PoC lost hours
   to a `user_id` vs `uid` claim-name mismatch (FB §2.1 #2).
 
 ## 4 · Test rejection paths
@@ -133,7 +133,7 @@ fail to verify the signature, and 401.
 
 ## 5 · Compose with faults
 
-Now the interesting part — combine JWT mocks with the rest of the
+Now the interesting part - combine JWT mocks with the rest of the
 Faultbox toolkit.
 
 ### Fault the JWKS endpoint
@@ -161,7 +161,7 @@ def test_jwks_outage_uses_cache():
               ).status_code == 200))
 ```
 
-### Slow JWKS — exercise client timeouts
+### Slow JWKS - exercise client timeouts
 
 ```python
 def test_slow_jwks_breaks_login():
@@ -180,7 +180,7 @@ def test_slow_jwks_breaks_login():
 `jwt.server()` is **EdDSA only** (Ed25519). Modern OIDC issuers
 (Auth0, Okta, Keycloak with EdDSA enabled) and well-maintained
 in-house auth services accept this. Older RSA/HS256-only stacks
-need a different mock — file an issue if you hit one.
+need a different mock - file an issue if you hit one.
 
 Other things v0.9.9 deliberately doesn't ship:
 
@@ -189,7 +189,7 @@ Other things v0.9.9 deliberately doesn't ship:
   for separate issuers.
 - **Token introspection endpoints** (`/introspect`). If your SUT
   uses opaque tokens with introspection, `jwt.server` doesn't help
-  — use `mock_service` directly with custom routes.
+  - use `mock_service` directly with custom routes.
 
 ## Takeaways
 
@@ -198,7 +198,9 @@ Other things v0.9.9 deliberately doesn't ship:
 - `auth.sign(claims = {…})` mints tokens the SUT verifies via the
   published JWKS.
 - The mock composes with `fault()`, `depends_on=`, and the data-path
-  proxy — fault the JWKS endpoint to exercise client-side caching;
+  proxy - fault the JWKS endpoint to exercise client-side caching;
   delay it to exercise client-side timeouts.
 
-Next: [Chapter 22 — Reading Faultbox Reports →](22-reports.md) (v0.11.0)
+You've completed Part 3 - every kind of dependency you can't run now has
+a faultable stand-in. Next, the dependencies you *can* run:
+[Part 4 - Chapter 7: HTTP Protocol Faults](../03-protocol-level/07-http-redis.md).

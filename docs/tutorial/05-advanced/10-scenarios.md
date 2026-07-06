@@ -7,24 +7,34 @@
 ## Goals & Purpose
 
 [Chapter 6](../02-syscall-level/06-domain-model.md) introduced the domain-centric
-model — separating scenarios, fault assumptions, and oracles into three
+model - separating scenarios, fault assumptions, and oracles into three
 independent layers. This chapter builds on that with `faultbox generate`:
+
+> **Deprecation note (v0.13.0).** `faultbox generate` still works in
+> v0.13.x but is deprecated and will be removed in v0.14.0 (RFC-044).
+> The modern equivalent is `faultbox plan --suggest` - the same
+> topology-driven analysis through the plan-tree pipeline, printing
+> copy-pasteable stubs for uncovered edges instead of writing files
+> (see [Chapter 26](../04-safety/26-plan-fanout.md)). Everything this
+> chapter teaches about scenarios, fault assumptions, and the fault
+> matrix is unchanged - only the generation command is moving.
+
 automatic failure discovery that outputs the domain-centric format.
 
 **The question:** "Have I tested every way this system can break?"
 
 This chapter teaches you to:
-- **Register scenario probes** — describe what the system does
-- **Auto-generate fault assumptions** — let Faultbox propose failure modes
-- **Review and curate** — add overrides with expected behavior
-- **Organize specs across files** — use `load()` for clean separation
+- **Register scenario probes** - describe what the system does
+- **Auto-generate fault assumptions** - let Faultbox propose failure modes
+- **Review and curate** - add overrides with expected behavior
+- **Organize specs across files** - use `load()` for clean separation
 
 After this chapter, your workflow becomes: write the happy path once,
 generate all failures automatically, review, commit.
 
 ## The `scenario()` builtin
 
-A scenario is a **probe** — a function that exercises the system and returns
+A scenario is a **probe** - a function that exercises the system and returns
 an observable result. Register it with `scenario()`:
 
 ```python
@@ -56,7 +66,7 @@ Save this as `scenario-test.star`.
 
 `scenario(order_flow)` does two things:
 1. **Registers** the function for the failure generator and fault composition
-2. **Runs it as a test** — equivalent to naming it `test_order_flow`
+2. **Runs it as a test** - equivalent to naming it `test_order_flow`
 
 The return value is captured and available for use with `fault_scenario(expect=)`
 and `fault_matrix(overrides=)`. See the "Fault Composition" section below.
@@ -152,8 +162,8 @@ def test_order_flow_db_partition():
 
 **What happened:** the generator created named `fault_assumption()` for each
 fault mode and composed them into a `fault_matrix()`. Each assumption is
-reusable — you can reference `db_down` in custom `fault_scenario()` calls.
-No invented API calls, no guessed assertions — your exact happy path under
+reusable - you can reference `db_down` in custom `fault_scenario()` calls.
+No invented API calls, no guessed assertions - your exact happy path under
 different failure conditions.
 
 ## Running generated tests
@@ -183,10 +193,10 @@ Result: 6/6 passed
 
 How to read the results:
 
-- **PASS** — the scenario completed without crashing under this fault.
+- **PASS** - the scenario completed without crashing under this fault.
   Since no `expect` was set, "pass" just means "didn't crash". Add
   `overrides=` to `fault_matrix()` to specify expected behavior per cell.
-- **FAIL** — the scenario crashed or timed out under this fault.
+- **FAIL** - the scenario crashed or timed out under this fault.
   This is a **discovered failure mode** worth investigating.
 
 To add expected behavior, edit the generated file and add overrides:
@@ -237,7 +247,7 @@ fault_scenario("order_custom_failure",
 )
 ```
 
-## Dry run — preview without generating
+## Dry run - preview without generating
 
 **Linux:**
 ```bash
@@ -257,7 +267,7 @@ make lima-run CMD="faultbox generate scenario-test.star --dry-run"
 
 ## Multiple scenarios
 
-Register as many scenarios as you want — each gets its own `.faults.star`:
+Register as many scenarios as you want - each gets its own `.faults.star`:
 
 ```python
 def order_flow():
@@ -279,7 +289,7 @@ faultbox generate scenario-test.star
 # → health_check.faults.star
 ```
 
-## Fault composition — writing tests by hand
+## Fault composition - writing tests by hand
 
 Auto-generation is great for discovery, but real tests need specific
 expectations. That's what `fault_assumption()`, `fault_scenario()`,
@@ -302,7 +312,7 @@ disk_full = fault_assumption("disk_full",
 )
 ```
 
-### Fault scenarios — one scenario, one fault, one oracle
+### Fault scenarios - one scenario, one fault, one oracle
 
 ```python
 fault_scenario("order_db_down",
@@ -315,7 +325,7 @@ fault_scenario("order_db_down",
 This registers `test_order_db_down`. The `expect` callback receives the
 scenario's return value and validates it with assertions.
 
-### Fault matrix — the cross-product
+### Fault matrix - the cross-product
 
 Instead of writing N×M tests by hand:
 
@@ -334,7 +344,7 @@ fault_matrix(
 
 ### Monitors on fault assumptions
 
-Attach invariants to fault assumptions — they fire automatically in every
+Attach invariants to fault assumptions - they fire automatically in every
 test that uses the assumption:
 
 ```python
@@ -356,7 +366,7 @@ gets `no_db_traffic` automatically.
 ## The workflow
 
 ```
-1. Write scenario() probes — describe how things work, return results
+1. Write scenario() probes - describe how things work, return results
 2. faultbox generate → creates <scenario>.faults.star with fault_matrix()
 3. faultbox test *.faults.star → discover failures
 4. Add overrides= with expected behavior per (scenario, fault) cell
@@ -367,8 +377,9 @@ gets `no_db_traffic` automatically.
 
 ## What you learned
 
-- `scenario(fn)` registers a probe — runs as test + available for composition
+- `scenario(fn)` registers a probe - runs as test + available for composition
 - `faultbox generate` creates `fault_assumption()` + `fault_matrix()` per scenario
+- `faultbox generate` is deprecated: `faultbox plan --suggest` is the forward path
 - `fault_assumption()` names and reuses fault configurations
 - `fault_scenario()` composes probe + fault + expect oracle
 - `fault_matrix()` generates the cross-product of scenarios × faults
@@ -378,5 +389,6 @@ gets `no_db_traffic` automatically.
 ## What's next
 
 You've automated failure discovery and structured fault composition.
-Chapter 11 introduces **event sources** — capturing structured stdout,
-database WAL changes, and message queue events as first-class trace data.
+[Chapter 24](../04-safety/24-determinism.md) pins down the determinism
+contract behind all of it - what L0/L1 guarantee, and how unmediated
+I/O is detected and reported.

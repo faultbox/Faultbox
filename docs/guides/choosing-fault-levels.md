@@ -1,7 +1,22 @@
-# Choosing Fault Levels: Syscall vs Protocol
+# Choosing Fault Levels: Start from the Bug Class
 
-Faultbox operates at two levels. This guide helps you decide which to use
-and when to combine them.
+You don't choose a mechanism - you choose a bug to close. Decide which
+of the six bug classes you're testing for, and the fault level follows.
+This guide gives the mapping first, then the mechanics of each level.
+
+## Which bug are you closing?
+
+| Bug class | Level | Typical fault |
+|---|---|---|
+| **Unhandled dependency failure** | Either - syscall for "the whole dependency is gone" (`connect=deny("ECONNREFUSED")`), protocol for "this operation is refused" (`error(query="INSERT*")`) | Start syscall-broad, refine protocol-precise |
+| **Missing timeout / runaway retry** | Protocol - slowness must hit one operation while the service stays healthy | `delay(path="/search*", delay="2s")` |
+| **Non-idempotent retry** | Syscall `hold()` + protocol `error()` - the failure must land *between* the side effect and the response | `write=hold("charge")`, then fail the reply |
+| **Partial failure / torn writes** | Syscall - the only level that can split a transaction mid-flight | `write=deny("EIO", trigger="after=1")`, `fsync=deny("EIO")` |
+| **Failed recovery** | Either level for the fault; the *assertion* is temporal | scoped `fault(...)`, then `eventually(recovered)` |
+| **Bad responses, not outages** | Protocol only - response rewriting | `response(path="/quote", status=200, body="<garbage>")` |
+
+The rest of this guide explains what each level can and cannot do, so
+you can refine these defaults.
 
 ## Two levels, one API
 
@@ -19,7 +34,7 @@ Same `fault()` builtin. The first argument determines the level:
 
 ## When to use syscall faults
 
-Syscall faults simulate **infrastructure failures** — the kind that affect
+Syscall faults simulate **infrastructure failures** - the kind that affect
 everything a service does, not just specific operations.
 
 | Scenario | Fault | What it simulates |
@@ -31,13 +46,13 @@ everything a service does, not just specific operations.
 | Total partition | `partition(svc_a, svc_b)` | Bidirectional network split |
 
 **Strengths:**
-- Works on ANY binary — no protocol support needed
+- Works on ANY binary - no protocol support needed
 - Catches unexpected write paths (logging, temp files, metrics)
 - Simulates real infrastructure failures accurately
 - Simple: one line tests a broad category
 
 **Weaknesses:**
-- Coarse: `write=deny("EIO")` blocks stdout, TCP, files — everything
+- Coarse: `write=deny("EIO")` blocks stdout, TCP, files - everything
 - Can't target specific queries, paths, or commands
 - May break service health (can't respond to healthchecks under write fault)
 
@@ -45,7 +60,7 @@ everything a service does, not just specific operations.
 
 ## When to use protocol faults
 
-Protocol faults simulate **application-level failures** — one operation
+Protocol faults simulate **application-level failures** - one operation
 fails while the rest of the service works normally.
 
 | Scenario | Fault | What it simulates |
@@ -59,7 +74,7 @@ fails while the rest of the service works normally.
 **Strengths:**
 - Precise: target specific queries, paths, commands, topics
 - Realistic: real services fail at the query level, not the disk level
-- Service stays healthy — healthchecks and other operations work normally
+- Service stays healthy - healthchecks and other operations work normally
 - Tests error handling for specific code paths
 
 **Weaknesses:**
@@ -116,10 +131,20 @@ def test_degraded_system():
 
 ## Progression for a new project
 
-1. **Start with syscall faults** — `connect=deny`, `write=deny`, `partition` for each dependency. Covers the broad "is X broken?" category.
+Work through the bug classes in order of incident frequency:
 
-2. **Add protocol faults** for critical paths — specific queries, endpoints, or commands where you need precise error handling verification.
+1. **Unhandled dependency failure first** - `connect=deny` +
+   `error()` for every dependency of your critical flow. This is the
+   class behind most production incidents, and one afternoon covers it.
 
-3. **Combine** for integration scenarios — realistic degradation that exercises multiple failure modes simultaneously.
+2. **Timeouts and retries next** - `delay()`/`slow()` on the same
+   dependencies. Assert latency bounds, not just status codes.
 
-Most projects get 80% of the value from step 1 alone.
+3. **Then the precision classes** for flows where correctness is money:
+   non-idempotent retries (`hold()`), torn writes
+   (`deny(trigger="after=N")`), recovery (`eventually()` after the
+   fault clears), bad responses (`response()` rewriting).
+
+Most projects get 80% of the value from step 1 alone - which is also
+why "which bug class has no spec yet?" is the right review question,
+not "which mechanism haven't we used?"

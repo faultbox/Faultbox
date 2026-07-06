@@ -1,12 +1,12 @@
-# Chapter 9: Containers — Real Infrastructure
+# Chapter 9: Containers - Real Infrastructure
 
 **Duration:** 30 minutes
 **Prerequisites:** [Chapter 0 (Setup)](../00-prelude/00-setup.md) completed, Docker running
 
 ## Goals & Purpose
 
-Chapters 1-6 used mock binaries — lightweight, fast, controllable. But in
-production, your services talk to Postgres, Redis, Kafka, Elasticsearch —
+Chapters 1-6 used mock binaries - lightweight, fast, controllable. But in
+production, your services talk to Postgres, Redis, Kafka, Elasticsearch -
 real infrastructure with real complexity.
 
 The question is: **does your error handling work against real Postgres, or
@@ -16,17 +16,17 @@ management, and its own error handling. The failure modes are different.
 
 Faultbox solves this by running real Docker containers with the same seccomp
 fault injection used for binaries. The same `fault_assumption()` and
-`fault_scenario()` API, the same assertions, the same trace output — but
+`fault_scenario()` API, the same assertions, the same trace output - but
 now against real infrastructure.
 
 This chapter teaches you to:
 - **Orchestrate Docker containers** with Faultbox (instead of docker-compose)
-- **Inject faults into real databases** — Postgres, Redis
-- **Understand container networking** — how services find each other
-- **Use per-service filtering** — only intercept syscalls on faulted services
+- **Inject faults into real databases** - Postgres, Redis
+- **Understand container networking** - how services find each other
+- **Use per-service filtering** - only intercept syscalls on faulted services
 
 After this chapter, you'll be able to answer: "what happens to my API when
-Postgres has a disk I/O error?" — tested against real Postgres, not a mock.
+Postgres has a disk I/O error?" - tested against real Postgres, not a mock.
 
 ## How container mode works
 
@@ -49,7 +49,7 @@ A tiny shim binary is injected into the container. It installs the seccomp
 filter, sends the listener fd to the host via a Unix domain socket
 (SCM_RIGHTS), then exec's the original entrypoint. This works with
 multi-process containers (Kafka, shell chains) because the fd is acquired
-before exec — no PID tracking or `CAP_SYS_PTRACE` needed.
+before exec - no PID tracking or `CAP_SYS_PTRACE` needed.
 
 ## Prerequisites
 
@@ -75,7 +75,7 @@ docker version                  # verify Docker is available
 Instead of a binary path, use `image=` or `build=`:
 
 ```python
-# Pull from registry — no Dockerfile needed
+# Pull from registry - no Dockerfile needed
 postgres = service("postgres",
     interface("main", "tcp", 5432),
     image = "postgres:16-alpine",
@@ -96,7 +96,7 @@ api = service("api",
 )
 ```
 
-Three service sources — exactly one required:
+Three service sources - exactly one required:
 
 | Parameter | When to use |
 |-----------|-------------|
@@ -201,7 +201,7 @@ The diagnostic output shows the expansion:
 ```
 
 **Note:** Postgres uses `pwrite64` for data pages, not `write`. The syscall
-family expansion handles this automatically — you write `write=deny(...)` and
+family expansion handles this automatically - you write `write=deny(...)` and
 it covers all write variants.
 
 ## Per-service filtering
@@ -260,7 +260,7 @@ def reset_db():
 
 Without reuse: 11 tests × 20s = 220s. With reuse: 20s + 11 × 0.5s = **25s**.
 
-> Seed and reset do more than speed things up — they are how a real
+> Seed and reset do more than speed things up - they are how a real
 > service gets its schema, migrations, and fixtures in place at all.
 > The full decision table (init scripts vs migrations vs fixtures vs
 > mock state) is in [Seeding Data & Initial State](../../guides/seeding-data.md).
@@ -277,24 +277,22 @@ Without reuse: 11 tests × 20s = 220s. With reuse: 20s + 11 × 0.5s = **25s**.
 - `reuse=True` with `seed`/`reset` cuts multi-test execution time by 5-10x
 - Requires Linux + Docker
 
-**The key takeaway:** you can now test your actual production dependencies —
+**The key takeaway:** you can now test your actual production dependencies -
 not mocks. "What happens when Postgres runs out of disk?" is tested against
 real Postgres.
 
 ## What's next
 
-You can test real infrastructure. But writing failure tests by hand is
-slow — Chapter 10 shows how to auto-generate them.
+You can now run your service against real infrastructure. Part 5 turns to
+the question that makes all of this pay off: what must ALWAYS hold, no
+matter which fault fires?
 
-**Continue:**
-- [Chapter 10: Scenarios & Generation](10-scenarios.md) — register
-  happy paths with `scenario()`, auto-generate fault mutations
-- [Chapter 11: Event Sources & Observability](11-event-sources.md) — capture
-  stdout, WAL changes, Kafka messages as trace events
+**Continue:** [Chapter 14: Invariants & Safety Properties](../04-safety/14-invariants.md) -
+the properties your system must never violate, under every fault in the matrix.
 
 **Reference:**
-- [Spec Language Reference](../../spec-language.md) — complete API
-- [CLI Reference](../../cli-reference.md) — all commands and flags
+- [Spec Language Reference](../../spec-language.md) - complete API
+- [CLI Reference](../../cli-reference.md) - all commands and flags
 - Explore the `demo/faultbox.star` for a complete working example
 
 ## Exercises
@@ -314,5 +312,5 @@ slow — Chapter 10 shows how to auto-generate them.
 4. **Graceful degradation**: The demo API connects to Redis but doesn't use it
    yet. Imagine it cached values in Redis. Write a `fault_assumption` that
    faults Redis (`connect=deny("ECONNREFUSED")`) and a `fault_scenario` that
-   expects the API still works via Postgres. This tests graceful degradation —
+   expects the API still works via Postgres. This tests graceful degradation -
    a key production resilience pattern.

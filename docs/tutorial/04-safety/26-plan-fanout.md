@@ -1,4 +1,4 @@
-# Chapter 26: Plan-Tree Fan-Out — `faultbox plan`, probability, interleavings
+# Chapter 26: Plan-Tree Fan-Out - `faultbox plan`, probability, interleavings
 
 **Duration:** 30 minutes
 **Prerequisites:** [Chapter 25 (Non-deterministic Operators)](25-choose-and-assume.md) completed, [Chapter 5 (Exploring Concurrency)](../02-syscall-level/05-concurrency.md) reviewed
@@ -10,12 +10,12 @@ Chapter 25's `choose()` taught you to declare a finite axis the plan tree fans o
 The three axis kinds compose. A spec with two `choose()` axes, one probabilistic fault with `max_fires=3`, and one `parallel(interleavings="all")` with 3 branches produces `2 × 2 × 2³ × 3! = 192` leaves. Reading that number out of `faultbox plan` is cheaper than discovering it from a 20-minute CI run.
 
 This chapter teaches you to:
-- **Probability fan-out** — turn stochastic fault firing into exhaustive coverage
-- **Interleaving fan-out** — explore every branch ordering of `parallel()`
-- **`faultbox plan`** — preview the plan tree without launching services
-- **Reading the report** — find a specific leaf's trace in a bundle
+- **Probability fan-out** - turn stochastic fault firing into exhaustive coverage
+- **Interleaving fan-out** - explore every branch ordering of `parallel()`
+- **`faultbox plan`** - preview the plan tree without launching services
+- **Reading the report** - find a specific leaf's trace in a bundle
 
-## Probability fan-out — `max_fires` + `mode="exhaustive"`
+## Probability fan-out - `max_fires` + `mode="exhaustive"`
 
 Pre-rc2 Faultbox treated `probability=p` stochastically: at each trigger point the seeded RNG decided whether the rule fired this time. A single test run produced one realization. Reproducing a rare bug required hunting for the right seed.
 
@@ -49,18 +49,18 @@ Each leaf is a deterministic execution. The bundle records the per-occurrence ve
 | Combination | Behavior |
 |-------------|----------|
 | `probability=1.0` | Always fires. No fan-out. `max_fires=` rejected. |
-| `probability<1, max_fires=` unset | Stochastic — legacy RNG path. |
-| `probability<1, max_fires=N` | Exhaustive — `2^N` leaves with deterministic vector. Default mode. |
-| `probability<1, max_fires=N, mode="stochastic"` | Rejected at spec load — `max_fires=` is incompatible with stochastic. |
-| `probability<1, mode="exhaustive"` (no `max_fires`) | Rejected at spec load — would silently degrade to stochastic. |
+| `probability<1, max_fires=` unset | Stochastic - legacy RNG path. |
+| `probability<1, max_fires=N` | Exhaustive - `2^N` leaves with deterministic vector. Default mode. |
+| `probability<1, max_fires=N, mode="stochastic"` | Rejected at spec load - `max_fires=` is incompatible with stochastic. |
+| `probability<1, mode="exhaustive"` (no `max_fires`) | Rejected at spec load - would silently degrade to stochastic. |
 
 ### Bare `probability=p` is unaffected
 
-This is the migration story. Existing specs that use `probability=0.3` *without* `max_fires=` keep the stochastic RNG path verbatim — no behavior change, no surprise extra leaves in CI. Opting into exhaustive fan-out is an explicit `max_fires=N` add.
+This is the migration story. Existing specs that use `probability=0.3` *without* `max_fires=` keep the stochastic RNG path verbatim - no behavior change, no surprise extra leaves in CI. Opting into exhaustive fan-out is an explicit `max_fires=N` add.
 
 > **Scope note:** rc2 probability fan-out is syscall-level (`delay()` / `deny()`). Protocol-level (`response()` / `error()` / `drop()`) still uses the stochastic path; the `max_fires=` surface threads through `internal/proxy` in a follow-up.
 
-## Interleaving fan-out — `parallel(..., interleavings=)`
+## Interleaving fan-out - `parallel(..., interleavings=)`
 
 `parallel(fn1, fn2, …)` (Chapter 5) runs branches concurrently. rc2 adds an `interleavings=` kwarg that turns each ordering into a leaf:
 
@@ -77,14 +77,14 @@ Policies:
 
 | Value | Leaves produced |
 |-------|-----------------|
-| `1` (default) | One — runs once, branches concurrently as in rc1 |
-| `"all"` | `factorial(N)` — every distinct ordering |
-| `"critical"` | `min(2N-1, N!)` — head-to-head + sequential pairs heuristic |
-| Integer N | `min(N, factorial(branches))` — capped subset, first N in plan order |
+| `1` (default) | One - runs once, branches concurrently as in rc1 |
+| `"all"` | `factorial(N)` - every distinct ordering |
+| `"critical"` | `min(2N-1, N!)` - head-to-head + sequential pairs heuristic |
+| Integer N | `min(N, factorial(branches))` - capped subset, first N in plan order |
 
 For 3 branches with `"all"`, that's 3! = 6 leaves with launch orderings `[a,b,c]`, `[a,c,b]`, `[b,a,c]`, …
 
-### Reserved values — locked for future RFCs
+### Reserved values - locked for future RFCs
 
 ```python
 parallel(a, b, interleavings = "dpor")          # → spec-load error, RFC-009
@@ -95,9 +95,9 @@ These are explicit "future release" rejections so CI integrations gating on the 
 
 ### Scope limit (rc2)
 
-Today's interleaving is **launch ordering** — branches launch sequentially in the per-leaf order. Mediated-event-level interleaving (two branches running concurrently while the engine releases their syscalls in a specific sequence) is a follow-up. The kwarg surface and plan-tree leaf descriptors are in place for that work to plug into; specs you write today stay valid when the engine refines.
+Today's interleaving is **launch ordering** - branches launch sequentially in the per-leaf order. Mediated-event-level interleaving (two branches running concurrently while the engine releases their syscalls in a specific sequence) is a follow-up. The kwarg surface and plan-tree leaf descriptors are in place for that work to plug into; specs you write today stay valid when the engine refines.
 
-## `faultbox plan` — preview the cross-product
+## `faultbox plan` - preview the cross-product
 
 Before committing CI time to a test, ask Faultbox what it will run:
 
@@ -115,7 +115,7 @@ Plan tree:
 Totals: 37 instances
 ```
 
-The command runs *only* spec loading + static analysis — no services launched, no Docker pulls, no Lima VM start. Sub-100ms even for large specs.
+The command runs *only* spec loading + static analysis - no services launched, no Docker pulls, no Lima VM start. Sub-100ms even for large specs.
 
 ### `--check-cost --max-instances N`
 
@@ -145,9 +145,9 @@ $ faultbox plan checkout.star --format=json | jq '.totals.instances'
 
 The JSON schema is versioned (`schema_version: 1`); the same shape lives in every bundle's `plan.json` so tooling that reads one reads both.
 
-## Composition — the cross-product
+## Composition - the cross-product
 
-The three axis kinds — `choose`, probability, interleaving — multiply:
+The three axis kinds - `choose`, probability, interleaving - multiply:
 
 ```python
 def test_everything():
@@ -164,7 +164,7 @@ def test_everything():
 The plan walker enumerates the cross-product in mixed-radix order so leaf indices are stable across runs. The bundle's `plan.json` records every axis; the HTML report's tests table shows the per-leaf assignment in the row label:
 
 ```
-test_everything [leaf 17 — retries=2, parallel#3, wal[01]]
+test_everything [leaf 17 - retries=2, parallel#3, wal[01]]
 ```
 
 ## Reading a specific leaf's trace
@@ -172,10 +172,10 @@ test_everything [leaf 17 — retries=2, parallel#3, wal[01]]
 Each leaf gets its own trace event log. To find leaf 17's events:
 
 1. Open the HTML report (`faultbox report run.fb` produces `report.html`).
-2. The tests table shows every leaf as a separate row — sort/filter by name to find your test.
+2. The tests table shows every leaf as a separate row - sort/filter by name to find your test.
 3. Click the leaf row to open the drill-down: per-leaf trace, swim-lane visualization, replay command.
 
-For CLI inspection: `cat run.fb/manifest.json | jq '.tests[] | select(.leaf_id=="17")'` gets the row metadata; `faultbox replay run.fb --test test_everything --leaf 17` (when leaf-selection lands — currently leaves share the test name in `--test`) reruns that specific configuration.
+For CLI inspection: `cat run.fb/manifest.json | jq '.tests[] | select(.leaf_id=="17")'` gets the row metadata; `faultbox replay run.fb --test test_everything --leaf 17` (when leaf-selection lands - currently leaves share the test name in `--test`) reruns that specific configuration.
 
 ## When to use which axis kind
 
@@ -186,7 +186,7 @@ For CLI inspection: `cat run.fb/manifest.json | jq '.tests[] | select(.leaf_id==
 | Two independent operations that might arrive in any order | `parallel(a, b, interleavings="all")` |
 | Combination that doesn't make sense | `halt()` inside body, or `assume=` predicate |
 
-For test design: pick the smallest axis count that exercises the failure modes you care about. `choose("retries", [0, 1])` + `probability=0.3, max_fires=1` is usually more informative than `choose("retries", [0, 1, 2, 3, 4, 5])` — diminishing returns set in fast and the plan grows multiplicatively.
+For test design: pick the smallest axis count that exercises the failure modes you care about. `choose("retries", [0, 1])` + `probability=0.3, max_fires=1` is usually more informative than `choose("retries", [0, 1, 2, 3, 4, 5])` - diminishing returns set in fast and the plan grows multiplicatively.
 
 ## Exercises
 
@@ -194,10 +194,10 @@ For test design: pick the smallest axis count that exercises the failure modes y
 
 2. **Cost gate.** Add the `faultbox plan --check-cost --max-instances 50` invocation to your repo's pre-commit hook. Add an axis that pushes the count over 50 and confirm the hook blocks the commit.
 
-3. **Exhaustive WAL coverage.** Take an existing spec that uses `probability=0.3` on a WAL write. Add `max_fires=3, mode="exhaustive"` and observe the eight-leaf plan tree (2³) in `faultbox plan`. Find the leaf where every WAL write fired — what does the trace look like compared to the all-passed leaf?
+3. **Exhaustive WAL coverage.** Take an existing spec that uses `probability=0.3` on a WAL write. Add `max_fires=3, mode="exhaustive"` and observe the eight-leaf plan tree (2³) in `faultbox plan`. Find the leaf where every WAL write fired - what does the trace look like compared to the all-passed leaf?
 
 4. **Interleaving identity.** Compare `parallel(a, b, interleavings=1)` and `parallel(a, b, interleavings="all")` plans. The first should produce 1 leaf, the second 2. Verify with `faultbox plan`.
 
 ## What's next
 
-You've reached the end of Part 4. The full v0.13.0 verification toolkit is at your disposal: invariants (Ch 14), monitors (Ch 15), partitions (Ch 16), determinism (Ch 24), operators (Ch 25), and plan-tree fan-out (this chapter). Part 5 covers advanced operational features — containers, scenario generation, event sources, and LLM agent integration.
+You've reached the end of Part 5. The full verification toolkit is at your disposal: invariants (Ch 14), monitors (Ch 15), partitions (Ch 16), scenarios & the fault matrix (Ch 10), determinism (Ch 24), operators (Ch 25), and plan-tree fan-out (this chapter). Part 6 covers the power tools - event sources, named operations, LLM agents, bundles, and reports.

@@ -7,7 +7,7 @@
 
 Network partitions are the most dangerous failure mode in distributed
 systems. Unlike a crashed server (which is clearly down), a partition
-creates **ambiguity** — each side thinks the other might be alive or dead.
+creates **ambiguity** - each side thinks the other might be alive or dead.
 
 This ambiguity causes split-brain: two nodes both think they're the
 primary. Two order services both accept the last item in stock. Two
@@ -19,13 +19,13 @@ your system handles partitions without violating safety invariants.
 
 ## partition() builtin
 
-Partitions are bidirectional — they affect two services at once. Unlike
+Partitions are bidirectional - they affect two services at once. Unlike
 `fault_assumption()` (which targets one service), partitions remain as
 standalone test functions:
 
 ```python
 def test_network_split():
-    """Orders can't reach inventory — should return 503."""
+    """Orders can't reach inventory - should return 503."""
     def scenario():
         resp = orders.post(path="/orders", body='...')
         assert_eq(resp.status, 503)
@@ -117,7 +117,7 @@ def test_no_stock_change_during_partition():
     """
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
-        # We don't care about the status — we care about the invariant.
+        # We don't care about the status - we care about the invariant.
 
         # No WAL write should happen on inventory (no reservation).
         assert_never(
@@ -146,13 +146,13 @@ Test that the system recovers after the partition heals:
 ```python
 def test_recovery_after_partition():
     """System works again after partition is resolved."""
-    # Phase 1: partition — orders should fail.
+    # Phase 1: partition - orders should fail.
     def during_partition():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_eq(resp.status, 503)
     partition(orders, inventory, run=during_partition)
 
-    # Phase 2: partition resolved — orders should work.
+    # Phase 2: partition resolved - orders should work.
     resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
     assert_eq(resp.status, 200)
 ```
@@ -176,14 +176,14 @@ reach B, but B can still reach A), use `fault()` directly:
 def test_one_way_partition():
     """Orders can't reach inventory, but inventory can still function.
 
-    This simulates asymmetric network failure — common when a firewall
+    This simulates asymmetric network failure - common when a firewall
     rule is misconfigured or a load balancer drops traffic in one direction.
     """
     def scenario():
         resp = orders.post(path="/orders", body='{"sku":"widget","qty":1}')
         assert_eq(resp.status, 503)
 
-        # Inventory is fine — it just doesn't receive requests.
+        # Inventory is fine - it just doesn't receive requests.
         # If another client could reach it directly, it would work.
     fault(orders, connect=deny("ECONNREFUSED", label="one-way partition"),
         run=scenario)
@@ -201,7 +201,7 @@ def test_one_way_partition():
 
 ## Partitions and the domain-centric model
 
-`partition()` is bidirectional — it affects two services at once. This
+`partition()` is bidirectional - it affects two services at once. This
 means it can't be expressed as a single `fault_assumption()` (which targets
 one service). Partitions remain standalone test functions, even in
 domain-centric specs:
@@ -221,7 +221,7 @@ def test_partition():
     partition(orders, inventory, run=scenario)
 ```
 
-`faultbox generate` handles this automatically — it produces a `fault_matrix()`
+`faultbox generate` handles this automatically - it produces a `fault_matrix()`
 for standard faults and separate `def test_*` functions for partitions.
 
 ## What you learned
@@ -230,8 +230,8 @@ for standard faults and separate `def test_*` functions for partitions.
 - Partitions + monitors verify safety under network failure
 - Test recovery after partition resolution
 - One-way partitions use `fault()` with `connect=deny()`
-- Partitions are standalone tests — not part of `fault_matrix()`
-- Partitions are the hardest failure mode — test them explicitly
+- Partitions are standalone tests - not part of `fault_matrix()`
+- Partitions are the hardest failure mode - test them explicitly
 
 ## What's next
 
@@ -240,5 +240,5 @@ You've completed the Safety & Verification section. You can now:
 - Write monitors that verify them continuously
 - Test under network partitions
 
-Continue to [Part 5: Advanced](../05-advanced/index.md) for containers,
-scenarios, event sources, named operations, and LLM integration.
+Continue to [Chapter 10: Scenarios & Fault Matrix](../05-advanced/10-scenarios.md) -
+generate the fault cross-product for every scenario you've declared.

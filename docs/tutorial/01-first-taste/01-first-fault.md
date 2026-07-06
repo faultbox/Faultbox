@@ -5,21 +5,28 @@
 
 ## Goals & Purpose
 
-Every program trusts the operating system. When your code calls `write()`,
-it assumes the bytes reach the disk. When it calls `connect()`, it assumes
-the network is there. But in production, these assumptions break: disks
-fill up, networks partition, I/O errors corrupt data.
+Most production outages are not exotic. They are ordinary failures - a
+full disk, a refused connection, a slow reply - hitting error-handling
+code that has never once executed. The study that named this pattern
+("Simple Testing Can Prevent Most Critical Failures", OSDI 2014) found
+that the large majority of catastrophic distributed-system failures came
+from incorrect handling of ordinary, non-fatal errors. Those are the
+bugs this tutorial teaches you to close - one
+[bug class](https://faultbox.io/docs/concepts/bug-classes) at a time,
+starting with the smallest possible demonstration: one program, one
+injected failure.
+
+The core intuition of this chapter: **the OS is an API, and like any
+API, it can return errors**. When your code calls `write()`, it assumes
+the bytes reach the disk. When it calls `connect()`, it assumes the
+network is there. Faultbox intercepts that API at the kernel level, so
+your program has no way to avoid or detect the interception. This is
+not mocking - it's real.
 
 **The question you should be asking:** *"What happens to my program when
-the OS returns an error it doesn't expect?"*
-
-Most teams discover the answer in production — at 3am, during a traffic
-spike. Faultbox lets you discover it now, on your laptop.
-
-In this chapter you'll build the core intuition: **the OS is an API, and
-like any API, it can return errors**. Faultbox intercepts that API at the
-kernel level, so your program has no way to avoid or detect the interception.
-This is not mocking — it's real.
+an ordinary operation returns an ordinary error?"* Most teams discover
+the answer in production - at 3am, during a traffic spike. Faultbox lets
+you discover it now, on your laptop.
 
 ## How it works
 
@@ -34,7 +41,7 @@ Your program                    Kernel                     Faultbox
     |<-- errno = EIO -------------|                           |
 ```
 
-This works on **any binary** — Go, Rust, C, Java, Python. No code changes,
+This works on **any binary** - Go, Rust, C, Java, Python. No code changes,
 no special libraries. The kernel is the interception point.
 
 ## Run the target program normally
@@ -66,11 +73,11 @@ net failed: ... connect: network is unreachable (took 2ms)
 > **Why "network is unreachable"?** This is NOT a fault injection.
 > `faultbox run` creates an **isolated network namespace** for the target
 > process (PID, mount, and network are all sandboxed). The target has no
-> network access — only loopback. This is a safety feature: the target
+> network access - only loopback. This is a safety feature: the target
 > can't make real external calls during testing.
 >
 > The filesystem still works because it uses the mount namespace which
-> shares `/tmp/`. The network error is normal and expected — ignore it
+> shares `/tmp/`. The network error is normal and expected - ignore it
 > for now. In later chapters, we'll inject network faults explicitly
 > with `connect=deny("ECONNREFUSED")`.
 
@@ -103,10 +110,10 @@ Notice what happened:
 - The seccomp filter was installed for syscall 64 (`write` on arm64)
 - **Four** write syscalls were intercepted and denied with EIO
 - The target exited with error code 1
-- **The target's own output is missing** — it tried to `write()` to stdout
+- **The target's own output is missing** - it tried to `write()` to stdout
   but that write was also denied! The program couldn't even print its error.
 
-This demonstrates a key point: `write=EIO:100%` denies ALL writes — to files,
+This demonstrates a key point: `write=EIO:100%` denies ALL writes - to files,
 to stdout, to network sockets. The program had no way to report what went wrong
 because the reporting mechanism (stdout) was itself broken.
 
@@ -151,9 +158,9 @@ make lima-run CMD='faultbox run --fault "openat=ENOENT:100%:/data/*" bin/linux/t
 ```
 
 The target writes to `/tmp/` (not `/data/`), so the filesystem test succeeds.
-(You'll still see "network is unreachable" — that's the namespace sandbox,
+(You'll still see "network is unreachable" - that's the namespace sandbox,
 not your fault rule.) **The intuition:** production failures are usually
-localized — one volume fails, not all storage. Path targeting simulates
+localized - one volume fails, not all storage. Path targeting simulates
 exactly that.
 
 > **fd→path resolution:** Path filtering works for both file-path syscalls
@@ -187,7 +194,7 @@ cascades into downstream timeouts. Delays let you find these problems.
 - `--fault "syscall=ERRNO:PROB%"` denies syscalls with specific errors
 - `--fault "syscall=delay:DURATION:PROB%"` introduces latency
 - Path globs (`:/data/*`) target specific files
-- seccomp-notify works at the kernel level — no code changes needed
+- seccomp-notify works at the kernel level - no code changes needed
 - **The mental model:** think of every syscall as an API call that can fail
 
 ## What's next
@@ -195,11 +202,11 @@ cascades into downstream timeouts. Delays let you find these problems.
 Running `faultbox run` with manual flags works for exploration, but it doesn't
 scale. You need:
 
-- **Repeatable tests** — run the same scenario every time, in CI
-- **Multi-service topologies** — your API depends on a database, which depends on storage
-- **Assertions** — not just "did it crash?" but "did it return the right error code?"
+- **Repeatable tests** - run the same scenario every time, in CI
+- **Multi-service topologies** - your API depends on a database, which depends on storage
+- **Assertions** - not just "did it crash?" but "did it return the right error code?"
 
-Chapter 2 introduces Starlark spec files — a way to codify your system
+Chapter 2 introduces Starlark spec files - a way to codify your system
 topology and test scenarios as code.
 
 ## Exercises
@@ -223,6 +230,6 @@ topology and test scenarios as code.
 
 4. **Selective denial**: Run with `--fault "openat=ENOENT:100%:/tmp/faultbox*"`.
    The glob targets only the test file. Does the target still run? What about
-   its other operations? Now try `--fault "write=EIO:100%:/tmp/faultbox*"` —
-   does path filtering work for `write` the same way as `openat`? (Yes — Faultbox
+   its other operations? Now try `--fault "write=EIO:100%:/tmp/faultbox*"` -
+   does path filtering work for `write` the same way as `openat`? (Yes - Faultbox
    resolves fd→path via `/proc`, so write path targeting works.)

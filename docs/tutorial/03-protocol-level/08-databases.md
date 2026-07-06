@@ -81,7 +81,7 @@ fault_scenario("slow_query",
 )
 ```
 
-The proxy parses the Postgres wire protocol — it sees the actual SQL query
+The proxy parses the Postgres wire protocol - it sees the actual SQL query
 text and matches against your pattern.
 
 ## MySQL: Same API, different protocol
@@ -110,7 +110,7 @@ fault_scenario("mysql_read_only",
 )
 ```
 
-Same fault assumption API — the proxy knows to speak MySQL wire protocol
+Same fault assumption API - the proxy knows to speak MySQL wire protocol
 because the interface is declared as `"mysql"`.
 
 ## Redis: Command-level faults
@@ -284,13 +284,15 @@ fault_scenario("slow_auth",
 - `scenario(fn)` registers probe functions that return observables
 - `fault_assumption(name, target=, ...)` defines named, reusable fault configs
 - `fault_scenario(name, scenario=, faults=, expect=)` composes tests from scenarios and faults
-- The proxy speaks the real wire protocol — matches SQL queries, Redis commands, Kafka topics
+- The proxy speaks the real wire protocol - matches SQL queries, Redis commands, Kafka topics
 - 10 protocols supported, covering 30+ products
 - Combine with syscall faults for cascading failure scenarios
 
 ## What's next
 
-Part 4 covers advanced features: testing real infrastructure with Docker
-containers, auto-generating failure scenarios from happy paths, capturing
-structured events from stdout and message queues, and defining high-level
-named operations.
+You can fault real databases and brokers through their protocols. The
+remaining piece of real infrastructure is running them the way production
+does - in containers. Chapter 9 launches real Postgres and Redis under
+Faultbox control, with the seed/reset lifecycle and container reuse.
+
+Continue: [Chapter 9: Containers](../05-advanced/09-containers.md)

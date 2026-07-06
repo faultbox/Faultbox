@@ -13,7 +13,7 @@ claim under realistic failure conditions.
 
 ## Day 1 with Faultbox
 
-Marcus doesn't write Go — he writes Starlark specs that exercise existing
+Marcus doesn't write Go - he writes Starlark specs that exercise existing
 Docker images without any code changes:
 
 ```python
@@ -36,7 +36,7 @@ search = service("search",
 )
 
 def test_checkout_when_redis_down():
-    """Cart still works if Redis cache is gone — falls back to Postgres."""
+    """Cart still works if Redis cache is gone - falls back to Postgres."""
     api.post(path="/cart/add", body='{"sku": "TSHIRT", "qty": 1}')
 
     def redis_dies():
@@ -64,7 +64,7 @@ def test_full_disk_error_message():
 
 ## What He Gets
 
-Failure mode coverage for Black Friday scenarios. No code changes needed —
+Failure mode coverage for Black Friday scenarios. No code changes needed -
 he tests existing containers as-is. He adds 15 failure scenarios in a week.
 
 ## Growth Path
@@ -74,11 +74,11 @@ he tests existing containers as-is. He adds 15 failure scenarios in a week.
 - **Week 2:** Adds `--runs 100` nightly runs to catch intermittent failures
   under different interleavings.
 - **Month 1:** When a test fails, he files a ticket with the ShiViz trace
-  attached — engineers see exactly what happened without reproducing.
+  attached - engineers see exactly what happened without reproducing.
 - **Month 2:** Builds a dashboard of failure mode coverage per service.
 
 ## Key Value
 
-Marcus is the **fastest adopter** — he doesn't need to change code, just
+Marcus is the **fastest adopter** - he doesn't need to change code, just
 write specs against existing images. He turns "we think we handle errors"
 into "we verified we handle these 47 failure modes."
