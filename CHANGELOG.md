@@ -13,6 +13,49 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.13.2] - 2026-07-06
+
+Temporal verdict semantics are grounded in finite-trace logic
+([RFC-049](docs/rfcs/0049-finite-trace-verdict-semantics.md), D4 of the
+[RFC-047](https://github.com/faultbox/Faultbox/issues/132) research
+agenda), plus the documentation and site restructure around the six
+bug classes.
+
+### Changed
+
+- **Timeout is always INCONCLUSIVE, never PASS (RFC-049 D4).** A `test()`
+  that ends by hitting its `timeout` now finalizes INCONCLUSIVE even if
+  every `eventually()` it declared was satisfied before the deadline. The
+  body did not reach a declared completion (natural return or
+  `terminate_when=`), so the run is a *truncated prefix* and a green
+  verdict would over-claim. Long-running / `reuse=True` specs that want a
+  definite PASS must declare `terminate_when=` rather than lean on the
+  deadline. Legacy synchronous `def test_*()` functions are unaffected.
+- **Unbounded `always(p)` under timeout is INCONCLUSIVE.** A never-violated
+  unbounded safety property (no `between=` window) finalizes INCONCLUSIVE
+  on timeout — a longer trace could still violate it (LTL₃ prefix). At
+  natural completion or `terminate_when=` it remains a definitive PASS
+  (LTL_f end-of-trace). Bounded `always(p, between=(a,b))` is unchanged.
+
+### Added
+
+- **`vacuous_property` warning event (RFC-049 vacuity resolution).** When an
+  `always(p, between=)` start anchor never fires, the window never opens and
+  the predicate is never evaluated. The verdict stays PASS (the window may be
+  legitimately untriggered), but the runtime now emits a `vacuous_property`
+  event into the trace so a typo'd or misnamed anchor surfaces instead of
+  hiding as a silent green.
+
+### Docs
+
+- Documentation and site restructured around the six bug classes: Part 1 of
+  the tutorial reframed to the bug-class + boundary story, new
+  [Seeding Data & Initial State](docs/guides/seeding-data.md) guide, new
+  [checkout Kafka outage](docs/use-cases/checkout-kafka-outage.md) use case,
+  and fault-level guidance in [choosing-fault-levels](docs/guides/choosing-fault-levels.md).
+- RFC-048 (causal-guided exploration) and RFC-050 (gray/metastable faults)
+  added as drafts; RFC-049 marked Accepted.
+
 ## [0.13.1] - 2026-06-18
 
 Fixes from the first field evaluation of v0.13.0 against a real
@@ -2303,7 +2346,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.1...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.2...HEAD
+[0.13.2]: https://github.com/faultbox/Faultbox/compare/release-0.13.1...release-0.13.2
 [0.13.1]: https://github.com/faultbox/Faultbox/compare/release-0.13.0...release-0.13.1
 [0.13.0]: https://github.com/faultbox/Faultbox/compare/release-0.12.29...release-0.13.0
 [0.12.29]: https://github.com/faultbox/Faultbox/compare/release-0.12.28...release-0.12.29

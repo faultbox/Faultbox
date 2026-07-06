@@ -86,6 +86,13 @@ test("balance_never_negative",
   or a `MatcherVal` from `match.event(...)`. Matcher anchors are
   enforced today; string lifecycle anchors are wired through the
   Termination logic.
+- **Vacuity warning (RFC-049).** If the `between=` *start* anchor
+  never fires, the window never opens and the predicate is never
+  evaluated. The verdict stays PASS — the window may be legitimately
+  untriggered (e.g. `between=(error, recovery)` in a run with no
+  error) — but the runtime emits a `vacuous_property` warning event
+  into the trace so a typo'd or misnamed anchor surfaces instead of
+  hiding as a silent green.
 
 ## `await_event(predicate_or_matcher)`
 
