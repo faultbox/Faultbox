@@ -12,21 +12,24 @@ state stay consistent, and did the system actually come back?"
 ## The topology
 
 ```python
-db = service("db", image = "postgres:16-alpine",
+db = service("db",
     interface("main", "postgres", 5432),
+    image   = "postgres:16-alpine",
     volumes = {"./schema.sql": "/docker-entrypoint-initdb.d/schema.sql"},
     reuse   = True,
     reset   = lambda: db.main.exec(sql = "TRUNCATE orders RESTART IDENTITY CASCADE"),
 )
 
-kafka = service("kafka", image = "bitnami/kafka:3.7",
+kafka = service("kafka",
     interface("main", "kafka", 9092),
+    image = "bitnami/kafka:3.7",
 )
 
-api = service("api", image = "myteam/checkout-api",
+api = service("api",
     interface("public", "http", 8080),
-    env = {"DB_ADDR": db.main.addr, "KAFKA_ADDR": kafka.main.addr},
-    depends_on = [db, kafka],
+    image       = "myteam/checkout-api",
+    env         = {"DB_ADDR": db.main.addr, "KAFKA_ADDR": kafka.main.addr},
+    depends_on  = [db, kafka],
     healthcheck = http("localhost:8080/health"),
 )
 ```
@@ -51,7 +54,7 @@ fault_scenario("checkout_broker_down",
     faults   = kafka_down,
     expect   = lambda r: (
         assert_eq(r.status, 201, "checkout must accept the order"),
-        assert_eq(r.json["fulfillment"], "deferred"),
+        assert_eq(r.data["fulfillment"], "deferred"),
     ),
 )
 ```
@@ -75,7 +78,7 @@ fault_scenario("checkout_broker_slow",
     faults   = kafka_slow,
     expect   = lambda r: (
         assert_eq(r.status, 201),
-        assert_lt(r.elapsed, "500ms",
+        assert_true(r.duration_ms < 500,
             "publish must be async or deadlined - checkout latency must not track broker latency"),
     ),
 )
@@ -87,12 +90,19 @@ The least-tested transition in production systems. The fault clears;
 the deferred events must actually flow.
 
 ```python
-def test_broker_recovery(t):
-    with fault(kafka, connect = deny("ECONNREFUSED")):
-        api.public.post(path = "/orders", body = '{"cart": 42}')
-    # fault cleared - recovery is now the thing under test:
-    eventually(lambda trace: trace.event(type = "kafka_publish", topic = "orders"),
-               within = "30s")
+def attempt_during_outage():
+    # the publish is attempted while the broker refuses connections;
+    # the fault clears the moment run= returns, so recovery - the deferred
+    # events actually draining - is what the eventually() below watches for.
+    fault(kafka, connect = deny("ECONNREFUSED"), run = lambda:
+        api.public.post(path = "/orders", body = '{"cart": 42}'))
+
+test("broker_recovery",
+    body    = attempt_during_outage,
+    expect  = eventually(lambda trace:
+        trace.event(type = "kafka_publish", topic = "orders")),
+    timeout = "30s",
+)
 ```
 
 If the producer is stuck on a dead connection pool, this test renders
