@@ -129,13 +129,22 @@ each test gets a fresh Kafka with empty topics.
 
 ### Topic observer
 
+> **Not yet callable from Starlark.** `topic()` is a Go event-source
+> plugin with no Starlark constructor wired yet, so a spec calling
+> `topic(...)` fails to load (`undefined: topic`). Until it ships, observe
+> the consumer's stdout log with
+> [`observe.stdout`](../spec-language.md#event-sources) and query
+> `type == "stdout"` events (see
+> [tutorial ch11](../tutorial/05-advanced/11-event-sources.md)). The shape
+> below describes the `topic` source once exposed.
+
 Capture all messages on a topic in the event log:
 
 ```python
 kafka = service("kafka",
     interface("broker", "kafka", 9092),
     image = "confluentinc/cp-kafka:7.6",
-    observe = [topic("order-events", decoder=json_decoder())],
+    observe = [topic("order-events", decoder=decoder("json"))],  # planned
 )
 ```
 
@@ -164,16 +173,25 @@ assert_never(where=lambda e:
 
 ### No orphan events (publish without DB commit)
 
-```python
-def no_orphan_events(event):
-    if event["type"] == "topic" and event.get("order_id"):
-        rows = db.main.query(
-            sql="SELECT count(*) as n FROM orders WHERE id='" + event["order_id"] + "'"
-        ).data[0]["n"]
-        if rows == 0:
-            fail("orphan Kafka event: order " + event["order_id"] + " not in DB")
+A monitor's `update`/`check` lambdas run sandboxed - they cannot issue
+queries or call `fail()`. Express the invariant instead by counting the
+two observed event streams and checking the relation: a published order
+must never outrun the committed rows. (Requires the `topic` and `wal`
+observers above; both are planned Starlark surfaces - see the note under
+[Topic observer](#topic-observer).)
 
-orphan_check = monitor(no_orphan_events)
+```python
+orphan_check = monitor("no_orphan_events",
+    on = match.any(match.event(type="topic"), match.event(type="wal")),
+    state_init = {"published": 0, "committed": 0},
+    update = lambda event, state: {
+        "published": state["published"] + (1 if event.type == "topic" else 0),
+        "committed": state["committed"] + (
+            1 if event.type == "wal" and event.data.get("op") == "INSERT" else 0),
+    },
+    # false => test FAILs, citing the offending event
+    check = lambda event, state: state["published"] <= state["committed"],
+)
 
 db_write_error = fault_assumption("db_write_error",
     target = db,

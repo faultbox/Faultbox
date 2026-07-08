@@ -69,13 +69,13 @@ petstore = http.server(
 )
 
 def test_list_pets():
-    result = step(petstore.main, "get", path = "/pets")
-    assert_true(result.status_code == 200)
+    result = petstore.main.get(path = "/pets")
+    assert_true(result.status == 200)
     assert_true(result.body.startswith("[{"))
 
 def test_get_pet():
-    result = step(petstore.main, "get", path = "/pets/42")
-    assert_true(result.status_code == 200)
+    result = petstore.main.get(path = "/pets/42")
+    assert_true(result.status == 200)
     assert_true("fluffy" in result.body)
 ```
 
@@ -163,10 +163,9 @@ auth = http.server(
 
 def test_login_requires_password():
     # Missing required "password" field — mock returns 400.
-    result = step(auth.main, "post",
-                  path = "/login",
-                  body = '{"email": "x@y.z"}')
-    assert_true(result.status_code == 400)
+    result = auth.main.post(path = "/login",
+                            body = '{"email": "x@y.z"}')
+    assert_true(result.status == 400)
 ```
 
 Alternatives:
@@ -182,19 +181,23 @@ types pass through unchecked.
 ## 5 · Combining with faults
 
 OpenAPI mocks are just `mock_service` instances — every other
-Faultbox primitive works against them. Inject faults against the
-mock's upstream to simulate a flapping producer:
+Faultbox primitive works against them. Inject a protocol-level fault at
+the mock's interface to simulate a flapping upstream:
 
 ```python
 def test_auth_upstream_flake():
-    # First call: the mock responds normally (generated from spec).
-    # Second call: the mock's own HTTP write syscall is denied,
-    # simulating a socket failure mid-response.
-    fault(auth,
-          write = deny("ECONNRESET", after = 1),
-          run   = lambda: my_app_handles_auth_flake(),
+    # Half the calls to /login get a 503 instead of the generated
+    # response - the mock's proxy layer rewrites them.
+    fault(auth.main,
+          error(path = "/login", status = 503, probability = 0.5),
+          run = lambda: my_app_handles_auth_flake(),
     )
 ```
+
+`fault(iface, error(...), run=...)` applies the rule for the duration
+of `run=` and lifts it afterward. `error(...)` here is a protocol
+fault - `path=`/`status=`/`probability=` - not the mock response
+constructor of the same name.
 
 ## Takeaways
 

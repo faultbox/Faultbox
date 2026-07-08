@@ -348,10 +348,12 @@ Attach invariants to fault assumptions - they fire automatically in every
 test that uses the assumption:
 
 ```python
-def check_no_db_traffic(event):
-    fail("traffic reached DB despite being down")
-
-no_db_traffic = monitor(check_no_db_traffic, service="db", syscall="read")
+# "Must never happen": while the DB is down, no read syscall should
+# reach it. check= returning False fails the test on the first match.
+no_db_traffic = monitor("no_db_traffic",
+    on = match.event(type="syscall", service="db", syscall="read"),
+    check = lambda event, state: False,
+)
 
 db_down = fault_assumption("db_down",
     target = api,

@@ -60,30 +60,36 @@ Three categories of dependency:
 `faultbox.star`:
 
 ```python
-load("@faultbox/mocks/jwt.star",  "jwt")
-load("@faultbox/mocks/grpc.star", "grpc")
+load("@faultbox/mocks/jwt.star",    "jwt")
+load("@faultbox/mocks/grpc.star",   "grpc")
+# Fault recipe module - aliased so its `grpc` namespace doesn't collide
+# with the mocks `grpc` import above. Used in §4.
+load("@faultbox/recipes/grpc.star", grpc_faults = "grpc")
 
 # --- Stateful real services (containers) -------------------------
 
-db = service("db", image = "mysql:8.0.32",
+db = service("db",
     interface("main", "mysql", 3306),
+    image = "mysql:8.0.32",
     env = {
         "MYSQL_ROOT_PASSWORD": "test",
         "MYSQL_DATABASE":      "appdb",
     },
-    seed = lambda: mysql.exec(db.main, sql = load_file("./schema.sql")),
+    seed = lambda: db.main.exec(sql = load_file("./schema.sql")),
     healthcheck = tcp("localhost:3306"),
     reuse = True,  # 5x faster across multi-test runs
 )
 
-cache = service("cache", image = "redis:7-alpine",
+cache = service("cache",
     interface("main", "redis", 6379),
+    image = "redis:7-alpine",
     healthcheck = tcp("localhost:6379"),
     reuse = True,
 )
 
-bus = service("bus", image = "apache/kafka:3.7.0",
+bus = service("bus",
     interface("main", "kafka", 9092),
+    image = "apache/kafka:3.7.0",
     healthcheck = kafka_ready("localhost:9092"),
     reuse = True,
 )
@@ -133,20 +139,21 @@ auth = jwt.server(
 
 # --- The SUT -----------------------------------------------------
 
-api = service("api", binary = "./bin/api",
+api = service("api",
     interface("public", "http", 8080),
+    binary = "./bin/api",
     env = {
         "DATABASE_URL":      "mysql://root:test@%s/appdb" % db.main.addr,
         "REDIS_URL":         cache.main.addr,
         "KAFKA_BROKERS":     bus.main.addr,
-        "GEO_CONFIG_ADDR":   geo.service.main.addr,
-        "USER_SERVICE_ADDR": users.service.main.addr,
-        "BALANCE_API_ADDR":  balance.service.main.addr,
+        "GEO_CONFIG_ADDR":   geo.main.addr,
+        "USER_SERVICE_ADDR": users.main.addr,
+        "BALANCE_API_ADDR":  balance.main.addr,
         "OIDC_ISSUER":       auth.service.main.addr,
         "OIDC_JWKS_URL":     auth.service.main.addr + "/.well-known/jwks.json",
     },
-    depends_on = [db, cache, bus, geo.service, users.service, balance.service, auth.service],
-    healthcheck = http("http://localhost:8080/healthz", expect_status = 200),
+    depends_on = [db, cache, bus, geo, users, balance, auth.service],
+    healthcheck = http("http://localhost:8080/healthz"),
 )
 ```
 
@@ -158,7 +165,12 @@ Notable choices:
 - **`load_file("./schema.sql")`** instead of code-generating a 1000-
   line string constant — landed in v0.9.8.
 - **`jwt.server()`** + **`grpc.server(descriptors=…)`** replace the
-  hand-written Go binaries every customer ended up writing.
+  hand-written Go binaries every customer ended up writing. Note the
+  return-shape asymmetry: `grpc.server()` returns a plain service, so
+  you address it as `geo.main` and pass `geo` to `depends_on=`.
+  `jwt.server()` returns a struct wrapping the service, so it's
+  `auth.service.main` and `auth.service` - plus `auth.sign(...)` for
+  minting tokens.
 - **All upstream addresses go through the data-path proxy** (RFC-024
   shipped v0.9.5) automatically — no spec changes needed for that.
 
@@ -169,23 +181,21 @@ fault scenarios:
 
 ```python
 def test_health_endpoint():
-    result = step(api.public, "get", path = "/healthz")
-    assert_true(result.status_code == 200)
+    result = api.public.get(path = "/healthz")
+    assert_true(result.status == 200)
 
 def test_jwt_protected_endpoint():
     token = auth.sign(claims = {"sub": "user-1", "scope": "read:orders"})
-    result = step(api.public, "get",
-                  path = "/orders",
-                  headers = {"Authorization": "Bearer " + token})
-    assert_true(result.status_code == 200)
+    result = api.public.get(path = "/orders",
+                            headers = {"Authorization": "Bearer " + token})
+    assert_true(result.status == 200)
 
 def test_create_order():
     token = auth.sign(claims = {"sub": "user-1", "scope": "write:orders"})
-    result = step(api.public, "post",
-                  path = "/orders",
-                  headers = {"Authorization": "Bearer " + token},
-                  body = '{"price":5000,"city_id":169}')
-    assert_true(result.status_code == 201)
+    result = api.public.post(path = "/orders",
+                             headers = {"Authorization": "Bearer " + token},
+                             body = '{"price":5000,"city_id":169}')
+    assert_true(result.status == 201)
 ```
 
 Run with `faultbox test faultbox.star --test test_health_endpoint`
@@ -200,43 +210,42 @@ them under chaos:
 ```python
 def order_creation():
     token = auth.sign(claims = {"sub": "user-1", "scope": "write:orders"})
-    return step(api.public, "post",
-                path = "/orders",
+    return api.public.post(path = "/orders",
                 headers = {"Authorization": "Bearer " + token},
                 body = '{"price":5000,"city_id":169}')
 
 def order_listing():
     token = auth.sign(claims = {"sub": "user-1", "scope": "read:orders"})
-    return step(api.public, "get",
-                path = "/orders",
+    return api.public.get(path = "/orders",
                 headers = {"Authorization": "Bearer " + token})
 
 def health_probe():
-    return step(api.public, "get", path = "/healthz")
+    return api.public.get(path = "/healthz")
 
 def login_flow():
     token = auth.sign(claims = {"sub": "user-1"})
-    return step(api.public, "post",
-                path = "/auth/refresh",
+    return api.public.post(path = "/auth/refresh",
                 headers = {"Authorization": "Bearer " + token})
 ```
 
-Each scenario returns the `step()` result — outcomes get fed to
+Each scenario returns the request result - outcomes get fed to
 `expect_*` predicates per matrix cell.
 
 ## 4 · Fault assumptions
 
 Six fault classes, mirroring real production failure modes:
 
+Using the `grpc_faults` recipe alias loaded in §1:
+
 ```python
 db_down = fault_assumption("db_down",
     target = db.main,
-    rules  = [error(status_code = 0, drop = True)],  # connection refused
+    rules  = [drop(query = "*")],  # close the connection mid-query
 )
 
 db_slow = fault_assumption("db_slow",
     target = db.main,
-    rules  = [response(delay_ms = 3000)],
+    rules  = [delay(query = "*", delay = "3s")],
 )
 
 db_write_fail = fault_assumption("db_write_fail",
@@ -255,8 +264,8 @@ bus_down = fault_assumption("bus_down",
 )
 
 users_unavailable = fault_assumption("users_unavailable",
-    target = users.service.main,
-    rules  = [grpc.unavailable("user-service down")],
+    target = users.main,
+    rules  = [grpc_faults.unavailable(method = "/inDriver.users.UserService/Get")],
 )
 ```
 

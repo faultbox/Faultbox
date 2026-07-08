@@ -183,13 +183,22 @@ db = service("postgres", ...,
 
 Captures Postgres Write-Ahead Log changes in real-time:
 
+> **Not yet callable from Starlark.** `wal_stream()` is a Go event-source
+> plugin with no Starlark constructor wired yet, so a spec calling
+> `wal_stream(...)` fails to load (`undefined: wal_stream`). Until it ships,
+> observe the service's stdout commit log with
+> [`observe.stdout`](../spec-language.md#event-sources) and query
+> `type == "stdout"` events (see
+> [tutorial ch11](../tutorial/05-advanced/11-event-sources.md)). The shape
+> below describes the `wal` source once exposed.
+
 ```python
 db = service("postgres",
     interface("main", "postgres", 5432),
     image = "postgres:16",
     env = {"POSTGRES_PASSWORD": "test"},
     healthcheck = tcp("localhost:5432"),
-    observe = [wal_stream(tables=["orders", "users"])],
+    observe = [wal_stream(tables=["orders", "users"])],  # planned
 )
 ```
 

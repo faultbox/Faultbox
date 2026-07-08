@@ -86,11 +86,10 @@ def test_authorised_request():
         "exp":   1700003600,
     })
 
-    result = step(api.public, "get",
-                  path    = "/orders",
-                  headers = {"Authorization": "Bearer " + token})
+    result = api.public.get(path    = "/orders",
+                            headers = {"Authorization": "Bearer " + token})
 
-    assert_true(result.status_code == 200)
+    assert_true(result.status == 200)
 ```
 
 Notes on claims:
@@ -112,18 +111,16 @@ What about tokens the SUT should reject? Two cheap variants:
 # we issue with aud="other".
 def test_wrong_audience_rejected():
     bad = auth.sign(claims = {"sub": "u1", "aud": "other"})
-    result = step(api.public, "get",
-                  path    = "/orders",
-                  headers = {"Authorization": "Bearer " + bad})
-    assert_true(result.status_code == 401)
+    result = api.public.get(path    = "/orders",
+                            headers = {"Authorization": "Bearer " + bad})
+    assert_true(result.status == 401)
 
 # Expired token: exp in the past.
 def test_expired_token_rejected():
     expired = auth.sign(claims = {"sub": "u1", "exp": 1000000000})
-    result = step(api.public, "get",
-                  path    = "/orders",
-                  headers = {"Authorization": "Bearer " + expired})
-    assert_true(result.status_code == 401)
+    result = api.public.get(path    = "/orders",
+                            headers = {"Authorization": "Bearer " + expired})
+    assert_true(result.status == 401)
 ```
 
 For the "wrong signature" case, mint a token from a **different**
@@ -146,33 +143,32 @@ window forces the cache-refresh path.
 def test_jwks_outage_uses_cache():
     # First request primes the JWKS cache in the SUT.
     token = auth.sign(claims = {"sub": "u1"})
-    ok = step(api.public, "get",
-              path    = "/orders",
-              headers = {"Authorization": "Bearer " + token})
-    assert_true(ok.status_code == 200)
+    ok = api.public.get(path    = "/orders",
+                        headers = {"Authorization": "Bearer " + token})
+    assert_true(ok.status == 200)
 
     # Now cut the JWKS endpoint and request again. SUT should serve
     # from cache as long as we're inside its TTL.
-    fault(auth.service.main, error(status_code = 503),
+    fault(auth.service.main, error(path = "/.well-known/**", status = 503),
           run = lambda: assert_true(
-              step(api.public, "get",
+              api.public.get(
                    path    = "/orders",
                    headers = {"Authorization": "Bearer " + token},
-              ).status_code == 200))
+              ).status == 200))
 ```
 
 ### Slow JWKS - exercise client timeouts
 
 ```python
 def test_slow_jwks_breaks_login():
-    fault(auth.service.main, response(delay_ms = 8000),
+    fault(auth.service.main, delay(path = "/.well-known/**", delay = "8s"),
           run = lambda: assert_true(
               # Your client likely has a 5s JWKS-fetch timeout. The
-              # POST should fail fast rather than hang for 8s.
-              step(api.public, "get",
+              # request should fail fast rather than hang for 8s.
+              api.public.get(
                    path    = "/orders",
                    headers = {"Authorization": "Bearer " + auth.sign(claims = {"sub": "u1"})},
-              ).status_code >= 500))
+              ).status >= 500))
 ```
 
 ## 6 · Algorithm scope and limits

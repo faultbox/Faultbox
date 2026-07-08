@@ -20,15 +20,22 @@ same assertions and monitors.
 
 This chapter teaches you to:
 - **Capture service stdout** and decode it into structured events
-- **Watch Postgres WAL** for data changes
-- **Consume Kafka topics** for message verification
-- **Poll Redis** for state changes
+- **Prove data reached Postgres** via the service's own commit logs
+- **Verify Kafka messages were published** from publish logs
+- **Confirm Redis state changes** from session-write logs
 - **Query events with lambdas** for precise assertions
+
+> **Which sources are built in?** `observe.stdout` and `observe.stderr`
+> are part of the Starlark runtime and work in every spec. Dedicated
+> Postgres WAL, Kafka topic, and Redis poll sources are Go event-source
+> plugins - not builtins you call from a spec. The Postgres/Kafka/Redis
+> sections below therefore use the stdout source: the service logs its
+> own effects, and you assert on those log events.
 
 ## Stdout: capturing service logs
 
-The simplest event source. Add `observe=[stdout(...)]` to capture a
-service's output:
+The simplest event source, and the one built into the Starlark runtime.
+Add `observe=[observe.stdout(...)]` to capture a service's output:
 
 ```python
 BIN = "bin/linux"
@@ -36,7 +43,7 @@ BIN = "bin/linux"
 db = service("db", BIN + "/mock-db",
     interface("main", "tcp", 5432),
     healthcheck = tcp("localhost:5432"),
-    observe = [stdout(decoder=json_decoder())],
+    observe = [observe.stdout(decoder=decoder("json"))],
 )
 
 api = service("api", BIN + "/mock-api",
@@ -111,7 +118,7 @@ specific fields.
 For services that output structured JSON logs (most Go/Node services):
 
 ```python
-observe = [stdout(decoder=json_decoder())]
+observe = [observe.stdout(decoder=decoder("json"))]
 
 # In an expect lambda or assertion:
 # If service outputs: {"level":"INFO","msg":"SET key1 value1","op":"SET"}
@@ -124,7 +131,7 @@ observe = [stdout(decoder=json_decoder())]
 For services using logfmt (`key=value` pairs):
 
 ```python
-observe = [stdout(decoder=logfmt_decoder())]
+observe = [observe.stdout(decoder=decoder("logfmt"))]
 
 # If service outputs: level=INFO msg="SET key1 value1" op=SET
 # assert_eventually(where=lambda e:
@@ -136,7 +143,7 @@ observe = [stdout(decoder=logfmt_decoder())]
 For services with custom log formats:
 
 ```python
-observe = [stdout(decoder=regex_decoder(
+observe = [observe.stdout(decoder=decoder("regex",
     pattern=r"(?P<timestamp>\S+) \[(?P<level>\w+)\] (?P<msg>.*)"
 ))]
 
@@ -212,11 +219,22 @@ faultbox test events-test.star --test error_logged_on_write_failure
 make lima-run CMD="faultbox test events-test.star --test error_logged_on_write_failure"
 ```
 
-## Postgres: WAL stream events
+## Postgres: proving data reached the database
 
 > **Requires Docker.** See [Chapter 9](09-containers.md) for container setup.
 
-Watch Postgres WAL (write-ahead log) for data changes in real-time:
+The `observe.stdout` / `observe.stderr` sources are the ones built into
+the Starlark runtime. Richer external channels - Postgres WAL streaming,
+Kafka topic consumers, Redis pollers - are provided by **event-source
+plugins** (Go, registered at compile time) and are not Starlark builtins
+you call from a spec. Calling `wal_stream(...)`, `topic(...)`, or
+`poll(...)` in a spec that hasn't loaded the corresponding plugin fails
+with `undefined`.
+
+The pattern below works with the built-in stdout source: have the
+service log its database effects as structured JSON, then assert on
+those log events. This proves the write actually reached Postgres - not
+just that the API returned 201.
 
 ```python
 pg = service("postgres",
@@ -224,7 +242,6 @@ pg = service("postgres",
     image = "postgres:16",
     env = {"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "mydb"},
     healthcheck = tcp("localhost:5432"),
-    observe = [wal_stream(tables=["orders"])],
 )
 
 api = service("api",
@@ -233,11 +250,11 @@ api = service("api",
     env = {"DATABASE_URL": "postgres://test@" + pg.main.internal_addr + "/mydb"},
     depends_on = [pg],
     healthcheck = http("localhost:8080/health"),
+    # The API logs each committed row as JSON, e.g.
+    # {"event":"row_inserted","table":"orders"}
+    observe = [observe.stdout(decoder=decoder("json"))],
 )
 ```
-
-`wal_stream(tables=["orders"])` connects to Postgres logical replication
-and emits an event for every INSERT, UPDATE, DELETE on the `orders` table.
 
 ```python
 def create_order():
@@ -249,16 +266,17 @@ fault_scenario("order_persisted_to_db",
     faults = [],
     expect = lambda r: [
         assert_eq(r.status, 201),
-        # The WAL event proves the row was inserted — not just that
+        # The log event proves the row was inserted - not just that
         # the API returned 201. It actually reached the database.
         assert_eventually(where=lambda e:
-            e.type == "wal" and e.data.get("table") == "orders"
-            and e.data.get("action") == "INSERT"),
+            e.type == "stdout" and e.service == "api"
+            and e.data.get("event") == "row_inserted"
+            and e.data.get("table") == "orders"),
     ],
 )
 ```
 
-### WAL + fault: verify rollback
+### Verify rollback
 
 ```python
 payment_down = fault_assumption("payment_down",
@@ -273,28 +291,31 @@ fault_scenario("no_insert_on_payment_failure",
         assert_true(r.status >= 400, "should fail without payment"),
         # Prove: no INSERT happened in the database.
         assert_never(where=lambda e:
-            e.type == "wal" and e.data.get("table") == "orders"
-            and e.data.get("action") == "INSERT"),
+            e.type == "stdout" and e.service == "api"
+            and e.data.get("event") == "row_inserted"
+            and e.data.get("table") == "orders"),
     ],
 )
 ```
 
 **Why this matters:** the API returned an error, but did it actually
-rollback the database transaction? `assert_never` on the WAL proves
+rollback the database transaction? `assert_never` on the commit log proves
 no data was persisted — the strongest guarantee you can make.
 
-## Kafka: topic consumer events
+## Kafka: verifying published messages
 
 > **Requires Docker.**
 
-Watch a Kafka topic for messages:
+Watching a Kafka topic directly needs the `topic` event-source plugin.
+Without it, the loadable pattern is the same as for Postgres: have the
+worker log each message it publishes as structured JSON, then assert on
+those log events.
 
 ```python
 kafka = service("kafka",
     interface("broker", "kafka", 9092),
     image = "confluentinc/cp-kafka:7.6",
     healthcheck = tcp("localhost:9092"),
-    observe = [topic("order-events", decoder=json_decoder())],
 )
 
 worker = service("worker",
@@ -303,11 +324,14 @@ worker = service("worker",
     env = {"KAFKA_BROKERS": kafka.broker.internal_addr},
     depends_on = [kafka],
     healthcheck = http("localhost:8080/health"),
+    # The worker logs each published message, e.g.
+    # {"event":"published","topic":"order-events","order_id":42}
+    observe = [observe.stdout(decoder=decoder("json"))],
 )
 ```
 
-`topic("order-events", decoder=json_decoder())` consumes from the
-`order-events` topic and decodes each message as JSON.
+The worker logs each message it publishes; we assert those log events
+carry the expected payload.
 
 ```python
 def process_order():
@@ -319,14 +343,16 @@ fault_scenario("order_event_published",
     faults = [],
     expect = lambda r: [
         assert_eq(r.status, 200),
-        # The event should appear on the topic.
+        # The publish should be logged.
         assert_eventually(where=lambda e:
-            e.type == "topic" and e.data.get("order_id") == 42),
+            e.type == "stdout" and e.service == "worker"
+            and e.data.get("event") == "published"
+            and e.data.get("order_id") == 42),
     ],
 )
 ```
 
-### Topic + fault: message loss detection
+### Message loss detection
 
 ```python
 def process_order_99():
@@ -343,9 +369,11 @@ fault_scenario("no_orphan_events_on_db_failure",
     faults = db_down,
     expect = lambda r: [
         assert_true(r.status >= 500, "should fail on DB error"),
-        # No event should appear — the DB write failed.
+        # No publish should be logged - the DB write failed.
         assert_never(where=lambda e:
-            e.type == "topic" and e.data.get("order_id") == 99),
+            e.type == "stdout" and e.service == "worker"
+            and e.data.get("event") == "published"
+            and e.data.get("order_id") == 99),
     ],
 )
 ```
@@ -354,23 +382,39 @@ This catches a common bug: publishing an event before confirming
 the database write. If the DB fails after publish, the event is
 orphaned — consumers process an order that doesn't exist.
 
-## Redis: polling state
+> **Note on `.data` types.** `.data` auto-decodes the JSON log line into
+> native Starlark values: a JSON string stays a string, a JSON number
+> becomes an int (so `order_id` of 42 compares as `42`, not `"42"`).
+> Match against the native type in your predicates.
+
+## Redis: verifying state changes
 
 > **Requires Docker.**
 
-Poll Redis keys for state changes:
+Polling Redis directly needs the `poll` event-source plugin. With the
+built-in stdout source, have the API log the session it writes to Redis
+and assert on that:
 
 ```python
 redis = service("redis",
     interface("main", "redis", 6379),
     image = "redis:7",
     healthcheck = tcp("localhost:6379"),
-    observe = [poll(command="GET session:active", interval="500ms")],
+)
+
+api = service("api",
+    interface("http", "http", 8080),
+    image = "myapp:latest",
+    env = {"REDIS_ADDR": redis.main.internal_addr},
+    depends_on = [redis],
+    healthcheck = http("localhost:8080/health"),
+    # The API logs session writes, e.g.
+    # {"event":"session_created","user":"alice"}
+    observe = [observe.stdout(decoder=decoder("json"))],
 )
 ```
 
-`poll()` runs a command at an interval and emits an event each time
-the result changes:
+The API logs each session it creates; we assert that log event appears:
 
 ```python
 def login_user():
@@ -383,8 +427,8 @@ fault_scenario("session_created",
     expect = lambda r: [
         assert_eq(r.status, 200),
         assert_eventually(where=lambda e:
-            e.type == "poll" and e.service == "redis"
-            and e.data.get("value") != ""),
+            e.type == "stdout" and e.service == "api"
+            and e.data.get("event") == "session_created"),
     ],
 )
 ```
@@ -425,27 +469,28 @@ faultbox test events-test.star --output trace.json
 faultbox test events-test.star --shiviz trace.shiviz
 ```
 
-**JSON** — all events (syscall + stdout + WAL + topic + poll) in one file
+**JSON** - all events (syscall + stdout events) in one file
 with vector clocks, timestamps, and service attribution.
 
 **ShiViz** — event source events appear on the same service swimlane as
 syscall events. Open at https://bestchai.bitbucket.io/shiviz/ to see:
-- DB syscall events AND WAL events on the same timeline
+- DB syscall events AND stdout log events on the same timeline
 - Causal arrows between services
-- The exact ordering: "the write syscall happened, then the WAL insert
-  event was emitted, then the Kafka topic event appeared"
+- The exact ordering: "the write syscall happened, then the service
+  logged the committed row, then the downstream call was made"
 
 This is useful for debugging distributed transactions — did the event
 publish happen before or after the database commit?
 
 ## What you learned
 
-- `observe=[stdout(decoder=...)]` captures service output as events
-- Three decoders: `json_decoder()`, `logfmt_decoder()`, `regex_decoder()`
-- `.data` auto-decodes — no `json.decode()` needed
-- `wal_stream(tables=[...])` watches Postgres WAL for INSERT/UPDATE/DELETE
-- `topic("name", decoder=...)` consumes Kafka messages
-- `poll(command="...", interval="...")` polls Redis or any command
+- `observe=[observe.stdout(decoder=...)]` captures service output as events
+- Three decoders: `decoder("json")`, `decoder("logfmt")`, `decoder("regex", pattern=...)`
+- `.data` auto-decodes - no `json.decode()` needed (fields arrive as strings)
+- `observe.stdout` / `observe.stderr` are the runtime's built-in event
+  sources; WAL / Kafka / Redis channels need Go event-source plugins
+- Have services log their DB commits, publishes, and state changes as
+  JSON - then assert on those `stdout` events for end-to-end guarantees
 - `fault_scenario()` with `expect=` handles both response assertions and trace assertions
 - `assert_eventually` and `assert_never` work in `expect=` for event source verification
 - Combine syscall faults + event sources to test end-to-end failure effects

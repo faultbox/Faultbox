@@ -118,6 +118,11 @@ api = service("api",
 )
 ```
 
+`interface(...)` must come *before* the named kwargs - Starlark won't
+accept a positional argument after a keyword one, so
+`service("api", image="myapp:latest", interface(...))` is a parse
+error.
+
 `depends_on = [auth]` ensures the mock is listening before `api`
 starts. Inside the container network, `api` reaches `auth` by its
 service name — same as for real services.
@@ -125,21 +130,28 @@ service name — same as for real services.
 ### 3. Test the authenticated path
 
 ```python
+load("@faultbox/mocks/jwt.star", "jwt")
+
+issuer = jwt.server(name = "issuer", interface = interface("main", "http", 8091))
+
 def test_authenticated_request_succeeds():
     resp = api.public.get(path = "/me", headers = {
-        "Authorization": "Bearer " + stub_jwt(kid = "test-1"),
+        "Authorization": "Bearer " + issuer.sign(claims = {"sub": "alice"}),
     })
     assert_eq(resp.status, 200)
 
-    assert_eventually(events()
-        .where(service = "auth", op = "GET /.well-known/openid-configuration/jwks")
-        .count() >= 1)
+    assert_true(len(events(
+        service = "auth",
+        op      = "GET /.well-known/openid-configuration/jwks",
+    )) >= 1)
 ```
 
-The `events()` assertion verifies the SUT actually fetched JWKS — not
-just succeeded by luck or cached state. Mock services emit events into
-the same event log as real services, so every existing assertion works
-unchanged.
+`jwt.server()` (Chapter 21) mints a signed token whose keys the auth
+stub could publish; here we only need a well-formed bearer to reach the
+authenticated path. The `events(...)` query returns a list - `len(...)`
+verifies the SUT actually fetched JWKS, not just succeeded by luck or
+cached state. Mock services emit events into the same event log as real
+services, so every existing query works unchanged.
 
 ## Dynamic responses
 
@@ -148,10 +160,14 @@ JWT whose subject matches the `user=` query param so tests can vary
 the logged-in identity.
 
 ```python
+load("@faultbox/mocks/jwt.star", "jwt")
+
+kp = jwt.keypair()  # one Ed25519 keypair, minted at spec-load time
+
 def mint_token(req):
     user = req["query"].get("user", "anonymous")
     return json_response(200, {
-        "access_token": sign_jwt({"sub": user, "exp": now() + 3600}),
+        "access_token": jwt.sign(kp, claims = {"sub": user, "exp": 1700003600}),
         "token_type":   "Bearer",
         "expires_in":   3600,
     })
@@ -164,6 +180,11 @@ auth = mock_service("auth",
     },
 )
 ```
+
+Claims like `exp` are plain values you set - the mock signs whatever you
+hand it, so token-expiry semantics stay under your control. There's no
+implicit clock builtin; if you want "now + 1 hour" compute the value in
+your test driver and pass it in.
 
 `dynamic(fn)` wraps a Starlark callable invoked per request. It
 receives a dict with `method`, `path`, `headers`, `query`, and `body`
@@ -283,18 +304,28 @@ jwks_unavailable = fault_assumption("jwks_unavailable",
     rules  = [error(path = "/.well-known/**", status = 503)],
 )
 
+no_500_from_api = monitor("no_500_from_api",
+    on    = lambda e: e.service == "api",
+    check = lambda e, state: e.fields.get("status_code") != "500",
+)
+
 fault_scenario("auth_fails_open",
-    target  = jwks_unavailable,
-    monitor = monitor(lambda e: e.service != "api" or e.status != 500),
+    scenario = lambda: api.public.get(path = "/me"),
+    faults   = [jwks_unavailable],
+    monitors = [no_500_from_api],
 )
 ```
 
-The mock answers normally, then the proxy layer rewrites the response
-to 503 — same machinery used for real services in Chapter 9. You can
+`fault_scenario()` takes `scenario=` (the probe callable), `faults=`
+(the assumptions to apply), and `monitors=` (scenario-scoped oracles).
+A `monitor()` is `on=` (which events to watch) plus `check=` (the
+invariant); it fails the test the moment `check` returns false. The
+mock answers normally, then the proxy layer rewrites the response to
+503 - same machinery used for real services in Chapter 9. You can
 combine mocks with recipes the same way:
 
 ```python
-load("@faultbox/recipes/redis.star", "redis_recipes")
+load("@faultbox/recipes/redis.star", redis_recipes = "redis")
 
 redis_oom = fault_assumption("cache_oom",
     target = cache.main,

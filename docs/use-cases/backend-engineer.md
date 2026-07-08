@@ -56,8 +56,9 @@ every PR. The next Postgres failover is a non-event.
 
 - **Week 2:** Adds `--explore=all` for concurrent payment tests - two
   payments for the same order arriving simultaneously.
-- **Month 2:** Uses `observe=[wal_stream(...)]` to monitor Postgres WAL
-  events and verify transaction isolation.
+- **Month 2:** Observes the app's commit log via
+  `observe=[observe.stdout(decoder=decoder("json"))]` to verify
+  transaction isolation (dedicated Postgres WAL streaming is planned).
 - **Month 3:** Builds a full failure matrix: Postgres down, Redis down,
   payment gateway timeout, disk full - each is a test case in CI.
 

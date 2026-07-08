@@ -26,14 +26,13 @@ def test_db_down():
 **Invariant:** "An order confirmed to the user is ALWAYS persisted in the database."
 
 ```python
-def order_confirmed_means_persisted(event):
-    """If we told the user 'confirmed', the data MUST be in the DB."""
-    if (event.type == "stdout" and event.service == "api"
-            and event.data.get("status") == "confirmed"
-            and event.data.get("persisted") != "true"):
-        fail("order confirmed but not persisted!")
-
-monitor(order_confirmed_means_persisted, service="api")
+# If we told the user 'confirmed', the data MUST be in the DB.
+monitor("order_confirmed_means_persisted",
+    on = match.event(type="stdout", service="api"),
+    check = lambda event, state:
+        not (event.data.get("status") == "confirmed"
+             and event.data.get("persisted") != "true"),
+)
 ```
 
 The test verifies one scenario. The invariant catches a bug in ANY
@@ -74,46 +73,60 @@ For each service, ask: "what would be catastrophic if it happened?"
 
 ### Pattern 1: "This should never happen"
 
-```python
-def no_negative_stock(event):
-    if (event.type == "stdout" and event.service == "inventory"
-            and event.data.get("stock") is not None):
-        stock = int(event.data["stock"])
-        if stock < 0:
-            fail("stock went negative: " + str(stock))
+A monitor's `check=` lambda returns `False` to fail the test. Here it
+fails the instant a stdout event reports negative stock:
 
-monitor(no_negative_stock, service="inventory")
+```python
+monitor("no_negative_stock",
+    on    = match.event(type="stdout", service="inventory"),
+    check = lambda event, state:
+        event.data.get("stock") == None or int(event.data["stock"]) >= 0,
+)
 ```
 
 ### Pattern 2: "If A happens, B must have happened"
 
+A monitor keeps per-test state in `state=`. `update=` accumulates the
+IDs seen on each side (both services log JSON to stdout, captured via
+`observe.stdout`); `check=` verifies that every confirmed order is also
+persisted. The `on=` matcher uses `match.any(...)` so the monitor sees
+events from both services:
+
 ```python
-confirmed_orders = {"ids": []}
-persisted_orders = {"ids": []}
-
-def track_confirmed(event):
-    if (event.type == "stdout" and event.service == "api"
-            and event.data.get("action") == "order_confirmed"):
-        confirmed_orders["ids"].append(event.data["order_id"])
-
-def track_persisted(event):
-    if (event.type == "wal" and event.data.get("table") == "orders"
-            and event.data.get("action") == "INSERT"):
-        persisted_orders["ids"].append(event.data["order_id"])
-
-monitor(track_confirmed, service="api")
-monitor(track_persisted, service="db")
+monitor("order_confirmed_means_persisted",
+    on = match.any(
+        match.event(type="stdout", service="api"),
+        match.event(type="stdout", service="db"),
+    ),
+    state_init = {"confirmed": [], "persisted": []},
+    update = lambda event, state: {
+        "confirmed": state["confirmed"] + (
+            [event.data["order_id"]]
+            if event.data.get("action") == "order_confirmed" else []),
+        "persisted": state["persisted"] + (
+            [event.data["order_id"]]
+            if event.data.get("action") == "INSERT" else []),
+    },
+    # Every confirmed order must already appear in the persisted set.
+    check = lambda event, state:
+        all([oid in state["persisted"] for oid in state["confirmed"]]),
+)
 
 def test_order_flow():
     api.post(path="/orders", body='...')
-
-    # After the test, verify invariant:
-    for oid in confirmed_orders["ids"]:
-        assert_true(oid in persisted_orders["ids"],
-            "order " + oid + " confirmed but not persisted")
+    # The monitor above runs on every event and fails the test if an
+    # order is ever confirmed without a matching persist.
 ```
 
+Attach `observe=[observe.stdout(decoder=decoder("json"))]` to both the
+`api` and `db` services so their log lines arrive as `type="stdout"`
+events with structured fields in `event.data`.
+
 ### Pattern 3: "A must happen before B"
+
+`assert_before(first=, then=)` asserts one event precedes another in the
+trace. Here we require the DB to `fsync` its WAL before the API emits its
+"responded" log line - i.e. data is durable before the client is told OK:
 
 ```python
 def test_wal_before_response():
@@ -123,29 +136,46 @@ def test_wal_before_response():
         assert_eq(resp.status, 201)
 
         assert_before(
-            first={"service": "db", "type": "wal", "data.action": "INSERT"},
-            then={"service": "api", "type": "step_recv"},
+            first={"service": "db", "syscall": "fsync"},
+            then=lambda e: e.type == "stdout" and e.service == "api"
+                and e.data.get("action") == "responded",
         )
     trace(db, syscalls=["write", "fsync"], run=scenario)
 ```
 
 ### Pattern 4: "Count constraint"
 
+A monitor counts matching events in `state=` and fails if the count ever
+exceeds the bound. Here: an order must produce **at most** one publish
+log line (the producer logs each publish to stdout):
+
 ```python
-publish_count = {"n": 0}
-
-def count_publishes(event):
-    if event.type == "topic" and event.data.get("topic") == "order-events":
-        publish_count["n"] += 1
-
-monitor(count_publishes)
+monitor("at_most_one_publish",
+    on = match.event(type="stdout", service="producer"),
+    state_init = {"n": 0},
+    update = lambda event, state: {
+        "n": state["n"] + (1 if event.data.get("action") == "publish" else 0),
+    },
+    check = lambda event, state: state["n"] <= 1,
+)
 
 def test_exactly_one_event():
-    """Each order should produce exactly one Kafka event."""
-    publish_count["n"] = 0
+    """Each order should produce exactly one publish event."""
     api.post(path="/orders", body='...')
-    assert_eq(publish_count["n"], 1,
-        "expected 1 event, got " + str(publish_count["n"]))
+    # The monitor fails the moment a second publish is logged.
+```
+
+For an exact-count check (exactly one, not just "at most one"), assert on
+the event count at the end of the scenario:
+
+```python
+def test_exactly_one_event():
+    api.post(path="/orders", body='...')
+    publishes = events(where=lambda e:
+        e.type == "stdout" and e.service == "producer"
+        and e.data.get("action") == "publish")
+    assert_eq(len(publishes), 1,
+        "expected 1 event, got " + str(len(publishes)))
 ```
 
 ## Monitors vs assertions
@@ -161,25 +191,50 @@ def test_exactly_one_event():
 
 **Use monitors** for: "this property should ALWAYS hold."
 
-**Best practice:** put invariant monitors in a shared file and load them
-in every spec:
+**Best practice:** put invariant monitors in a shared file behind a
+function that returns them, then attach them where you need them:
 
 ```python
 # invariants.star
-def register_invariants():
-    monitor(no_negative_stock, service="inventory")
-    monitor(no_orphan_events, service="worker")
-    monitor(no_duplicate_messages)
+def invariant_monitors():
+    return [
+        monitor("no_negative_stock",
+            on = match.event(type="stdout", service="inventory"),
+            check = lambda event, state:
+                event.data.get("stock") == None or int(event.data["stock"]) >= 0,
+        ),
+        monitor("no_orphan_events",
+            on = match.event(type="stdout", service="worker"),
+            check = lambda event, state:
+                event.data.get("action") != "orphan",
+        ),
+    ]
 ```
+
+Calling `invariant_monitors()` at the top level of a spec registers each
+monitor **spec-wide** - it runs on every test:
 
 ```python
 # any-test.star
-load("invariants.star", "register_invariants")
-register_invariants()
+load("invariants.star", "invariant_monitors")
+
+INVARIANTS = invariant_monitors()   # spec-wide: active in every test
 
 def test_my_scenario():
     # invariants are active during this test
     ...
+```
+
+To scope invariants to a particular fault instead, pass them to
+`fault_assumption(monitors=)` / `fault_scenario(monitors=)` /
+`fault_matrix(monitors=)`:
+
+```python
+db_down = fault_assumption("db_down",
+    target = api,
+    connect = deny("ECONNREFUSED"),
+    monitors = invariant_monitors(),   # active whenever this fault applies
+)
 ```
 
 ## Invariants under fault

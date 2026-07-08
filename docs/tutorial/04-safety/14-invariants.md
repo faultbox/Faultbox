@@ -68,17 +68,27 @@ This must hold in every cell of the matrix:
 If ANY combination violates this, you have a data loss bug.
 
 In the domain-centric model, invariants live on **fault assumptions** as
-monitors — they fire automatically in every test that uses the assumption:
+monitors - they fire automatically in every test that uses the assumption.
+A monitor is a small state machine: `on=` selects the events it cares
+about, `update=` folds each one into per-test state, and `check=` returns
+`False` the moment the invariant is broken:
 
 ```python
-def order_persisted(event):
-    # If API confirmed, DB must have the row
-    if event["type"] == "stdout" and "confirmed" in event.get("body", ""):
-        rows = events(where=lambda e: e.type == "wal" and e.data.get("action") == "INSERT")
-        if len(rows) == 0:
-            fail("order confirmed but not persisted!")
-
-persistence_check = monitor(order_persisted)
+# Track every persisted row; when the API confirms an order, that
+# order_id must already be in the persisted set.
+persistence_check = monitor("order_persisted",
+    on = match.any(
+        match.event(type="wal", action="INSERT"),
+        match.event(type="stdout", service="api", status="confirmed"),
+    ),
+    state_init = {"persisted": []},
+    update = lambda e, s: (
+        {"persisted": s["persisted"] + [e.order_id]}
+            if e.type == "wal" else s
+    ),
+    check = lambda e, s:
+        e.type != "stdout" or e.order_id in s["persisted"],
+)
 
 db_down = fault_assumption("db_down",
     target = api,
@@ -105,7 +115,7 @@ you can point to the exact moment it went wrong.
 | Confirmed order always persisted | `confirmed → persisted` | Confirmed but no DB row |
 
 **In Faultbox:** safety properties map to `assert_never()` and monitors
-that call `fail()` on violation.
+whose `check=` returns `False` on violation.
 
 ```python
 # Safety: stock never negative
@@ -177,17 +187,25 @@ kafka.Publish("order-created", order)
 
 This code assumes: "if Insert fails, don't publish to Kafka." The
 invariant is: **no Kafka event without a successful DB insert.** Express
-it as a monitor on the fault assumption:
+it as a monitor on the fault assumption. The monitor accumulates every
+successful INSERT in its state, then fails the instant a Kafka publish
+arrives for an order that was never inserted:
 
 ```python
-def no_orphan_events(event):
-    if event["type"] == "topic" and event.get("topic") == "order-created":
-        db_rows = events(where=lambda e:
-            e.type == "wal" and e.data.get("action") == "INSERT")
-        if len(db_rows) == 0:
-            fail("Kafka event published without DB insert")
-
-orphan_check = monitor(no_orphan_events)
+orphan_check = monitor("no_orphan_events",
+    on = match.any(
+        match.event(type="wal", action="INSERT"),
+        match.event(type="topic", topic="order-created"),
+    ),
+    state_init = {"inserted": []},
+    update = lambda e, s: (
+        {"inserted": s["inserted"] + [e.order_id]}
+            if e.type == "wal" else s
+    ),
+    # A publish is legal only if its order was already inserted.
+    check = lambda e, s:
+        e.type != "topic" or e.order_id in s["inserted"],
+)
 
 db_write_fail = fault_assumption("db_write_fail",
     target = db,
@@ -295,16 +313,22 @@ The real test: do invariants hold when things break? In the domain model,
 invariants travel with fault assumptions — you don't wire them per-test:
 
 ```python
-# Invariant monitor: confirmed orders must be persisted
-def order_persisted_check(event):
-    if (event["type"] == "stdout" and event["service"] == "api"
-            and event.get("status") == "confirmed"):
-        rows = events(where=lambda e:
-            e.type == "wal" and e.data.get("action") == "INSERT")
-        if len(rows) == 0:
-            fail("order confirmed but not persisted!")
-
-persistence_monitor = monitor(order_persisted_check, service="api")
+# Invariant monitor: confirmed orders must be persisted.
+# Accumulate every INSERT; when the API says "confirmed", the row must
+# already be there.
+persistence_monitor = monitor("order_persisted",
+    on = match.any(
+        match.event(type="wal", action="INSERT"),
+        match.event(type="stdout", service="api", status="confirmed"),
+    ),
+    state_init = {"persisted": []},
+    update = lambda e, s: (
+        {"persisted": s["persisted"] + [e.order_id]}
+            if e.type == "wal" else s
+    ),
+    check = lambda e, s:
+        e.type != "stdout" or e.order_id in s["persisted"],
+)
 
 # Fault assumptions carry the invariant
 db_slow = fault_assumption("db_slow",

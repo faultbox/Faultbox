@@ -137,7 +137,7 @@ Work through the bug classes in order of incident frequency:
    `error()` for every dependency of your critical flow. This is the
    class behind most production incidents, and one afternoon covers it.
 
-2. **Timeouts and retries next** - `delay()`/`slow()` on the same
+2. **Timeouts and retries next** - `delay()` on the same
    dependencies. Assert latency bounds, not just status codes.
 
 3. **Then the precision classes** for flows where correctness is money:

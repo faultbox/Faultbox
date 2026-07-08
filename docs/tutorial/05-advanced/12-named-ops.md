@@ -110,7 +110,7 @@ scenario(check_inventory)
 fault_matrix(
     scenarios = [place_order, check_inventory],
     faults = [persist_broken, wal_broken],
-    expect = lambda r: assert_true(r.status != 200, "expected failure under fault"),
+    default_expect = lambda r: assert_true(r.status != 200, "expected failure under fault"),
 )
 ```
 

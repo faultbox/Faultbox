@@ -120,11 +120,10 @@ with foreign key constraints.
 
 ## Event Sources
 
-No native event source. Use `stdout` to capture MySQL logs, or `poll` for
-periodic state checks:
+No native event source. Use `observe.stdout` to capture MySQL logs:
 
 ```python
 db = service("mysql", ...,
-    observe = [stdout(decoder=logfmt_decoder())],
+    observe = [observe.stdout(decoder=decoder("logfmt"))],
 )
 ```

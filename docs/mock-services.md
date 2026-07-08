@@ -89,6 +89,8 @@ Routes match `"METHOD PATH"` with `*` (single segment) and `**` (any
 segments) globs.
 
 ```python
+kp = jwt_keypair(kid = "test-1")
+
 auth = mock_service("auth",
     interface("http", "http", 8090),
     routes = {
@@ -96,17 +98,20 @@ auth = mock_service("auth",
             "issuer":   "http://auth:8090",
             "jwks_uri": "http://auth:8090/.well-known/openid-configuration/jwks",
         }),
-        "GET /.well-known/openid-configuration/jwks": json_response(200, {
-            "keys": [{"kty": "OKP", "crv": "Ed25519", "kid": "test-1", "x": "..."}],
-        }),
+        "GET /.well-known/openid-configuration/jwks": json_response(200, jwt_jwks(kp)),
         "POST /token":                                dynamic(lambda req: json_response(200, {
-            "access_token": sign_jwt({"sub": req["query"].get("user", "anon")}),
+            "access_token": jwt_sign(kp, {"sub": req["query"].get("user", "anon")}),
             "expires_in":   3600,
         })),
         "GET /health":                                status_only(204),
     },
 )
 ```
+
+`jwt_keypair()` / `jwt_sign(keypair, claims)` / `jwt_jwks(keypair)` are
+the low-level EdDSA primitives. For the common OIDC-issuer case, reach
+for the higher-level `jwt.server()` helper from `@faultbox/mocks/jwt.star`,
+which stands up the JWKS routes and gives you a `.sign(claims)` method.
 
 HTTP/2 uses the same route table format. Protocol is `"http2"` instead
 of `"http"`. Without TLS, served over h2c (cleartext HTTP/2). With
@@ -307,8 +312,8 @@ user_service = grpc.server(
 )
 
 api = service("api",
-    binary = "./bin/truck-api",
     interface("public", "http", 8080),
+    binary = "./bin/truck-api",
     env = {
         "GRPC_GEO_CONFIG_ADDRESS":   geo_config.main.internal_addr,
         "GRPC_USER_SERVICE_ADDRESS": user_service.main.internal_addr,
@@ -377,9 +382,9 @@ v0.8.6 still works:
 
 ```python
 upstreams = service("upstreams",
-    binary = "./bin/upstream-mocks",
     interface("geo_config",   "grpc", 9001),
     interface("user_service", "grpc", 9003),
+    binary = "./bin/upstream-mocks",
     healthcheck = tcp("localhost:9001"),
     seccomp    = False,
 )

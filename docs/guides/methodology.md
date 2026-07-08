@@ -69,12 +69,13 @@ That gives you 3 tests per dependency — a good starting point.
 **What:** properties that must hold regardless of what goes wrong.
 
 ```python
-# This monitor runs on EVERY test, under EVERY fault:
-def no_negative_stock(event):
-    if event.data.get("stock") and int(event.data["stock"]) < 0:
-        fail("stock went negative: " + event.data["stock"])
-
-monitor(no_negative_stock, service="inventory")
+# This monitor runs on EVERY test, under EVERY fault. The check=
+# lambda returns False to fail the test the instant stock goes negative.
+monitor("no_negative_stock",
+    on    = match.event(type="stdout", service="inventory"),
+    check = lambda event, state:
+        event.data.get("stock") == None or int(event.data["stock"]) >= 0,
+)
 ```
 
 **Why this is the hardest layer:** a test checks one scenario. An
@@ -170,7 +171,7 @@ def test_api_db_disk_full():
 | "DB is completely down" | `fault(api, connect=deny("ECONNREFUSED"))` | Syscall: blocks all connections |
 | "This specific SQL query fails" | `fault(db.pg, error(query="INSERT INTO orders*"))` | Protocol: targets one query |
 | "Disk is full" | `fault(db, write=deny("ENOSPC"))` | Syscall: affects all writes |
-| "Slow reads from one table" | `fault(db.pg, delay(query="SELECT * FROM orders*"))` | Protocol: targets one query |
+| "Slow reads from one table" | `fault(db.pg, delay(query="SELECT * FROM orders*", delay="3s"))` | Protocol: targets one query |
 | "Redis SET fails but GET works" | `fault(cache.redis, error(command="SET"))` | Protocol: targets one command |
 | "Total network partition" | `partition(api, db)` | Syscall: blocks connect both ways |
 | "HTTP 429 from upstream" | `fault(api.http, response(status=429))` | Protocol: specific HTTP response |

@@ -307,7 +307,7 @@ can't pull as a Docker image. Faultbox does not launch the service. It
 stands up its existing protocol proxy in front of each declared
 interface and dials the remote upstream. The SUT reaches the remote
 through the proxy, so every protocol-level fault — `response()`,
-`error()`, `slow()`, gRPC method targeting, SQL matchers — fires
+`error()`, `delay()`, gRPC method targeting, SQL matchers - fires
 exactly as if it were a local container.
 
 ```python
@@ -346,7 +346,7 @@ messages naming the offending kwarg):
 
 - Syscall-level faults (`write=deny()`, `connect=delay()`,
   `op(...)=hold()`, etc.) — Faultbox can't seccomp a remote process.
-  Move them to protocol faults (`response()` / `error()` / `slow()`)
+  Move them to protocol faults (`response()` / `error()` / `delay()`)
   or use `mock_service()` if you need full process control.
 - `seed=`, `reset=`, `reuse=` — Faultbox doesn't own the lifecycle.
 - `volumes=`, `ports=`, `args=`, `binary=`, `image=`, `build=` —
@@ -438,7 +438,7 @@ not keywords.
 
 ### Type: `Interface`
 
-**Constructor:** `interface(name, protocol, port, spec=)`
+**Constructor:** `interface(name, protocol, port, spec=, tls=)`
 
 Declares a communication endpoint on a service. The `protocol` string
 selects which plugin handles step methods and healthchecks.
@@ -449,6 +449,7 @@ selects which plugin handles step methods and healthchecks.
 | `protocol` | string | **yes** | Plugin name — determines available methods |
 | `port` | int | **yes** | Port number |
 | `spec` | string | no | Path to protocol spec file (OpenAPI, protobuf, Avro) |
+| `tls` | `tls_cert(...)` | no | TLS material for the interface's proxy (RFC-038). See [TLS Support](#tls-support). |
 
 **What's user-defined:** The name is yours. The protocol must match a
 registered plugin (see [Protocols](#protocols)).
@@ -575,14 +576,15 @@ print(resp.data[0]["name"])  # 'alice'
 | `.event_type` | `string` | PObserve dotted notation (`"syscall.write"`) |
 | `.data` | `dict` | Auto-decoded payload (from JSON `"data"` field, or all fields) |
 | `.fields` | `dict` | Raw string fields |
-| `.first` | `StarlarkEvent/None` | In `assert_before` `then=` lambda: the matched first event |
 | `.<field_name>` | `string` | Direct access to any field (e.g., `.decision`, `.label`) |
 
 ```python
 assert_eventually(where=lambda e: e.type == "wal" and e.data["op"] == "INSERT")
+
+# assert_before takes dict filters (not lambdas):
 assert_before(
-    first=lambda e: e.data["op"] == "INSERT",
-    then=lambda e: e.data["ref_id"] == e.first.data["id"],
+    first={"service": "db", "syscall": "openat", "path": "/data/wal"},
+    then={"service": "db", "syscall": "write", "path": "/data/wal"},
 )
 ```
 
@@ -895,7 +897,7 @@ real upstream. The proxy is transparent when no rules are installed —
 behaviour is byte-identical to dialing the upstream directly. When
 `fault(interface_ref, response(...)|error(...)|drop(...))` installs a
 rule, the proxy applies it to the SUT's app-initiated traffic, not just
-traffic from `step()` calls. User env values that contain a literal
+traffic from test-body requests. User env values that contain a literal
 upstream address (e.g. `DATABASE_URL="postgres://u:p@localhost:5432/db"`
 via `pg.main.addr` concatenation) are substring-rewritten the same way.
 
@@ -1089,7 +1091,7 @@ They are attached to services via the `observe=` parameter.
 api = service("api", "./api",
     interface("public", "http", 8080),
     observe=[
-        stdout(decoder=json_decoder()),
+        observe.stdout(decoder=decoder("json")),
     ],
 )
 
@@ -1097,25 +1099,31 @@ db = service("postgres",
     interface("main", "postgres", 5432),
     image="postgres:16",
     observe=[
-        stdout(decoder=logfmt_decoder()),
-        wal_stream(slot="faultbox"),
+        observe.stderr(decoder=decoder("logfmt")),
     ],
 )
 ```
 
-Events from sources have a type (`"stdout"`, `"wal"`, `"topic"`, `"tail"`,
-`"poll"`) and are queryable by assertions and monitors — same as syscall events.
+Events from sources have a type (`"stdout"`, `"stderr"`, and - once the
+Go-plugin sources below ship a Starlark constructor - `"wal"`, `"topic"`,
+`"tail"`, `"poll"`) and are queryable by assertions and monitors - same
+as syscall events.
 
 ### Built-in Event Sources
 
+Only `observe.stdout` and `observe.stderr` have Starlark constructors
+today. The remaining sources exist as Go event-source plugins but have
+no `observe.*` builtin yet - the factories are reserved (RFC-044 §8.6)
+and will plug into the `observe` namespace in a later release.
+
 | Source | Constructor | What it captures |
 |--------|------------|-----------------|
-| stdout | `stdout(decoder=)` | Service stdout lines, decoded per line |
-| stderr | `stderr(decoder=)` | Service stderr lines, decoded per line (zap/logrus default) |
-| wal_stream | `wal_stream(slot=)` | Postgres logical replication (INSERT/UPDATE/DELETE) |
-| topic | `topic(broker=, topic=, group=)` | Kafka/NATS topic messages |
-| tail | `tail(path=)` | New lines appended to a file (inotify) |
-| poll | `poll(url=, interval=)` | Periodic HTTP endpoint fetch |
+| stdout | `observe.stdout(decoder=)` | Service stdout lines, decoded per line |
+| stderr | `observe.stderr(decoder=)` | Service stderr lines, decoded per line (zap/logrus default) |
+| wal_stream | Go plugin - no Starlark constructor yet (planned) | Postgres logical replication (INSERT/UPDATE/DELETE) |
+| topic | Go plugin - no Starlark constructor yet (planned) | Kafka/NATS topic messages |
+| tail | Go plugin - no Starlark constructor yet (planned) | New lines appended to a file (inotify) |
+| poll | Go plugin - no Starlark constructor yet (planned) | Periodic HTTP endpoint fetch |
 
 ### Decoders
 
@@ -1147,27 +1155,31 @@ observe=[observe.stdout(decoder=decoder("regex", pattern=r"WAL: (?P<action>\w+) 
 Event source events work with all assertion and query functions:
 
 ```python
-# Assert a WAL INSERT happened:
+# Assert a WAL INSERT happened (wal events require the wal_stream Go plugin):
 assert_eventually(where=lambda e: e.type == "wal" and e.data["op"] == "INSERT")
 
-# Monitor stdout for errors:
-monitor(lambda e: fail("unexpected error") if e.type == "stdout" and "ERROR" in e.data.get("level", ""))
+# Monitor stdout for errors - RFC-041 monitor form (check=False FAILs):
+monitor("no_stdout_errors",
+    on    = match.event(type="stdout"),
+    check = lambda event, state: "ERROR" not in event.data.get("level", ""),
+)
 
-# Query Kafka topic events:
+# Query Kafka topic events (topic events require the topic Go plugin):
 msgs = events(where=lambda e: e.type == "topic" and e.data["topic"] == "orders.events")
 ```
 
 ### Diagnosing SUT failures via `stdout` / `stderr`
 
 When a containerized or binary SUT silently hangs at startup or fails
-behind a proxy, attach `observe=[stdout(decoder=...)]` (or `stderr(...)`
-if your service writes logs to fd 2) so the SUT's own log lines
-become **first-class trace events** in the bundle. The bundle
+behind a proxy, attach `observe=[observe.stdout(decoder=...)]` (or
+`observe.stderr(...)` if your service writes logs to fd 2) so the SUT's
+own log lines become **first-class trace events** in the bundle. The bundle
 becomes self-diagnosing — you can see the last function the SUT
 reached without redeploying a debug build.
 
 ```python
-# zap, logrus, slog (default) all write to stderr — capture via stderr().
+# zap, logrus, slog (default) all write to stderr - capture via
+# observe.stderr.
 api = service("truck-api",
     interface("http", "http", 8080),
     binary="/usr/local/bin/truck-api",
@@ -1175,16 +1187,16 @@ api = service("truck-api",
         "DATABASE_HOST": db.mysql.proxy_host,
         "DATABASE_PORT": db.mysql.proxy_port,
     },
-    observe=[stderr(decoder=json_decoder())],
+    observe=[observe.stderr(decoder=decoder("json"))],
     healthcheck=http("localhost:8080/health", timeout="60s"),
 )
 
 # Services that route logs to stdout explicitly (Python defaults,
-# many CLIs) use stdout() — same surface, different fd.
+# many CLIs) use observe.stdout - same surface, different fd.
 worker = service("worker",
     interface("rpc", "tcp", 9000),
     binary="/usr/local/bin/worker",
-    observe=[stdout(decoder=logfmt_decoder())],
+    observe=[observe.stdout(decoder=decoder("logfmt"))],
 )
 
 # Capture both — the SUT writes errors to stderr, business events to
@@ -1194,8 +1206,8 @@ mixed = service("mixed",
     interface("api", "http", 8080),
     binary="/usr/local/bin/mixed",
     observe=[
-        stdout(decoder=json_decoder()),
-        stderr(decoder=json_decoder()),
+        observe.stdout(decoder=decoder("json")),
+        observe.stderr(decoder=decoder("json")),
     ],
 )
 ```
@@ -1221,15 +1233,15 @@ This pattern was load-bearing for the v0.12.15.x diagnostic arc — three
 proxy bugs (handshake, RESP3 framing, goroutine ctx-rooting) each
 diagnosed from a customer bundle on the first attempt because the SUT's
 fatal log was already in the trace. If you author specs that go to
-customers, default to including `observe=[stdout(decoder=...)]` on the
-SUT — it's cheap to keep on, expensive to add later when something
-breaks.
+customers, default to including `observe=[observe.stdout(decoder=...)]`
+on the SUT - it's cheap to keep on, expensive to add later when
+something breaks.
 
 **Decoder choice:**
 
-- `json_decoder()` — structured loggers (zap, zerolog, slog default)
-- `logfmt_decoder()` — `key=value` style (logrus, klog)
-- `regex_decoder(pattern=...)` — unstructured logs; capture the fields you need
+- `decoder("json")` - structured loggers (zap, zerolog, slog default)
+- `decoder("logfmt")` - `key=value` style (logrus, klog)
+- `decoder("regex", pattern=...)` - unstructured logs; capture the fields you need
 
 If your SUT defaults to a non-stdout sink (file, syslog, proprietary
 format), gate the stdout output behind an env var so production behavior
@@ -2136,20 +2148,17 @@ where=lambda e: e.service == "db" and int(e.fields.get("size", "0")) > 4096
 #### `assert_before(first=, then=)`
 
 Asserts that the first event matching `first` occurs before the first event
-matching `then` in the trace. Arguments can be dicts (same filter keys as
-`assert_eventually`) or lambda predicates.
+matching `then` in the trace. Both `first=` and `then=` take **dicts** of
+filter keys (same keys as `assert_eventually`: `service`, `syscall`, `path`,
+`decision`, ...). Matching is over `syscall` events. Lambda predicates are
+not accepted here, and there is no cross-event correlation between the
+matched `first` and `then` events.
 
 ```python
 # Dict matching:
 assert_before(
     first={"service": "inventory", "syscall": "openat", "path": "/tmp/inventory.wal"},
     then={"service": "inventory", "syscall": "write", "path": "/tmp/inventory.wal"},
-)
-
-# Lambda predicates with correlation — then= receives the matched first event:
-assert_before(
-    first=lambda e: e.data["op"] == "INSERT",
-    then=lambda e: e.data["ref_id"] == e.first.data["id"],
 )
 ```
 
@@ -2528,7 +2537,7 @@ def body():
 `ignore=` accepts a matcher or callable for events that should not
 reset the quiescence timer (heartbeats, telemetry, metric flushes).
 
-### `test(name, body=, setup=, expect=, timeout=, terminate_when=, clock=)`
+### `test(name, body=, setup=, expect=, timeout=, terminate_when=, assume=, clock=)`
 
 Declarative test wrapper with explicit temporal config. Registered as
 `test_<name>` so CLI `--test foo` and `--test test_foo` both work.
@@ -2592,6 +2601,18 @@ Predicates receive a `trace` object. Most-used operators:
 causal methods (`happens_before/after`, `concurrent_with`,
 `same_service_as`, `preceded_by/within`, `followed_by/within`,
 `directly_caused_by`, `duration_since`).
+
+### `duration(str) → int`
+
+Parses a duration string (`"200ms"`, `"1.5s"`, `"2m"`) into integer
+**nanoseconds**. `event.duration_since(other)` returns the same units, so
+the two compose with numeric comparisons (`<`, `<=`, `>`, `>=`).
+
+```python
+# Assert two events happened within 200ms of each other:
+eventually(lambda t:
+    t.event(type="response").duration_since(t.event(type="request")) < duration("200ms"))
+```
 
 ---
 
@@ -2669,10 +2690,12 @@ cascade = fault_assumption("cascade",
 **With monitors:**
 
 ```python
-def check_no_traffic(event):
-    fail("traffic reached inventory despite being down")
-
-no_traffic = monitor(check_no_traffic, service="inventory", syscall="read")
+# check= returns False on the first matching event => the test FAILs,
+# citing that event ("this must never happen").
+no_traffic = monitor("no_traffic",
+    on = match.event(type="syscall", service="inventory", syscall="read"),
+    check = lambda event, state: False,
+)
 
 inventory_down = fault_assumption("inventory_down",
     target = inventory,
@@ -2883,11 +2906,17 @@ fault_scenario("no_stale_cache_after_failure",
 Use event sources (`observe=`) to track produced and consumed messages,
 then verify in `expect`:
 
+The `topic` event source (Kafka/NATS messages) is a Go event-source
+plugin; it has no `observe.*` Starlark constructor yet, so it can't be
+attached inline like `observe.stdout`. The queries below show how you
+assert over `"topic"`-typed events once that source is wired. To capture
+produce/consume activity today, attach `observe.stdout` /
+`observe.stderr` to the SUT and match its own structured log lines.
+
 ```python
 kafka = service("kafka",
     interface("broker", "kafka", 9092),
     image = "confluentinc/cp-kafka:7.6",
-    observe = [topic("order-events", decoder=json_decoder())],
     healthcheck = tcp("localhost:9092"),
 )
 
@@ -2953,16 +2982,19 @@ For invariants that must hold across ALL scenarios and faults — not just
 one specific test — use monitors on fault assumptions:
 
 ```python
-def no_orphan_events(event):
-    """If Kafka event published, DB row must exist."""
-    if event["type"] == "topic" and event.get("order_id"):
-        rows = db.main.query(
-            sql="SELECT count(*) as n FROM orders WHERE id='" + event["order_id"] + "'"
-        ).data[0]["n"]
-        if rows == 0:
-            fail("orphan Kafka event: order " + event["order_id"] + " not in DB")
-
-orphan_check = monitor(no_orphan_events)
+# A monitor's update/check lambdas run sandboxed - no queries, no fail().
+# Express "no publish without a committed row" by counting the two observed
+# streams and checking the relation (published must not outrun committed).
+orphan_check = monitor("no_orphan_events",
+    on = match.any(match.event(type="topic"), match.event(type="wal")),
+    state_init = {"published": 0, "committed": 0},
+    update = lambda event, state: {
+        "published": state["published"] + (1 if event.type == "topic" else 0),
+        "committed": state["committed"] + (
+            1 if event.type == "wal" and event.data.get("op") == "INSERT" else 0),
+    },
+    check = lambda event, state: state["published"] <= state["committed"],
+)
 
 # Attach to every fault that could cause this inconsistency
 db_write_error = fault_assumption("db_write_error",
@@ -3120,8 +3152,8 @@ Events use dotted `event_type` for PObserve compatibility:
 | `proxy_conn_close` | Proxy connection terminated; carries `bytes_c2s` / `bytes_s2c` / `duration_ms` / `reason` |
 | `proxy_handshake_complete` | Protocol-aware proxy finished its auth/handshake phase (mysql, postgres, redis) |
 | `proxy_stall` | Proxy direction blocked on pending bytes for ≥ stall threshold (default 5s warn, 30s extend) |
-| `stdout` | Service stdout line (when `observe=[stdout(...)]`) |
-| `stderr` | Service stderr line (when `observe=[stderr(...)]`) |
+| `stdout` | Service stdout line (when `observe=[observe.stdout(...)]`) |
+| `stderr` | Service stderr line (when `observe=[observe.stderr(...)]`) |
 
 The `partition_key` field (default: service name) enables routing events to
 per-service PObserve monitor instances.

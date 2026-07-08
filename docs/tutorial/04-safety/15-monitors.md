@@ -10,10 +10,10 @@ specific points in the test. But assertions have a timing problem: they
 check at the moment you call them. If a violation happens between two
 assertions, you miss it.
 
-**Monitors** solve this. A monitor is a callback that fires on **every
-event** as it arrives — syscall events, protocol events, stdout events,
-WAL events, topic events. If your invariant is violated at any point
-during any test, the monitor catches it immediately.
+**Monitors** solve this. A monitor is a small state machine that fires on
+**every matching event** as it arrives - syscall events, protocol events,
+stdout events, WAL events, topic events. If your invariant is violated at
+any point during any test, the monitor catches it immediately.
 
 This chapter teaches you to:
 - **Understand monitor lifecycle** — when they start, fire, and stop
@@ -23,26 +23,34 @@ This chapter teaches you to:
 
 ## What is a monitor?
 
-A monitor is a function that receives every matching event in real-time:
+A monitor has four parts: a name, an event matcher (`on=`), optional
+per-test memory (`state_init=` + `update=`), and a verdict (`check=`).
+For every event that matches `on=`, Faultbox folds it into the state via
+`update`, then calls `check`. If `check` returns `False`, the test fails
+immediately.
 
 ```python
-def my_monitor(event):
-    if something_bad(event):
-        fail("invariant violated: " + str(event.data))
-
-monitor(my_monitor, service="api")
+monitor("stock_never_negative",
+    on         = match.event(type="stdout", service="api"),
+    state_init = {"stock": 0},
+    update     = lambda e, s: {"stock": int(e.stock)} if e.stock else s,
+    check      = lambda e, s: s["stock"] >= 0,
+)
 ```
 
-When registered, the monitor is called for every event from the specified
-service. If the function calls `fail()`, the test fails immediately with
-a "monitor violation" error.
+`on=` is a matcher from the `match` module - `match.event(...)` selects
+by `type`, `service`, and any event field; `match.any(...)` / `match.all(...)`
+compose them. The monitor is called for every matching event; the moment
+`check` returns `False`, the test fails with a "monitor violation" error.
 
 ## Monitor lifecycle
 
 ### When does a monitor start?
 
-When you call `monitor(fn, ...)`. It begins receiving events from that
-moment forward.
+When you call `monitor(name, on=...)` at the top level, it is registered
+spec-wide and receives events in every test. Passed to
+`fault_assumption(monitors=)`, `fault_scenario(monitors=)`, or
+`fault_matrix(monitors=)`, it is scoped to just those tests.
 
 ### When does a monitor fire?
 
@@ -51,10 +59,10 @@ the event is delivered to all monitors before processing continues.
 
 ### When does a monitor stop?
 
-At the end of the test. Each test starts with a clean set of monitors.
-Monitors from one test don't carry over to the next.
+At the end of the test. `state_init` is seeded fresh for each test, so
+one test's accumulated state never carries over to the next.
 
-### What happens when a monitor calls fail()?
+### What happens when check returns False?
 
 The test fails **immediately**. The failure message includes which
 monitor triggered it and the event that caused it. No further events
@@ -70,81 +78,72 @@ are processed for that test.
 ### Property: "A must happen before B"
 
 ```python
-seen_write = {"happened": False}
-
-def write_before_response(event):
-    # Track: did the WAL write happen?
-    if (event.type == "syscall" and event.service == "db"
-            and event.fields.get("syscall") == "write"
-            and "wal" in event.fields.get("path", "")):
-        seen_write["happened"] = True
-
-    # Check: when the response is sent, was write already done?
-    if (event.type == "step_recv" and event.service == "test"):
-        if not seen_write["happened"]:
-            fail("response sent before WAL write!")
-
-monitor(write_before_response)
+monitor("write_before_response",
+    on = match.any(
+        # A: the WAL write on the db service.
+        match.event(type="syscall", service="db", syscall="write", path="*wal*"),
+        # B: the response handed back to the test driver.
+        match.event(type="step_recv", service="test"),
+    ),
+    state_init = {"wrote": False},
+    # Remember once we've seen the WAL write.
+    update = lambda e, s: {"wrote": True} if e.type == "syscall" else s,
+    # When the response is sent, the write must already have happened.
+    check = lambda e, s: e.type != "step_recv" or s["wrote"],
+)
 ```
 
-This fires on every event. When it sees the HTTP response event, it
-checks whether the WAL write already happened. If not — ordering violation.
+This fires on every matching event. `update` flips `wrote` to `True` when
+the WAL write lands; `check` only enforces anything on the response event,
+where it requires the write to already be recorded. If not - ordering
+violation.
 
 ### Property: "A must never happen after B"
 
 ```python
-order_confirmed = {"done": False}
-
-def no_write_after_confirm(event):
-    if (event.type == "stdout" and event.service == "api"
-            and event.data.get("status") == "confirmed"):
-        order_confirmed["done"] = True
-
-    if (order_confirmed["done"]
-            and event.type == "syscall" and event.service == "db"
-            and event.fields.get("syscall") == "write"):
-        fail("DB write happened after order was confirmed to user!")
-
-monitor(no_write_after_confirm)
+monitor("no_write_after_confirm",
+    on = match.any(
+        # B: the order is confirmed to the user.
+        match.event(type="stdout", service="api", status="confirmed"),
+        # A: a DB write.
+        match.event(type="syscall", service="db", syscall="write"),
+    ),
+    state_init = {"confirmed": False},
+    update = lambda e, s: {"confirmed": True} if e.type == "stdout" else s,
+    # Once confirmed, no further DB write is allowed.
+    check = lambda e, s: not (e.type == "syscall" and s["confirmed"]),
+)
 ```
 
 ### Property: "At most N occurrences"
 
 ```python
-retry_count = {"n": 0}
-
-def max_retries(event):
-    if (event.type == "stdout" and event.service == "api"
-            and event.data.get("action") == "retry"):
-        retry_count["n"] += 1
-        if retry_count["n"] > 3:
-            fail("too many retries: " + str(retry_count["n"]) +
-                 " (circuit breaker should have tripped)")
-
-monitor(max_retries, service="api")
+monitor("max_retries",
+    on = match.event(type="stdout", service="api", action="retry"),
+    state_init = 0,
+    update = lambda e, s: s + 1,
+    # More than 3 retries → the circuit breaker should have tripped.
+    check = lambda e, s: s <= 3,
+)
 ```
 
 ### Property: "If A happens, B must follow within N events"
 
 ```python
-pending_writes = {"ids": []}
-
-def write_must_be_fsync(event):
-    # Track writes to WAL
-    if (event.type == "syscall" and event.fields.get("syscall") == "write"
-            and "wal" in event.fields.get("path", "")):
-        pending_writes["ids"].append(event.seq)
-
-    # When fsync happens, clear pending writes
-    if (event.type == "syscall" and event.fields.get("syscall") == "fsync"):
-        pending_writes["ids"] = []
-
-    # If we have too many unsynced writes, flag it
-    if len(pending_writes["ids"]) > 10:
-        fail("WAL has " + str(len(pending_writes["ids"])) +
-             " unsynced writes — data durability risk")
-
-monitor(write_must_be_fsync, service="db")
+monitor("write_must_be_fsync",
+    on = match.any(
+        # A: a WAL write increments the unsynced count.
+        match.event(type="syscall", service="db", syscall="write", path="*wal*"),
+        # B: an fsync clears it.
+        match.event(type="syscall", service="db", syscall="fsync"),
+    ),
+    state_init = {"pending": 0},
+    update = lambda e, s:
+        {"pending": 0} if e.syscall == "fsync"
+        else {"pending": s["pending"] + 1},
+    # Too many unsynced writes is a data-durability risk.
+    check = lambda e, s: s["pending"] <= 10,
+)
 ```
 
 ## Monitors at the syscall level
@@ -169,31 +168,31 @@ api = service("api", BIN + "/mock-api",
     healthcheck = http("localhost:8080/health"),
 )
 
+# Infrastructure invariant: when the DB denies a write, the API must
+# surface an error to the client - never a 2xx. The monitor remembers
+# whether a deny was seen, then vets each API response.
+denied_surfaces_error = monitor("denied_surfaces_error",
+    on = match.any(
+        match.event(type="syscall", service="db", decision="deny*"),
+        match.event(type="step_recv", service="api"),
+    ),
+    state_init = {"denied": False},
+    update = lambda e, s: {"denied": True} if e.type == "syscall" else s,
+    # A response is only allowed to be a success if nothing was denied.
+    check = lambda e, s:
+        e.type != "step_recv" or not s["denied"] or int(e.status) >= 400,
+)
+
 def test_denied_writes_produce_errors():
-    denied_count = {"n": 0}
-
-    def denied_syscall_handled(event):
-        """If a syscall is denied, the service MUST return an error response."""
-        if (event["type"] == "syscall" and event["service"] == "api"
-                and event.get("decision", "").startswith("deny")):
-            denied_count["n"] += 1
-
-    # monitor() inside a test auto-registers immediately.
-    monitor(denied_syscall_handled, service="api")
-
     def scenario():
-        resp = api.post(path="/data/key", body="value")
-        # If any syscall was denied, the response must reflect it.
-        if denied_count["n"] > 0:
-            assert_true(resp.status >= 400,
-                "denied syscalls but got " + str(resp.status))
+        api.post(path="/data/key", body="value")
     fault(db, write=deny("EIO"), run=scenario)
 ```
 
-> **Note:** `monitor()` inside a `test_*` function auto-registers on the
-> event log immediately (backward compatible). At top level, `monitor()`
-> returns a `MonitorDef` value without registering — use it with
-> `fault_assumption(monitors=)` for reusable monitors.
+> **Note:** A top-level `monitor(name, on=...)` registers spec-wide and
+> fires in every test. To scope a monitor to specific tests instead,
+> pass it to `fault_assumption(monitors=)`, `fault_scenario(monitors=)`,
+> or `fault_matrix(monitors=)`.
 
 **Linux:**
 ```bash
@@ -219,7 +218,6 @@ kafka = service("kafka",
     interface("broker", "kafka", 9092),
     image="confluentinc/cp-kafka:7.6",
     healthcheck=tcp("localhost:9092"),
-    observe=[topic("order-events", decoder=json_decoder())],
 )
 
 db = service("db",
@@ -227,86 +225,79 @@ db = service("db",
     image="postgres:16",
     env={"POSTGRES_PASSWORD": "test"},
     healthcheck=tcp("localhost:5432"),
-    observe=[wal_stream(tables=["orders"])],
 )
 
-# Track: event published but no corresponding DB row
-published_ids = {"set": set()}
-persisted_ids = {"set": set()}
-
-def track_kafka_publish(event):
-    if event.type == "topic" and event.data.get("order_id"):
-        oid = event.data["order_id"]
-        published_ids["set"].add(oid)
-
-def track_db_insert(event):
-    if (event.type == "wal" and event.data.get("table") == "orders"
-            and event.data.get("action") == "INSERT"):
-        persisted_ids["set"].add(event.data.get("order_id"))
-
-def no_orphan_events(event):
-    """Kafka event without DB row = orphan (consumer will process
-    an order that doesn't exist)."""
-    if event.type == "topic" and event.data.get("order_id"):
-        oid = event.data["order_id"]
-        if oid not in persisted_ids["set"]:
-            fail("orphan Kafka event: order " + oid +
-                 " published but not in DB")
-
-monitor(track_kafka_publish)
-monitor(track_db_insert, service="db")
-monitor(no_orphan_events)
+# One monitor accumulates every persisted order_id (from WAL INSERT
+# events) and vets every Kafka publish against that set. A publish for
+# an order that was never inserted is an orphan.
+no_orphan_events = monitor("no_orphan_events",
+    on = match.any(
+        match.event(type="wal", table="orders", action="INSERT"),
+        match.event(type="topic", topic="order-events"),
+    ),
+    state_init = {"persisted": []},
+    update = lambda e, s: (
+        {"persisted": s["persisted"] + [e.order_id]}
+            if e.type == "wal" else s
+    ),
+    # Kafka event without a matching DB row = orphan (the consumer would
+    # process an order that doesn't exist).
+    check = lambda e, s:
+        e.type != "topic" or e.order_id in s["persisted"],
+)
 
 def test_no_orphan_on_db_failure():
     """When DB fails, no event should be published to Kafka."""
     def scenario():
-        api.http.post(path="/orders", body='{"item":"widget"}')
+        api.post(path="/orders", body='{"item":"widget"}')
         # Don't assert on status — we're checking the invariant
     fault(db, write=deny("EIO"), run=scenario)
 ```
 
-### What the monitors verify together:
+### What the monitor verifies:
 
-1. `track_db_insert` records every WAL INSERT to the orders table
-2. `track_kafka_publish` records every Kafka message on order-events
-3. `no_orphan_events` checks on every Kafka publish: is the order already
-   in the DB? If not — the code published the event before confirming
-   the DB write. That's a bug.
+The single `no_orphan_events` monitor watches two event streams at once:
+
+1. Every WAL `INSERT` on the orders table adds an `order_id` to the
+   `persisted` set (via `update`).
+2. Every Kafka publish on `order-events` is checked (via `check`): is the
+   order already in the set? If not - the code published the event before
+   confirming the DB write. That's a bug.
 
 This catches the classic **dual-write** problem: publishing an event
-before the database commit succeeds.
+before the database commit succeeds. (The `wal` and `topic` event
+streams come from Postgres logical replication and the Kafka broker;
+consult Chapter 9 for wiring event sources on container services.)
 
 ## Combined: syscall + protocol + event sources
 
 The most powerful monitors combine all three levels:
 
+A monitor's `on=` matcher can span every layer at once, and its `update`
+folds the different event types into one running state:
+
 ```python
-def comprehensive_order_monitor(event):
-    """Tracks the full order lifecycle across all event types."""
-
-    # Syscall level: WAL write happened
-    if (event.type == "syscall" and event.service == "db"
-            and event.fields.get("syscall") == "write"
-            and "wal" in event.fields.get("path", "")):
-        # DB is actually writing to disk — good
-        pass
-
-    # Event source level: Kafka event published
-    if event.type == "topic" and event.data.get("topic") == "order-events":
-        # Check: was the DB write already confirmed?
-        wal_events = events(where=lambda e:
-            e.type == "wal" and e.data.get("action") == "INSERT"
-            and e.data.get("order_id") == event.data.get("order_id"))
-        if len(wal_events) == 0:
-            fail("Kafka event published before DB commit for order " +
-                 event.data.get("order_id", "?"))
-
-    # Protocol level: HTTP response sent to user
-    if (event.type == "step_recv" and event.service == "test"):
-        # All pending writes should be fsynced by now
-        pass
-
-monitor(comprehensive_order_monitor)
+comprehensive_order_monitor = monitor("comprehensive_order",
+    on = match.any(
+        # Syscall level: WAL write hitting disk.
+        match.event(type="syscall", service="db", syscall="write", path="*wal*"),
+        # Event source level: database row inserted.
+        match.event(type="wal", action="INSERT"),
+        # Event source level: Kafka event published.
+        match.event(type="topic", topic="order-events"),
+        # Protocol level: HTTP response sent to the user.
+        match.event(type="step_recv", service="test"),
+    ),
+    # Remember which orders were committed to the DB.
+    state_init = {"committed": []},
+    update = lambda e, s: (
+        {"committed": s["committed"] + [e.order_id]}
+            if e.type == "wal" else s
+    ),
+    # A Kafka publish must never precede the DB commit for its order.
+    check = lambda e, s:
+        e.type != "topic" or e.order_id in s["committed"],
+)
 ```
 
 This single monitor watches:
@@ -324,23 +315,32 @@ store in a variable and reuse across fault assumptions, scenarios, and matrices.
 
 ```python
 # Define once, reuse everywhere.
-def check_no_orphan(event):
-    if event["type"] == "topic" and event["data"].get("order_id"):
-        if event["data"]["order_id"] not in persisted_ids["set"]:
-            fail("orphan event: " + event["data"]["order_id"])
+no_orphan = monitor("no_orphan",
+    on = match.any(
+        match.event(type="wal", action="INSERT"),
+        match.event(type="topic", topic="order-events"),
+    ),
+    state_init = {"persisted": []},
+    update = lambda e, s: (
+        {"persisted": s["persisted"] + [e.order_id]}
+            if e.type == "wal" else s
+    ),
+    check = lambda e, s:
+        e.type != "topic" or e.order_id in s["persisted"],
+)
 
-no_orphan = monitor(check_no_orphan)
-
-def check_max_retries(event):
-    if int(event.get("retry_count", "0")) > 3:
-        fail("too many retries")
-
-max_retries = monitor(check_max_retries, service="api", syscall="connect")
+max_retries = monitor("max_retries",
+    on = match.event(type="stdout", service="api", action="retry"),
+    state_init = 0,
+    update = lambda e, s: s + 1,
+    check = lambda e, s: s <= 3,
+)
 ```
 
-**At top level** (load time), `monitor()` creates the value without
-registering it. **Inside a `test_*` function**, it auto-registers for
-backward compatibility.
+A top-level `monitor(...)` registers spec-wide and fires in every test.
+Passing the same `MonitorDef` to `fault_assumption(monitors=)`,
+`fault_scenario(monitors=)`, or `fault_matrix(monitors=)` scopes it to
+just those tests instead of running everywhere.
 
 ## Monitors on fault assumptions
 
@@ -348,10 +348,12 @@ Attach monitors to `fault_assumption()` — they fire automatically in every
 test that uses the assumption:
 
 ```python
-def check_no_db_traffic(event):
-    fail("traffic reached DB despite being down")
-
-no_db_traffic = monitor(check_no_db_traffic, service="db", syscall="read")
+# Any read reaching the DB while it is supposed to be down is a
+# violation - check= returns False on the very first matching event.
+no_db_traffic = monitor("no_db_traffic",
+    on = match.event(type="syscall", service="db", syscall="read"),
+    check = lambda e, s: False,
+)
 
 db_down = fault_assumption("db_down",
     target = api,
@@ -377,16 +379,24 @@ Put invariant monitors in a separate file and load them everywhere:
 
 ```python
 # invariants.star
-def check_no_orphan_events(event):
-    # ...business logic...
-    pass
+no_orphan = monitor("no_orphan_events",
+    on = match.any(
+        match.event(type="wal", action="INSERT"),
+        match.event(type="topic", topic="order-events"),
+    ),
+    state_init = {"persisted": []},
+    update = lambda e, s: (
+        {"persisted": s["persisted"] + [e.order_id]}
+            if e.type == "wal" else s
+    ),
+    check = lambda e, s:
+        e.type != "topic" or e.order_id in s["persisted"],
+)
 
-def check_no_negative_stock(event):
-    # ...business logic...
-    pass
-
-no_orphan = monitor(check_no_orphan_events)
-no_negative_stock = monitor(check_no_negative_stock, service="inventory")
+no_negative_stock = monitor("no_negative_stock",
+    on = match.event(type="stdout", service="inventory"),
+    check = lambda e, s: not e.stock or int(e.stock) >= 0,
+)
 ```
 
 ```python

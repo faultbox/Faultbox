@@ -92,8 +92,8 @@ geo = grpc.server(
 )
 
 api = service("api",
-    binary = "./bin/api",
     interface("public", "http", 8080),
+    binary = "./bin/api",
     env = {
         "GEO_GRPC_ADDR": geo.main.internal_addr,
     },
@@ -102,9 +102,9 @@ api = service("api",
 )
 
 def test_city_lookup():
-    r = http.get(api.public, "/cities/42")
+    r = api.public.get(path = "/cities/42")
     assert_eq(r.status, 200)
-    assert_eq(r.json.name, "Almaty")
+    assert_eq(r.data["name"], "Almaty")
 ```
 
 Run it:
@@ -155,11 +155,11 @@ request and returns a response:
 
 ```python
 def handle_by_coords(req):
-    # req.body is the decoded request dict; for typed mocks, not yet
-    # available in v0.9.0 (JSON-only). Use routes + response for most
-    # cases; dynamic for pure-response logic.
+    # req is the request dict: "method", "path", "headers", "query",
+    # "body" (the raw request bytes as a string). Return one of
+    # grpc.response / grpc.error / grpc.raw_response.
     return grpc.response({
-        "id":   1 if req.body else 2,
+        "id":   1 if req["body"] else 2,
         "name": "dynamic",
     })
 
@@ -172,7 +172,7 @@ For cases the typed encoder can't express — oneof tricks, deprecated
 fields, extensions — pass the exact wire bytes:
 
 ```python
-"/yourcorp.geo.GeoService/Exotic": grpc.raw_response(b"\x08\x2a"),
+"/yourcorp.geo.GeoService/Exotic": grpc.raw_response("\x08\x2a"),
 ```
 
 ## Multi-service mock processes
@@ -198,8 +198,8 @@ user = grpc.server(
 )
 
 api = service("api",
-    binary = "./bin/api",
     interface("public", "http", 8080),
+    binary = "./bin/api",
     env = {
         "GEO_GRPC_ADDR":  geo.main.internal_addr,
         "USER_GRPC_ADDR": user.main.internal_addr,
@@ -217,14 +217,16 @@ them one at a time without leaking.
 fault layer sits in front of the typed encoder:
 
 ```python
-load("@faultbox/recipes/grpc.star", "grpc_faults")
+# The recipe module exports its namespace as `grpc`; alias it to
+# `grpc_faults` so it doesn't collide with the mocks `grpc` import.
+load("@faultbox/recipes/grpc.star", grpc_faults = "grpc")
 
 geo_down = fault_assumption("geo_down",
     target = geo.main,
-    rules  = [grpc_faults.unavailable()],
+    rules  = [grpc_faults.unavailable(method = "/yourcorp.geo.GeoService/GetCity")],
 )
 
-test_retries_on_geo_down = fault_scenario("retries_on_geo_down",
+fault_scenario("retries_on_geo_down",
     scenario = create_order,
     faults   = [geo_down],
     expect   = lambda r: assert_eq(r.status, 200),  # retry succeeds

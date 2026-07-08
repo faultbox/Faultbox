@@ -55,7 +55,7 @@ to spot the drift.
 ## 3. "TCP healthcheck says ready but app rejects requests"
 
 Symptom: `healthcheck=tcp("localhost:5432")` returns success, then
-the first `step()` against the service fails with `connection
+the first request against the service fails with `connection
 refused` or `protocol error`.
 
 Cause: `tcp()` only proves a port is bound. Postgres/MySQL etc.
@@ -66,11 +66,14 @@ behind it is ready.
 Fix: replace `tcp(...)` with a protocol-aware check:
 
 ```python
-healthcheck = http("http://localhost:8080/healthz", expect_status = 200)
-# Or for SQL services, poll with a real connection (write a custom
-# wait loop in the test driver):
-healthcheck = wait_until(lambda: step(db.main, "query", sql = "SELECT 1").success)
+# http() healthchecks already require a 2xx, so an app /healthz that
+# checks its own DB connection is the most reliable readiness gate:
+healthcheck = http("http://localhost:8080/healthz")
 ```
+
+For a bare SQL service with no app in front, `tcp()` is the only built-in
+healthcheck - give the container extra settle time, or have the SUT retry
+its first query, since Faultbox has no query-based healthcheck builtin.
 
 This was the #5 hour-burner on the inDrive PoC.
 
@@ -187,13 +190,13 @@ producer version.
 (0.x → 1.x) — minor/patch drift warns and proceeds. See the
 [`bundles.md`](bundles.md) version-compat table for the full matrix.
 
-## 10. "Container DNS works in step() but not from the SUT"
+## 10. "Container DNS works from the test driver but not from the SUT"
 
-Symptom: `step(db.main, "query", ...)` works, but the SUT inside its
-container errors on `dial tcp: lookup db: no such host`.
+Symptom: `db.main.query(...)` from the test body works, but the SUT
+inside its container errors on `dial tcp: lookup db: no such host`.
 
-Cause: `step()` runs from the test driver (host process) which uses
-`localhost:<HostPort>` to reach the container. The SUT inside its
+Cause: test-body requests run from the test driver (host process) which
+uses `localhost:<HostPort>` to reach the container. The SUT inside its
 container needs to use the Docker DNS name (`db`) over the
 `faultbox-net` bridge.
 

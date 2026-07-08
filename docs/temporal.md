@@ -385,15 +385,20 @@ captures whatever the configured event sources emit:
 
 | Source | Captures | Property check feasible? |
 |--------|----------|--------------------------|
-| `topic()` (Kafka) | Message payloads, partition, offset, key | ✅ payload fields queryable directly |
-| `wal_stream()` (Postgres logical replication) | Row-level INSERT/UPDATE/DELETE with old + new column values | ✅ derived DB state captured directly |
+| `observe.stdout` / `observe.stderr` | Decoded log lines | ⚠️ whatever the SUT chose to log |
 | MySQL/Redis proxy | Commands + responses | ⚠️ operations visible; values only when SUT reads back |
-| `stdout()` / `stderr()` | Decoded log lines | ⚠️ whatever the SUT chose to log |
+| `topic` (Kafka) - *planned* | Message payloads, partition, offset, key | ✅ payload fields queryable - once the Starlark constructor ships |
+| `wal_stream` (Postgres logical replication) - *planned* | Row-level INSERT/UPDATE/DELETE with old + new column values | ✅ derived DB state - once the Starlark constructor ships |
+
+Only `observe.stdout` / `observe.stderr` are callable from Starlark today;
+`topic` / `wal_stream` / `tail` / `poll` are Go event-source plugins with no
+Starlark constructor wired yet.
 
 For state the log can't see today (write-only files, in-memory state
-the SUT never reads back), use one of three patterns:
+the SUT never reads back), use one of these patterns:
 
-1. **CDC / WAL streaming** — strongest. Add `wal_stream()` for Postgres.
+1. **Structured stdout logging** - strongest available today. Log commits as
+   JSON and read them back via `observe.stdout(decoder=decoder("json"))`.
 2. **Probe reads in the test body** — `api.get_balance()` issues a
    SELECT; the proxy captures the result.
 3. **State projection via monitor memory** — fold events into derived

@@ -153,10 +153,13 @@ You can also attach **monitors** - invariants that must hold whenever this
 fault is active:
 
 ```python
-def check_no_db_traffic(event):
-    fail("traffic reached DB despite being down")
-
-no_db_traffic = monitor(check_no_db_traffic, service="db", syscall="read")
+# "Must never happen": if the DB is down, no read syscall should ever
+# reach it. The monitor fires on each matching event; check= returning
+# False fails the test.
+no_db_traffic = monitor("no_db_traffic",
+    on = match.event(type="syscall", service="db", syscall="read"),
+    check = lambda event, state: False,
+)
 
 db_down = fault_assumption("db_down",
     target = db,

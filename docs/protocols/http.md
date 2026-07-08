@@ -149,13 +149,13 @@ api = service("api",
 
 ## Event Sources
 
-HTTP services don't have a native event source. Use `stdout` to capture
-application logs:
+HTTP services don't have a native event source. Use `observe.stdout` to
+capture application logs:
 
 ```python
 api = service("api",
     interface("public", "http", 8080),
     build = "./api",
-    observe = [stdout(decoder=json_decoder())],
+    observe = [observe.stdout(decoder=decoder("json"))],
 )
 ```

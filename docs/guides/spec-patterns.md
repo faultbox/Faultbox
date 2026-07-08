@@ -20,6 +20,7 @@ db = service("db",
     image="postgres:16",
     env={"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "mydb"},
     healthcheck=tcp("localhost:5432"),
+    observe=[observe.stdout(decoder=decoder("json"))],
 )
 
 cache = service("cache",
@@ -37,6 +38,7 @@ api = service("api",
     },
     depends_on=[db, cache],
     healthcheck=http("localhost:8080/health"),
+    observe=[observe.stdout(decoder=decoder("json"))],
 )
 ```
 
@@ -82,19 +84,24 @@ def test_specific_query_fails():
 ### Key invariants
 
 ```python
-# Data written to DB must not be lost
+# Data written to DB must not be lost. The DB logs each commit to
+# stdout (captured via observe.stdout); assert one arrived.
 def test_write_persisted():
     resp = api.http.post(path="/users", body='{"name":"alice"}')
     assert_eq(resp.status, 201)
     assert_eventually(where=lambda e:
-        e.type == "wal" and e.data.get("action") == "INSERT")
+        e.type == "stdout" and e.data.get("action") == "INSERT")
 
-# Cache failure must not cause data loss
-monitor(lambda e:
-    fail("data loss") if e.type == "stdout" and "lost" in e.data.get("msg", ""),
-    service="api",
+# Cache failure must not cause data loss: fail if the API ever logs
+# a "lost" message. check= returning False fails the test.
+monitor("no_data_loss",
+    on    = match.event(type="stdout", service="api"),
+    check = lambda event, state: "lost" not in event.data.get("msg", ""),
 )
 ```
+
+Attach `observe=[observe.stdout(decoder=decoder("json"))]` to `db` and
+`api` so their structured log lines become `type="stdout"` events.
 
 ## Pattern 2: Event-Driven (Producer + Broker + Consumer)
 
@@ -112,7 +119,6 @@ kafka = service("kafka",
     interface("broker", "kafka", 9092),
     image="confluentinc/cp-kafka:7.6",
     healthcheck=tcp("localhost:9092"),
-    observe=[topic("order-events", decoder=json_decoder())],
 )
 
 db = service("db",
@@ -120,7 +126,7 @@ db = service("db",
     image="postgres:16",
     env={"POSTGRES_PASSWORD": "test"},
     healthcheck=tcp("localhost:5432"),
-    observe=[wal_stream(tables=["orders"])],
+    observe=[observe.stdout(decoder=decoder("json"))],
 )
 
 producer = service("producer",
@@ -129,6 +135,7 @@ producer = service("producer",
     env={"KAFKA_BROKERS": kafka.broker.internal_addr},
     depends_on=[kafka],
     healthcheck=http("localhost:8080/health"),
+    observe=[observe.stdout(decoder=decoder("json"))],
 )
 
 consumer = service("consumer",
@@ -140,6 +147,7 @@ consumer = service("consumer",
     },
     depends_on=[kafka, db],
     healthcheck=http("localhost:8081/health"),
+    observe=[observe.stdout(decoder=decoder("json"))],
 )
 ```
 
@@ -165,41 +173,53 @@ def test_consumer_db_down():
 def test_kafka_message_drop():
     def scenario():
         producer.http.post(path="/orders", body='{"item":"widget"}')
-        # The event should not appear in the consumer's DB
+        # The event should not appear in the consumer's DB - the
+        # consumer logs each persisted row to stdout.
         assert_never(where=lambda e:
-            e.type == "wal" and e.data.get("table") == "orders")
+            e.type == "stdout" and e.service == "consumer"
+            and e.data.get("action") == "INSERT")
     fault(kafka.broker, drop(topic="order-events"), run=scenario)
 ```
 
 ### Key invariants
 
 ```python
-# Every published event must eventually be consumed and persisted
-published = {"ids": []}
-persisted = {"ids": []}
+# Every published event must eventually be consumed and persisted.
+# The producer logs each publish and the DB logs each persist to
+# stdout; one monitor tracks both sides in state= and fails if any
+# published order_id is missing from the persisted set.
+monitor("published_is_persisted",
+    on = match.any(
+        match.event(type="stdout", service="producer"),
+        match.event(type="stdout", service="db"),
+    ),
+    state_init = {"published": [], "persisted": []},
+    update = lambda event, state: {
+        "published": state["published"] + (
+            [event.data["order_id"]]
+            if event.data.get("action") == "publish" else []),
+        "persisted": state["persisted"] + (
+            [event.data["order_id"]]
+            if event.data.get("action") == "INSERT" else []),
+    },
+    check = lambda event, state:
+        all([oid in state["persisted"] for oid in state["published"]]),
+)
 
-def track_published(event):
-    if event.type == "topic" and event.data.get("topic") == "order-events":
-        published["ids"].append(event.data.get("order_id"))
-
-def track_persisted(event):
-    if event.type == "wal" and event.data.get("table") == "orders":
-        persisted["ids"].append(event.data.get("order_id"))
-
-monitor(track_published)
-monitor(track_persisted, service="db")
-
-# No duplicate messages
-seen_ids = {"set": set()}
-
-def no_duplicates(event):
-    if event.type == "topic" and event.data.get("order_id"):
-        oid = event.data["order_id"]
-        if oid in seen_ids["set"]:
-            fail("duplicate message: " + oid)
-        seen_ids["set"].add(oid)
-
-monitor(no_duplicates)
+# No duplicate messages - track seen order_ids and fail on a repeat.
+monitor("no_duplicate_messages",
+    on = match.event(type="stdout", service="producer"),
+    state_init = {"seen": []},
+    update = lambda event, state: {
+        "seen": state["seen"] + (
+            [event.data["order_id"]]
+            if event.data.get("action") == "publish" else []),
+    },
+    # The just-published id must not already have been seen before this event.
+    check = lambda event, state:
+        event.data.get("action") != "publish"
+        or state["seen"].count(event.data["order_id"]) <= 1,
+)
 ```
 
 ## Pattern 3: Microservice Mesh
@@ -244,6 +264,7 @@ gateway = service("gateway",
     env={"ORDERS_ADDR": orders.grpc.internal_addr},
     depends_on=[orders],
     healthcheck=http("localhost:8080/health"),
+    observe=[observe.stdout(decoder=decoder("json"))],
 )
 ```
 
@@ -291,23 +312,21 @@ def test_cascade():
 
 ```python
 # If the gateway returns 200, the order must be fully processed
-# (inventory reserved, payment charged)
-def no_partial_orders(event):
-    if (event.type == "stdout" and event.service == "gateway"
-            and event.data.get("status") == "200"
-            and event.data.get("order_complete") != "true"):
-        fail("gateway returned 200 but order not complete")
+# (inventory reserved, payment charged). The gateway logs each
+# completed request to stdout; fail if a 200 lacks order_complete.
+monitor("no_partial_orders",
+    on = match.event(type="stdout", service="gateway"),
+    check = lambda event, state:
+        not (event.data.get("status") == "200"
+             and event.data.get("order_complete") != "true"),
+)
 
-monitor(no_partial_orders, service="gateway")
-
-# Response time SLA: no request should take > 10s
-def sla_check(event):
-    if event.type == "step_recv" and event.service == "test":
-        duration = int(event.fields.get("duration_ms", "0"))
-        if duration > 10000:
-            fail("SLA violation: " + str(duration) + "ms")
-
-monitor(sla_check)
+# Response time SLA: no logged request should report > 10s.
+monitor("sla_check",
+    on = match.event(type="stdout", service="gateway"),
+    check = lambda event, state:
+        int(event.data.get("duration_ms", "0")) <= 10000,
+)
 ```
 
 ## Adapting patterns to your project
