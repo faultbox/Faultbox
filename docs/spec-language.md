@@ -345,7 +345,7 @@ What's rejected on remote services (spec-load errors with explicit
 messages naming the offending kwarg):
 
 - Syscall-level faults (`write=deny()`, `connect=delay()`,
-  `op(...)=hold()`, etc.) — Faultbox can't seccomp a remote process.
+  `fsync=deny()`, etc.) — Faultbox can't seccomp a remote process.
   Move them to protocol faults (`response()` / `error()` / `delay()`)
   or use `mock_service()` if you need full process control.
 - `seed=`, `reset=`, `reuse=` — Faultbox doesn't own the lifecycle.

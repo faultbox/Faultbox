@@ -10,8 +10,8 @@ This guide gives the mapping first, then the mechanics of each level.
 |---|---|---|
 | **Unhandled dependency failure** | Either - syscall for "the whole dependency is gone" (`connect=deny("ECONNREFUSED")`), protocol for "this operation is refused" (`error(query="INSERT*")`) | Start syscall-broad, refine protocol-precise |
 | **Missing timeout / runaway retry** | Protocol - slowness must hit one operation while the service stays healthy | `delay(path="/search*", delay="2s")` |
-| **Non-idempotent retry** | Syscall `hold()` + protocol `error()` - the failure must land *between* the side effect and the response | `write=hold("charge")`, then fail the reply |
-| **Partial failure / torn writes** | Syscall - the only level that can split a transaction mid-flight | `write=deny("EIO", trigger="after=1")`, `fsync=deny("EIO")` |
+| **Non-idempotent retry** | Protocol - the failure must land *between* the side effect and the response | `delay(delay="10s")` on the charge past the caller's timeout, then assert one side effect |
+| **Partial failure / torn writes** | Syscall - the only level that can split a transaction mid-flight | `write=deny("EIO")`, `fsync=deny("EIO")` |
 | **Failed recovery** | Either level for the fault; the *assertion* is temporal | scoped `fault(...)`, then `eventually(recovered)` |
 | **Bad responses, not outages** | Protocol only - response rewriting | `response(path="/quote", status=200, body="<garbage>")` |
 
@@ -141,8 +141,8 @@ Work through the bug classes in order of incident frequency:
    dependencies. Assert latency bounds, not just status codes.
 
 3. **Then the precision classes** for flows where correctness is money:
-   non-idempotent retries (`hold()`), torn writes
-   (`deny(trigger="after=N")`), recovery (`eventually()` after the
+   non-idempotent retries (`delay()` past the caller's timeout), torn
+   writes (`write=deny("EIO")`), recovery (`eventually()` after the
    fault clears), bad responses (`response()` rewriting).
 
 Most projects get 80% of the value from step 1 alone - which is also
