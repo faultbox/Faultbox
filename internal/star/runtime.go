@@ -450,21 +450,43 @@ func New(logger *slog.Logger) *Runtime {
 		detStrict:  true,
 		detAllow:   make(map[string]bool),
 	}
-	rt.proxyMgr = proxy.NewManager(func(evt proxy.ProxyEvent) {
-		// RFC-034: ProxyEvent.Type discriminates the event family.
-		// Legacy emit sites (rule-fired faults from per-protocol
-		// plugins) leave Type empty, falling through to the historical
-		// "proxy" type. New connection-lifecycle / stall emissions set
-		// Type explicitly (proxy_conn_open / _close /
-		// _handshake_complete / proxy_stall) so the report can render
-		// them distinctly.
-		eventType := evt.Type
-		if eventType == "" {
-			eventType = "proxy"
-		}
-		rt.events.Emit(eventType, evt.To, evt.Fields)
-	})
+	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
 	return rt
+}
+
+// emitProxyEvent records a ProxyEvent into the event log.
+//
+// RFC-034: ProxyEvent.Type discriminates the event family. Legacy emit
+// sites (rule-fired faults from per-protocol plugins) leave Type empty,
+// falling through to the historical "proxy" type. New connection-lifecycle
+// / stall emissions set Type explicitly (proxy_conn_open / _close /
+// _handshake_complete / proxy_stall) so the report can render them
+// distinctly.
+//
+// #141: the struct-level Action/Protocol are folded into the emitted fields
+// so predicates and monitors can key on them (e.data.get("action")).
+// Previously only evt.Fields was emitted, so `action` was always None.
+func (rt *Runtime) emitProxyEvent(evt proxy.ProxyEvent) {
+	eventType := evt.Type
+	if eventType == "" {
+		eventType = "proxy"
+	}
+	// Copy the map — it may be shared — and never clobber an explicit
+	// field of the same name.
+	fields := evt.Fields
+	if evt.Action != "" || evt.Protocol != "" {
+		fields = make(map[string]string, len(evt.Fields)+2)
+		for k, v := range evt.Fields {
+			fields[k] = v
+		}
+		if _, ok := fields["action"]; !ok && evt.Action != "" {
+			fields["action"] = evt.Action
+		}
+		if _, ok := fields["protocol"]; !ok && evt.Protocol != "" {
+			fields["protocol"] = evt.Protocol
+		}
+	}
+	rt.events.Emit(eventType, evt.To, fields)
 }
 
 // LoadFile executes a .star file, populating the service registry and
