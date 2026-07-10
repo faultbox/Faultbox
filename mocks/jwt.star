@@ -21,10 +21,10 @@
 #             "email": "alice@example.com",
 #             "scope": "read:orders",
 #         })
-#         result = step(api.public, "get",
+#         result = api.public.get(
 #                       path    = "/orders",
 #                       headers = {"Authorization": "Bearer " + token})
-#         assert_true(result.status_code == 200)
+#         assert_true(result.status == 200)
 #
 # What `jwt.server(...)` returns is a struct with three attrs:
 #   .service     → ServiceDef (use as fault target / depends_on)

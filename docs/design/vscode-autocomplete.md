@@ -230,12 +230,12 @@ def events(
 ) -> List[event]: ...
 
 def monitor(
-    callback: Callable[[event], None],
+    name: str,
     *,
-    service: str = ...,
-    syscall: str = ...,
-    path: str = ...,
-    decision: str = ...,
+    on: matcher,
+    state_init: dict = ...,
+    update: Callable[[event, dict], dict] = ...,
+    check: Callable[[event, dict], bool] = ...,
 ) -> None: ...
 
 # ---------------------------------------------------------------------------
@@ -269,10 +269,11 @@ def scenario(fn: Callable) -> None: ...
 # Event Sources & Decoders
 # ---------------------------------------------------------------------------
 
-def stdout(*, decoder: decoder = ...) -> observe_source: ...
-def json_decoder() -> decoder: ...
-def logfmt_decoder() -> decoder: ...
-def regex_decoder(*, pattern: str) -> decoder: ...
+# Event sources are namespace methods: observe.stdout(decoder=...),
+# observe.stderr(decoder=...). Decoders are unified under decoder(name).
+def decoder(name: str, *, pattern: str = ...) -> decoder: ...
+# Deprecated aliases (removal v0.14.0): stdout(), stderr(),
+# json_decoder(), logfmt_decoder(), regex_decoder().
 
 # ---------------------------------------------------------------------------
 # Starlark builtins
@@ -340,9 +341,10 @@ def load(module: str, *symbols: str) -> None: ...
         "prefix": "monitor",
         "scope": "python",
         "body": [
-            "monitor(lambda e: fail(\"${1:violation}\") if ${2:condition},",
-            "    service=\"${3:service}\",",
-            "    ${4|syscall,decision|}=\"${5:value}\",",
+            "monitor(\"${1:name}\",",
+            "    on = match.event(type=\"${2:event_type}\"),",
+            "    state_init = {${3}},",
+            "    check = lambda event, state: ${4:condition},",
             ")"
         ],
         "description": "Faultbox event monitor"
@@ -351,7 +353,7 @@ def load(module: str, *symbols: str) -> None: ...
         "prefix": "observe",
         "scope": "python",
         "body": [
-            "observe = [stdout(decoder=${1|json_decoder(),logfmt_decoder(),regex_decoder(pattern=\"\")|})]"
+            "observe = [observe.stdout(decoder=decoder(\"${1|json,logfmt,regex|}\"))]"
         ],
         "description": "Faultbox stdout observation"
     },
