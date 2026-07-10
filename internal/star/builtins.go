@@ -2650,7 +2650,8 @@ func builtinProxyError(thread *starlark.Thread, fn *starlark.Builtin, args starl
 	return pf, nil
 }
 
-// drop(method=, path=, topic=, op=, collection=, probability=) — close connection / drop message.
+// drop(method=, path=, query=, command=, topic=, op=, key=, collection=, probability=) — close connection / drop message.
+// `op=` is an alias for `method=` and `collection=` for `key=` (natural for MongoDB/document stores).
 func builtinProxyDrop(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	pf := &ProxyFaultDef{Action: "drop"}
 	for _, kv := range kwargs {
@@ -2660,6 +2661,10 @@ func builtinProxyDrop(thread *starlark.Thread, fn *starlark.Builtin, args starla
 			pf.Method, _ = starlark.AsString(kv[1])
 		case "path":
 			pf.Path, _ = starlark.AsString(kv[1])
+		case "query":
+			pf.Query, _ = starlark.AsString(kv[1])
+		case "command":
+			pf.Command, _ = starlark.AsString(kv[1])
 		case "key", "collection":
 			pf.Key, _ = starlark.AsString(kv[1])
 		case "topic":
