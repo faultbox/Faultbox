@@ -707,7 +707,15 @@ func builtinDeny(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 	if err != nil {
 		return nil, err
 	}
-	return &FaultDef{Action: "deny", Errno: strings.ToUpper(errno), Probability: prob, Label: label, MaxFires: maxFires, Mode: mode}, nil
+	// #139: reject an errno that isn't injectable at spec load. An unknown
+	// name never reaches the kernel — previously it was silently applied as
+	// errno 0 (a deny that denies nothing).
+	errnoUpper := strings.ToUpper(errno)
+	if !engine.ValidErrno(errnoUpper) {
+		return nil, fmt.Errorf("deny(): unknown errno %q; supported: %s",
+			errnoUpper, strings.Join(engine.SupportedErrnos(), ", "))
+	}
+	return &FaultDef{Action: "deny", Errno: errnoUpper, Probability: prob, Label: label, MaxFires: maxFires, Mode: mode}, nil
 }
 
 // parseProbabilityFanoutKwargs reads RFC-042 §8.9's max_fires= and

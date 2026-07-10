@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -421,6 +422,25 @@ func errnoByName(name string) (syscall.Errno, bool) {
 	name = strings.ToUpper(name)
 	e, ok := errnoMap[name]
 	return e, ok
+}
+
+// ValidErrno reports whether name is an errno Faultbox can inject. Names
+// not in the table never reach the kernel; validating at spec load turns a
+// typo'd errno into a loud error instead of a silent errno-0 no-op (#139).
+func ValidErrno(name string) bool {
+	_, ok := errnoByName(name)
+	return ok
+}
+
+// SupportedErrnos returns the injectable errno names, sorted, for error
+// messages and documentation.
+func SupportedErrnos() []string {
+	names := make([]string, 0, len(errnoMap))
+	for name := range errnoMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func errnoName(e syscall.Errno) string {
