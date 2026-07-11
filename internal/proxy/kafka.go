@@ -147,6 +147,7 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		tracker.AddBytesC2S(msgLen)
 
 		// Parse API key to identify Produce/Fetch requests.
+		duplicate := false
 		if len(payload) >= 8 {
 			apiKey := int16(binary.BigEndian.Uint16(payload[0:2]))
 			topic := "" // Would need deeper parsing to extract topic
@@ -155,9 +156,11 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 				// Try to extract topic from the payload (simplified).
 				topic = p.extractTopic(payload)
 
-				if handled := p.checkRules(clientConn, apiKey, topic, payload); handled {
+				handled, dup := p.checkRules(clientConn, apiKey, topic, payload)
+				if handled {
 					continue
 				}
+				duplicate = dup
 			}
 		}
 
@@ -192,6 +195,12 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		clientConn.Write(respLenBuf)
 		clientConn.Write(resp)
 
+		// #138: re-send the produce so the message lands on the broker a
+		// second time (the client already got its single ack above).
+		if duplicate {
+			p.forwardDuplicate(serverConn, lenBuf, payload)
+		}
+
 		requestsSeen++
 		if requestsSeen == 1 {
 			tracker.EmitHandshakeComplete("", 1)
@@ -199,7 +208,11 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 }
 
-func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string, payload []byte) bool {
+// checkRules applies matching fault rules to a produce/fetch request.
+// handled=true means the request was consumed (dropped or errored) and must
+// not be forwarded. duplicate=true means forward normally AND once more, so
+// the message lands on the broker twice (#138).
+func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string, payload []byte) (handled bool, duplicate bool) {
 	p.mu.RLock()
 	rules := make([]Rule, len(p.rules))
 	copy(rules, p.rules)
@@ -233,7 +246,7 @@ func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string,
 					Fields:   map[string]string{"api": apiName, "topic": topic},
 				})
 			}
-			return true
+			return true, false
 
 		case ActionDelay:
 			if p.onEvent != nil {
@@ -244,7 +257,7 @@ func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string,
 					Fields:   map[string]string{"api": apiName, "topic": topic, "delay_ms": fmt.Sprintf("%d", rule.Delay.Milliseconds())},
 				})
 			}
-			return false // forward after delay
+			return false, false // forward after delay
 
 		case ActionError:
 			// Close connection to simulate broker error.
@@ -257,10 +270,48 @@ func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string,
 					Fields:   map[string]string{"api": apiName, "topic": topic, "error": rule.Error},
 				})
 			}
-			return true
+			return true, false
+
+		case ActionDuplicate:
+			// Only a produce can be duplicated — duplicating a fetch is
+			// meaningless. Forward normally, then re-send once so the
+			// consumer sees the message twice (#138).
+			if apiKey != kafkaAPIProduce {
+				return false, false
+			}
+			if p.onEvent != nil {
+				p.onEvent(ProxyEvent{
+					Protocol: "kafka",
+					Action:   "duplicate",
+					To:       p.svcName,
+					Fields:   map[string]string{"api": apiName, "topic": topic},
+				})
+			}
+			return false, true
 		}
 	}
-	return false
+	return false, false
+}
+
+// forwardDuplicate re-sends a produce request to the broker so the message
+// lands twice, then reads and discards the extra response (the client already
+// received its single ack). Best-effort: any error just ends the extra send.
+func (p *kafkaProxy) forwardDuplicate(serverConn net.Conn, lenBuf, payload []byte) {
+	if _, err := serverConn.Write(lenBuf); err != nil {
+		return
+	}
+	if _, err := serverConn.Write(payload); err != nil {
+		return
+	}
+	respLenBuf := make([]byte, 4)
+	if _, err := io.ReadFull(serverConn, respLenBuf); err != nil {
+		return
+	}
+	respLen := int(binary.BigEndian.Uint32(respLenBuf))
+	if respLen <= 0 || respLen > 10*1024*1024 {
+		return
+	}
+	io.CopyN(io.Discard, serverConn, int64(respLen))
 }
 
 // extractTopic tries to extract the topic name from a Kafka Produce/Fetch request.
