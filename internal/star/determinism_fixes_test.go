@@ -21,7 +21,7 @@ import (
 // and asserts the site sequence is byte-identical every time.
 func TestIssue122_ProbFaultSiteOrderIsDeterministic(t *testing.T) {
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 wal_d = deny("EIO", probability=0.3, max_fires=2, mode="exhaustive", label="wal")
 cache_d = deny("EIO", probability=0.3, max_fires=2, mode="exhaustive", label="cache")
 log_d = deny("EIO", probability=0.3, max_fires=2, mode="exhaustive", label="log")

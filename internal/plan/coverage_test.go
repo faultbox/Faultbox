@@ -10,13 +10,13 @@ func TestWithCoverage_MarksFaultedAndUnfaultedEdges(t *testing.T) {
 	rt := newRuntime(t)
 	src := `
 db = service("db",
-    image = "busybox", cmd = ["sh","-c","sleep 1"],
+    image = "busybox",
 )
 redis = service("redis",
-    image = "busybox", cmd = ["sh","-c","sleep 1"],
+    image = "busybox",
 )
 api = service("api",
-    image = "busybox", cmd = ["sh","-c","sleep 1"],
+    image = "busybox",
     depends_on = [db, redis],
 )
 
@@ -63,8 +63,8 @@ fault_scenario("api_db_down", scenario=scenario_x, faults=db_down)
 func TestWithCoverage_MatrixCellsAttributedToCollapsedTest(t *testing.T) {
 	rt := newRuntime(t)
 	src := `
-db = service("db", image="busybox", cmd=["sh","-c","sleep 1"])
-api = service("api", image="busybox", cmd=["sh","-c","sleep 1"], depends_on=[db])
+db = service("db", image="busybox")
+api = service("api", image="busybox", depends_on=[db])
 
 def scenario_checkout(): pass
 def scenario_browse(): pass

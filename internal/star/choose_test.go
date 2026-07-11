@@ -89,7 +89,7 @@ func TestChoose_NamedFormStringRequired(t *testing.T) {
 func TestNondet_RejectsKwargs(t *testing.T) {
 	rt := New(testLogger())
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 nondet(svc=svc)
 `
 	err := rt.LoadString("spec.star", src)
@@ -109,7 +109,7 @@ nondet(svc=svc)
 func TestNondet_ServiceFormStillMarksService(t *testing.T) {
 	rt := New(testLogger())
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 nondet(svc)
 `
 	if err := rt.LoadString("spec.star", src); err != nil {

@@ -107,7 +107,7 @@ def test_leaves():
 func TestProbabilityFanout_FamilyExpansionRecordsOneSite(t *testing.T) {
 	rt := New(testLogger())
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 dn = deny("EIO", probability=0.3, max_fires=2)
 `
 	if err := rt.LoadString("spec.star", src); err != nil {
@@ -137,7 +137,7 @@ func TestRunAll_LeafProbabilityOutcomesSurfaceOnTestResult(t *testing.T) {
 	skipIfNoDocker(t)
 	rt := New(testLogger())
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 dn = deny("EIO", probability=0.3, max_fires=2, mode="exhaustive", label="wal")
 def test_prob():
     fault(svc, write=dn, run=lambda: None)
@@ -198,7 +198,7 @@ func TestRunAll_CombinedChooseAndProbCarryBothMaps(t *testing.T) {
 	skipIfNoDocker(t)
 	rt := New(testLogger())
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 dn = deny("EIO", probability=0.3, max_fires=1, mode="exhaustive", label="wal")
 def test_combo():
     _ = choose("retries", [0, 1])

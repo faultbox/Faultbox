@@ -439,6 +439,11 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				return nil, err
 			}
 			svc.NondeterministicOK = set
+		default:
+			// #140: reject unknown kwargs at spec load. Without this, a typo
+			// (imagee=) or a roadmap kwarg (determinism="L4") was silently
+			// dropped — the author's intent vanished with no signal.
+			return nil, fmt.Errorf("service(%q): unknown keyword argument %q; valid: binary, image, build, remote, healthcheck, env, args, depends_on, volumes, ports, observe, ops, reuse, seed, reset, seccomp, nondeterministic_ok", name, key)
 		}
 	}
 
