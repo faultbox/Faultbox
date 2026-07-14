@@ -25,10 +25,18 @@ func TestDeny_RejectsUnknownErrno(t *testing.T) {
 		t.Errorf("deny(\"eio\") should be valid (case-insensitive): %v", err)
 	}
 
+	// Every errno documented in docs/errno-reference.md must be injectable
+	// (the reference, the editor stub, and errnoMap stay in sync).
+	for _, name := range []string{"ENOSYS", "EDEADLK", "ELOOP", "EDQUOT", "ENOLCK"} {
+		if _, err := deny(name); err != nil {
+			t.Errorf("deny(%q) is documented and must be valid: %v", name, err)
+		}
+	}
+
 	// An unknown errno is rejected with a helpful message.
-	_, err := deny("EDEADLK")
+	_, err := deny("EBOGUS")
 	if err == nil {
-		t.Fatal("deny(\"EDEADLK\") must error at spec load, got nil (#139)")
+		t.Fatal("deny(\"EBOGUS\") must error at spec load, got nil (#139)")
 	}
 	if !strings.Contains(err.Error(), "unknown errno") {
 		t.Errorf("error = %q, want it to mention 'unknown errno'", err.Error())

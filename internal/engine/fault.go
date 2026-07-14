@@ -482,4 +482,13 @@ var errnoMap = map[string]syscall.Errno{
 	"ENOMEM": syscall.ENOMEM,
 	"EBUSY":  syscall.EBUSY,
 	"EINVAL": syscall.EINVAL,
+
+	// Documented in docs/errno-reference.md - the reference, the editor
+	// stub, and this table must stay in sync (#139 made unknown names a
+	// hard spec-load error, so every documented name must be injectable).
+	"ENOSYS":  syscall.ENOSYS,
+	"EDEADLK": syscall.EDEADLK,
+	"ELOOP":   syscall.ELOOP,
+	"EDQUOT":  syscall.EDQUOT,
+	"ENOLCK":  syscall.ENOLCK,
 }
