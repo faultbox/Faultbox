@@ -111,7 +111,7 @@ The predicate receives a `choices` dict mapping each named `choose("name", opts)
 ## Composition example
 
 ```python
-db = service("db", image = "busybox", cmd = ["sh","-c","sleep 1"])
+db = service("db", image = "busybox")
 
 # Top-level choices — visible to assume= at body entry.
 retries_axis = choose("retries", [0, 1, 3])
