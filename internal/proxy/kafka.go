@@ -147,6 +147,7 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		tracker.AddBytesC2S(msgLen)
 
 		// Parse API key to identify Produce/Fetch requests.
+		duplicate := false
 		if len(payload) >= 8 {
 			apiKey := int16(binary.BigEndian.Uint16(payload[0:2]))
 			topic := "" // Would need deeper parsing to extract topic
@@ -155,9 +156,11 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 				// Try to extract topic from the payload (simplified).
 				topic = p.extractTopic(payload)
 
-				if handled := p.checkRules(clientConn, apiKey, topic, payload); handled {
+				handled, dup := p.checkRules(clientConn, apiKey, topic, payload)
+				if handled {
 					continue
 				}
+				duplicate = dup
 			}
 		}
 
@@ -192,6 +195,18 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		clientConn.Write(respLenBuf)
 		clientConn.Write(resp)
 
+		// #138: re-send the produce so the message lands on the broker a
+		// second time (the client already got its single ack above). A
+		// failed duplicate round-trip leaves serverConn mid-frame, so it
+		// must kill the connection like any other framing error - limping
+		// on would desync every later response.
+		if duplicate {
+			if err := p.forwardDuplicate(serverConn, lenBuf, payload, tracker); err != nil {
+				closeReason = classifyCloseReason(err, "server")
+				return
+			}
+		}
+
 		requestsSeen++
 		if requestsSeen == 1 {
 			tracker.EmitHandshakeComplete("", 1)
@@ -199,7 +214,11 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 }
 
-func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string, payload []byte) bool {
+// checkRules applies matching fault rules to a produce/fetch request.
+// handled=true means the request was consumed (dropped or errored) and must
+// not be forwarded. duplicate=true means forward normally AND once more, so
+// the message lands on the broker twice (#138).
+func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string, payload []byte) (handled bool, duplicate bool) {
 	p.mu.RLock()
 	rules := make([]Rule, len(p.rules))
 	copy(rules, p.rules)
@@ -233,7 +252,7 @@ func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string,
 					Fields:   map[string]string{"api": apiName, "topic": topic},
 				})
 			}
-			return true
+			return true, false
 
 		case ActionDelay:
 			if p.onEvent != nil {
@@ -244,7 +263,7 @@ func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string,
 					Fields:   map[string]string{"api": apiName, "topic": topic, "delay_ms": fmt.Sprintf("%d", rule.Delay.Milliseconds())},
 				})
 			}
-			return false // forward after delay
+			return false, false // forward after delay
 
 		case ActionError:
 			// Close connection to simulate broker error.
@@ -257,10 +276,62 @@ func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string,
 					Fields:   map[string]string{"api": apiName, "topic": topic, "error": rule.Error},
 				})
 			}
-			return true
+			return true, false
+
+		case ActionDuplicate:
+			// Only a produce can be duplicated — duplicating a fetch is
+			// meaningless. The rule simply does not apply to a fetch: keep
+			// evaluating later rules instead of swallowing them.
+			if apiKey != kafkaAPIProduce {
+				continue
+			}
+			if p.onEvent != nil {
+				p.onEvent(ProxyEvent{
+					Protocol: "kafka",
+					Action:   "duplicate",
+					To:       p.svcName,
+					Fields:   map[string]string{"api": apiName, "topic": topic},
+				})
+			}
+			return false, true
 		}
 	}
-	return false
+	return false, false
+}
+
+// forwardDuplicate re-sends a produce request to the broker so the message
+// lands twice, then reads and discards the extra response (the client already
+// received its single ack). Any failure is returned so the caller can kill
+// the connection: a half-done round-trip leaves serverConn mid-frame, and
+// silently continuing would desync every later response. The read carries a
+// deadline because an acks=0 producer elicits no broker response at all —
+// without it we would block and then steal the ack of the next request.
+func (p *kafkaProxy) forwardDuplicate(serverConn net.Conn, lenBuf, payload []byte, tracker *connTracker) error {
+	if _, err := serverConn.Write(lenBuf); err != nil {
+		return err
+	}
+	if _, err := serverConn.Write(payload); err != nil {
+		return err
+	}
+	tracker.AddBytesC2S(len(payload))
+
+	serverConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer serverConn.SetReadDeadline(time.Time{})
+
+	respLenBuf := make([]byte, 4)
+	if _, err := io.ReadFull(serverConn, respLenBuf); err != nil {
+		return err
+	}
+	tracker.AddBytesS2C(4)
+	respLen := int(binary.BigEndian.Uint32(respLenBuf))
+	if respLen <= 0 || respLen > 10*1024*1024 {
+		return fmt.Errorf("duplicate response length %d out of range", respLen)
+	}
+	if _, err := io.CopyN(io.Discard, serverConn, int64(respLen)); err != nil {
+		return err
+	}
+	tracker.AddBytesS2C(respLen)
+	return nil
 }
 
 // extractTopic tries to extract the topic name from a Kafka Produce/Fetch request.

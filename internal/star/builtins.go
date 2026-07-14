@@ -439,6 +439,20 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 				return nil, err
 			}
 			svc.NondeterministicOK = set
+		default:
+			// #140: reject unknown kwargs at spec load. Without this, a typo
+			// (imagee=) or a roadmap kwarg (determinism="L4") was silently
+			// dropped — the author's intent vanished with no signal. The
+			// historical phantom kwargs get targeted migration hints.
+			switch key {
+			case "cmd", "entrypoint":
+				return nil, fmt.Errorf("service(%q): %q is not supported - the image's default command runs; use args= for extra arguments", name, key)
+			case "http", "tcp":
+				return nil, fmt.Errorf("service(%q): %q is not supported - declare an interface instead: interface(\"main\", %q, <port>)", name, key, key)
+			case "name":
+				return nil, fmt.Errorf("service(): name is the first positional argument - write service(\"myname\", ...), not name=")
+			}
+			return nil, fmt.Errorf("service(%q): unknown keyword argument %q; valid: binary, image, build, remote, healthcheck, env, args, depends_on, volumes, ports, observe, ops, reuse, seed, reset, seccomp, nondeterministic_ok", name, key)
 		}
 	}
 
@@ -635,6 +649,9 @@ func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.T
 		pf := &ProxyFaultDef{Action: "delay"}
 		for _, kv := range kwargs {
 			key, _ := starlark.AsString(kv[0])
+			if parseProxyMatcherKwarg(pf, key, kv[1]) {
+				continue
+			}
 			switch key {
 			case "delay":
 				s, _ := starlark.AsString(kv[1])
@@ -643,20 +660,8 @@ func builtinDelay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.T
 					return nil, fmt.Errorf("delay() bad duration %q: %w", s, err)
 				}
 				pf.Delay = d
-			case "method", "op":
-				pf.Method, _ = starlark.AsString(kv[1])
-			case "path":
-				pf.Path, _ = starlark.AsString(kv[1])
-			case "query":
-				pf.Query, _ = starlark.AsString(kv[1])
-			case "key", "collection":
-				pf.Key, _ = starlark.AsString(kv[1])
-			case "command":
-				pf.Command, _ = starlark.AsString(kv[1])
-			case "topic":
-				pf.Topic, _ = starlark.AsString(kv[1])
-			case "probability":
-				pf.Probability = parseProbability(kv[1])
+			default:
+				return nil, fmt.Errorf("delay(): unknown keyword argument %q; valid: %s, delay", key, proxyMatcherKwargs)
 			}
 		}
 		if pf.Delay == 0 {
@@ -707,7 +712,15 @@ func builtinDeny(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tu
 	if err != nil {
 		return nil, err
 	}
-	return &FaultDef{Action: "deny", Errno: strings.ToUpper(errno), Probability: prob, Label: label, MaxFires: maxFires, Mode: mode}, nil
+	// #139: reject an errno that isn't injectable at spec load. An unknown
+	// name never reaches the kernel — previously it was silently applied as
+	// errno 0 (a deny that denies nothing).
+	errnoUpper := strings.ToUpper(errno)
+	if !engine.ValidErrno(errnoUpper) {
+		return nil, fmt.Errorf("deny(): unknown errno %q; supported: %s",
+			errnoUpper, strings.Join(engine.SupportedErrnos(), ", "))
+	}
+	return &FaultDef{Action: "deny", Errno: errnoUpper, Probability: prob, Label: label, MaxFires: maxFires, Mode: mode}, nil
 }
 
 // parseProbabilityFanoutKwargs reads RFC-042 §8.9's max_fires= and
@@ -2583,35 +2596,56 @@ func proxyFaultToRule(pf *ProxyFaultDef) proxy.Rule {
 	}
 }
 
-// response(method=, path=, status=, body=) — return custom response.
+// parseProxyMatcherKwarg handles the matcher and probability kwargs shared
+// by the proxy fault builtins (response/error/drop/delay/duplicate).
+// Aliases: op= for method=, collection= for key= (document stores),
+// subject= for topic= (NATS). Returns false when the key is not a shared
+// matcher kwarg - the caller handles its action-specific keys and rejects
+// true unknowns, so a typo'd matcher can never silently become an empty
+// match-everything pattern (#137).
+func parseProxyMatcherKwarg(pf *ProxyFaultDef, key string, v starlark.Value) bool {
+	switch key {
+	case "method", "op":
+		pf.Method, _ = starlark.AsString(v)
+	case "path":
+		pf.Path, _ = starlark.AsString(v)
+	case "query":
+		pf.Query, _ = starlark.AsString(v)
+	case "command":
+		pf.Command, _ = starlark.AsString(v)
+	case "key", "collection":
+		pf.Key, _ = starlark.AsString(v)
+	case "topic", "subject":
+		pf.Topic, _ = starlark.AsString(v)
+	case "probability":
+		pf.Probability = parseProbability(v)
+	default:
+		return false
+	}
+	return true
+}
+
+// proxyMatcherKwargs is the shared kwarg list for error messages.
+const proxyMatcherKwargs = "method, op, path, query, command, key, collection, topic, subject, probability"
+
+// response(method=, path=, query=, command=, key=, topic=, status=, body=, probability=) — return custom response.
 func builtinProxyResponse(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	pf := &ProxyFaultDef{Action: "respond"}
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
+		if parseProxyMatcherKwarg(pf, key, kv[1]) {
+			continue
+		}
 		switch key {
-		case "method":
-			pf.Method, _ = starlark.AsString(kv[1])
-		case "path":
-			pf.Path, _ = starlark.AsString(kv[1])
-		case "query":
-			pf.Query, _ = starlark.AsString(kv[1])
-		case "key":
-			pf.Key, _ = starlark.AsString(kv[1])
-		case "command":
-			pf.Command, _ = starlark.AsString(kv[1])
-		case "topic":
-			pf.Topic, _ = starlark.AsString(kv[1])
 		case "status":
 			if n, ok := kv[1].(starlark.Int); ok {
 				val, _ := n.Int64()
 				pf.Status = int(val)
 			}
-		case "body":
+		case "body", "value":
 			pf.Body, _ = starlark.AsString(kv[1])
-		case "value":
-			pf.Body, _ = starlark.AsString(kv[1])
-		case "probability":
-			pf.Probability = parseProbability(kv[1])
+		default:
+			return nil, fmt.Errorf("response(): unknown keyword argument %q; valid: %s, status, body, value", key, proxyMatcherKwargs)
 		}
 	}
 	return pf, nil
@@ -2623,19 +2657,10 @@ func builtinProxyError(thread *starlark.Thread, fn *starlark.Builtin, args starl
 	pf := &ProxyFaultDef{Action: "error"}
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
+		if parseProxyMatcherKwarg(pf, key, kv[1]) {
+			continue
+		}
 		switch key {
-		case "method", "op":
-			pf.Method, _ = starlark.AsString(kv[1])
-		case "path":
-			pf.Path, _ = starlark.AsString(kv[1])
-		case "query":
-			pf.Query, _ = starlark.AsString(kv[1])
-		case "key", "collection":
-			pf.Key, _ = starlark.AsString(kv[1])
-		case "command":
-			pf.Command, _ = starlark.AsString(kv[1])
-		case "topic":
-			pf.Topic, _ = starlark.AsString(kv[1])
 		case "message":
 			pf.Error, _ = starlark.AsString(kv[1])
 		case "status":
@@ -2643,42 +2668,40 @@ func builtinProxyError(thread *starlark.Thread, fn *starlark.Builtin, args starl
 				val, _ := n.Int64()
 				pf.Status = int(val)
 			}
-		case "probability":
-			pf.Probability = parseProbability(kv[1])
+		default:
+			return nil, fmt.Errorf("error(): unknown keyword argument %q; valid: %s, message, status", key, proxyMatcherKwargs)
 		}
 	}
 	return pf, nil
 }
 
-// drop(method=, path=, topic=, op=, collection=, probability=) — close connection / drop message.
+// drop(method=, path=, query=, command=, topic=, op=, key=, collection=, probability=) — close connection / drop message.
+// `op=` is an alias for `method=` and `collection=` for `key=` (natural for MongoDB/document stores).
 func builtinProxyDrop(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	pf := &ProxyFaultDef{Action: "drop"}
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
-		switch key {
-		case "method", "op":
-			pf.Method, _ = starlark.AsString(kv[1])
-		case "path":
-			pf.Path, _ = starlark.AsString(kv[1])
-		case "key", "collection":
-			pf.Key, _ = starlark.AsString(kv[1])
-		case "topic":
-			pf.Topic, _ = starlark.AsString(kv[1])
-		case "probability":
-			pf.Probability = parseProbability(kv[1])
+		if !parseProxyMatcherKwarg(pf, key, kv[1]) {
+			return nil, fmt.Errorf("drop(): unknown keyword argument %q; valid: %s", key, proxyMatcherKwargs)
 		}
 	}
 	return pf, nil
 }
 
-// duplicate(topic=) — deliver message twice.
+// duplicate(topic=, probability=) — deliver message twice. Narrower than the
+// other proxy faults on purpose: only the Kafka plugin implements duplication,
+// so matcher kwargs beyond topic/subject would be silent no-ops.
 func builtinProxyDuplicate(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	pf := &ProxyFaultDef{Action: "duplicate"}
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
 		switch key {
-		case "topic":
+		case "topic", "subject":
 			pf.Topic, _ = starlark.AsString(kv[1])
+		case "probability":
+			pf.Probability = parseProbability(kv[1])
+		default:
+			return nil, fmt.Errorf("duplicate(): unknown keyword argument %q; valid: topic, subject, probability", key)
 		}
 	}
 	return pf, nil

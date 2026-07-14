@@ -91,7 +91,9 @@ slow_broker = fault_assumption("slow_broker",
 
 ### `duplicate(topic=)`
 
-Duplicate messages — the consumer sees each message twice.
+Duplicate messages — the consumer sees each message twice. The proxy
+forwards the produce normally, then re-sends it once; the producer still
+receives a single ack.
 
 ```python
 duplicates = fault_assumption("duplicates",
@@ -99,6 +101,14 @@ duplicates = fault_assumption("duplicates",
     rules = [duplicate(topic="order-events")],
 )
 ```
+
+> **Idempotent producers:** modern Kafka clients default to
+> `enable.idempotence=true`, and a real broker deduplicates the re-sent
+> batch (same producer id and sequence number) — the consumer will NOT
+> see the message twice. `duplicate()` exercises the consumer's
+> duplicate-handling against non-idempotent producers and mock brokers;
+> to test it with an idempotent producer, disable idempotence for the
+> test or produce the duplicate at the application level.
 
 ## Seed / Reset Patterns
 

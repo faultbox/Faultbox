@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -423,6 +424,25 @@ func errnoByName(name string) (syscall.Errno, bool) {
 	return e, ok
 }
 
+// ValidErrno reports whether name is an errno Faultbox can inject. Names
+// not in the table never reach the kernel; validating at spec load turns a
+// typo'd errno into a loud error instead of a silent errno-0 no-op (#139).
+func ValidErrno(name string) bool {
+	_, ok := errnoByName(name)
+	return ok
+}
+
+// SupportedErrnos returns the injectable errno names, sorted, for error
+// messages and documentation.
+func SupportedErrnos() []string {
+	names := make([]string, 0, len(errnoMap))
+	for name := range errnoMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func errnoName(e syscall.Errno) string {
 	for name, val := range errnoMap {
 		if val == e {
@@ -462,4 +482,13 @@ var errnoMap = map[string]syscall.Errno{
 	"ENOMEM": syscall.ENOMEM,
 	"EBUSY":  syscall.EBUSY,
 	"EINVAL": syscall.EINVAL,
+
+	// Documented in docs/errno-reference.md - the reference, the editor
+	// stub, and this table must stay in sync (#139 made unknown names a
+	// hard spec-load error, so every documented name must be injectable).
+	"ENOSYS":  syscall.ENOSYS,
+	"EDEADLK": syscall.EDEADLK,
+	"ELOOP":   syscall.ELOOP,
+	"EDQUOT":  syscall.EDQUOT,
+	"ENOLCK":  syscall.ENOLCK,
 }

@@ -2705,7 +2705,7 @@ api = service("api", "/tmp/mock-api",
 
 err_503 = fault_assumption("err_503",
     target = api.public,
-    rules  = [error(status_code = 503)],
+    rules  = [error(status = 503)],
 )
 `)
 	if err != nil {

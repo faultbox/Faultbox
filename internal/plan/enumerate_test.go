@@ -68,7 +68,7 @@ def test_bar():
 func TestEnumerate_FaultMatrixCollapsesCells(t *testing.T) {
 	rt := newRuntime(t)
 	src := `
-svc = service("svc", image = "busybox", cmd = ["sh","-c","sleep 1"])
+svc = service("svc", image = "busybox")
 
 def scenario_a(): pass
 def scenario_b(): pass
@@ -130,7 +130,7 @@ fault_matrix(
 func TestEnumerate_FaultScenarioStandalone(t *testing.T) {
 	rt := newRuntime(t)
 	src := `
-svc = service("svc", image = "busybox", cmd = ["sh","-c","sleep 1"])
+svc = service("svc", image = "busybox")
 
 def scenario_a(): pass
 
@@ -219,9 +219,9 @@ func TestEnumerate_TopologyServices(t *testing.T) {
 api = service("api",
     interface("public", "http", 80),
     interface("internal", "http", 8080),
-    image = "busybox", cmd = ["sh","-c","sleep 1"],
+    image = "busybox",
 )
-db = service("db", image = "busybox", cmd = ["sh","-c","sleep 1"])
+db = service("db", image = "busybox")
 def test_x(): return None
 `
 	if err := rt.LoadString("spec.star", src); err != nil {
@@ -246,7 +246,7 @@ def test_x(): return None
 func TestEnumerate_ByteStableAcrossCallsViaJSON(t *testing.T) {
 	rt := newRuntime(t)
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 def scenario_a(): pass
 def scenario_b(): pass
 fa1 = fault_assumption("f1", target=svc, write=deny("EIO"))
@@ -281,7 +281,7 @@ func (s *stringWriter) Write(p []byte) (int, error) { return s.b.Write(p) }
 func TestEnumerate_DeterministicAcrossCalls(t *testing.T) {
 	rt := newRuntime(t)
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 def scenario_a(): pass
 def scenario_b(): pass
 fa1 = fault_assumption("f1", target=svc, write=deny("EIO"))

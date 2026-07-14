@@ -10,6 +10,24 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+### Fixed
+- Five bugs from the July 2026 doc audit (#137-#141): `drop(query=/command=)`
+  no longer drops all traffic; Kafka `duplicate(topic=)` actually re-sends the
+  produce; unknown errnos and unknown `service()` kwargs fail at spec load
+  instead of being silently ignored; proxy events carry `action`/`protocol`.
+
+### Changed
+- **Stricter spec loading.** `deny()` rejects errno names outside the supported
+  table (widened with the documented ENOSYS/EDEADLK/ELOOP/EDQUOT/ENOLCK);
+  `service()` and the proxy fault builtins (`response`/`error`/`drop`/`delay`/
+  `duplicate`) reject unknown keyword arguments with migration hints. Specs
+  relying on silently-ignored kwargs (`cmd=`, `http=`, `tcp=`, `name=`) must
+  switch to the documented forms.
+- `subject=` is now an accepted alias for `topic=` in proxy fault matchers
+  (NATS), as the protocol-proxy design doc always showed.
+- Trace schema: `proxy_conn_close` and `proxy_stall` events now include the
+  `protocol` field (previously only lifecycle-open events carried it).
+
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 

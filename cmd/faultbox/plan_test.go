@@ -14,7 +14,7 @@ func TestPlanCmd_TextOutputContainsCorePieces(t *testing.T) {
 	dir := t.TempDir()
 	spec := filepath.Join(dir, "spec.star")
 	src := `
-svc = service("svc", image="busybox", cmd=["sh","-c","sleep 1"])
+svc = service("svc", image="busybox")
 
 def scenario_checkout(): pass
 def scenario_browse(): pass
@@ -119,8 +119,8 @@ func TestPlanCmd_MissingSpecPrintsUsage(t *testing.T) {
 
 func TestPlanCmd_CoverageAddsTable(t *testing.T) {
 	spec := writeTempSpec(t, `
-db = service("db", image="busybox", cmd=["sh","-c","sleep 1"])
-api = service("api", image="busybox", cmd=["sh","-c","sleep 1"], depends_on=[db])
+db = service("db", image="busybox")
+api = service("api", image="busybox", depends_on=[db])
 def scenario_x(): pass
 db_down = fault_assumption("db_down", target=db, write=deny("EIO"))
 fault_scenario("api_db_down", scenario=scenario_x, faults=db_down)
@@ -135,8 +135,8 @@ fault_scenario("api_db_down", scenario=scenario_x, faults=db_down)
 
 func TestPlanCmd_SuggestEmitsStubs(t *testing.T) {
 	spec := writeTempSpec(t, `
-db = service("db", image="busybox", cmd=["sh","-c","sleep 1"])
-api = service("api", image="busybox", cmd=["sh","-c","sleep 1"], depends_on=[db])
+db = service("db", image="busybox")
+api = service("api", image="busybox", depends_on=[db])
 def test_x(): return True
 `)
 	out := mustCaptureStdout(t, func() int { return planCmd([]string{spec, "--suggest"}) })

@@ -239,27 +239,23 @@ seccomp policy blocking the operation entirely, missing filesystem feature.
 
 ## Using errnos not listed here
 
-Linux has ~130 errnos. This reference covers the most common ones for
-fault injection. If you need an errno not listed here:
+Linux has ~130 errnos; Faultbox injects a curated, validated set - every
+name in this reference plus the generic ones, about thirty in total.
+Since v0.13.2, `deny()` validates the errno name at spec load: an unknown
+name is a hard error listing the supported set, never a silent no-op.
 
-**Step 1:** Find the errno name. Run on your target Linux system:
-```bash
-# List all errnos:
-python3 -c "import errno; print('\n'.join(f'{v}: {k}' for k,v in sorted(errno.errorcode.items())))"
-
-# Or search for a specific error:
-grep -r "EDEADLK\|ELOOP\|ENOLCK" /usr/include/asm-generic/errno*.h
-```
-
-**Step 2:** Use it directly in Faultbox — any valid Linux errno name works:
+Less common but supported names:
 ```python
 fault(db, write=deny("EDEADLK"), run=scenario)    # resource deadlock
 fault(db, openat=deny("ELOOP"), run=scenario)      # too many symlinks
 fault(db, write=deny("EDQUOT"), run=scenario)      # disk quota exceeded
+fault(db, write=deny("ENOLCK"), run=scenario)      # no locks available
 ```
 
-Faultbox passes the errno string to the kernel — if Linux recognizes it,
-it works. No configuration needed.
+If you need an errno outside the supported set, it is a one-line addition
+to the table in `internal/engine/fault.go` -
+[open an issue](https://github.com/faultbox/Faultbox/issues) with the use
+case and it ships in the next release.
 
 ## Combining errnos with probability
 

@@ -61,14 +61,14 @@ def reset_db():
     # Runs before each subsequent test. Keep it cheap and idempotent.
     postgres.main.exec(sql = "TRUNCATE orders RESTART IDENTITY CASCADE")
 
-postgres = service(
-    name    = "postgres",
+postgres = service("postgres",
+    interface("main", "postgres", 5432),
     image   = "postgres:16-alpine",
     volumes = {"./init.sql": "/docker-entrypoint-initdb.d/init.sql"},
     reuse   = True,
     seed    = seed_db,
     reset   = reset_db,
-    ...
+    healthcheck = tcp("localhost:5432"),
 )
 ```
 

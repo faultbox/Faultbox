@@ -10,13 +10,22 @@ inject faults, assert on behavior.
 
 ```python
 # faultbox.star
-api = service("api", binary="./api", http="localhost:8080")
-db  = service("db",  binary="./db",  tcp="localhost:5432")
+db = service("db", "./db",
+    interface("main", "tcp", 5432),
+    healthcheck = tcp("localhost:5432"),
+)
+api = service("api", "./api",
+    interface("public", "http", 8080),
+    env = {"DB_ADDR": db.main.addr},
+    depends_on = [db],
+    healthcheck = http("localhost:8080/health"),
+)
 
-def test_write_failure(t):
-    fault(db, write=deny("EIO"))
-    resp = api.http.post("/orders", json={"item": "widget"})
-    assert_eq(resp.status, 503, "API should return 503 when DB fails")
+def test_write_failure():
+    def scenario():
+        resp = api.post(path="/orders", body='{"item": "widget"}')
+        assert_eq(resp.status, 503, "API must degrade cleanly when DB writes fail")
+    fault(db, write=deny("EIO"), run=scenario)
 ```
 
 ```bash
