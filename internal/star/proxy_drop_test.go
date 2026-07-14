@@ -51,3 +51,37 @@ func TestProxyDrop_QueryCommandKwargs(t *testing.T) {
 		t.Errorf("error(query=) regression: Query = %q", v.(*ProxyFaultDef).Query)
 	}
 }
+
+// TestProxyBuiltins_RejectUnknownKwargs: a typo'd matcher kwarg must fail at
+// spec load, never silently become an empty match-everything pattern (#137's
+// failure mode, applied uniformly like service() got for #140).
+func TestProxyBuiltins_RejectUnknownKwargs(t *testing.T) {
+	thread := &starlark.Thread{}
+
+	if _, err := builtinProxyDrop(thread, nil, nil, kwTuples("qeury", "DELETE*")); err == nil {
+		t.Error("drop(qeury=) typo must error, got nil")
+	}
+	if _, err := builtinProxyError(thread, nil, nil, kwTuples("patth", "/x")); err == nil {
+		t.Error("error(patth=) typo must error, got nil")
+	}
+	if _, err := builtinProxyResponse(thread, nil, nil, kwTuples("bodyy", "x")); err == nil {
+		t.Error("response(bodyy=) typo must error, got nil")
+	}
+	if _, err := builtinProxyDuplicate(thread, nil, nil, kwTuples("method", "POST")); err == nil {
+		t.Error("duplicate(method=) must error (only kafka implements duplication), got nil")
+	}
+}
+
+// TestProxyBuiltins_SubjectAlias: subject= (NATS) maps to the topic matcher,
+// as documented in docs/design/protocol-proxy.md - the NATS plugin matches
+// rule.Topic against the message subject.
+func TestProxyBuiltins_SubjectAlias(t *testing.T) {
+	thread := &starlark.Thread{}
+	v, err := builtinProxyDrop(thread, nil, nil, kwTuples("subject", "orders.*"))
+	if err != nil {
+		t.Fatalf("drop(subject=): %v", err)
+	}
+	if got := v.(*ProxyFaultDef).Topic; got != "orders.*" {
+		t.Errorf("drop(subject=): Topic = %q, want %q", got, "orders.*")
+	}
+}
