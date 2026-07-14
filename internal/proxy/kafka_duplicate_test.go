@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/binary"
 	"io"
 	"net"
 	"sync/atomic"
@@ -10,52 +9,12 @@ import (
 	"time"
 )
 
-// countingKafkaUpstream echoes length-prefixed frames and counts how many it
-// receives. Returns (addr, *counter, stop).
-func countingKafkaUpstream(t *testing.T) (string, *int32, func()) {
-	t.Helper()
-	var frames int32
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				for {
-					hdr := make([]byte, 4)
-					if _, err := io.ReadFull(c, hdr); err != nil {
-						return
-					}
-					n := int(binary.BigEndian.Uint32(hdr))
-					if n <= 0 || n > 64*1024 {
-						return
-					}
-					body := make([]byte, n)
-					if _, err := io.ReadFull(c, body); err != nil {
-						return
-					}
-					atomic.AddInt32(&frames, 1)
-					c.Write(hdr)
-					c.Write(body)
-				}
-			}()
-		}
-	}()
-	return ln.Addr().String(), &frames, func() { ln.Close() }
-}
-
 // TestKafkaProxy_DuplicateForwardsTwice guards #138: a duplicate(topic=) rule
 // must make a produce land on the broker twice (the consumer sees it twice),
 // while the producer still gets a single ack. Previously ActionDuplicate had
 // no case in the Kafka proxy, so the rule was a silent no-op.
 func TestKafkaProxy_DuplicateForwardsTwice(t *testing.T) {
-	upstreamAddr, frames, stop := countingKafkaUpstream(t)
+	upstreamAddr, _, frames, stop := kafkaEcho(t, false)
 	defer stop()
 
 	var dupEvents int32
@@ -98,7 +57,7 @@ func TestKafkaProxy_DuplicateForwardsTwice(t *testing.T) {
 // TestKafkaProxy_DuplicateIgnoresFetch ensures only produce is duplicated —
 // duplicating a fetch is meaningless.
 func TestKafkaProxy_DuplicateIgnoresFetch(t *testing.T) {
-	upstreamAddr, frames, stop := countingKafkaUpstream(t)
+	upstreamAddr, _, frames, stop := kafkaEcho(t, false)
 	defer stop()
 
 	p := newKafkaProxy(nil, "broker")
@@ -124,5 +83,42 @@ func TestKafkaProxy_DuplicateIgnoresFetch(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if got := atomic.LoadInt32(frames); got != 1 {
 		t.Errorf("fetch produced %d upstream frames, want 1 (fetch must not duplicate)", got)
+	}
+}
+
+// TestKafkaProxy_DuplicateRuleDoesNotShadowLaterRules guards the rule-
+// evaluation semantics: a duplicate rule matching a FETCH does not apply,
+// and must fall through to later rules. Pre-fix the ActionDuplicate case
+// returned early for fetches, silently disabling every rule after it.
+func TestKafkaProxy_DuplicateRuleDoesNotShadowLaterRules(t *testing.T) {
+	upstreamAddr, _, _, stop := kafkaEcho(t, false)
+	defer stop()
+
+	p := newKafkaProxy(nil, "broker")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	proxyAddr, err := p.Start(ctx, upstreamAddr)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer p.Stop()
+	p.AddRule(Rule{Topic: "orders", Action: ActionDuplicate})
+	p.AddRule(Rule{Topic: "orders", Action: ActionError, Error: "broker down"})
+
+	c, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer c.Close()
+
+	sendKafkaFrame(t, c, kafkaAPIFetch, "orders")
+
+	// The error rule must fire for the fetch: the proxy closes the client
+	// connection instead of forwarding. A successful echo response here
+	// means the duplicate rule shadowed the error rule.
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(c, buf); err == nil {
+		t.Error("fetch got a response; the error rule after duplicate never fired (rule shadowing)")
 	}
 }

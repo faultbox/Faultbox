@@ -16,8 +16,10 @@ import (
 // kafkaEcho is a trivial Kafka-shaped upstream: it reads
 // length-prefixed frames and writes a length-prefixed reply that
 // echoes the payload. Stands in for the broker without pulling in
-// kafka-go or sarama. Returns (addr, stop).
-func kafkaEcho(t *testing.T, useTLS bool) (string, *tls.Config, func()) {
+// kafka-go or sarama. Returns (addr, upstreamTLS, frameCounter, stop);
+// the counter reports how many request frames the broker received
+// (used by the #138 duplicate tests).
+func kafkaEcho(t *testing.T, useTLS bool) (string, *tls.Config, *int32, func()) {
 	t.Helper()
 	var ln net.Listener
 	var srvCfg *tls.Config
@@ -39,6 +41,7 @@ func kafkaEcho(t *testing.T, useTLS bool) (string, *tls.Config, func()) {
 		}
 	}
 
+	var frames int32
 	stopped := make(chan struct{})
 	go func() {
 		for {
@@ -61,6 +64,7 @@ func kafkaEcho(t *testing.T, useTLS bool) (string, *tls.Config, func()) {
 					if _, err := io.ReadFull(c, body); err != nil {
 						return
 					}
+					atomic.AddInt32(&frames, 1)
 					// Echo back with the same length prefix.
 					c.Write(hdr)
 					c.Write(body)
@@ -68,7 +72,7 @@ func kafkaEcho(t *testing.T, useTLS bool) (string, *tls.Config, func()) {
 			}()
 		}
 	}()
-	return ln.Addr().String(), srvCfg, func() { ln.Close(); close(stopped) }
+	return ln.Addr().String(), srvCfg, &frames, func() { ln.Close(); close(stopped) }
 }
 
 // sendKafkaFrame writes a Kafka request to a connection: 4-byte
@@ -118,7 +122,7 @@ func readKafkaFrame(t *testing.T, c net.Conn) []byte {
 // through the proxy with no rules. Satisfies the #84 coverage gate
 // and serves as the plaintext regression baseline for TLS migration.
 func TestKafkaProxy_Passthrough(t *testing.T) {
-	upstreamAddr, _, stop := kafkaEcho(t, false)
+	upstreamAddr, _, _, stop := kafkaEcho(t, false)
 	defer stop()
 
 	p := newKafkaProxy(nil, "broker")
@@ -148,7 +152,7 @@ func TestKafkaProxy_Passthrough(t *testing.T) {
 // upstream, plaintext frame parsing keeps working in the middle so
 // topic-glob rules still fire.
 func TestKafkaProxy_TLSEndToEnd(t *testing.T) {
-	upstreamAddr, upstreamCfg, stop := kafkaEcho(t, true)
+	upstreamAddr, upstreamCfg, _, stop := kafkaEcho(t, true)
 	defer stop()
 
 	upstreamLeaf, _ := x509.ParseCertificate(upstreamCfg.Certificates[0].Certificate[0])
@@ -192,7 +196,7 @@ func TestKafkaProxy_TLSEndToEnd(t *testing.T) {
 // tunnel. The customer's exact use case for kafka: TLS broker plus
 // topic-glob fault injection.
 func TestKafkaProxy_TLSRuleInjection(t *testing.T) {
-	upstreamAddr, upstreamCfg, stop := kafkaEcho(t, true)
+	upstreamAddr, upstreamCfg, _, stop := kafkaEcho(t, true)
 	defer stop()
 
 	upstreamLeaf, _ := x509.ParseCertificate(upstreamCfg.Certificates[0].Certificate[0])
@@ -252,7 +256,7 @@ func TestKafkaProxy_TLSRuleInjection(t *testing.T) {
 // TestKafkaProxy_PlaintextStillWorks — regression check. Without
 // SetTLS the plugin retains pre-RFC-038 behavior verbatim.
 func TestKafkaProxy_PlaintextStillWorks(t *testing.T) {
-	upstreamAddr, _, stop := kafkaEcho(t, false)
+	upstreamAddr, _, _, stop := kafkaEcho(t, false)
 	defer stop()
 
 	p := newKafkaProxy(nil, "broker")

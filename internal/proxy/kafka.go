@@ -196,9 +196,15 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		clientConn.Write(resp)
 
 		// #138: re-send the produce so the message lands on the broker a
-		// second time (the client already got its single ack above).
+		// second time (the client already got its single ack above). A
+		// failed duplicate round-trip leaves serverConn mid-frame, so it
+		// must kill the connection like any other framing error - limping
+		// on would desync every later response.
 		if duplicate {
-			p.forwardDuplicate(serverConn, lenBuf, payload)
+			if err := p.forwardDuplicate(serverConn, lenBuf, payload, tracker); err != nil {
+				closeReason = classifyCloseReason(err, "server")
+				return
+			}
 		}
 
 		requestsSeen++
@@ -274,10 +280,10 @@ func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string,
 
 		case ActionDuplicate:
 			// Only a produce can be duplicated — duplicating a fetch is
-			// meaningless. Forward normally, then re-send once so the
-			// consumer sees the message twice (#138).
+			// meaningless. The rule simply does not apply to a fetch: keep
+			// evaluating later rules instead of swallowing them.
 			if apiKey != kafkaAPIProduce {
-				return false, false
+				continue
 			}
 			if p.onEvent != nil {
 				p.onEvent(ProxyEvent{
@@ -295,23 +301,37 @@ func (p *kafkaProxy) checkRules(clientConn net.Conn, apiKey int16, topic string,
 
 // forwardDuplicate re-sends a produce request to the broker so the message
 // lands twice, then reads and discards the extra response (the client already
-// received its single ack). Best-effort: any error just ends the extra send.
-func (p *kafkaProxy) forwardDuplicate(serverConn net.Conn, lenBuf, payload []byte) {
+// received its single ack). Any failure is returned so the caller can kill
+// the connection: a half-done round-trip leaves serverConn mid-frame, and
+// silently continuing would desync every later response. The read carries a
+// deadline because an acks=0 producer elicits no broker response at all —
+// without it we would block and then steal the ack of the next request.
+func (p *kafkaProxy) forwardDuplicate(serverConn net.Conn, lenBuf, payload []byte, tracker *connTracker) error {
 	if _, err := serverConn.Write(lenBuf); err != nil {
-		return
+		return err
 	}
 	if _, err := serverConn.Write(payload); err != nil {
-		return
+		return err
 	}
+	tracker.AddBytesC2S(len(payload))
+
+	serverConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer serverConn.SetReadDeadline(time.Time{})
+
 	respLenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(serverConn, respLenBuf); err != nil {
-		return
+		return err
 	}
+	tracker.AddBytesS2C(4)
 	respLen := int(binary.BigEndian.Uint32(respLenBuf))
 	if respLen <= 0 || respLen > 10*1024*1024 {
-		return
+		return fmt.Errorf("duplicate response length %d out of range", respLen)
 	}
-	io.CopyN(io.Discard, serverConn, int64(respLen))
+	if _, err := io.CopyN(io.Discard, serverConn, int64(respLen)); err != nil {
+		return err
+	}
+	tracker.AddBytesS2C(respLen)
+	return nil
 }
 
 // extractTopic tries to extract the topic name from a Kafka Produce/Fetch request.
