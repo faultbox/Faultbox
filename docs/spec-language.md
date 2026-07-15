@@ -1929,12 +1929,17 @@ delay(topic="orders.events", delay="5s")             # Kafka
 > fault. `delay("500ms")` with a positional duration returns a syscall-level
 > fault. Same builtin, context-dependent.
 
-#### `drop(method=, path=, topic=, probability=)`
+#### `drop(method=, path=, query=, command=, key=, topic=, probability=)`
 
-Drop the connection or message.
+Drop the connection or message. The match kwargs mirror `error()`/`delay()`,
+so a drop can be scoped to a SQL statement (`query=`) or Redis command
+(`command=`); an unmatched pattern drops nothing (it does **not** fall back
+to dropping everything).
 
 ```python
 drop(method="POST", path="/upload")                  # HTTP — TCP reset
+drop(query="INSERT INTO orders*")                    # Postgres/MySQL — only INSERTs
+drop(command="SET", key="session:*")                 # Redis — only SET on session keys
 drop(topic="orders.events", probability="30%")       # Kafka — message loss
 ```
 

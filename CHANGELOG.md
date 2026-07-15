@@ -10,6 +10,15 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+Next-version work is tracked in
+[GitHub Issues](https://github.com/faultbox/Faultbox/issues).
+
+## [0.13.3] - 2026-07-14
+
+Bug fixes and stricter spec loading, from the July 2026 documentation audit.
+Several previously silent no-ops (mis-scoped drops, a dead Kafka `duplicate`,
+unknown errnos/kwargs) now either work correctly or fail loudly at spec load.
+
 ### Fixed
 - Five bugs from the July 2026 doc audit (#137-#141): `drop(query=/command=)`
   no longer drops all traffic; Kafka `duplicate(topic=)` actually re-sends the
@@ -27,9 +36,6 @@ Per-release "What's new" pages live on the site at
   (NATS), as the protocol-proxy design doc always showed.
 - Trace schema: `proxy_conn_close` and `proxy_stall` events now include the
   `protocol` field (previously only lifecycle-open events carried it).
-
-Next-version work is tracked in
-[GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
 ## [0.13.2] - 2026-07-06
 
@@ -2364,7 +2370,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.2...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.3...HEAD
+[0.13.3]: https://github.com/faultbox/Faultbox/compare/release-0.13.2...release-0.13.3
 [0.13.2]: https://github.com/faultbox/Faultbox/compare/release-0.13.1...release-0.13.2
 [0.13.1]: https://github.com/faultbox/Faultbox/compare/release-0.13.0...release-0.13.1
 [0.13.0]: https://github.com/faultbox/Faultbox/compare/release-0.12.29...release-0.13.0
