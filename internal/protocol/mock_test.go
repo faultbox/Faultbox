@@ -53,7 +53,7 @@ func TestHTTPMockStaticRoutes(t *testing.T) {
 				},
 			},
 			{
-				Pattern: "GET /health",
+				Pattern:  "GET /health",
 				Response: &MockResponse{Status: 204},
 			},
 			{
@@ -276,7 +276,7 @@ func TestHTTP2MockStaticRoutes(t *testing.T) {
 	spec := MockSpec{
 		Routes: []MockRoute{
 			{
-				Pattern: "GET /healthz",
+				Pattern:  "GET /healthz",
 				Response: &MockResponse{Status: 200, Body: []byte(`ok`), ContentType: "text/plain"},
 			},
 			{
@@ -1156,8 +1156,8 @@ func TestGRPCMockReflection_DisabledForUntypedMocks(t *testing.T) {
 // Two protocols exist in connect-go:
 //   - WithGRPC():    standard gRPC wire (what this test covers)
 //   - WithGRPCWeb(): browser-friendly HTTP/1.1 framing — not supported
-//                    by the stdlib grpc.Server; would need a separate
-//                    handler if a customer asks.
+//     by the stdlib grpc.Server; would need a separate
+//     handler if a customer asks.
 //
 // The pure Connect protocol (JSON-over-HTTP) is also not supported by
 // the stdlib grpc.Server. If a customer hits either case, RFC-023
@@ -1257,7 +1257,7 @@ func (*emptyMsg) Unmarshal([]byte) error   { return nil }
 // --- test helpers ---
 
 type recordedEmits struct {
-	mu    sync.Mutex
+	mu     sync.Mutex
 	count_ int64
 }
 

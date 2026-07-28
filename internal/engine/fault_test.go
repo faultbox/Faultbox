@@ -8,9 +8,9 @@ import (
 
 func TestParseFaultRule(t *testing.T) {
 	tests := []struct {
-		input    string
-		want     FaultRule
-		wantErr  bool
+		input   string
+		want    FaultRule
+		wantErr bool
 	}{
 		{
 			input: "open=ENOENT:50%",
@@ -189,10 +189,10 @@ func TestMatchPath(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"", "/anything", true},            // no glob matches all
-		{"/data/*", "/data/foo", true},     // glob matches
+		{"", "/anything", true},             // no glob matches all
+		{"/data/*", "/data/foo", true},      // glob matches
 		{"/data/*", "/data/foo/bar", false}, // * doesn't cross /
-		{"/data/*", "/other/foo", false},   // no match
+		{"/data/*", "/other/foo", false},    // no match
 		{"/tmp/test-*", "/tmp/test-123", true},
 	}
 

@@ -143,15 +143,15 @@ func awaitEvent(ctx context.Context, log *EventLog, m *MatcherVal) (Event, error
 //
 // Signature (RFC-041 §5.3.1):
 //
-//	await_stable(quiescence_window="1s", ignore=None, clock="wall")
+//		await_stable(quiescence_window="1s", ignore=None, clock="wall")
 //
-// - quiescence_window — duration string ("1s", "500ms"). Default "1s".
-// - ignore — matcher or callable that returns truthy for events to
-//   exclude from activity detection. Default None (every event is
-//   activity).
-// - clock — reserved kwarg per §8.8. Accepts "wall" silently;
-//   "virtual" returns an explicit "requires gVisor (Path C)" error so
-//   spec authors get a discoverable migration message.
+//	  - quiescence_window — duration string ("1s", "500ms"). Default "1s".
+//	  - ignore — matcher or callable that returns truthy for events to
+//	    exclude from activity detection. Default None (every event is
+//	    activity).
+//	  - clock — reserved kwarg per §8.8. Accepts "wall" silently;
+//	    "virtual" returns an explicit "requires gVisor (Path C)" error so
+//	    spec authors get a discoverable migration message.
 //
 // No own timeout — bounded by the per-test context PR 6 propagates
 // here via rt.testCtx (or rt.testContext() if a getter is preferred).

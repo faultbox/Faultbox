@@ -16,11 +16,11 @@ var socketRe = regexp.MustCompile(`^(socket|pipe|anon_inode):\[\d+\]$`)
 
 // TraceOutput is the JSON structure written to --output.
 type TraceOutput struct {
-	Version    int               `json:"version"`
-	StarFile   string            `json:"star_file,omitempty"`
-	DurationMs int64             `json:"duration_ms"`
-	Pass       int               `json:"pass"`
-	Fail       int               `json:"fail"`
+	Version    int    `json:"version"`
+	StarFile   string `json:"star_file,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
+	Pass       int    `json:"pass"`
+	Fail       int    `json:"fail"`
 	// Inconclusive — count of tests that timed out with pending
 	// temporal assertions (RFC-041 §5.5(c)). Omitted when zero so
 	// trace.json from pre-RFC-041 specs is byte-identical.
@@ -69,27 +69,27 @@ type TestTraceOutput struct {
 	// RFC-027 expectation metadata — mirrored from the manifest so
 	// trace.json is self-contained for the drill-down renderer. Empty
 	// Expectation means the test had no expect=/default_expect=.
-	Expectation                string `json:"expectation,omitempty"`
-	ExpectationViolated        bool   `json:"expectation_violated,omitempty"`
-	FaultBypassed              bool   `json:"fault_bypassed,omitempty"`
-	StrictDeterminismViolation bool   `json:"strict_determinism_violation,omitempty"` // RFC-040 §8.3
-	BypassedRules       []BypassedRule `json:"bypassed_rules,omitempty"`
-	ErrorDetail         *ErrorDetail                    `json:"error_detail,omitempty"`
-	Faults              []FaultInfo                     `json:"faults,omitempty"`
-	SyscallSummary      map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
-	Diagnostics         []Diagnostic                    `json:"diagnostics,omitempty"`
-	Assertion           *AssertionDetail                `json:"assertion,omitempty"`
-	Events              []Event                         `json:"events"`
+	Expectation                string                          `json:"expectation,omitempty"`
+	ExpectationViolated        bool                            `json:"expectation_violated,omitempty"`
+	FaultBypassed              bool                            `json:"fault_bypassed,omitempty"`
+	StrictDeterminismViolation bool                            `json:"strict_determinism_violation,omitempty"` // RFC-040 §8.3
+	BypassedRules              []BypassedRule                  `json:"bypassed_rules,omitempty"`
+	ErrorDetail                *ErrorDetail                    `json:"error_detail,omitempty"`
+	Faults                     []FaultInfo                     `json:"faults,omitempty"`
+	SyscallSummary             map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
+	Diagnostics                []Diagnostic                    `json:"diagnostics,omitempty"`
+	Assertion                  *AssertionDetail                `json:"assertion,omitempty"`
+	Events                     []Event                         `json:"events"`
 }
 
 // Diagnostic is an actionable hint for LLM agents and humans.
 type Diagnostic struct {
-	Level      string `json:"level"`                 // "error", "warning", "info"
-	Code       string `json:"code"`                  // machine-readable code
-	Message    string `json:"message"`               // human-readable description
-	Suggestion string `json:"suggestion"`            // what to do about it
-	Service    string `json:"service,omitempty"`      // related service
-	Syscall    string `json:"syscall,omitempty"`      // related syscall
+	Level      string `json:"level"`             // "error", "warning", "info"
+	Code       string `json:"code"`              // machine-readable code
+	Message    string `json:"message"`           // human-readable description
+	Suggestion string `json:"suggestion"`        // what to do about it
+	Service    string `json:"service,omitempty"` // related service
+	Syscall    string `json:"syscall,omitempty"` // related syscall
 }
 
 // FaultInfo describes a fault rule that was active during a test.
@@ -620,10 +620,10 @@ func WriteNormalizedTrace(path string, result *SuiteResult) error {
 
 // ANSI color codes for terminal output.
 const (
-	colorRed   = "\033[31m"
-	colorGreen = "\033[32m"
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
-	colorReset = "\033[0m"
+	colorReset  = "\033[0m"
 )
 
 // DiffTraces compares two normalized trace strings and returns a human-readable diff.

@@ -11,9 +11,9 @@ import (
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/dynamicpb"
-	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 func init() {
@@ -108,8 +108,8 @@ func (p *grpcProtocol) rawInvoke(ctx context.Context, conn *grpc.ClientConn, met
 
 // Ensure imports are used (these will be needed for full reflection-based invoke).
 var (
-	_ = protojson.MarshalOptions{}
-	_ proto.Message          = (*dynamicpb.Message)(nil)
-	_ = protodesc.NewFile
-	_ = (*descriptorpb.FileDescriptorProto)(nil)
+	_               = protojson.MarshalOptions{}
+	_ proto.Message = (*dynamicpb.Message)(nil)
+	_               = protodesc.NewFile
+	_               = (*descriptorpb.FileDescriptorProto)(nil)
 )

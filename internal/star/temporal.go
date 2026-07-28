@@ -128,19 +128,23 @@ type EventuallyExpectation struct {
 	predicate starlark.Callable
 	anchor    *MatcherVal // optional — start watching from first matching event
 
-	mu             sync.Mutex
-	satisfied      bool
-	anchorReached  bool
+	mu            sync.Mutex
+	satisfied     bool
+	anchorReached bool
 }
 
 var _ ExpectationVal = (*EventuallyExpectation)(nil)
 
-func (e *EventuallyExpectation) String() string        { return fmt.Sprintf("<eventually %s>", funcName(e.predicate)) }
-func (e *EventuallyExpectation) Type() string          { return "eventually" }
-func (e *EventuallyExpectation) Freeze()               {}
-func (e *EventuallyExpectation) Truth() starlark.Bool  { return true }
-func (e *EventuallyExpectation) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: eventually") }
-func (e *EventuallyExpectation) Name() string          { return "eventually(" + funcName(e.predicate) + ")" }
+func (e *EventuallyExpectation) String() string {
+	return fmt.Sprintf("<eventually %s>", funcName(e.predicate))
+}
+func (e *EventuallyExpectation) Type() string         { return "eventually" }
+func (e *EventuallyExpectation) Freeze()              {}
+func (e *EventuallyExpectation) Truth() starlark.Bool { return true }
+func (e *EventuallyExpectation) Hash() (uint32, error) {
+	return 0, fmt.Errorf("unhashable: eventually")
+}
+func (e *EventuallyExpectation) Name() string { return "eventually(" + funcName(e.predicate) + ")" }
 
 func (e *EventuallyExpectation) Evaluate(thread *starlark.Thread, log *EventLog) (Verdict, string, error) {
 	e.mu.Lock()
@@ -219,11 +223,11 @@ type AlwaysExpectation struct {
 	betweenStart betweenAnchor
 	betweenEnd   betweenAnchor
 
-	mu             sync.Mutex
-	violated       bool
-	violationMsg   string
-	windowStarted  bool
-	windowEnded    bool
+	mu            sync.Mutex
+	violated      bool
+	violationMsg  string
+	windowStarted bool
+	windowEnded   bool
 }
 
 // SetWindowStarted is called by the runtime when a lifecycle anchor
@@ -481,14 +485,14 @@ func funcName(c starlark.Callable) string {
 // Required: name (positional string) + body (callable). Optional:
 //   - setup           — called once before body; result discarded
 //   - expect          — an eventually(...) or always(...) value;
-//                       registered alongside any expectations the body
-//                       declares inline so the §5.5 Finalize pass sees
-//                       it. Body cannot raise from expect=.
+//     registered alongside any expectations the body
+//     declares inline so the §5.5 Finalize pass sees
+//     it. Body cannot raise from expect=.
 //   - timeout         — duration string ("30s", "1m"). Default 30s.
 //   - terminate_when  — an eventually(...) value; when its predicate
-//                       holds, Termination fires via (b) §5.5.
+//     holds, Termination fires via (b) §5.5.
 //   - clock           — reserved per §8.8. "wall" today;
-//                       "virtual" → "requires gVisor" error.
+//     "virtual" → "requires gVisor" error.
 //
 // Tests declared via test() coexist with legacy def test_*() functions.
 // DiscoverTests includes both. The full test name is "test_<n>" so

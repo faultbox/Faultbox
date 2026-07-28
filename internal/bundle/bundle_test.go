@@ -526,8 +526,8 @@ func TestBuildCapturesSpecFiles(t *testing.T) {
 		CreatedAt:       time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC),
 		Trace:           []byte(`{}`),
 		Specs: map[string][]byte{
-			"faultbox.star":       []byte("load('helpers/jwt.star', 'sign')\n"),
-			"helpers/jwt.star":    []byte("def sign(): return 'ok'\n"),
+			"faultbox.star":        []byte("load('helpers/jwt.star', 'sign')\n"),
+			"helpers/jwt.star":     []byte("def sign(): return 'ok'\n"),
 			"_external/weird.star": []byte("# outside baseDir, captured defensively\n"),
 		},
 	}

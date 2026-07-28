@@ -476,10 +476,10 @@ func TestShiVizViolationMarker(t *testing.T) {
 				Reason: "assert_true failed: expected 5xx on DB write failure",
 				Events: []Event{
 					{Seq: 1, Type: "syscall", Service: "db", EventType: "syscall.write",
-						Fields: map[string]string{"syscall": "write", "decision": "deny(EIO)"},
+						Fields:      map[string]string{"syscall": "write", "decision": "deny(EIO)"},
 						VectorClock: map[string]int64{"db": 1}},
 					{Seq: 2, Type: "syscall", Service: "api", EventType: "syscall.connect",
-						Fields: map[string]string{"syscall": "connect", "decision": "allow"},
+						Fields:      map[string]string{"syscall": "connect", "decision": "allow"},
 						VectorClock: map[string]int64{"api": 1}},
 				},
 			},
@@ -785,9 +785,19 @@ def test_connect_fault():
 	}
 }
 
+// TestRequiredSyscallsPartition pins that partition() no longer requests a
+// seccomp filter.
+//
+// It used to install a connect() deny, so "connect" was requested here. Since
+// v0.14.0 it drops packets on the gateway instead — connect-deny only blocks
+// connection *setup*, and every consensus protocol pools long-lived
+// connections, so against Raft/etcd/Cassandra it did nothing at all while the
+// test still passed. Requesting connect now would filter services that need
+// no filter.
 func TestRequiredSyscallsPartition(t *testing.T) {
 	rt := New(testLogger())
 	err := rt.LoadString("test.star", `
+determinism(runtime = "gvisor")
 a = service("a", "/tmp/a", interface("main", "tcp", 8080))
 b = service("b", "/tmp/b", interface("main", "tcp", 9090))
 
@@ -800,9 +810,8 @@ def test_partition():
 		t.Fatalf("LoadString: %v", err)
 	}
 
-	syscalls := rt.requiredSyscalls()
-	if len(syscalls) != 1 || syscalls[0] != "connect" {
-		t.Fatalf("expected [connect] for partition, got %v", syscalls)
+	if syscalls := rt.requiredSyscalls(); len(syscalls) != 0 {
+		t.Fatalf("partition() requested syscalls %v; it acts on the packet gateway now", syscalls)
 	}
 }
 

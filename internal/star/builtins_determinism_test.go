@@ -92,11 +92,16 @@ func TestDeterminism_RejectsBogusLevel(t *testing.T) {
 	mustContain(t, err, "tier-3", "must be one of")
 }
 
-// ---- Reserved-syntax gating: runtime ----
+// ---- runtime gating ----
 
-func TestDeterminism_RejectsRuntimeGVisor(t *testing.T) {
-	err := loadStringErr(t, `determinism(runtime = "gvisor")`)
-	mustContain(t, err, "runtime=", "gvisor", "reserved", "RFC-046")
+// RFC-054 implements RFC-046 Path B, so runtime="gvisor" is no longer
+// reserved syntax. This test previously asserted it was rejected; it now pins
+// the opposite, together with the thing that did NOT change — both runtimes
+// still cap at L1 (see TestDeterminismL2StillErrors in packetspec_test.go).
+func TestDeterminism_AcceptsGVisorRuntime(t *testing.T) {
+	if err := loadStringErr(t, `determinism(runtime = "gvisor")`); err != nil {
+		t.Errorf(`determinism(runtime="gvisor") rejected: %v`, err)
+	}
 }
 
 func TestDeterminism_RejectsBogusRuntime(t *testing.T) {

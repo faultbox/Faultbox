@@ -15,8 +15,8 @@ import (
 const (
 	SECCOMP_SET_MODE_FILTER = 1
 
-	SECCOMP_FILTER_FLAG_NEW_LISTENER        = 1 << 3
-	SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV  = 1 << 5
+	SECCOMP_FILTER_FLAG_NEW_LISTENER       = 1 << 3
+	SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV = 1 << 5
 
 	SECCOMP_RET_ALLOW      = 0x7fff0000
 	SECCOMP_RET_USER_NOTIF = 0x7fc00000
@@ -35,8 +35,8 @@ const (
 
 // seccomp_data offsets.
 const (
-	offsetNr   = 0  // offsetof(struct seccomp_data, nr)
-	offsetArch = 4  // offsetof(struct seccomp_data, arch)
+	offsetNr   = 0 // offsetof(struct seccomp_data, nr)
+	offsetArch = 4 // offsetof(struct seccomp_data, arch)
 )
 
 // SockFprog matches struct sock_fprog for the seccomp() syscall.
@@ -504,4 +504,3 @@ func ReadSockaddrFromProcess(pid uint32, addr uint64) (ip string, port int, err 
 		return "", 0, fmt.Errorf("unsupported address family: %d", family)
 	}
 }
-

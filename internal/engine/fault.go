@@ -2,31 +2,27 @@ package engine
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/faultbox/Faultbox/internal/pathmatch"
 )
 
-// MatchPath checks if the given path matches the fault rule's path glob.
-// Returns true if:
-//   - the rule has no path glob (matches everything, but system paths are excluded separately)
-//   - the path matches the glob pattern
+// MatchPath reports whether path satisfies the rule's path glob. An empty
+// glob matches everything (system paths are excluded separately).
+//
+// Backed by internal/pathmatch rather than filepath.Match since v0.14.0.
+// filepath.Match cannot cross a path separator, so `/data/*` matched
+// `/data/foo` but not `/data/a/b` — a rule targeting a database that nests its
+// files silently matched nothing: no fault fired, no diagnostic, test passed.
+// `**` now crosses separators. The change is a widening: every pattern that
+// matched before still matches (TestBackCompatWithFilepathMatch).
 func (r FaultRule) MatchPath(path string) bool {
-	if r.PathGlob == "" {
-		return true
-	}
-	matched, _ := filepath.Match(r.PathGlob, path)
-	if matched {
-		return true
-	}
-	// Also try matching just the prefix for directory globs like /data/*
-	// filepath.Match requires exact segment match, so /data/* matches /data/foo
-	// but not /data/foo/bar. For the PoC this is fine.
-	return false
+	return pathmatch.Match(r.PathGlob, path)
 }
 
 // FaultAction describes what kind of fault to inject.
@@ -454,17 +450,17 @@ func errnoName(e syscall.Errno) string {
 
 var errnoMap = map[string]syscall.Errno{
 	// File/IO errors
-	"ENOENT":  syscall.ENOENT,
-	"EACCES":  syscall.EACCES,
-	"EPERM":   syscall.EPERM,
-	"EIO":     syscall.EIO,
-	"ENOSPC":  syscall.ENOSPC,
-	"EROFS":   syscall.EROFS,
-	"EEXIST":  syscall.EEXIST,
+	"ENOENT":    syscall.ENOENT,
+	"EACCES":    syscall.EACCES,
+	"EPERM":     syscall.EPERM,
+	"EIO":       syscall.EIO,
+	"ENOSPC":    syscall.ENOSPC,
+	"EROFS":     syscall.EROFS,
+	"EEXIST":    syscall.EEXIST,
 	"ENOTEMPTY": syscall.ENOTEMPTY,
-	"ENFILE":  syscall.ENFILE,
-	"EMFILE":  syscall.EMFILE,
-	"EFBIG":   syscall.EFBIG,
+	"ENFILE":    syscall.ENFILE,
+	"EMFILE":    syscall.EMFILE,
+	"EFBIG":     syscall.EFBIG,
 
 	// Network errors
 	"ECONNREFUSED":  syscall.ECONNREFUSED,

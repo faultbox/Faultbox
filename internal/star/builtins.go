@@ -25,19 +25,19 @@ type parallelResult struct {
 
 // builtins returns all Starlark built-in functions for a runtime.
 func (rt *Runtime) builtins() starlark.StringDict {
-	return starlark.StringDict{
-		"service":     starlark.NewBuiltin("service", rt.builtinService),
-		"interface":   starlark.NewBuiltin("interface", builtinInterface),
-		"tcp":         starlark.NewBuiltin("tcp", builtinTCP),
-		"http":        starlark.NewBuiltin("http", builtinHTTP),
-		"kafka_ready": starlark.NewBuiltin("kafka_ready", builtinKafkaReady),
-		"delay":       starlark.NewBuiltin("delay", builtinDelay),
-		"deny":        starlark.NewBuiltin("deny", builtinDeny),
-		"allow":       starlark.NewBuiltin("allow", builtinAllow),
-		"fault":       starlark.NewBuiltin("fault", rt.builtinFault),
-		"fault_all":   starlark.NewBuiltin("fault_all", rt.builtinFaultAll),
-		"fault_start": starlark.NewBuiltin("fault_start", rt.builtinFaultStart),
-		"fault_stop":  starlark.NewBuiltin("fault_stop", rt.builtinFaultStop),
+	out := starlark.StringDict{
+		"service":           starlark.NewBuiltin("service", rt.builtinService),
+		"interface":         starlark.NewBuiltin("interface", builtinInterface),
+		"tcp":               starlark.NewBuiltin("tcp", builtinTCP),
+		"http":              starlark.NewBuiltin("http", builtinHTTP),
+		"kafka_ready":       starlark.NewBuiltin("kafka_ready", builtinKafkaReady),
+		"delay":             starlark.NewBuiltin("delay", builtinDelay),
+		"deny":              starlark.NewBuiltin("deny", builtinDeny),
+		"allow":             starlark.NewBuiltin("allow", builtinAllow),
+		"fault":             starlark.NewBuiltin("fault", rt.builtinFault),
+		"fault_all":         starlark.NewBuiltin("fault_all", rt.builtinFaultAll),
+		"fault_start":       starlark.NewBuiltin("fault_start", rt.builtinFaultStart),
+		"fault_stop":        starlark.NewBuiltin("fault_stop", rt.builtinFaultStop),
 		"assert_true":       starlark.NewBuiltin("assert_true", rt.builtinAssertTrue),
 		"assert_eq":         starlark.NewBuiltin("assert_eq", rt.builtinAssertEq),
 		"assert_eventually": starlark.NewBuiltin("assert_eventually", rt.builtinAssertEventually),
@@ -47,61 +47,67 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"parallel":          starlark.NewBuiltin("parallel", rt.builtinParallel),
 		"monitor":           starlark.NewBuiltin("monitor", rt.builtinMonitor),
 		"partition":         starlark.NewBuiltin("partition", rt.builtinPartition),
+		"partition_start":   starlark.NewBuiltin("partition_start", rt.builtinPartitionStart),
+		"partition_stop":    starlark.NewBuiltin("partition_stop", rt.builtinPartitionStop),
 		"nondet":            starlark.NewBuiltin("nondet", rt.builtinNondet),
 		// RFC-043 §5.2 — finite non-deterministic choice. Zero-arg
 		// `nondet()` is sugar for `choose([True, False])`; that
 		// overload is wired in builtinNondet itself to avoid renaming
 		// the existing nondet(service, ...) variant.
-		"choose":            starlark.NewBuiltin("choose", rt.builtinChoose),
+		"choose": starlark.NewBuiltin("choose", rt.builtinChoose),
 		// RFC-043 §5.3 — halt the current plan-tree branch. Body
 		// execution stops at the call site; the test is recorded as
 		// "halted" (not pass/fail/inconclusive).
-		"halt":              starlark.NewBuiltin("halt", rt.builtinHalt),
+		"halt": starlark.NewBuiltin("halt", rt.builtinHalt),
 		// RFC-043 §5.4 — assume(predicate) spec-wide constraint. rc1
 		// evaluates at spec-load against the current choice snapshot
 		// and errors immediately on violation; rc2 will defer to
 		// per-leaf pruning.
-		"assume":            starlark.NewBuiltin("assume", rt.builtinAssume),
-		"trace":             starlark.NewBuiltin("trace", rt.builtinTrace),
-		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
-		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
-		"scenario":          starlark.NewBuiltin("scenario", rt.builtinScenario),
-		"fault_assumption":  starlark.NewBuiltin("fault_assumption", rt.builtinFaultAssumption),
-		"fault_scenario":    starlark.NewBuiltin("fault_scenario", rt.builtinFaultScenario),
-		"fault_matrix":      starlark.NewBuiltin("fault_matrix", rt.builtinFaultMatrix),
-		"op":                starlark.NewBuiltin("op", builtinOp),
-		"response":          starlark.NewBuiltin("response", builtinProxyResponse),
-		"error":             starlark.NewBuiltin("error", builtinProxyError),
-		"drop":              starlark.NewBuiltin("drop", builtinProxyDrop),
-		"duplicate":         starlark.NewBuiltin("duplicate", builtinProxyDuplicate),
+		"assume": starlark.NewBuiltin("assume", rt.builtinAssume),
+		"trace":  starlark.NewBuiltin("trace", rt.builtinTrace),
+		// RFC-054 M5 — file-scoped I/O observation via gVisor trace points.
+		"watch":            starlark.NewBuiltin("watch", rt.builtinWatch),
+		"watch_start":      starlark.NewBuiltin("watch_start", rt.builtinWatchStart),
+		"watch_stop":       starlark.NewBuiltin("watch_stop", rt.builtinWatchStop),
+		"trace_start":      starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
+		"trace_stop":       starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
+		"scenario":         starlark.NewBuiltin("scenario", rt.builtinScenario),
+		"fault_assumption": starlark.NewBuiltin("fault_assumption", rt.builtinFaultAssumption),
+		"fault_scenario":   starlark.NewBuiltin("fault_scenario", rt.builtinFaultScenario),
+		"fault_matrix":     starlark.NewBuiltin("fault_matrix", rt.builtinFaultMatrix),
+		"op":               starlark.NewBuiltin("op", builtinOp),
+		"response":         starlark.NewBuiltin("response", builtinProxyResponse),
+		"error":            starlark.NewBuiltin("error", builtinProxyError),
+		"drop":             starlark.NewBuiltin("drop", builtinProxyDrop),
+		"duplicate":        starlark.NewBuiltin("duplicate", builtinProxyDuplicate),
 		// RFC-044 §8.6 — `observe` module is the canonical surface for
 		// event-source factories. Legacy top-level stdout/stderr remain
 		// registered as deprecated aliases that emit a one-time stderr
 		// warning before producing the same value the new form does.
 		// Removal in v0.14.0.
-		"observe":           makeObserveModule(),
-		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutDeprecated),
-		"stderr":            starlark.NewBuiltin("stderr", builtinStderrDeprecated),
+		"observe": makeObserveModule(),
+		"stdout":  starlark.NewBuiltin("stdout", builtinStdoutDeprecated),
+		"stderr":  starlark.NewBuiltin("stderr", builtinStderrDeprecated),
 		// RFC-044 §8.7 — `decoder("name", ...)` is the unified
 		// dispatcher; the three legacy names are deprecated aliases.
 		// All four routes converge in builtinDecoder so DecoderVal
 		// construction has a single source of truth.
-		"decoder":           starlark.NewBuiltin("decoder", builtinDecoder),
-		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoderDeprecated),
-		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoderDeprecated),
-		"regex_decoder":     starlark.NewBuiltin("regex_decoder", builtinRegexDecoderDeprecated),
+		"decoder":        starlark.NewBuiltin("decoder", builtinDecoder),
+		"json_decoder":   starlark.NewBuiltin("json_decoder", builtinJSONDecoderDeprecated),
+		"logfmt_decoder": starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoderDeprecated),
+		"regex_decoder":  starlark.NewBuiltin("regex_decoder", builtinRegexDecoderDeprecated),
 		// struct(**kwargs) — namespace objects. Used by recipe modules so
 		// protocol-specific helpers don't collide on common names (e.g.
 		// mongodb.disk_full vs postgres.disk_full).
 		"struct": starlark.NewBuiltin("struct", starlarkstruct.Make),
 		// Mock services (RFC-017).
-		"mock_service":   starlark.NewBuiltin("mock_service", rt.builtinMockService),
-		"json_response":  starlark.NewBuiltin("json_response", builtinJSONResponse),
-		"text_response":  starlark.NewBuiltin("text_response", builtinTextResponse),
-		"bytes_response": starlark.NewBuiltin("bytes_response", builtinBytesResponse),
-		"status_only":    starlark.NewBuiltin("status_only", builtinStatusOnly),
-		"redirect":       starlark.NewBuiltin("redirect", builtinRedirect),
-		"dynamic":        starlark.NewBuiltin("dynamic", builtinDynamic),
+		"mock_service":        starlark.NewBuiltin("mock_service", rt.builtinMockService),
+		"json_response":       starlark.NewBuiltin("json_response", builtinJSONResponse),
+		"text_response":       starlark.NewBuiltin("text_response", builtinTextResponse),
+		"bytes_response":      starlark.NewBuiltin("bytes_response", builtinBytesResponse),
+		"status_only":         starlark.NewBuiltin("status_only", builtinStatusOnly),
+		"redirect":            starlark.NewBuiltin("redirect", builtinRedirect),
+		"dynamic":             starlark.NewBuiltin("dynamic", builtinDynamic),
 		"grpc_response":       starlark.NewBuiltin("grpc_response", builtinGRPCResponse),
 		"grpc_typed_response": starlark.NewBuiltin("grpc_typed_response", builtinGRPCTypedResponse),
 		"grpc_raw_response":   starlark.NewBuiltin("grpc_raw_response", builtinGRPCRawResponse),
@@ -166,6 +172,16 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// can be compared numerically.
 		"duration": starlark.NewBuiltin("duration", builtinDuration),
 	}
+
+	// RFC-054 §"DSL extensions" — packet_* fault family. Registered
+	// unconditionally so a spec that uses one gets a precise
+	// "requires runtime=gvisor" error at spec load, rather than
+	// "undefined: packet_drop", which would send the author looking
+	// for a typo instead of a missing runtime declaration.
+	for name, b := range packetFaultBuiltins() {
+		out[name] = b
+	}
+	return out
 }
 
 // builtinDuration parses a duration string ("200ms", "1.5s", "2m") into
@@ -1498,7 +1514,7 @@ func (rt *Runtime) builtinFaultAssumption(thread *starlark.Thread, fn *starlark.
 	}
 
 	// Parse kwargs.
-	var target starlark.Value   // *ServiceDef or *InterfaceRef
+	var target starlark.Value // *ServiceDef or *InterfaceRef
 	var description string
 	var monitors []*MonitorDef
 	var children []*FaultAssumptionDef
@@ -2245,95 +2261,6 @@ func (rt *Runtime) builtinMonitor(thread *starlark.Thread, fn *starlark.Builtin,
 	return m, nil
 }
 
-// partition(svc_a, svc_b, run=callback)
-// Creates a network partition between two services. While the callback runs,
-// svc_a cannot connect to svc_b and svc_b cannot connect to svc_a.
-func (rt *Runtime) builtinPartition(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if len(args) < 2 {
-		return nil, fmt.Errorf("partition() requires two service arguments")
-	}
-	svcA, ok := args[0].(*ServiceDef)
-	if !ok {
-		return nil, fmt.Errorf("partition() first arg must be a service, got %s", args[0].Type())
-	}
-	svcB, ok := args[1].(*ServiceDef)
-	if !ok {
-		return nil, fmt.Errorf("partition() second arg must be a service, got %s", args[1].Type())
-	}
-
-	var bodyFn starlark.Callable
-	for _, kv := range kwargs {
-		key, _ := starlark.AsString(kv[0])
-		if key == "run" {
-			cb, cbOk := kv[1].(starlark.Callable)
-			if !cbOk {
-				return nil, fmt.Errorf("partition() run= must be a callable")
-			}
-			bodyFn = cb
-		}
-	}
-	if bodyFn == nil {
-		return nil, fmt.Errorf("partition() requires run= keyword with a callback function")
-	}
-
-	// Resolve destination addresses from service interfaces.
-	// svc_a blocks connect to all of svc_b's interface ports, and vice versa.
-	var rulesA, rulesB []engine.FaultRule
-	for _, iface := range svcB.Interfaces {
-		rulesA = append(rulesA, engine.FaultRule{
-			Syscall:     "connect",
-			Action:      engine.ActionDeny,
-			Errno:       111, // ECONNREFUSED
-			Probability: 1.0,
-			DestAddr:    fmt.Sprintf("127.0.0.1:%d", iface.Port),
-		})
-	}
-	for _, iface := range svcA.Interfaces {
-		rulesB = append(rulesB, engine.FaultRule{
-			Syscall:     "connect",
-			Action:      engine.ActionDeny,
-			Errno:       111, // ECONNREFUSED
-			Probability: 1.0,
-			DestAddr:    fmt.Sprintf("127.0.0.1:%d", iface.Port),
-		})
-	}
-
-	// Apply partition rules.
-	rsA, okA := rt.sessions[svcA.Name]
-	rsB, okB := rt.sessions[svcB.Name]
-	if !okA {
-		return nil, fmt.Errorf("partition(): service %q is not running", svcA.Name)
-	}
-	if !okB {
-		return nil, fmt.Errorf("partition(): service %q is not running", svcB.Name)
-	}
-	rsA.session.SetDynamicFaultRules(rulesA)
-	rsB.session.SetDynamicFaultRules(rulesB)
-	rt.events.Emit("partition_applied", "", map[string]string{
-		"between": svcA.Name + "," + svcB.Name,
-	})
-
-	// Run body, then remove partition.
-	defer func() {
-		rsA.session.ClearDynamicFaultRules()
-		rsB.session.ClearDynamicFaultRules()
-		rt.events.Emit("partition_removed", "", map[string]string{
-			"between": svcA.Name + "," + svcB.Name,
-		})
-	}()
-
-	result, err := starlark.Call(thread, bodyFn, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	if result == nil {
-		return starlark.None, nil
-	}
-	return result, nil
-}
-
-// assert_before(first={filters}, then={filters})
-// Asserts that the first matching event for "first" occurs before the first matching event for "then".
 func (rt *Runtime) builtinAssertBefore(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var firstDict, thenDict *starlark.Dict
 	for _, kv := range kwargs {
@@ -2413,7 +2340,18 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 
 	var result []starlark.Value
 	for _, ev := range events {
-		if ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
+		// The dict-filter path keeps its historical allow-list: those filters
+		// (syscall=, path=, decision=) only make sense for those families, and
+		// widening it would change what existing specs see.
+		//
+		// The where= path does NOT filter by type. The lambda *is* the filter,
+		// and pre-filtering silently hid every other family from it — including
+		// `proxy`, which docs/spec-language.md has always shown as
+		// `events(where=lambda e: e.type == "proxy" ...)`. That example could
+		// never have matched. Same for unmediated_io (RFC-040) and packet
+		// (RFC-054): a predicate naming them returned an empty list and the
+		// author had no way to tell "no such events" from "not allowed here".
+		if whereFn == nil && ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
 			continue
 		}
 
@@ -2456,10 +2394,10 @@ type ObserveSourceVal struct {
 
 var _ starlark.Value = (*ObserveSourceVal)(nil)
 
-func (v *ObserveSourceVal) String() string      { return fmt.Sprintf("<observe %s>", v.Config.SourceName) }
-func (v *ObserveSourceVal) Type() string         { return "observe_source" }
-func (v *ObserveSourceVal) Freeze()              {}
-func (v *ObserveSourceVal) Truth() starlark.Bool { return true }
+func (v *ObserveSourceVal) String() string        { return fmt.Sprintf("<observe %s>", v.Config.SourceName) }
+func (v *ObserveSourceVal) Type() string          { return "observe_source" }
+func (v *ObserveSourceVal) Freeze()               {}
+func (v *ObserveSourceVal) Truth() starlark.Bool  { return true }
 func (v *ObserveSourceVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: observe_source") }
 
 // DecoderVal is a Starlark value representing a decoder config.
@@ -2470,10 +2408,10 @@ type DecoderVal struct {
 
 var _ starlark.Value = (*DecoderVal)(nil)
 
-func (v *DecoderVal) String() string      { return fmt.Sprintf("<decoder %s>", v.Name) }
-func (v *DecoderVal) Type() string         { return "decoder" }
-func (v *DecoderVal) Freeze()              {}
-func (v *DecoderVal) Truth() starlark.Bool { return true }
+func (v *DecoderVal) String() string        { return fmt.Sprintf("<decoder %s>", v.Name) }
+func (v *DecoderVal) Type() string          { return "decoder" }
+func (v *DecoderVal) Freeze()               {}
+func (v *DecoderVal) Truth() starlark.Bool  { return true }
 func (v *DecoderVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: decoder") }
 
 // stdout(decoder=) — creates an observe source config for stdout capture.
@@ -2499,9 +2437,11 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 			}
 			bodyFn = cb
 		} else if key == "source" {
-			if s, ok := kv[1].(*ServiceDef); ok {
-				sourceSvc = s.Name
+			s, ok := kv[1].(*ServiceDef)
+			if !ok {
+				return nil, fmt.Errorf("fault() source= must be a service, got %s", kv[1].Type())
 			}
+			sourceSvc = s.Name
 		}
 	}
 
@@ -2509,18 +2449,43 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 		return nil, fmt.Errorf("fault() requires run= keyword with a callback function")
 	}
 
-	// Collect proxy fault defs from positional args.
+	// Collect fault defs from positional args. Protocol-level (ProxyFaultDef)
+	// and packet-level (PacketFaultDef) faults may be mixed on one interface:
+	// they act at different layers of the same data path.
 	var proxyFaults []*ProxyFaultDef
+	var packetFaults []*PacketFaultDef
 	for _, arg := range args {
-		pf, ok := arg.(*ProxyFaultDef)
-		if !ok {
-			return nil, fmt.Errorf("fault(interface_ref, ...) arguments must be response()/error()/drop(), got %s", arg.Type())
+		switch v := arg.(type) {
+		case *ProxyFaultDef:
+			proxyFaults = append(proxyFaults, v)
+		case *PacketFaultDef:
+			packetFaults = append(packetFaults, v)
+		default:
+			return nil, fmt.Errorf("fault(interface_ref, ...) arguments must be response()/error()/drop() or packet_*(), got %s", arg.Type())
 		}
-		proxyFaults = append(proxyFaults, pf)
 	}
 
-	if len(proxyFaults) == 0 {
-		return nil, fmt.Errorf("fault(interface_ref, ...) requires at least one protocol fault (response, error, drop, etc.)")
+	if len(proxyFaults) == 0 && len(packetFaults) == 0 {
+		return nil, fmt.Errorf("fault(interface_ref, ...) requires at least one protocol fault (response, error, drop, ...) or packet fault (packet_drop, packet_delay, ...)")
+	}
+
+	// Packet faults need the netstack gateway, which only the gvisor runtimes
+	// provide. Reject at spec load naming the fix — installing them silently
+	// under the default runtime would produce a test that passes because
+	// nothing was ever injected.
+	if len(packetFaults) > 0 {
+		if err := rt.requirePacketRuntime(describePacketFaults(packetFaults)); err != nil {
+			return nil, err
+		}
+		// A source= naming a service that does not reach this interface would
+		// scope the rules to an address that was never allocated, so they would
+		// match nothing — silently, which is how the pre-v0.14.0 source= bug
+		// hid for so long.
+		if sourceSvc != "" {
+			if err := rt.validateFaultSource(sourceSvc, svcName, ifaceName); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Resolve target address (RFC-036 aware: remote services dial the
@@ -2546,6 +2511,15 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 		"proxy":     proxyAddr,
 		"source":    sourceSvc,
 	})
+
+	// Packet-level rules install onto the netstack gateway for the same window.
+	if len(packetFaults) > 0 {
+		cleanup, err := rt.applyPacketFaults(thread, sourceSvc, svcName, ifaceName, packetFaults)
+		if err != nil {
+			return nil, fmt.Errorf("fault(): %w", err)
+		}
+		defer cleanup()
+	}
 
 	// Run body, then clear rules.
 	defer func() {

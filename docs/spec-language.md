@@ -32,6 +32,16 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`http`](#healthchecks),
 [`kafka_ready`](#healthchecks).
 
+**Packet faults (RFC-054, v0.14.0)** —
+[`packet_drop`](#packet-level-faults),
+[`packet_delay`](#packet-level-faults),
+[`packet_reorder`](#packet-level-faults),
+[`packet_duplicate`](#packet-level-faults),
+[`packet_corrupt`](#packet-level-faults),
+[`packet_reset`](#packet-level-faults),
+[`packet_window`](#packet-level-faults),
+[`packet_pass`](#packet-level-faults).
+
 **Faults (syscall + protocol)** —
 [`fault`](#fault),
 [`fault_all`](#fault_all),
@@ -1856,6 +1866,184 @@ fault(inventory, write=delay("500ms"), run=fn)
 
 ---
 
+## Packet-Level Faults
+
+Syscall faults act on a whole call; protocol faults act on a parsed message.
+Between them sits the layer where most real network failures live — the
+individual TCP segment or UDP datagram. Packet faults (RFC-054) operate there,
+on gVisor's userspace TCP/IP stack.
+
+The capability that motivates the layer: **a dropped packet sends no RST.**
+Today's `drop()` closes the connection, and a well-written client handles
+`ECONNRESET` correctly on the first try. A socket stuck in `ESTABLISHED`
+writing into a void until a keepalive fires — the failure that actually takes
+production down — is only reachable here.
+
+### Enabling
+
+Packet faults need the netstack gateway, which is opt-in per spec:
+
+```python
+determinism(runtime = "gvisor")
+```
+
+A `packet_*` fault under `runtime="default"` **fails the test**, naming the fix.
+It is not a warning: a fault that installs but never fires produces a *passing*
+test, and the author concludes the service tolerates packet loss when no packet
+was ever touched.
+
+**Requirements:** Linux with `CAP_NET_ADMIN` and `/dev/net/tun`. On macOS, run
+inside the Lima VM (`make env-start`). The preflight check names whichever
+prerequisite is missing.
+
+### Fault builtins
+
+Targeted at an interface reference, the same shape as protocol faults:
+
+```python
+packet_drop(**match)                    # silently discard — no RST
+packet_pass(**match)                    # explicit allow, to carve an exception
+packet_delay("250ms", **match)          # defer, then release in arrival order
+packet_reorder(by = 2, **match)         # release after `by` later packets
+packet_duplicate(count = 2, **match)    # deliver N times
+packet_corrupt(offset = 0, length = 4, corrupt_mode = "flip",
+               checksum = "fix", **match)
+packet_reset(**match)                   # synthesize a RST, drop the original
+packet_window(size = 0, **match)        # rewrite the advertised receive window
+```
+
+Rules are evaluated in declaration order and **first match wins**, so a narrow
+`packet_pass` above a broad `packet_drop` carves out an exception.
+
+> `bandwidth()` and `mtu()` are **not** in v0.14.0. They are link-scoped shapers
+> needing a token bucket and real fragmentation handling rather than the
+> match-and-act pipeline above; they land in v0.14.1.
+
+### The matcher
+
+Every `packet_*` builtin accepts the same optional kwargs, ANDed together:
+
+| Kwarg | Type | Meaning |
+|---|---|---|
+| `dir` | `"c2s"` / `"s2c"` / `"both"` | Direction relative to the SUT. Default `"both"`. |
+| `proto` | `"tcp"` / `"udp"` / `"icmp"` | Transport. |
+| `flags` | string | TCP flags: `"SYN"`, `"PSH,ACK"`, `"!RST"` (negation), `"ACK,!SYN"`. |
+| `port` | int | Destination port. |
+| `len`, `len_gt`, `len_lt` | int | Payload length, headers excluded. `len=0` matches a bare ACK. |
+| `payload_prefix` | string | Byte prefix. |
+| `payload_contains` | string | Byte substring. |
+| `nth`, `after`, `every` | int | Occurrence selectors, per flow. Mutually exclusive. |
+| `probability`, `max_fires`, `mode` | — | Identical semantics to syscall faults, including RFC-042 §8.9 exhaustive fan-out. |
+| `label` | string | Shown in trace output. |
+| `where` | callable | Escape hatch — see below. |
+
+### `where=` — the lambda escape hatch
+
+```python
+fault(db.main,
+    packet_delay("250ms", where = lambda p: p.dir == "c2s" and p.len > 1400),
+    run = scenario,
+)
+```
+
+The declarative kwargs compile to a Go predicate with no Starlark on the
+datapath. `where=` is evaluated **only** for packets that already passed them,
+so it refines a cheap filter rather than replacing it.
+
+A `where=` predicate that raises, or returns a non-bool, counts as **no match**
+and **fails the test**. It cannot silently mean "nothing matched": a lambda
+that throws on every packet would inject nothing while every assertion below it
+still passed.
+
+### The `Packet` value
+
+| Field | Type | Notes |
+|---|---|---|
+| `proto` | string | `"tcp"` / `"udp"` / `"icmp"` |
+| `dir` | string | `"c2s"` / `"s2c"` |
+| `src_ip`, `dst_ip` | string | |
+| `src_port`, `dst_port` | int | |
+| `len` | int | Payload length |
+| `payload` | string | Byte string — `startswith`, `endswith`, `in` all work |
+| `payload_bytes` | bytes | For slicing and `elems()` |
+| `flags` | list of string | TCP only |
+| `seq`, `ack`, `window` | int | TCP only |
+| `index` | int | 0-based ordinal within the flow |
+| `flow` | string | Stable flow id, usable as a dict key |
+
+> `payload` is a **string**, not bytes. Starlark's `bytes` type has exactly one
+> method (`elems()`), so `p.payload.startswith(...)` would fail on it. Starlark
+> strings hold arbitrary bytes, so this is binary-safe and carries the full
+> method set. Use `payload_bytes` when you want slicing.
+
+### Recipes
+
+```python
+# Silent blackhole — the half-open connection. No RST; the client hangs.
+fault(db.main, packet_drop(dir = "s2c", flags = "!SYN"), run = scenario)
+
+# Gray partition — partial, directional, probabilistic (RFC-050).
+fault(db.main, packet_drop(dir = "c2s", probability = "30%"), run = scenario)
+
+# Asymmetric latency — breaks naive RTT-based timeout tuning.
+fault(db.main,
+    packet_delay("400ms", dir = "s2c"),
+    packet_delay("5ms",   dir = "c2s"),
+    run = scenario)
+
+# Connection-pool poisoning — RST mid-stream.
+fault(db.main, packet_reset(after = 100), run = scenario)
+
+# Backpressure — advertise a full receive buffer.
+fault(db.main, packet_window(size = 0, dir = "s2c"), run = scenario)
+
+# Retransmit storm — drop every third data segment.
+fault(db.main, packet_drop(dir = "s2c", every = 3, flags = "PSH,ACK"), run = scenario)
+
+# Payload predicate on a custom binary protocol.
+fault(db.main,
+    packet_delay("2s", where = lambda p: p.payload.startswith("\x00\x00\x00")),
+    run = scenario)
+```
+
+Packet and protocol faults compose on one interface — they act at different
+layers of the same data path:
+
+```python
+fault(db.main,
+    packet_delay("50ms", dir = "c2s"),
+    error(query = "INSERT*", message = "disk full"),
+    run = scenario)
+```
+
+A full runnable corpus lives at [`poc/gvisor-rfc054/faultbox.star`](../poc/gvisor-rfc054/faultbox.star).
+
+### Trace events
+
+Packet actions emit `type="packet"` events with `action`, `direction`,
+`protocol`, `src`, `dst`, `len`, `flags`, `flow` and `label`:
+
+```python
+dropped = events(where = lambda e: e.type == "packet" and e.fields.get("action") == "drop")
+assert_true(len(dropped) > 0, "no packet was dropped")
+```
+
+> Use `events()` for a post-hoc scan of what already happened.
+> `assert_eventually()` is a temporal operator that waits for *future* events,
+> so it cannot see inside a fault window that has already closed.
+
+### What packet faults do not do
+
+- **Not below TLS-aware.** Faults act on the wire, so corrupting an encrypted
+  stream produces a MAC failure, not a semantic corruption.
+- **No `fault_matrix()` fan-out yet.** The parameter space is much larger than
+  a syscall fault's; enumerating it naively would explode the plan tree.
+- **Netstack's own timers are wall-clock.** A test depending on a TCP
+  retransmit deadline is wall-clock sensitive, the same caveat L1 already
+  carries.
+
+---
+
 ## Protocol-Level Faults
 
 Syscall-level `fault(service, ...)` operates at the kernel level. Protocol-level
@@ -1882,11 +2070,21 @@ Optional `source=` targets a specific consumer when multiple services
 connect to the same interface:
 
 ```python
-fault(kafka.main, source=worker,
+fault(kafka.main,
     drop(topic="orders.*"),
+    source=worker,
     run=scenario,
 )
 ```
+
+> Positional arguments must come before keyword arguments — that is Starlark's
+> grammar, not a Faultbox rule. Writing `source=` ahead of the fault rules
+> fails to parse with *"positional argument may not follow named"*.
+
+`source=` scopes the rules to traffic from one consumer, which is what makes
+pairwise and one-way partitions expressible in a peer mesh. A `source=` naming
+a service that does not reach the interface is rejected at fault time rather
+than silently matching nothing.
 
 ### Protocol fault builtins
 
@@ -2336,8 +2534,8 @@ Top-level declaration. May be called at most once per spec; if omitted, the spec
 
 | Kwarg | Type | Default | Notes |
 |-------|------|---------|-------|
-| `level` | string | `"L1"` | One of `"L0"`, `"L1"`. `"L2"`–`"L5"` parse but error at spec load (reserved for future releases — see [RFC-046](rfcs/0046-beyond-l1-roadmap.md)). |
-| `runtime` | string | `"default"` | The substrate. v0.13.0 ships only `"default"` (seccomp-notify). `"gvisor"` parses but errors. |
+| `level` | string | `"L1"` | One of `"L0"`, `"L1"`. `"L2"`–`"L5"` parse but error at spec load (reserved — see [RFC-046](rfcs/0046-beyond-l1-roadmap.md)). **`runtime="gvisor"` does not raise this ceiling**: it widens the mediated surface, not the promise. |
+| `runtime` | string | `"default"` | The substrate. `"default"` is seccomp-notify. `"gvisor"` (v0.14.0, RFC-054) adds the netstack packet gateway needed by `packet_*` faults. Both cap at L1. |
 | `strict` | bool | `True` (at L1) | `True` ⇒ untolerated `unmediated_io` events fail the test. `False` ⇒ they appear as warnings. Passing `strict=` at L0 is rejected — L0 has no detection events, so the kwarg can't honor any intent. |
 | `allow` | list | `[]` | Spec-wide tolerated categories. Items must come from `clock`, `rand`, `dns`, `network-unmediated`, `fs-unmediated`. Any other string is rejected at spec load. |
 

@@ -151,6 +151,7 @@ func (rt *Runtime) snapshotCurrentLeaf() *PlanLeaf {
 	defer rt.currentLeafMu.RUnlock()
 	return rt.currentLeaf
 }
+
 // Top-level choose() calls have already executed and recorded into
 // rt.choices; everything past this point is body-time. The plan
 // walker uses the snapshot to reset body-level recordings between

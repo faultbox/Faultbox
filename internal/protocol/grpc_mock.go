@@ -223,9 +223,9 @@ type anyProto struct {
 
 // Reset / String / ProtoMessage satisfy the proto.Message interface so
 // grpc-go's "proto" codec accepts our value in SendMsg/RecvMsg.
-func (a *anyProto) Reset()        { a.data = nil }
+func (a *anyProto) Reset()         { a.data = nil }
 func (a *anyProto) String() string { return fmt.Sprintf("anyProto(%d bytes)", len(a.data)) }
-func (a *anyProto) ProtoMessage() {}
+func (a *anyProto) ProtoMessage()  {}
 
 // Marshal / Unmarshal satisfy grpc-go's special-case path for raw bytes
 // messages. grpc-go checks for (Marshal() ([]byte, error)) before falling

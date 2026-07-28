@@ -17,11 +17,59 @@ const (
 	DeterminismL1 = "L1"
 )
 
-// Determinism runtime values.
+// Determinism runtime values. Two, matching RFC-046's original matrix.
+//
+// An earlier RFC-054 draft split this into "gvisor-net" and "gvisor" so a spec
+// that only wanted packet faults would not drag runsc adoption along with it.
+// That turned out to be the wrong lever: the cost is not the *runtime*, it is
+// the *feature*. So there is one runtime, and the runsc requirement is driven
+// by whether the spec actually uses filesystem observation:
+//
+//   - runtime="gvisor"                  → netstack packet gateway. No runsc.
+//   - runtime="gvisor" + watch(...)     → additionally requires runsc and
+//     container mode, checked at spec load.
+//
+// A spec that never calls watch() never needs runsc, which is what the split
+// was protecting — without a second runtime name to explain.
+//
+// Both values cap at L1: the mediated surface widens, the promise does not.
 const (
-	DeterminismRuntimeDefault = "default" // seccomp-notify (Path A); caps at L1
-	DeterminismRuntimeGVisor  = "gvisor"  // reserved; lands with RFC-046 Path B/C
+	DeterminismRuntimeDefault = "default" // seccomp-notify (Path A)
+	// DeterminismRuntimeGVisor enables the gVisor substrate: the netstack
+	// packet gateway (Path B) always, plus filesystem observation via
+	// runsc + seccheck (Path C-lite) for specs that ask for it.
+	DeterminismRuntimeGVisor = "gvisor"
 )
+
+// runtimeSupportsPacketFaults reports whether a runtime provides the packet
+// gateway that packet_* faults need.
+func runtimeSupportsPacketFaults(rt string) bool {
+	return rt == DeterminismRuntimeGVisor
+}
+
+// requirePacketRuntime rejects packet faults declared under a runtime that has
+// no packet gateway.
+//
+// This is a spec-load error rather than a runtime warning on purpose. A packet
+// fault that installs but never fires produces a *passing* test — the author
+// concludes their service tolerates packet loss when in fact no packet was
+// ever touched. That is strictly worse than a spec that refuses to load.
+func (rt *Runtime) requirePacketRuntime(what string) error {
+	rt.mu.Lock()
+	runtimeName := rt.detRuntime
+	rt.mu.Unlock()
+	if runtimeSupportsPacketFaults(runtimeName) {
+		return nil
+	}
+	subject := "packet faults"
+	if what != "" {
+		subject = what
+	}
+	return fmt.Errorf(
+		"%s require the netstack packet gateway, but this spec runs on runtime=%q; "+
+			"add determinism(runtime=%q) at the top of the spec",
+		subject, runtimeName, DeterminismRuntimeGVisor)
+}
 
 // unmediated_io categories. RFC-040 §8.1 enumerates the five classes of
 // unmediated I/O Faultbox can detect under L1. Spec authors list these in
@@ -120,12 +168,11 @@ func (rt *Runtime) builtinDeterminism(thread *starlark.Thread, fn *starlark.Buil
 	}
 
 	switch rtName {
-	case DeterminismRuntimeDefault:
-		// supported
-	case DeterminismRuntimeGVisor:
-		return nil, fmt.Errorf("determinism(runtime=%q): reserved for a future Faultbox release; v0.13.0 supports only runtime=%q (see RFC-046 §Path B/C)", rtName, DeterminismRuntimeDefault)
+	case DeterminismRuntimeDefault, DeterminismRuntimeGVisor:
+		// supported — both cap at L1 (RFC-054).
 	default:
-		return nil, fmt.Errorf("determinism(runtime=%q): must be %q (%q reserved)", rtName, DeterminismRuntimeDefault, DeterminismRuntimeGVisor)
+		return nil, fmt.Errorf("determinism(runtime=%q): must be %q or %q",
+			rtName, DeterminismRuntimeDefault, DeterminismRuntimeGVisor)
 	}
 
 	// strict has no effect at L0 — there are no detection events to gate.
@@ -247,10 +294,10 @@ func strictViolationReason(ev *Event) string {
 //
 // Categories handled here:
 //   - clock_gettime → "clock" (gettimeofday omitted: always VDSO on
-//                    amd64/arm64, absent from the seccomp arch tables)
+//     amd64/arm64, absent from the seccomp arch tables)
 //   - getrandom     → "rand"
 //   - connect       → "dns" (port 53) / "network-unmediated" (other ports
-//                     not bound to a declared interface or a Faultbox proxy)
+//     not bound to a declared interface or a Faultbox proxy)
 //
 // fs-unmediated is a reserved category in v0.13.0 — accepted in allow= lists
 // but no events are emitted yet (deferred to a future release).

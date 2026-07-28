@@ -13,14 +13,14 @@ import (
 
 // LaunchConfig describes how to launch a container with seccomp fault injection.
 type LaunchConfig struct {
-	Name       string            // container name (= service name)
-	Image      string            // image reference (e.g., "postgres:16")
-	Env        []string          // environment variables
-	Ports      map[int]int       // container_port → host_port (0 = auto)
-	Volumes    map[string]string // host_path → container_path
-	SyscallNrs []uint32          // syscalls to intercept
-	ShimPath   string            // host path to faultbox-shim binary
-	NetworkID  string            // Docker network ID
+	Name        string            // container name (= service name)
+	Image       string            // image reference (e.g., "postgres:16")
+	Env         []string          // environment variables
+	Ports       map[int]int       // container_port → host_port (0 = auto)
+	Volumes     map[string]string // host_path → container_path
+	SyscallNrs  []uint32          // syscalls to intercept
+	ShimPath    string            // host path to faultbox-shim binary
+	NetworkID   string            // Docker network ID
 	SkipPull    bool              // skip image pull (for locally built images)
 	PullTimeout time.Duration     // timeout for image pull (default 120s)
 
@@ -29,12 +29,17 @@ type LaunchConfig struct {
 	// `seccomp = False` in the Starlark spec — workaround for
 	// multi-process container entrypoints where shim handoff hangs.
 	NoSeccomp bool
+
+	// Runtime overrides the OCI runtime, e.g. "runsc" for gVisor filesystem
+	// observation (RFC-054 M5). Empty keeps the daemon default (runc), so
+	// enabling gVisor never changes behaviour for specs that did not ask.
+	Runtime string
 }
 
 // LaunchResult contains the result of launching a container.
 type LaunchResult struct {
 	ContainerID string
-	HostPID     int             // container init PID (for process exit detection)
+	HostPID     int // container init PID (for process exit detection)
 	ListenerFd  int
 	HostPorts   map[int]int // container_port → actual host_port
 }
@@ -144,6 +149,7 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 		Binds:      binds,
 		Ports:      cfg.Ports,
 		NetworkID:  cfg.NetworkID,
+		Runtime:    cfg.Runtime,
 	})
 	if err != nil {
 		return nil, err
@@ -240,6 +246,7 @@ func launchSimple(ctx context.Context, client *Client, cfg LaunchConfig, log *sl
 		Binds:     binds,
 		Ports:     cfg.Ports,
 		NetworkID: cfg.NetworkID,
+		Runtime:   cfg.Runtime,
 	})
 	if err != nil {
 		return nil, err

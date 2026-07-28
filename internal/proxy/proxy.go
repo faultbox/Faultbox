@@ -76,11 +76,11 @@ type Rule struct {
 type Action int
 
 const (
-	ActionRespond  Action = iota // Return custom response (don't forward)
-	ActionError                  // Return protocol-specific error
-	ActionDelay                  // Delay then forward normally
-	ActionDrop                   // Close connection / drop message
-	ActionDuplicate              // Forward twice (for message brokers)
+	ActionRespond   Action = iota // Return custom response (don't forward)
+	ActionError                   // Return protocol-specific error
+	ActionDelay                   // Delay then forward normally
+	ActionDrop                    // Close connection / drop message
+	ActionDuplicate               // Forward twice (for message brokers)
 )
 
 // MatchRequest checks if a rule matches a request described by the given fields.
@@ -144,11 +144,11 @@ type OnProxyEvent func(evt ProxyEvent)
 //   - "proxy_handshake_complete" — protocol-aware proxies only; auth phase done
 //   - "proxy_stall"              — read direction blocked on pending bytes for ≥ threshold
 type ProxyEvent struct {
-	Type     string            // "" → "proxy" (legacy); RFC-034 emit sites set explicitly
+	Type     string // "" → "proxy" (legacy); RFC-034 emit sites set explicitly
 	Protocol string
-	Action   string // "error", "delay", "drop", "respond", "forward"
-	From     string // source service
-	To       string // target service
+	Action   string            // "error", "delay", "drop", "respond", "forward"
+	From     string            // source service
+	To       string            // target service
 	Fields   map[string]string // protocol-specific: method, path, query, etc.
 }
 

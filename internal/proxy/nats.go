@@ -188,11 +188,15 @@ func extractNATSSubject(line string) string {
 	return ""
 }
 
-func (p *natsProxy) AddRule(rule Rule)  { p.mu.Lock(); p.rules = append(p.rules, rule); p.mu.Unlock() }
-func (p *natsProxy) ClearRules()        { p.mu.Lock(); p.rules = nil; p.mu.Unlock() }
+func (p *natsProxy) AddRule(rule Rule) { p.mu.Lock(); p.rules = append(p.rules, rule); p.mu.Unlock() }
+func (p *natsProxy) ClearRules()       { p.mu.Lock(); p.rules = nil; p.mu.Unlock() }
 func (p *natsProxy) Stop() error {
-	if p.cancel != nil { p.cancel() }
-	if p.listener != nil { p.listener.Close() }
+	if p.cancel != nil {
+		p.cancel()
+	}
+	if p.listener != nil {
+		p.listener.Close()
+	}
 	p.wg.Wait()
 	return nil
 }

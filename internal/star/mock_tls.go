@@ -20,11 +20,11 @@ import (
 // mockTLS holds the per-runtime TLS state — one CA signs all mock server
 // certs so a single Faultbox CA bundle can be trusted by every client.
 type mockTLS struct {
-	mu       sync.Mutex
-	ca       *x509.Certificate
-	caDER    []byte
-	caKey    *ecdsa.PrivateKey
-	caPath   string // PEM-encoded CA cert on disk
+	mu     sync.Mutex
+	ca     *x509.Certificate
+	caDER  []byte
+	caKey  *ecdsa.PrivateKey
+	caPath string // PEM-encoded CA cert on disk
 }
 
 // newMockTLS generates a fresh CA + writes the PEM bundle to a known path
@@ -41,13 +41,13 @@ func newMockTLS() (*mockTLS, error) {
 		return nil, fmt.Errorf("ca serial: %w", err)
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "Faultbox Mock CA"},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		IsCA:         true,
-		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "Faultbox Mock CA"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)

@@ -108,12 +108,12 @@ func buildTestBundle(t *testing.T) string {
 				"events":      []any{},
 			},
 			{
-				"name":        "test_inventory_survives_redis_outage",
-				"result":      "fail",
-				"reason":      "assert_eq: expected 503, got 500",
+				"name":         "test_inventory_survives_redis_outage",
+				"result":       "fail",
+				"reason":       "assert_eq: expected 503, got 500",
 				"failure_type": "assertion",
-				"seed":        42,
-				"duration_ms": 340,
+				"seed":         42,
+				"duration_ms":  340,
 				"faults": []map[string]any{
 					{"service": "redis", "syscall": "write", "action": "deny", "errno": "EIO", "hits": 3},
 				},

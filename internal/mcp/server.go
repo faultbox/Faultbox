@@ -543,4 +543,3 @@ func (s *Server) toolError(id interface{}, msg string) *jsonRPCResponse {
 	}
 	return s.resultObj(id, result)
 }
-

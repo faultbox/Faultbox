@@ -56,9 +56,9 @@ var styleCSS string
 // specific lines in these files. Keys are paths relative to the
 // archive root, e.g. "spec/faultbox.star".
 type Data struct {
-	Manifest *bundle.Manifest  `json:"manifest"`
-	Env      *bundle.Env       `json:"env,omitempty"`
-	Trace    json.RawMessage   `json:"trace,omitempty"`
+	Manifest *bundle.Manifest `json:"manifest"`
+	Env      *bundle.Env      `json:"env,omitempty"`
+	Trace    json.RawMessage  `json:"trace,omitempty"`
 	// Plan is the RFC-042 plan tree as written by `faultbox test`.
 	// Absent on pre-RFC-042 bundles (the report falls back to "no
 	// plan data" in the Plan tab). Stored as RawMessage so the

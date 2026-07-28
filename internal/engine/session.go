@@ -35,8 +35,8 @@ type SyscallEvent struct {
 	Decision string        `json:"decision"` // "allow", "deny(ERRNO)", "delay(500ms)"
 	Path     string        `json:"path,omitempty"`
 	Latency  time.Duration `json:"latency_ns,omitempty"` // time spent in fault (delay duration)
-	Label    string        `json:"label,omitempty"`       // optional fault label from deny/delay
-	Op       string        `json:"op,omitempty"`          // named operation (e.g., "persist")
+	Label    string        `json:"label,omitempty"`      // optional fault label from deny/delay
+	Op       string        `json:"op,omitempty"`         // named operation (e.g., "persist")
 
 	// DestIP / DestPort are populated only for connect() syscalls — read
 	// from the SUT's sockaddr argument once at the top of handleNotification
@@ -175,6 +175,11 @@ type Session struct {
 	// Monotonic syscall event counter.
 	syscallSeq atomic.Int64
 
+	// unresolvedPaths counts path-carrying syscalls whose path could not be
+	// recovered from /proc. Surfaced in DynamicRuleReport so a zero-match
+	// path-filtered rule can say *why* it never matched.
+	unresolvedPaths atomic.Int64
+
 	// Dynamic fault rules — can be modified while session is running.
 	dynamicRulesMu sync.RWMutex
 	dynamicRules   map[int32][]*FaultRule
@@ -296,6 +301,18 @@ type DynamicRuleReport struct {
 	Op         string
 	Label      string
 	MatchCount int64
+
+	// PathGlob is the rule's path filter, empty when it has none.
+	PathGlob string
+	// UnresolvedPaths is how many syscalls of this rule's family were seen
+	// while the path could not be recovered from /proc.
+	//
+	// Without it, a zero-match path-filtered rule is ambiguous: the app might
+	// have performed no matching I/O at all, or Faultbox might have failed to
+	// read the path (the read races the SUT and truncates at 256 bytes) and so
+	// never had anything to match against. Those need very different fixes, and
+	// until now they looked identical.
+	UnresolvedPaths int64
 }
 
 // DynamicRuleActivity returns one report per currently-installed dynamic
@@ -314,11 +331,13 @@ func (s *Session) DynamicRuleActivity() []DynamicRuleReport {
 	for _, rules := range s.dynamicRules {
 		for _, r := range rules {
 			out = append(out, DynamicRuleReport{
-				Syscall:    r.Syscall,
-				Action:     actionName(r.Action),
-				Op:         r.Op,
-				Label:      r.Label,
-				MatchCount: r.MatchCount(),
+				Syscall:         r.Syscall,
+				Action:          actionName(r.Action),
+				Op:              r.Op,
+				Label:           r.Label,
+				MatchCount:      r.MatchCount(),
+				PathGlob:        r.PathGlob,
+				UnresolvedPaths: s.unresolvedPaths.Load(),
 			})
 		}
 	}

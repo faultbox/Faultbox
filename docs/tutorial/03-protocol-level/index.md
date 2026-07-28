@@ -8,3 +8,4 @@ specific messages.
 |---------|----------|------------------|
 | [HTTP Protocol Faults](07-http-redis.md) | 25 min | fault(interface_ref), response(), delay(), drop() for HTTP protocol |
 | [Database & Broker Faults](08-databases.md) | 25 min | Postgres query errors, Kafka message drops, gRPC status codes |
+| [Packet-Level Faults](27-packet-faults.md) | 25 min | packet_drop/delay/reset/window, the half-open blackhole, payload predicates (v0.14.0) |

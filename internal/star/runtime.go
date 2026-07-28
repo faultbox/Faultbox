@@ -40,8 +40,8 @@ type TestResult struct {
 	Seed        uint64         `json:"seed"`
 	DurationMs  int64          `json:"duration_ms"`
 	Events      []Event        `json:"events,omitempty"`
-	ReturnValue starlark.Value `json:"-"`          // scenario return value for fault_scenario/fault_matrix
-	Matrix      *MatrixInfo    `json:"-"`          // non-nil if from fault_matrix()
+	ReturnValue starlark.Value `json:"-"` // scenario return value for fault_scenario/fault_matrix
+	Matrix      *MatrixInfo    `json:"-"` // non-nil if from fault_matrix()
 
 	// ExpectationName is the callable.Name() of the fs.Expect predicate
 	// used by this test, when one was provided. Empty for bare tests and
@@ -206,9 +206,9 @@ type CrashInfo struct {
 
 // Runtime is the Starlark execution environment.
 type Runtime struct {
-	log      *slog.Logger
-	events   *EventLog
-	eng      *engine.Engine
+	log    *slog.Logger
+	events *EventLog
+	eng    *engine.Engine
 
 	// Service registry — populated during .star file load.
 	mu       sync.Mutex
@@ -234,13 +234,13 @@ type Runtime struct {
 	globals starlark.StringDict
 
 	// Container support.
-	dockerClient   *container.Client      // lazy-initialized Docker client
-	networkID      string                 // Faultbox Docker network ID
-	containerIDs   map[string]string      // service name → container ID (for cleanup)
-	baseDir        string                 // directory of the loaded .star file (for build= paths)
-	sourceText     string                 // raw .star source for syscall scanning
-	loadedSpecs    map[string][]byte      // absolute path → bytes of every local .star loaded (RFC-025 Phase 4)
-	rootSpec       string                 // absolute path of the root spec (LoadFile argument)
+	dockerClient *container.Client // lazy-initialized Docker client
+	networkID    string            // Faultbox Docker network ID
+	containerIDs map[string]string // service name → container ID (for cleanup)
+	baseDir      string            // directory of the loaded .star file (for build= paths)
+	sourceText   string            // raw .star source for syscall scanning
+	loadedSpecs  map[string][]byte // absolute path → bytes of every local .star loaded (RFC-025 Phase 4)
+	rootSpec     string            // absolute path of the root spec (LoadFile argument)
 
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
@@ -249,9 +249,9 @@ type Runtime struct {
 	virtualTime bool
 
 	// Exploration mode: "all", "sample", or "".
-	exploreMode    string
-	explorePerm    int // current permutation index for explore mode
-	exploreHeldN   int // number of held syscalls observed in last explore run
+	exploreMode  string
+	explorePerm  int // current permutation index for explore mode
+	exploreHeldN int // number of held syscalls observed in last explore run
 
 	// Services excluded from interleaving control in parallel().
 	nondetServices map[string]bool
@@ -423,6 +423,37 @@ type Runtime struct {
 	detAllow          map[string]bool
 	detExplicit       bool
 	detStrictOverride *bool
+
+	// watches tracks active watch() windows for file I/O observation
+	// (RFC-054 M5).
+	watches *watchRegistry
+
+	// fsObs holds the seccheck sink and per-service trace sessions.
+	fsObs *fsObservation
+	// specUsesWatch records whether any test calls watch(). Filesystem
+	// observation requires runsc, so a spec that never watches must not be
+	// forced onto it — the runsc requirement follows the feature, not the
+	// runtime (RFC-054 §"Runtime selection").
+	specUsesWatch bool
+	// watchRan records that a watch window opened during the current test.
+	watchRan bool
+	// fsSkipReported ensures the "observation skipped" diagnostic is emitted
+	// once per run rather than once per service.
+	fsSkipReported bool
+
+	// partitions tracks partition_start() windows so partition_stop() undoes
+	// exactly what was installed, and so a leaked one cannot cross tests.
+	partitions *partitionRegistry
+
+	// packetGW holds the spec-wide netstack packet gateway (RFC-054 M4).
+	// nil-safe: only started when the runtime provides one.
+	packetGW *packetGatewayState
+
+	// packetRules holds packet-level fault rules per interface (RFC-054).
+	// The netstack gateway attaches to it at service start; until then
+	// installs are counted so a fault that reached no data path cannot pass
+	// silently.
+	packetRules *packetRuleRegistry
 }
 
 type runningSession struct {
@@ -434,9 +465,9 @@ type runningSession struct {
 // New creates a new Starlark runtime.
 func New(logger *slog.Logger) *Runtime {
 	rt := &Runtime{
-		log:           logging.WithComponent(logger, "starlark"),
-		events:        NewEventLog(),
-		eng:           engine.New(logger),
+		log:               logging.WithComponent(logger, "starlark"),
+		events:            NewEventLog(),
+		eng:               engine.New(logger),
 		services:          make(map[string]*ServiceDef),
 		sessions:          make(map[string]*runningSession),
 		faults:            make(map[string]map[string]*FaultDef),
@@ -451,6 +482,11 @@ func New(logger *slog.Logger) *Runtime {
 		detAllow:   make(map[string]bool),
 	}
 	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
+	rt.packetRules = newPacketRuleRegistry()
+	rt.packetGW = newPacketGatewayState()
+	rt.watches = newWatchRegistry()
+	rt.partitions = newPartitionRegistry()
+	rt.fsObs = newFSObservation()
 	return rt
 }
 
@@ -514,6 +550,12 @@ func (rt *Runtime) LoadFile(path string) error {
 		rt.loadedSpecs[absPath] = append([]byte(nil), src...)
 	}
 
+	// RFC-054 M5: same static scan as LoadString. Both load paths must set
+	// this — the CLI uses LoadFile, so patching only LoadString left
+	// filesystem observation silently disabled for every real run while the
+	// unit tests passed.
+	rt.specUsesWatch = sourceUsesWatch(string(src))
+
 	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
 	// violations surface as load errors instead of mid-test panics.
 	if err := validateMonitorLambdasInSource(path, string(src)); err != nil {
@@ -544,6 +586,12 @@ func (rt *Runtime) LoadString(name, src string) error {
 	if err := validateMonitorLambdasInSource(name, src); err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
+	// RFC-054 M5: filesystem observation needs runsc, and the container
+	// runtime must be chosen before the first service launches — long before
+	// any test body calls watch(). So it is detected from the source, the same
+	// static-scan approach the monitor and assume validators above use.
+	rt.specUsesWatch = sourceUsesWatch(src)
+
 	// RFC-043 §8.7 — same model for assume() predicates.
 	if err := validateAssumeLambdasInSource(name, src); err != nil {
 		return fmt.Errorf("load: %w", err)
@@ -693,8 +741,8 @@ func (rt *Runtime) Services() []*ServiceDef {
 
 // ScenarioRegistration records a happy-path function registered via scenario().
 type ScenarioRegistration struct {
-	Name string             // function name (e.g., "order_flow")
-	Fn   starlark.Callable  // the Starlark callable
+	Name string            // function name (e.g., "order_flow")
+	Fn   starlark.Callable // the Starlark callable
 }
 
 // Scenarios returns all registered scenario functions.
@@ -1729,6 +1777,54 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// strict_determinism_violation → fault_bypassed. This means a concurrent
 	// monitor violation and unmediated_io event are reported as "monitor
 	// violation"; the unmediated_io event is still in the trace for the report.
+	// A watch() that saw nothing is the filesystem analogue of an unwired
+	// packet gateway: its assertions are vacuous.
+	if reason := rt.fsObservationFailure(); reason != "" && rt.watchRan {
+		return TestResult{
+			Name:            name,
+			Result:          "fail",
+			Reason:          reason,
+			DurationMs:      time.Since(start).Milliseconds(),
+			Events:          events,
+			Matrix:          matrixInfo,
+			ExpectationName: expectName,
+		}
+	}
+
+	// A packet fault that installed onto no data path injected nothing, so a
+	// "pass" here would mean "the SUT tolerated a fault that never happened".
+	// Fail loudly instead — this is the same reasoning as the fault_bypassed
+	// verdict, applied to the gateway rather than to a rule that never matched.
+	// A where= lambda that throws matches nothing, so the fault never fires and
+	// the test would otherwise pass. `p.payload.startswith(...)` is exactly
+	// such a lambda — Starlark's bytes type has only elems() — so this is a
+	// mistake a spec author will actually make.
+	if err, n := rt.packetRules.firstWhereError(); err != nil {
+		return TestResult{
+			Name:   name,
+			Result: "fail",
+			Reason: fmt.Sprintf("packet fault where= predicate failed %d time(s), so it matched nothing "+
+				"and the fault never fired; first failure: %v", n, err),
+			DurationMs:      time.Since(start).Milliseconds(),
+			Events:          events,
+			Matrix:          matrixInfo,
+			ExpectationName: expectName,
+		}
+	}
+
+	if n := rt.packetRules.unwiredInstalls(); n > 0 {
+		return TestResult{
+			Name:   name,
+			Result: "fail",
+			Reason: fmt.Sprintf("packet faults were installed %d time(s) but no netstack gateway was attached, "+
+				"so no packet was affected; the result below would be meaningless", n),
+			DurationMs:      time.Since(start).Milliseconds(),
+			Events:          events,
+			Matrix:          matrixInfo,
+			ExpectationName: expectName,
+		}
+	}
+
 	if rt.strictEffective() {
 		if v := rt.firstStrictViolation(events); v != nil {
 			return TestResult{
@@ -2395,6 +2491,14 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 	shimPath := rt.findShimPath()
 
 	// Launch container.
+	// RFC-054 M5: the sink must be listening before the sandbox starts. The
+	// trace config sets ignore_setup_error=false, so a Sentry that cannot
+	// reach the sink refuses to boot — which beats a sandbox that runs while
+	// watch() silently observes nothing.
+	if err := rt.ensureFSObservation(ctx); err != nil {
+		return fmt.Errorf("filesystem observation: %w", err)
+	}
+
 	result, err := container.Launch(ctx, rt.dockerClient, container.LaunchConfig{
 		Name:       svcName,
 		Image:      imageName,
@@ -2406,11 +2510,21 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		NetworkID:  rt.networkID,
 		SkipPull:   svc.Build != "", // locally built images don't need pull
 		NoSeccomp:  svc.NoSeccomp,   // honor `seccomp = False` opt-out
+		// RFC-054 M5: "runsc" when the spec uses watch(), else empty so the
+		// daemon default (runc) is untouched.
+		Runtime: rt.containerRuntimeName(),
 	}, rt.log)
 	if err != nil {
 		return fmt.Errorf("launch container %q: %w", svcName, err)
 	}
 	rt.containerIDs[svcName] = result.ContainerID
+
+	// RFC-054 M5: attach the trace session now that the sandbox exists. Done
+	// after the container ID is recorded, because routeFileIO attributes each
+	// point back to a service through that map.
+	if err := rt.attachTrace(ctx, svcName, result.ContainerID); err != nil {
+		return fmt.Errorf("filesystem observation: %w", err)
+	}
 
 	// Set up stdout / stderr observation for container services. Same
 	// surface as the binary path (svc.Observe with stdout()/stderr()
@@ -2919,10 +3033,24 @@ func (rt *Runtime) stopServices() {
 		os.RemoveAll(socketBase)
 	}
 
+	// Any partition left open by partition_start() is removed here, so it
+	// cannot leak into the next test.
+	rt.clearPartitions()
+
 	// Clear active faults.
 	rt.faultsMu.Lock()
 	rt.faults = make(map[string]map[string]*FaultDef)
 	rt.faultsMu.Unlock()
+
+	// Tear the packet gateway down with the services it fronted. A leaked TUN
+	// device outlives the process and breaks the next run with "device busy",
+	// which is the same class of quiet leak the proxy-lifecycle findings
+	// (docs/design/2026-04-27) were written about. Reused services keep their
+	// gateway, since their connections are still live.
+	if len(reused) == 0 {
+		rt.closePacketGateway()
+		rt.closeFSObservation(context.Background())
+	}
 }
 
 // stopReusedServices tears down containers that were kept alive via reuse=True.
@@ -2973,8 +3101,29 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 			prefix := fmt.Sprintf("FAULTBOX_%s_%s", upper, ifUpper)
 
 			host, port := "localhost", iface.Port
-			if proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName); proxyAddr != "" {
-				if ph, pp, err := splitHostPort(proxyAddr); err == nil {
+			mediated := rt.proxyMgr.GetProxyAddr(name, ifName)
+			// RFC-054: under the gVisor runtime the SUT dials the packet
+			// gateway instead, which relays onward. Packet faults then act on
+			// the leg the SUT actually experiences.
+			//
+			// The relay target is the proxy when one is running, and the real
+			// upstream otherwise. That distinction is load-bearing for a peer
+			// mesh: preStartProxies starts an interface's proxy when its owning
+			// service starts, and only services launched afterwards see it. A
+			// mesh is a cycle, so for at least one link the proxy is always
+			// absent when the consumer's env is built. Gating the gateway on a
+			// proxy address therefore left that link unmediated, and packet
+			// rules installed into a link no traffic crossed. Chaining through
+			// a proxy is an optimization, not a precondition.
+			upstream := mediated
+			if upstream == "" {
+				upstream = proxyTargetAddr(s, iface)
+			}
+			if gwAddr := rt.gatewayAddrFor(svc.Name, name, ifName, iface.Port, upstream); gwAddr != "" {
+				mediated = gwAddr
+			}
+			if mediated != "" {
+				if ph, pp, err := splitHostPort(mediated); err == nil {
 					host, port = ph, pp
 				}
 			}
@@ -2990,7 +3139,7 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 	// rewrite those substrings so app-initiated traffic goes via the proxy.
 	// Substitution table: one entry per (upstream real addr → proxy addr)
 	// pair across every interface that has a running proxy.
-	substitutions := rt.proxyAddrSubstitutions()
+	substitutions := rt.proxyAddrSubstitutionsForService(svc.Name)
 	for k, v := range svc.Env {
 		v = applyAddrSubstitutions(v, substitutions)
 		// RFC-033: resolve any iface.proxy_addr / proxy_host / proxy_port
@@ -3031,6 +3180,15 @@ const (
 // mode-aware variant that container env building needs.
 func (rt *Runtime) proxyAddrSubstitutions() map[string]string {
 	return rt.proxyAddrSubstitutionsFor(binaryConsumer)
+}
+
+// proxyAddrSubstitutionsForService is proxyAddrSubstitutions with the consuming
+// service named, so RFC-054's packet gateway can hand out a distinct address
+// per (consumer, service, interface) triple. Without the consumer name every
+// consumer of an interface would share one gateway address and `source=`
+// targeting would be unresolvable.
+func (rt *Runtime) proxyAddrSubstitutionsForService(consumer string) map[string]string {
+	return rt.proxyAddrSubstitutionsConsumer(binaryConsumer, consumer)
 }
 
 // faultedInterfaces walks every registered fault_scenario / fault_matrix
@@ -3080,6 +3238,10 @@ func (rt *Runtime) faultedInterfaces() map[string]map[string]bool {
 // are re-spelled with host.docker.internal so the SUT, isolated in its
 // network namespace, can still reach the host-side listener.
 func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]string {
+	return rt.proxyAddrSubstitutionsConsumer(mode, "")
+}
+
+func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer string) map[string]string {
 	out := make(map[string]string)
 	// RFC-035: gate container-consumer substitutions on a registered
 	// proxy fault.
@@ -3105,11 +3267,40 @@ func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]strin
 	//     bridge-bind).
 	faulted := rt.faultedInterfaces()
 	for name, s := range rt.services {
+		// Never rewrite a service's own interface addresses in its own env.
+		//
+		// The substitution is a *dial*-address rewrite, but it is applied by
+		// substring match over every user env value — so a bind address like
+		// RAFT_BIND="127.0.0.1:8301" would be rewritten to the gateway address
+		// too, and the service would try to bind an address it does not own
+		// and exit. This only became reachable once the gateway stopped
+		// requiring a proxy: before that, a mesh link usually had no
+		// substitution at all.
+		//
+		// The FAULTBOX_<SVC>_<IFACE>_* vars are built separately in buildEnv
+		// and still carry the gateway address for the service's own
+		// interfaces, which is what a peer advertises.
+		if name == consumer {
+			continue
+		}
 		for ifName, iface := range s.Interfaces {
 			if mode == containerConsumer && !faulted[name][ifName] {
 				continue
 			}
 			proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName)
+			// A missing proxy is not a reason to skip the gateway — see the
+			// mesh-cycle note in buildEnv. Fall back to the real upstream so
+			// every link is still mediated at the packet layer.
+			gwUpstream := proxyAddr
+			if gwUpstream == "" {
+				gwUpstream = proxyTargetAddr(s, iface)
+			}
+			if gwAddr := rt.gatewayAddrFor(consumer, name, ifName, iface.Port, gwUpstream); gwAddr != "" {
+				out[fmt.Sprintf("localhost:%d", iface.Port)] = gwAddr
+				out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = gwAddr
+				out[fmt.Sprintf("%s:%d", name, iface.Port)] = gwAddr
+				continue
+			}
 			if proxyAddr == "" {
 				continue
 			}
@@ -3628,10 +3819,13 @@ func (rt *Runtime) requiredSyscalls() []string {
 		}
 	}
 
-	// partition() always needs connect.
-	if strings.Contains(src, "partition(") {
-		found["connect"] = true
-	}
+	// partition() no longer needs a seccomp filter. It used to install a
+	// connect() deny, which is why "connect" was requested here; since
+	// v0.14.0 it drops packets on the gateway instead, because connect-deny
+	// only blocks connection *setup* and every consensus protocol pools
+	// long-lived connections. Requesting connect now would install a filter
+	// on services that need none, slowing them for no benefit.
+	_ = src
 
 	// Virtual time needs time syscalls.
 	if rt.virtualTime {
@@ -3741,13 +3935,8 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 			}
 		}
 
-		// partition(VAR_A, VAR_B, ...) needs connect for both services.
-		for _, line := range lines {
-			if strings.Contains(line, "partition(") &&
-				(strings.Contains(line, varName+",") || strings.Contains(line, ", "+varName)) {
-				found["connect"] = true
-			}
-		}
+		// partition() deliberately contributes no syscalls — see the note in
+		// requiredSyscalls.
 	}
 
 	// Virtual time needs time syscalls on all services.
@@ -4076,6 +4265,22 @@ func (rt *Runtime) removeFaults(svcName string) {
 			}
 			if r.Label != "" {
 				fields["label"] = r.Label
+			}
+			// A path-filtered rule that matched nothing is ambiguous: the app
+			// may have done no matching I/O, or Faultbox may have failed to
+			// recover the path from /proc and had nothing to match against.
+			// Say which, instead of leaving the author to guess.
+			if r.PathGlob != "" {
+				fields["path"] = r.PathGlob
+				if r.UnresolvedPaths > 0 {
+					fields["unresolved_paths"] = fmt.Sprintf("%d", r.UnresolvedPaths)
+					fields["hint"] = "path filter never matched, and " +
+						fmt.Sprintf("%d", r.UnresolvedPaths) +
+						" syscall path(s) could not be resolved from /proc — the filter may be correct but unmatched"
+				} else {
+					fields["hint"] = "path filter never matched any resolved path; " +
+						"check the glob (use ** to cross directories, e.g. /data/**/*.wal)"
+				}
 			}
 			rt.events.Emit("fault_zero_traffic", svcName, fields)
 		}

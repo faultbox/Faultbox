@@ -254,11 +254,19 @@ func isStorageCommand(cmd string) bool {
 	return false
 }
 
-func (p *memcachedProxy) AddRule(rule Rule)  { p.mu.Lock(); p.rules = append(p.rules, rule); p.mu.Unlock() }
-func (p *memcachedProxy) ClearRules()        { p.mu.Lock(); p.rules = nil; p.mu.Unlock() }
+func (p *memcachedProxy) AddRule(rule Rule) {
+	p.mu.Lock()
+	p.rules = append(p.rules, rule)
+	p.mu.Unlock()
+}
+func (p *memcachedProxy) ClearRules() { p.mu.Lock(); p.rules = nil; p.mu.Unlock() }
 func (p *memcachedProxy) Stop() error {
-	if p.cancel != nil { p.cancel() }
-	if p.listener != nil { p.listener.Close() }
+	if p.cancel != nil {
+		p.cancel()
+	}
+	if p.listener != nil {
+		p.listener.Close()
+	}
 	p.wg.Wait()
 	return nil
 }

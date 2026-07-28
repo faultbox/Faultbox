@@ -56,11 +56,11 @@ const Filename = "faultbox.lock"
 // stable across regenerations so PR diffs stay focused.
 type Lock struct {
 	SchemaVersion int               `json:"schema_version"`
-	LockVersion   string            `json:"lock_version"`              // faultbox version that wrote this file
-	GeneratedAt   string            `json:"generated_at"`              // RFC3339; informational
-	Images        map[string]string `json:"images,omitempty"`          // tag → "sha256:..."
-	Stdlib        *StdlibPin        `json:"stdlib,omitempty"`          // reserved for Phase 2
-	Binaries      map[string]string `json:"binaries,omitempty"`        // path → "sha256:..."; reserved for Phase 2
+	LockVersion   string            `json:"lock_version"`       // faultbox version that wrote this file
+	GeneratedAt   string            `json:"generated_at"`       // RFC3339; informational
+	Images        map[string]string `json:"images,omitempty"`   // tag → "sha256:..."
+	Stdlib        *StdlibPin        `json:"stdlib,omitempty"`   // reserved for Phase 2
+	Binaries      map[string]string `json:"binaries,omitempty"` // path → "sha256:..."; reserved for Phase 2
 }
 
 // StdlibPin reserves room for a future content-hash of the embedded

@@ -112,12 +112,17 @@ func (c *Client) ImageDigest(ctx context.Context, ref string) (string, error) {
 type CreateOpts struct {
 	Name       string
 	Image      string
-	Entrypoint []string          // override entrypoint (faultbox-shim)
-	Cmd        []string          // original cmd from image
-	Env        []string          // KEY=VALUE environment
-	Binds      []string          // host:container volume mounts
-	Ports      map[int]int       // container_port → host_port (0 = auto)
-	NetworkID  string            // Docker network to join
+	Entrypoint []string    // override entrypoint (faultbox-shim)
+	Cmd        []string    // original cmd from image
+	Env        []string    // KEY=VALUE environment
+	Binds      []string    // host:container volume mounts
+	Ports      map[int]int // container_port → host_port (0 = auto)
+	NetworkID  string      // Docker network to join
+
+	// Runtime overrides the OCI runtime, e.g. "runsc" for gVisor
+	// (RFC-054 M5). Empty uses the daemon default, which stays "runc" —
+	// enabling gVisor is opt-in per spec and never changes the default.
+	Runtime string
 }
 
 // CreateContainer creates a container with the given options.
@@ -166,6 +171,11 @@ func (c *Client) CreateContainer(ctx context.Context, opts CreateOpts) (string, 
 		// port-published interface via the 127.0.0.1 route out-of-container
 		// through Docker's userland proxy).
 		ExtraHosts: []string{"host.docker.internal:host-gateway"},
+
+		// RFC-054 M5: run under gVisor when the spec asks for filesystem
+		// observation. The Sentry, not the host kernel, then executes the
+		// container's syscalls, which is what makes trace points available.
+		Runtime: opts.Runtime,
 	}
 
 	netCfg := &network.NetworkingConfig{}
@@ -422,9 +432,9 @@ type ShimConfig struct {
 	SyscallNrs []uint32 `json:"syscall_nrs"`
 	Entrypoint []string `json:"entrypoint"`
 	Cmd        []string `json:"cmd"`
-	SocketPath string   `json:"socket_path,omitempty"`  // Unix socket for fd passing (preferred)
-	ReportPath string   `json:"report_path,omitempty"`  // legacy file-based reporting
-	AckPath    string   `json:"ack_path,omitempty"`     // legacy ACK file
+	SocketPath string   `json:"socket_path,omitempty"` // Unix socket for fd passing (preferred)
+	ReportPath string   `json:"report_path,omitempty"` // legacy file-based reporting
+	AckPath    string   `json:"ack_path,omitempty"`    // legacy ACK file
 }
 
 // ShimConfigJSON serializes a ShimConfig to JSON for the env var.

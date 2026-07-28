@@ -128,10 +128,10 @@ func (e *Engine) runTrace(ctx context.Context, topo *config.TopologyConfig, name
 
 	// Start services in dependency order.
 	type runningService struct {
-		name   string
+		name    string
 		session *Session
-		cancel context.CancelFunc
-		done   chan *Result
+		cancel  context.CancelFunc
+		done    chan *Result
 	}
 	var running []runningService
 

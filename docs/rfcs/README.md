@@ -67,6 +67,13 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | RFC-011 | `faultbox infer` — Specification Mining from Traces | — | RFC-009 |
 | RFC-012 | `faultbox export --format p-lang` — P-lang Bridge | — | RFC-011 |
 
+### v0.14.0 — gVisor adoption
+
+| RFC | Title | Status | Depends On |
+|-----|-------|--------|------------|
+| [RFC-054](0054-gvisor-packet-and-file-mediation.md) | gVisor Adoption — Packet-Level Network Faults & File-Level I/O Observation | Implemented (v0.14.0, packet faults); `watch()` deferred to v0.14.1 | RFC-040, RFC-046 |
+| [RFC-046](0046-beyond-l1-roadmap.md) | Beyond L1 — gVisor Runtime Roadmap | Path B Implemented (v0.14.0) | RFC-040 |
+
 ## Dependency Graph
 
 ```
