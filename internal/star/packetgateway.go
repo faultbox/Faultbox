@@ -28,6 +28,31 @@ type packetRuleRegistry struct {
 	gateway  PacketGateway
 	unwired  int
 	installs map[string][]*netfault.Rule
+
+	// whereErr is the first where=-predicate failure seen this test, and
+	// whereErrCount how many followed. A lambda that throws on every packet
+	// matches nothing, so the fault silently never fires and the test passes.
+	whereErr      error
+	whereErrCount int
+}
+
+// recordWhereError captures a failing where= predicate. Called from the
+// datapath, so it must be cheap and must not block.
+func (rt *Runtime) recordWhereError(err error) {
+	r := rt.packetRules
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.whereErrCount++
+	if r.whereErr == nil {
+		r.whereErr = err
+	}
+}
+
+// firstWhereError returns the first where= failure and the total count.
+func (r *packetRuleRegistry) firstWhereError() (error, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.whereErr, r.whereErrCount
 }
 
 func newPacketRuleRegistry() *packetRuleRegistry {
@@ -96,7 +121,7 @@ func (r *packetRuleRegistry) rulesFor(service, iface string) []*netfault.Rule {
 func (rt *Runtime) applyPacketFaults(thread *starlark.Thread, svcName, ifaceName string, defs []*PacketFaultDef) (func(), error) {
 	rules := make([]*netfault.Rule, 0, len(defs))
 	for _, d := range defs {
-		r, err := d.Compile(thread)
+		r, err := d.Compile(thread, rt.recordWhereError)
 		if err != nil {
 			return nil, fmt.Errorf("packet_%s(): %w", d.Action, err)
 		}

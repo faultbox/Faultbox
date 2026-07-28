@@ -240,7 +240,7 @@ func packetBuiltin(name, action string, extra map[string]func(pf *PacketFaultDef
 		}
 		// Compile eagerly so a malformed combination fails at spec load rather
 		// than at packet time, where nothing would surface it.
-		if _, err := pf.Compile(nil); err != nil {
+		if _, err := pf.Compile(nil, nil); err != nil {
 			return nil, fmt.Errorf("%s(): %w", name, err)
 		}
 		return pf, nil
@@ -373,8 +373,10 @@ func packetFaultBuiltins() map[string]*starlark.Builtin {
 //
 // thread is the Starlark thread used to invoke a where= predicate; nil means
 // "validate only", which is what spec load does so a bad combination fails
-// there instead of at packet time.
-func (p *PacketFaultDef) Compile(thread *starlark.Thread) (*netfault.Rule, error) {
+// there instead of at packet time. onWhereError receives the first failure
+// from a where= lambda so the runtime can fail the test instead of reporting
+// a pass for a fault that never fired.
+func (p *PacketFaultDef) Compile(thread *starlark.Thread, onWhereError func(error)) (*netfault.Rule, error) {
 	r := &netfault.Rule{
 		Label:       p.Label,
 		Probability: p.Probability,
@@ -462,7 +464,7 @@ func (p *PacketFaultDef) Compile(thread *starlark.Thread) (*netfault.Rule, error
 		m.PayloadContains = []byte(p.PayloadContains)
 	}
 	if p.Where != nil && thread != nil {
-		m.Where = makeWherePredicate(thread, p.Where)
+		m.Where = makeWherePredicate(thread, p.Where, onWhereError)
 	}
 	r.Match = m
 
@@ -474,19 +476,32 @@ func (p *PacketFaultDef) Compile(thread *starlark.Thread) (*netfault.Rule, error
 
 // makeWherePredicate bridges a Starlark lambda onto the datapath.
 //
-// A predicate that errors or returns a non-bool is treated as "no match" —
-// the alternative is to abort the test from inside a packet callback, where
-// there is no sane place to surface the failure. The error is recorded so the
-// runtime can report it rather than swallow it.
-func makeWherePredicate(thread *starlark.Thread, fn starlark.Callable) func(*netfault.PacketView) bool {
+// A predicate that errors, or returns a non-bool, cannot match — there is no
+// sane way to abort a test from inside a packet callback. But it must not fail
+// *silently*: a lambda that throws on every packet would inject nothing and
+// the test would pass, and the author would conclude their service tolerates
+// the fault. `p.payload.startswith(...)` is exactly such a lambda (Starlark's
+// bytes type has only elems()), and it is how this RFC's own headline example
+// was originally written.
+//
+// So the first failure is reported through onError, and the runtime fails the
+// test with it.
+func makeWherePredicate(thread *starlark.Thread, fn starlark.Callable, onError func(error)) func(*netfault.PacketView) bool {
+	report := func(err error) {
+		if onError != nil {
+			onError(err)
+		}
+	}
 	return func(pv *netfault.PacketView) bool {
 		pkt := newStarlarkPacket(pv)
 		res, err := starlark.Call(thread, fn, starlark.Tuple{pkt}, nil)
 		if err != nil {
+			report(fmt.Errorf("where= predicate failed on %s: %w", pv.String(), err))
 			return false
 		}
 		b, ok := res.(starlark.Bool)
 		if !ok {
+			report(fmt.Errorf("where= predicate returned %s, want a bool (packet %s)", res.Type(), pv.String()))
 			return false
 		}
 		return bool(b)
@@ -539,6 +554,19 @@ func (p *starlarkPacket) Attr(name string) (starlark.Value, error) {
 	case "len":
 		return starlark.MakeInt(p.pv.PayloadLen), nil
 	case "payload":
+		// A Starlark string, not bytes.
+		//
+		// Starlark's bytes type has exactly one method — elems() — so
+		// `p.payload.startswith(b"...")` fails, which is how the RFC's own
+		// headline example was written. Starlark strings in go.starlark.net
+		// are arbitrary byte sequences (not UTF-8 validated), so String gives
+		// binary-safe storage *plus* the full method set: startswith,
+		// endswith, find, count, index. It also matches the declarative
+		// payload_prefix= / payload_contains= kwargs, which are strings.
+		return starlark.String(p.pv.Payload), nil
+	case "payload_bytes":
+		// Escape hatch for slicing and elems() when a spec really wants the
+		// bytes type.
 		return starlark.Bytes(p.pv.Payload), nil
 	case "flags":
 		names := netfault.FlagNames(p.pv.Flags)

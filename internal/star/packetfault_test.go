@@ -216,7 +216,7 @@ func TestPacketFaultCompiles(t *testing.T) {
 	pf := mustPacketBuiltin(t,
 		`packet_delay("250ms", dir = "c2s", proto = "tcp", flags = "PSH,ACK", port = 5432, len_gt = 1400, nth = 2, label = "slow")`)
 
-	r, err := pf.Compile(nil)
+	r, err := pf.Compile(nil, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestPacketFaultCompiles(t *testing.T) {
 
 func TestPacketFaultCompileDefaults(t *testing.T) {
 	// duplicate without count → 2 (delivered twice), per the documented default.
-	r, err := mustPacketBuiltin(t, `packet_duplicate()`).Compile(nil)
+	r, err := mustPacketBuiltin(t, `packet_duplicate()`).Compile(nil, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestPacketFaultCompileDefaults(t *testing.T) {
 	}
 
 	// corrupt without mode/checksum → flip + fix.
-	r, err = mustPacketBuiltin(t, `packet_corrupt()`).Compile(nil)
+	r, err = mustPacketBuiltin(t, `packet_corrupt()`).Compile(nil, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -328,9 +328,103 @@ func TestStarlarkPacketFields(t *testing.T) {
 	if flags.String() != `["PSH", "ACK"]` {
 		t.Errorf("pkt.flags = %s, want [\"PSH\", \"ACK\"]", flags.String())
 	}
+	// payload is a Starlark *string*, not bytes. Starlark's bytes type has
+	// exactly one method (elems()), so `p.payload.startswith(...)` — how the
+	// RFC's headline example was written — would fail on bytes. go.starlark.net
+	// strings are arbitrary byte sequences, so String is binary-safe and
+	// carries the full method set.
 	payload, _ := p.Attr("payload")
-	if b, ok := payload.(starlark.Bytes); !ok || string(b) != "hello" {
-		t.Errorf("pkt.payload = %v, want b\"hello\"", payload)
+	if s, ok := payload.(starlark.String); !ok || string(s) != "hello" {
+		t.Errorf("pkt.payload = %v (%s), want the string \"hello\"", payload, payload.Type())
+	}
+	// payload_bytes remains for slicing / elems().
+	pb, _ := p.Attr("payload_bytes")
+	if b, ok := pb.(starlark.Bytes); !ok || string(b) != "hello" {
+		t.Errorf("pkt.payload_bytes = %v, want b\"hello\"", pb)
+	}
+}
+
+// TestPayloadSupportsStringMethods is the regression guard for the bug this
+// DSL review found: the RFC's own headline example silently matched nothing
+// because Starlark bytes has no startswith.
+func TestPayloadSupportsStringMethods(t *testing.T) {
+	rt := New(testLogger())
+	th := &starlark.Thread{Name: "test"}
+
+	cases := []struct {
+		expr    string
+		payload []byte
+		want    bool
+	}{
+		{`packet_drop(where = lambda p: p.payload.startswith("\x00\x00\x00"))`, []byte{0, 0, 0, 9}, true},
+		{`packet_drop(where = lambda p: p.payload.startswith("\x00\x00\x00"))`, []byte("GET /"), false},
+		{`packet_drop(where = lambda p: p.payload.startswith("GET "))`, []byte("GET /x"), true},
+		{`packet_drop(where = lambda p: "admin" in p.payload)`, []byte("user=admin"), true},
+		{`packet_drop(where = lambda p: p.payload.endswith("\r\n\r\n"))`, []byte("GET /\r\n\r\n"), true},
+		{`packet_drop(where = lambda p: p.payload_bytes[0:3] == b"\x00\x00\x00")`, []byte{0, 0, 0, 1}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.expr, func(t *testing.T) {
+			v, err := starlark.Eval(th, "t.star", c.expr, rt.builtins())
+			if err != nil {
+				t.Fatalf("eval: %v", err)
+			}
+			var predErr error
+			r, err := v.(*PacketFaultDef).Compile(th, func(e error) { predErr = e })
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got := r.Match.Where(&netfault.PacketView{Payload: c.payload, PayloadLen: len(c.payload)})
+			if predErr != nil {
+				t.Fatalf("predicate errored (it must not): %v", predErr)
+			}
+			if got != c.want {
+				t.Errorf("= %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestWherePredicateErrorIsReported: a lambda that throws matches nothing, so
+// the fault never fires and the test would pass. It must be reported.
+func TestWherePredicateErrorIsReported(t *testing.T) {
+	rt := New(testLogger())
+	th := &starlark.Thread{Name: "test"}
+	v, err := starlark.Eval(th, "t.star",
+		`packet_drop(where = lambda p: p.no_such_field == 1)`, rt.builtins())
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	var reported error
+	r, err := v.(*PacketFaultDef).Compile(th, func(e error) { reported = e })
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if r.Match.Where(&netfault.PacketView{Proto: netfault.ProtoTCP}) {
+		t.Error("a predicate that errored was treated as a match")
+	}
+	if reported == nil {
+		t.Fatal("predicate failure was swallowed; the fault would silently never fire")
+	}
+	if !strings.Contains(reported.Error(), "where=") {
+		t.Errorf("report should name the where= predicate, got: %v", reported)
+	}
+}
+
+func TestWherePredicateNonBoolIsReported(t *testing.T) {
+	rt := New(testLogger())
+	th := &starlark.Thread{Name: "test"}
+	v, _ := starlark.Eval(th, "t.star", `packet_drop(where = lambda p: "yes")`, rt.builtins())
+	var reported error
+	r, err := v.(*PacketFaultDef).Compile(th, func(e error) { reported = e })
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if r.Match.Where(&netfault.PacketView{}) {
+		t.Error("non-bool return was treated as a match")
+	}
+	if reported == nil || !strings.Contains(reported.Error(), "want a bool") {
+		t.Errorf("non-bool return not reported clearly, got: %v", reported)
 	}
 }
 
@@ -357,7 +451,7 @@ func TestWherePredicateInvokedFromStarlark(t *testing.T) {
 	}
 	pf := v.(*PacketFaultDef)
 
-	r, err := pf.Compile(thread)
+	r, err := pf.Compile(thread, nil)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -377,37 +471,5 @@ func TestWherePredicateInvokedFromStarlark(t *testing.T) {
 	}
 	if r.Match.Where(wrongDir) {
 		t.Error("predicate matched the wrong direction")
-	}
-}
-
-// TestWherePredicateErrorIsNotAMatch: a lambda that blows up must not be
-// treated as a match, which would inject a fault the author never asked for.
-func TestWherePredicateErrorIsNotAMatch(t *testing.T) {
-	rt := New(testLogger())
-	thread := &starlark.Thread{Name: "test"}
-	v, err := starlark.Eval(thread, "test.star",
-		`packet_drop(where = lambda p: p.nonexistent_field == 1)`, rt.builtins())
-	if err != nil {
-		t.Fatalf("eval: %v", err)
-	}
-	r, err := v.(*PacketFaultDef).Compile(thread)
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	if r.Match.Where(&netfault.PacketView{Proto: netfault.ProtoTCP}) {
-		t.Error("a predicate that errored was treated as a match")
-	}
-}
-
-func TestWherePredicateNonBoolIsNotAMatch(t *testing.T) {
-	rt := New(testLogger())
-	thread := &starlark.Thread{Name: "test"}
-	v, _ := starlark.Eval(thread, "test.star", `packet_drop(where = lambda p: "yes")`, rt.builtins())
-	r, err := v.(*PacketFaultDef).Compile(thread)
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	if r.Match.Where(&netfault.PacketView{}) {
-		t.Error("a predicate returning a non-bool was treated as a match")
 	}
 }

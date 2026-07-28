@@ -1740,6 +1740,23 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// "pass" here would mean "the SUT tolerated a fault that never happened".
 	// Fail loudly instead — this is the same reasoning as the fault_bypassed
 	// verdict, applied to the gateway rather than to a rule that never matched.
+	// A where= lambda that throws matches nothing, so the fault never fires and
+	// the test would otherwise pass. `p.payload.startswith(...)` is exactly
+	// such a lambda — Starlark's bytes type has only elems() — so this is a
+	// mistake a spec author will actually make.
+	if err, n := rt.packetRules.firstWhereError(); err != nil {
+		return TestResult{
+			Name:   name,
+			Result: "fail",
+			Reason: fmt.Sprintf("packet fault where= predicate failed %d time(s), so it matched nothing "+
+				"and the fault never fired; first failure: %v", n, err),
+			DurationMs:      time.Since(start).Milliseconds(),
+			Events:          events,
+			Matrix:          matrixInfo,
+			ExpectationName: expectName,
+		}
+	}
+
 	if n := rt.packetRules.unwiredInstalls(); n > 0 {
 		return TestResult{
 			Name:   name,
