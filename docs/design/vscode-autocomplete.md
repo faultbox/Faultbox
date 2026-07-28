@@ -186,6 +186,45 @@ def fault_start(svc: service, **syscall_faults: fault) -> None: ...
 def fault_stop(svc: service) -> None: ...
 
 # ---------------------------------------------------------------------------
+# Packet-Level Faults (RFC-054, v0.14.0)
+# ---------------------------------------------------------------------------
+# Require determinism(runtime="gvisor"). All accept the shared matcher kwargs:
+# dir, proto, flags, port, len, len_gt, len_lt, payload_prefix,
+# payload_contains, nth, after, every, probability, max_fires, mode, label,
+# where.
+
+class packet:
+    """The value passed to a where= predicate."""
+    proto: str          # "tcp" | "udp" | "icmp"
+    dir: str            # "c2s" | "s2c"
+    src_ip: str
+    dst_ip: str
+    src_port: int
+    dst_port: int
+    len: int            # payload length, headers excluded
+    payload: str        # byte string: startswith / endswith / `in` all work
+    payload_bytes: bytes
+    flags: list[str]    # TCP only
+    seq: int
+    ack: int
+    window: int
+    index: int          # 0-based ordinal within the flow
+    flow: str
+
+class packet_fault: ...
+
+def packet_drop(**match: Any) -> packet_fault: ...
+def packet_pass(**match: Any) -> packet_fault: ...
+def packet_reset(**match: Any) -> packet_fault: ...
+def packet_delay(duration: str = ..., **match: Any) -> packet_fault: ...
+def packet_reorder(*, by: int, **match: Any) -> packet_fault: ...
+def packet_duplicate(*, count: int = 2, **match: Any) -> packet_fault: ...
+def packet_corrupt(*, offset: int = 0, length: int = 1,
+                   corrupt_mode: str = "flip", checksum: str = "fix",
+                   **match: Any) -> packet_fault: ...
+def packet_window(*, size: int, **match: Any) -> packet_fault: ...
+
+# ---------------------------------------------------------------------------
 # Assertions
 # ---------------------------------------------------------------------------
 

@@ -1,6 +1,7 @@
 # RFC-054: gVisor Adoption — Packet-Level Network Faults & File-Level I/O Observation
 
-> **Status: Draft**, 2026-07-28. Target: **v0.14.0**. Branch: `epic/v0.14.0-gvisor`.
+> **Status: Implemented (v0.14.0)** for packet faults; `watch()` deferred to v0.14.1.
+> 2026-07-28. Target: **v0.14.0**. Branch: `epic/v0.14.0-gvisor`.
 > Implements [RFC-046](0046-beyond-l1-roadmap.md) **Path B** and introduces a third path
 > (**Path C-lite**) that RFC-046 did not consider. Uses the L0–L5 vocabulary from
 > [RFC-040](0040-determinism-levels.md). Implementation plan:

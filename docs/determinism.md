@@ -167,3 +167,33 @@ These are intentional trade-offs accepted for the initial L1 contract. Each has 
 - [RFC-041 — Temporal Properties & Monitors](rfcs/0041-temporal-properties.md)
 - [RFC-042 — Exploration Plan & Coverage Engine](rfcs/0042-exploration-plan.md)
 - [Spec language reference](spec-language.md)
+
+## What `runtime="gvisor"` changes (v0.14.0, RFC-054)
+
+`determinism(runtime = "gvisor")` puts a userspace TCP/IP stack (gVisor's netstack) on the
+mediated data path, which makes individual packets faultable — see
+[Packet-Level Faults](spec-language.md#packet-level-faults).
+
+**It does not raise the determinism ceiling.** Both runtimes cap at **L1**, and
+`level="L2"` still errors at spec load. The distinction matters:
+
+- What widens is the *mediated surface*: Faultbox now sees and controls TCP segments and
+  UDP datagrams on the mediated link, where before it saw only whole syscalls and parsed
+  L7 messages.
+- What would be needed for L2 is *total event determinism*, including clock virtualization
+  and an RNG funnel. Neither comes from the netstack; both need the full Sentry
+  (RFC-046 Path C).
+
+Conflating "we observe more" with "we promise more" is exactly what this document exists
+to prevent, so it is guarded by a test.
+
+Two honest caveats under the gVisor runtime:
+
+- **Netstack's own timers are wall-clock.** TCP retransmit and keepalive deadlines inside
+  the stack are not virtualized, so a test that depends on one is wall-clock sensitive.
+- **`where=` lambdas must be pure.** A packet predicate that reads external state breaks
+  replay, and Faultbox cannot detect that. A predicate that *raises* is caught and fails
+  the test.
+
+`fs-unmediated` remains a reserved category emitting no events. The `watch()` primitive
+that would have implemented it is deferred to v0.14.1 (RFC-054 decision record M5).

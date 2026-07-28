@@ -57,6 +57,7 @@ Runtime (internal/star/) -- parses topology, discovers tests
 | **Binary** | Fork+exec with seccomp filter | Local development, mock services |
 | **Container** | Docker + faultbox-shim entrypoint | Real infrastructure (Postgres, Redis) |
 | **Mock** (RFC-017) | In-process protocol stub, no process | Stand-in for trivial dependencies (JWKS, feature flags) |
+| **Packet** (RFC-054) | gVisor netstack on a TUN gateway; per-segment faults | Timeout tuning, backpressure, gray partitions, half-open blackholes. Opt in with `determinism(runtime="gvisor")`; Linux + CAP_NET_ADMIN. |
 | **Remote** (RFC-036) | No launch; proxy dials externally-running endpoint | Real cluster pods (k8s dev platforms) when images aren't distributable. Healthcheck required; syscall faults rejected at spec load. Composes with RFC-038 `tls=tls_cert(...)` for TLS upstreams. |
 
 ### Project Structure
@@ -72,6 +73,9 @@ faultbox/
 │   ├── star/                 # Starlark runtime, builtins, event log, per-service filtering
 │   ├── container/            # Docker API wrapper, network, container launch, Unix socket fd passing
 │   ├── protocol/             # Protocol plugins (http, http2, tcp, udp, postgres, mysql, redis, kafka, nats, grpc, mongodb, cassandra, clickhouse)
+│   ├── netfault/             # Packet-level faults on gVisor netstack (RFC-054)
+│   ├── pathmatch/            # `**`-capable path glob shared by fault rules
+│   ├── gvisor/               # runsc control + seccheck trace-point sink
 │   ├── proxy/                # Transparent proxy for protocol-level fault injection
 │   ├── eventsource/          # Event source plugins (stdout, wal_stream, topic, tail, poll) + decoders
 │   ├── generate/             # Failure scenario generator (analyzer, matrix, codegen)
@@ -110,6 +114,9 @@ faultbox/
 | `internal/star` | Starlark runtime, all builtins, event log, service lifecycle, container reuse, `@faultbox/` stdlib resolver | `runtime.go`, `builtins.go`, `types.go` |
 | `internal/container` | Docker client, network, container launch, Unix socket fd passing (SCM_RIGHTS) | `docker.go`, `launch.go`, `fd_linux.go` |
 | `internal/protocol` | Protocol plugins — 13 total: http, http2, tcp, udp, postgres, mysql, redis, kafka, nats, grpc, mongodb, cassandra, clickhouse | `protocol.go`, `http.go`, `http2.go`, `mongodb.go` |
+| `internal/netfault` | Packet-level fault engine: `FaultEndpoint` (a `stack.LinkEndpoint` decorator), matcher, defer queue, TUN gateway | `endpoint.go`, `match.go`, `gateway_linux.go` |
+| `internal/pathmatch` | `**`-capable glob shared by syscall path filters | `pathmatch.go` |
+| `internal/gvisor` | Stock runsc control + seccheck remote-sink decoder | `runsc.go`, `seccheck/seccheck.go` |
 | `internal/proxy` | Transparent proxy for protocol-level fault injection | `proxy.go`, `http.go`, `http2.go`, `mongodb.go`, `cassandra.go`, `clickhouse.go`, `udp.go`, `mysql.go`, `postgres.go` |
 | `internal/proxy/sqlmatch` | SQL-aware rule canonicalizer (case, whitespace, `?`/`$N` placeholder normalization) shared by MySQL + Postgres proxies | `sqlmatch.go` |
 | `recipes/` | Embedded stdlib — curated failure wrappers per RFC-018/019. Loaded via `load("@faultbox/recipes/<name>.star", ...)`. Shipped recipes: mongodb, http2, udp, cassandra, clickhouse. | `mongodb.star`, `cassandra.star`, etc. |

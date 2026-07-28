@@ -13,6 +13,88 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.14.0] - 2026-07-28
+
+Packet-level network faults. Faultbox mediated at two layers — individual
+syscalls and parsed L7 protocol messages — with nothing in between. A packet
+was not an object anywhere in the codebase, so "drop this TCP segment",
+"delay every ACK from the server" and "advertise a zero receive window" were
+inexpressible. RFC-054 adds that layer using gVisor's userspace TCP/IP stack
+(`gvisor.dev/gvisor/pkg/tcpip`) as a plain Go dependency — no fork, no runsc.
+
+The capability that motivates it: **a dropped packet sends no RST.** Today's
+`drop()` closes the connection, and well-written clients handle `ECONNRESET`
+correctly on the first try. A socket stuck in `ESTABLISHED` writing into a void
+until a keepalive fires — the failure that actually takes production down —
+was unreachable. It is now one line.
+
+### Added
+- **Packet faults** (RFC-054): `packet_drop`, `packet_delay`, `packet_reorder`,
+  `packet_duplicate`, `packet_corrupt`, `packet_reset`, `packet_window`,
+  `packet_pass`. Opt in with `determinism(runtime = "gvisor")`; Linux with
+  `CAP_NET_ADMIN` required (use the Lima VM on macOS).
+- **Packet matcher**: `dir`, `proto`, `flags` (`"PSH,ACK"`, `"!RST"`), `port`,
+  `len`/`len_gt`/`len_lt`, `payload_prefix`, `payload_contains`, plus the
+  occurrence selectors `nth`/`after`/`every` and the RFC-042 §8.9
+  `probability`/`max_fires`/`mode` semantics, identical to syscall faults.
+- **`where=` lambda escape hatch** with a read-only `Packet` value (`proto`,
+  `dir`, `src_ip`, `dst_ip`, `src_port`, `dst_port`, `len`, `payload`,
+  `payload_bytes`, `flags`, `seq`, `ack`, `window`, `index`, `flow`).
+  Declarative kwargs are evaluated first, so a lambda refines a cheap filter
+  rather than replacing it.
+- `packet` trace events carrying `action`, `direction`, `protocol`, `src`,
+  `dst`, `len`, `flags`, `flow`, `label`.
+- Scenario corpus at `poc/gvisor-rfc054/faultbox.star` — 12 runnable scenarios,
+  each asserting its fault actually fired.
+- Tutorial chapter: [Packet-Level Faults](docs/tutorial/03-protocol-level/27-packet-faults.md).
+- `internal/gvisor/seccheck`: decoder for gVisor's trace-point protocol,
+  shipped and tested ahead of the `watch()` primitive it will serve in v0.14.1.
+
+### Fixed
+- **`**` path globs now cross directories.** `op(path = "/data/**")` matched
+  *nothing*: `MatchPath` used `filepath.Match`, which cannot cross a path
+  separator, so a rule targeting a database that nests its files never fired —
+  no fault, no diagnostic, test passed. New `internal/pathmatch` supports `**`,
+  `?`, `[a-z]` classes and escapes. The change is a widening: every pattern
+  that matched before still matches, cross-checked by two back-compat tables.
+- **`events(where = ...)` was blind to most event types.** It filtered to
+  `{syscall, stdout, topic, wal}` *before* invoking the lambda, so a predicate
+  naming any other family silently matched nothing — including
+  `events(where = lambda e: e.type == "proxy" ...)`, which
+  `docs/spec-language.md` has always documented and which could never have
+  worked. `unmediated_io` (RFC-040) had the same problem. The lambda is now the
+  filter; the dict-filter path keeps its allow-list.
+- A path-filtered rule that matched nothing now says *why*: whether the service
+  did no matching I/O, or whether path recovery from `/proc` failed (it races
+  the SUT and truncates at 256 bytes). Those were indistinguishable and need
+  different fixes.
+
+### Changed
+- `determinism(runtime = "gvisor")` is accepted; it was reserved syntax that
+  errored. **It does not raise the determinism ceiling** — both runtimes cap at
+  L1, and `level = "L2"` still errors at spec load. What widens is the mediated
+  surface, not the promise.
+- Container launches accept an OCI runtime override. The Docker default stays
+  `runc`; nothing changes for specs that did not ask for gVisor.
+
+### Known limitations
+- **`watch()` (filesystem observation) is deferred to v0.14.1.** The sink and
+  DSL are complete, but `runsc trace create` instruments only tasks created
+  *after* the session starts, and Faultbox attaches one after the service is
+  healthy. Measured: 2 trace points for a network-driven workload against a
+  running Postgres backend, versus 1054 for the same work from a newly-spawned
+  process. A `watch()` would observe almost nothing while every assertion under
+  it still passed, so it fails at spec load rather than shipping with a caveat.
+  The fix is runsc's `-pod-init-config`. See RFC-054 decision record M5.
+- **`bandwidth()` and `mtu()` are deferred to v0.14.1** — link-scoped shapers
+  needing a token bucket and real fragmentation handling, not per-packet rules.
+- Packet faults act below TLS, so corrupting an encrypted stream yields a MAC
+  failure rather than a semantic corruption.
+- Packet faults do not yet participate in `fault_matrix()` fan-out.
+- `gvisor.dev/gvisor` is **pinned**. Its HEAD does not build as a Go module
+  dependency (`pkg/tcpip/stack` carries two different external test package
+  names in one directory); CI asserts the pin still builds on all targets.
+
 ## [0.13.3] - 2026-07-14
 
 Bug fixes and stricter spec loading, from the July 2026 documentation audit.
