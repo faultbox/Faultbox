@@ -423,6 +423,12 @@ type Runtime struct {
 	detAllow          map[string]bool
 	detExplicit       bool
 	detStrictOverride *bool
+
+	// packetRules holds packet-level fault rules per interface (RFC-054).
+	// The netstack gateway attaches to it at service start; until then
+	// installs are counted so a fault that reached no data path cannot pass
+	// silently.
+	packetRules *packetRuleRegistry
 }
 
 type runningSession struct {
@@ -451,6 +457,7 @@ func New(logger *slog.Logger) *Runtime {
 		detAllow:   make(map[string]bool),
 	}
 	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
+	rt.packetRules = newPacketRuleRegistry()
 	return rt
 }
 
@@ -1729,6 +1736,23 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// strict_determinism_violation → fault_bypassed. This means a concurrent
 	// monitor violation and unmediated_io event are reported as "monitor
 	// violation"; the unmediated_io event is still in the trace for the report.
+	// A packet fault that installed onto no data path injected nothing, so a
+	// "pass" here would mean "the SUT tolerated a fault that never happened".
+	// Fail loudly instead — this is the same reasoning as the fault_bypassed
+	// verdict, applied to the gateway rather than to a rule that never matched.
+	if n := rt.packetRules.unwiredInstalls(); n > 0 {
+		return TestResult{
+			Name:   name,
+			Result: "fail",
+			Reason: fmt.Sprintf("packet faults were installed %d time(s) but no netstack gateway was attached, "+
+				"so no packet was affected; the result below would be meaningless", n),
+			DurationMs:      time.Since(start).Milliseconds(),
+			Events:          events,
+			Matrix:          matrixInfo,
+			ExpectationName: expectName,
+		}
+	}
+
 	if rt.strictEffective() {
 		if v := rt.firstStrictViolation(events); v != nil {
 			return TestResult{

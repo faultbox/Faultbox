@@ -18,10 +18,55 @@ const (
 )
 
 // Determinism runtime values.
+//
+// RFC-054 splits RFC-046's single "gvisor" value in two. The two mechanisms
+// have very different adoption costs: the packet gateway is a library import
+// that works for binary *and* container services, while filesystem observation
+// requires every container in the spec to run under runsc. Gating the cheap
+// half behind the expensive half would be a mistake, so they are separate
+// values and a spec adopts only what it needs.
+//
+// All three cap at L1 — the mediated surface widens, the promise does not.
 const (
-	DeterminismRuntimeDefault = "default" // seccomp-notify (Path A); caps at L1
-	DeterminismRuntimeGVisor  = "gvisor"  // reserved; lands with RFC-046 Path B/C
+	DeterminismRuntimeDefault = "default" // seccomp-notify (Path A)
+	// DeterminismRuntimeGVisorNet enables the netstack packet gateway
+	// (RFC-054 Path B). No runsc required.
+	DeterminismRuntimeGVisorNet = "gvisor-net"
+	// DeterminismRuntimeGVisor is the packet gateway plus filesystem
+	// observation via runsc + seccheck (RFC-054 Path C-lite). Container mode
+	// only.
+	DeterminismRuntimeGVisor = "gvisor"
 )
+
+// runtimeSupportsPacketFaults reports whether a runtime provides the packet
+// gateway that packet_* faults need.
+func runtimeSupportsPacketFaults(rt string) bool {
+	return rt == DeterminismRuntimeGVisorNet || rt == DeterminismRuntimeGVisor
+}
+
+// requirePacketRuntime rejects packet faults declared under a runtime that has
+// no packet gateway.
+//
+// This is a spec-load error rather than a runtime warning on purpose. A packet
+// fault that installs but never fires produces a *passing* test — the author
+// concludes their service tolerates packet loss when in fact no packet was
+// ever touched. That is strictly worse than a spec that refuses to load.
+func (rt *Runtime) requirePacketRuntime(what string) error {
+	rt.mu.Lock()
+	runtimeName := rt.detRuntime
+	rt.mu.Unlock()
+	if runtimeSupportsPacketFaults(runtimeName) {
+		return nil
+	}
+	subject := "packet faults"
+	if what != "" {
+		subject = what
+	}
+	return fmt.Errorf(
+		"%s require the netstack packet gateway, but this spec runs on runtime=%q; "+
+			"add determinism(runtime=%q) at the top of the spec (or %q if you also need filesystem observation)",
+		subject, runtimeName, DeterminismRuntimeGVisorNet, DeterminismRuntimeGVisor)
+}
 
 // unmediated_io categories. RFC-040 §8.1 enumerates the five classes of
 // unmediated I/O Faultbox can detect under L1. Spec authors list these in
@@ -120,12 +165,11 @@ func (rt *Runtime) builtinDeterminism(thread *starlark.Thread, fn *starlark.Buil
 	}
 
 	switch rtName {
-	case DeterminismRuntimeDefault:
-		// supported
-	case DeterminismRuntimeGVisor:
-		return nil, fmt.Errorf("determinism(runtime=%q): reserved for a future Faultbox release; v0.13.0 supports only runtime=%q (see RFC-046 §Path B/C)", rtName, DeterminismRuntimeDefault)
+	case DeterminismRuntimeDefault, DeterminismRuntimeGVisorNet, DeterminismRuntimeGVisor:
+		// supported — all three cap at L1 (RFC-054).
 	default:
-		return nil, fmt.Errorf("determinism(runtime=%q): must be %q (%q reserved)", rtName, DeterminismRuntimeDefault, DeterminismRuntimeGVisor)
+		return nil, fmt.Errorf("determinism(runtime=%q): must be one of %q, %q, %q",
+			rtName, DeterminismRuntimeDefault, DeterminismRuntimeGVisorNet, DeterminismRuntimeGVisor)
 	}
 
 	// strict has no effect at L0 — there are no detection events to gate.

@@ -25,7 +25,7 @@ type parallelResult struct {
 
 // builtins returns all Starlark built-in functions for a runtime.
 func (rt *Runtime) builtins() starlark.StringDict {
-	return starlark.StringDict{
+	out := starlark.StringDict{
 		"service":     starlark.NewBuiltin("service", rt.builtinService),
 		"interface":   starlark.NewBuiltin("interface", builtinInterface),
 		"tcp":         starlark.NewBuiltin("tcp", builtinTCP),
@@ -166,6 +166,16 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// can be compared numerically.
 		"duration": starlark.NewBuiltin("duration", builtinDuration),
 	}
+
+	// RFC-054 §"DSL extensions" — packet_* fault family. Registered
+	// unconditionally so a spec that uses one gets a precise
+	// "requires runtime=gvisor-net" error at spec load, rather than
+	// "undefined: packet_drop", which would send the author looking
+	// for a typo instead of a missing runtime declaration.
+	for name, b := range packetFaultBuiltins() {
+		out[name] = b
+	}
+	return out
 }
 
 // builtinDuration parses a duration string ("200ms", "1.5s", "2m") into
@@ -2509,18 +2519,34 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 		return nil, fmt.Errorf("fault() requires run= keyword with a callback function")
 	}
 
-	// Collect proxy fault defs from positional args.
+	// Collect fault defs from positional args. Protocol-level (ProxyFaultDef)
+	// and packet-level (PacketFaultDef) faults may be mixed on one interface:
+	// they act at different layers of the same data path.
 	var proxyFaults []*ProxyFaultDef
+	var packetFaults []*PacketFaultDef
 	for _, arg := range args {
-		pf, ok := arg.(*ProxyFaultDef)
-		if !ok {
-			return nil, fmt.Errorf("fault(interface_ref, ...) arguments must be response()/error()/drop(), got %s", arg.Type())
+		switch v := arg.(type) {
+		case *ProxyFaultDef:
+			proxyFaults = append(proxyFaults, v)
+		case *PacketFaultDef:
+			packetFaults = append(packetFaults, v)
+		default:
+			return nil, fmt.Errorf("fault(interface_ref, ...) arguments must be response()/error()/drop() or packet_*(), got %s", arg.Type())
 		}
-		proxyFaults = append(proxyFaults, pf)
 	}
 
-	if len(proxyFaults) == 0 {
-		return nil, fmt.Errorf("fault(interface_ref, ...) requires at least one protocol fault (response, error, drop, etc.)")
+	if len(proxyFaults) == 0 && len(packetFaults) == 0 {
+		return nil, fmt.Errorf("fault(interface_ref, ...) requires at least one protocol fault (response, error, drop, ...) or packet fault (packet_drop, packet_delay, ...)")
+	}
+
+	// Packet faults need the netstack gateway, which only the gvisor runtimes
+	// provide. Reject at spec load naming the fix — installing them silently
+	// under the default runtime would produce a test that passes because
+	// nothing was ever injected.
+	if len(packetFaults) > 0 {
+		if err := rt.requirePacketRuntime(describePacketFaults(packetFaults)); err != nil {
+			return nil, err
+		}
 	}
 
 	// Resolve target address (RFC-036 aware: remote services dial the
@@ -2546,6 +2572,15 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 		"proxy":     proxyAddr,
 		"source":    sourceSvc,
 	})
+
+	// Packet-level rules install onto the netstack gateway for the same window.
+	if len(packetFaults) > 0 {
+		cleanup, err := rt.applyPacketFaults(thread, svcName, ifaceName, packetFaults)
+		if err != nil {
+			return nil, fmt.Errorf("fault(): %w", err)
+		}
+		defer cleanup()
+	}
 
 	// Run body, then clear rules.
 	defer func() {
