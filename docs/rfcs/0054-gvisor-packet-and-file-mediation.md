@@ -685,7 +685,7 @@ all three targets, so an attempted bump fails loudly.
 | `link/channel`, `link/sniffer`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `adapters/gonet` | ✅ all targets |
 | **Go version bump required?** | **No.** The pin declares `go 1.25.5`; the project is on `go 1.26.1`. (Head would have forced `go >= 1.26.3` — another reason not to track master.) |
 | **`FaultEndpoint` decorator shape compiles and runs?** | **Yes.** A `stack.LinkEndpoint` decorator wrapping `link/channel` was accepted by `stack.CreateNIC`; NIC came up at MTU 1500. The design in §"The packet gateway" is validated, not assumed. |
-| Binary cost | Minimal main + the full netstack set = **6.5 MB**. Against `bin/faultbox`'s 47.4 MB baseline that is roughly **+13%** |
+| Binary cost | Minimal main + the full netstack set = 6.5 MB standalone. **Actual measured cost once netfault is linked into `cmd/faultbox` (M2): +4.6 MB, 47.4 → 52.0 MB (+9.7%)** — below the standalone estimate, since the two binaries share runtime and stdlib |
 | `go mod tidy` cost | ~4 min cold — gVisor's module graph is large. A CI cold-cache consideration, not a build-time one |
 
 **No `nogvisor` build tag is needed.** The standing-risk fallback in the plan is withdrawn:
