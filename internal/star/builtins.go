@@ -2423,7 +2423,18 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 
 	var result []starlark.Value
 	for _, ev := range events {
-		if ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
+		// The dict-filter path keeps its historical allow-list: those filters
+		// (syscall=, path=, decision=) only make sense for those families, and
+		// widening it would change what existing specs see.
+		//
+		// The where= path does NOT filter by type. The lambda *is* the filter,
+		// and pre-filtering silently hid every other family from it — including
+		// `proxy`, which docs/spec-language.md has always shown as
+		// `events(where=lambda e: e.type == "proxy" ...)`. That example could
+		// never have matched. Same for unmediated_io (RFC-040) and packet
+		// (RFC-054): a predicate naming them returned an empty list and the
+		// author had no way to tell "no such events" from "not allowed here".
+		if whereFn == nil && ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
 			continue
 		}
 

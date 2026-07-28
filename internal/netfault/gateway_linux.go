@@ -203,10 +203,8 @@ func (l *linuxGateway) teardownDevice(g *Gateway) {
 	}
 }
 
-// Destroy removes the TUN device. Separate from close() because the device
-// outlives the netstack instance and a leaked one breaks the next run with
-// "device busy".
-func (l *linuxGateway) Destroy(g *Gateway) {
+// destroy removes the TUN device this gateway created.
+func (l *linuxGateway) destroy(g *Gateway) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.teardownDevice(g)

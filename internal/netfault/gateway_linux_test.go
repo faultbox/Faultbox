@@ -74,7 +74,7 @@ func TestGatewayStartsAndTearsDown(t *testing.T) {
 	// The device is removed by Destroy, invoked through the platform layer on
 	// teardown; assert we do not leave a half-configured interface behind.
 	if lp, ok := g.platform.(*linuxGateway); ok {
-		lp.Destroy(g)
+		lp.destroy(g)
 	}
 	if _, err := net.InterfaceByName(g.Device()); err == nil {
 		t.Errorf("TUN device %s survived teardown", g.Device())

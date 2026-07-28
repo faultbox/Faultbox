@@ -224,3 +224,55 @@ func TestPacketRegistryCountsUnwiredInstalls(t *testing.T) {
 		t.Errorf("unwiredInstalls = %d, want 1", got)
 	}
 }
+
+// TestEventsWhereSeesAllEventTypes is a regression guard for a pre-existing
+// bug found while building the RFC-054 scenario corpus: events() filtered to
+// {syscall, stdout, topic, wal} *before* invoking the where= lambda, so a
+// predicate naming any other family silently matched nothing.
+//
+// docs/spec-language.md has always documented
+// `events(where=lambda e: e.type == "proxy" ...)`, which could never have
+// worked. unmediated_io (RFC-040) and packet (RFC-054) had the same problem.
+func TestEventsWhereSeesAllEventTypes(t *testing.T) {
+	rt := New(testLogger())
+	rt.events.Emit("packet", "db", map[string]string{"action": "drop"})
+	rt.events.Emit("proxy", "db", map[string]string{"action": "error"})
+	rt.events.Emit("unmediated_io", "api", map[string]string{"category": "clock"})
+	rt.events.Emit("syscall", "db", map[string]string{"syscall": "write"})
+
+	for _, want := range []string{"packet", "proxy", "unmediated_io", "syscall"} {
+		src := `events(where = lambda e: e.type == "` + want + `")`
+		v, err := evalIn(t, rt, src)
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		list, ok := v.(*starlark.List)
+		if !ok {
+			t.Fatalf("%s returned %s, want a list", src, v.Type())
+		}
+		if list.Len() == 0 {
+			t.Errorf("events(where=e.type==%q) found nothing; the where= lambda is being pre-filtered", want)
+		}
+	}
+}
+
+// TestEventsDictFilterKeepsAllowList pins that the fix did not widen the
+// dict-filter path, where syscall=/path=/decision= only make sense for the
+// historical families.
+func TestEventsDictFilterKeepsAllowList(t *testing.T) {
+	rt := New(testLogger())
+	rt.events.Emit("packet", "db", map[string]string{"action": "drop"})
+	rt.events.Emit("syscall", "db", map[string]string{"syscall": "write"})
+
+	v, err := evalIn(t, rt, `events(service = "db")`)
+	if err != nil {
+		t.Fatalf("events(service=): %v", err)
+	}
+	list := v.(*starlark.List)
+	for i := 0; i < list.Len(); i++ {
+		se := list.Index(i).(*StarlarkEvent)
+		if se.ev.Type == "packet" {
+			t.Error("dict-filter path now returns packet events; that changes existing spec behaviour")
+		}
+	}
+}

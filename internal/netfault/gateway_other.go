@@ -31,4 +31,5 @@ func (u unsupportedGateway) listen(g *Gateway, _ *GatewayAddr) (net.Listener, er
 	return nil, u.preflight(g)
 }
 
-func (unsupportedGateway) close() error { return nil }
+func (unsupportedGateway) close() error     { return nil }
+func (unsupportedGateway) destroy(*Gateway) {}

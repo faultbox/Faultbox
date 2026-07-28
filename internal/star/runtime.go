@@ -424,6 +424,10 @@ type Runtime struct {
 	detExplicit       bool
 	detStrictOverride *bool
 
+	// packetGW holds the spec-wide netstack packet gateway (RFC-054 M4).
+	// nil-safe: only started when the runtime provides one.
+	packetGW *packetGatewayState
+
 	// packetRules holds packet-level fault rules per interface (RFC-054).
 	// The netstack gateway attaches to it at service start; until then
 	// installs are counted so a fault that reached no data path cannot pass
@@ -458,6 +462,7 @@ func New(logger *slog.Logger) *Runtime {
 	}
 	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
 	rt.packetRules = newPacketRuleRegistry()
+	rt.packetGW = newPacketGatewayState()
 	return rt
 }
 
@@ -2964,6 +2969,15 @@ func (rt *Runtime) stopServices() {
 	rt.faultsMu.Lock()
 	rt.faults = make(map[string]map[string]*FaultDef)
 	rt.faultsMu.Unlock()
+
+	// Tear the packet gateway down with the services it fronted. A leaked TUN
+	// device outlives the process and breaks the next run with "device busy",
+	// which is the same class of quiet leak the proxy-lifecycle findings
+	// (docs/design/2026-04-27) were written about. Reused services keep their
+	// gateway, since their connections are still live.
+	if len(reused) == 0 {
+		rt.closePacketGateway()
+	}
 }
 
 // stopReusedServices tears down containers that were kept alive via reuse=True.
@@ -3014,8 +3028,15 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 			prefix := fmt.Sprintf("FAULTBOX_%s_%s", upper, ifUpper)
 
 			host, port := "localhost", iface.Port
-			if proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName); proxyAddr != "" {
-				if ph, pp, err := splitHostPort(proxyAddr); err == nil {
+			mediated := rt.proxyMgr.GetProxyAddr(name, ifName)
+			// RFC-054: under the gVisor runtime the SUT dials the packet
+			// gateway instead, which relays into the proxy. Packet faults then
+			// act on the leg the SUT actually experiences.
+			if gwAddr := rt.gatewayAddrFor(svc.Name, name, ifName, iface.Port, mediated); gwAddr != "" {
+				mediated = gwAddr
+			}
+			if mediated != "" {
+				if ph, pp, err := splitHostPort(mediated); err == nil {
 					host, port = ph, pp
 				}
 			}
@@ -3031,7 +3052,7 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 	// rewrite those substrings so app-initiated traffic goes via the proxy.
 	// Substitution table: one entry per (upstream real addr → proxy addr)
 	// pair across every interface that has a running proxy.
-	substitutions := rt.proxyAddrSubstitutions()
+	substitutions := rt.proxyAddrSubstitutionsForService(svc.Name)
 	for k, v := range svc.Env {
 		v = applyAddrSubstitutions(v, substitutions)
 		// RFC-033: resolve any iface.proxy_addr / proxy_host / proxy_port
@@ -3072,6 +3093,15 @@ const (
 // mode-aware variant that container env building needs.
 func (rt *Runtime) proxyAddrSubstitutions() map[string]string {
 	return rt.proxyAddrSubstitutionsFor(binaryConsumer)
+}
+
+// proxyAddrSubstitutionsForService is proxyAddrSubstitutions with the consuming
+// service named, so RFC-054's packet gateway can hand out a distinct address
+// per (consumer, service, interface) triple. Without the consumer name every
+// consumer of an interface would share one gateway address and `source=`
+// targeting would be unresolvable.
+func (rt *Runtime) proxyAddrSubstitutionsForService(consumer string) map[string]string {
+	return rt.proxyAddrSubstitutionsConsumer(binaryConsumer, consumer)
 }
 
 // faultedInterfaces walks every registered fault_scenario / fault_matrix
@@ -3121,6 +3151,10 @@ func (rt *Runtime) faultedInterfaces() map[string]map[string]bool {
 // are re-spelled with host.docker.internal so the SUT, isolated in its
 // network namespace, can still reach the host-side listener.
 func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]string {
+	return rt.proxyAddrSubstitutionsConsumer(mode, "")
+}
+
+func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer string) map[string]string {
 	out := make(map[string]string)
 	// RFC-035: gate container-consumer substitutions on a registered
 	// proxy fault.
@@ -3155,6 +3189,17 @@ func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]strin
 				continue
 			}
 			target := proxyAddr
+			// RFC-054: under the gVisor runtime the SUT dials the packet
+			// gateway, which relays into this proxy. Applied before the
+			// container-consumer rewrite because the gateway address is
+			// already routable from a container (it is a host subnet, not a
+			// loopback listener).
+			if gwAddr := rt.gatewayAddrFor(consumer, name, ifName, iface.Port, proxyAddr); gwAddr != "" {
+				out[fmt.Sprintf("localhost:%d", iface.Port)] = gwAddr
+				out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = gwAddr
+				out[fmt.Sprintf("%s:%d", name, iface.Port)] = gwAddr
+				continue
+			}
 			if mode == containerConsumer {
 				if _, pp, err := splitHostPort(proxyAddr); err == nil {
 					target = fmt.Sprintf("host.docker.internal:%d", pp)

@@ -2,8 +2,10 @@ package netfault
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 // GatewayConfig configures the packet gateway.
@@ -60,7 +62,13 @@ type Gateway struct {
 type platformGateway interface {
 	start(g *Gateway) error
 	listen(g *Gateway, ga *GatewayAddr) (net.Listener, error)
+	// close stops netstack and releases the TUN fd.
 	close() error
+	// destroy removes the TUN device, but only if this gateway created it.
+	// Separate from close because the device outlives the netstack instance:
+	// a leaked one survives the process and breaks the next run with
+	// "device busy".
+	destroy(g *Gateway)
 	// preflight reports why the gateway cannot run here, or nil.
 	preflight(g *Gateway) error
 }
@@ -133,6 +141,60 @@ func (g *Gateway) Listen(ga *GatewayAddr) (net.Listener, error) {
 	g.listeners = append(g.listeners, ln)
 	g.mu.Unlock()
 	return ln, nil
+}
+
+// Serve accepts on a gateway address and relays each connection to the
+// address's upstream, which is normally the existing protocol proxy.
+//
+// Chaining behind the proxy rather than replacing it is deliberate. The SUT
+// dials the gateway, so packet faults act on the SUT-facing leg — the one the
+// SUT actually experiences — while the 14 protocol proxies keep their existing
+// listeners and need no changes at all. The cost is one extra loopback hop,
+// the same order as the proxy hop already present since RFC-024.
+//
+// Serve returns once the listener is closed.
+func (g *Gateway) Serve(ga *GatewayAddr) error {
+	ln, err := g.Listen(ga)
+	if err != nil {
+		return err
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return // listener closed during teardown
+			}
+			go g.relay(c, ga.Upstream)
+		}
+	}()
+	return nil
+}
+
+func (g *Gateway) relay(down net.Conn, upstream string) {
+	defer down.Close()
+	if upstream == "" {
+		return
+	}
+	up, err := net.DialTimeout("tcp", upstream, 10*time.Second)
+	if err != nil {
+		return
+	}
+	defer up.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); io.Copy(up, down); closeWrite(up) }()
+	go func() { defer wg.Done(); io.Copy(down, up); closeWrite(down) }()
+	wg.Wait()
+}
+
+// closeWrite half-closes so the peer observes EOF rather than waiting for the
+// whole connection to drop. Without it a request/response protocol that reads
+// until EOF hangs for the full timeout.
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
 }
 
 func ruleKey(service, iface string) string { return service + "\x00" + iface }
@@ -230,6 +292,10 @@ func (g *Gateway) Close() error {
 	if err := g.platform.close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	// Remove the TUN device too. Leaving it behind is a silent leak that only
+	// shows up as "device busy" on the *next* run, which is a miserable way to
+	// discover a teardown bug.
+	g.platform.destroy(g)
 	return firstErr
 }
 
