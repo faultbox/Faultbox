@@ -3,6 +3,7 @@ package netfault
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -237,8 +238,13 @@ type fakeClock struct {
 type fakeTimer struct {
 	deadline time.Time
 	fn       func()
-	stopped  bool
-	seq      int
+	// stopped is atomic because the deferQueue goroutine calls Stop()
+	// concurrently with the test goroutine calling Advance(), which reads it
+	// under the clock's mutex. Guarding only one side of that pair is not
+	// guarding it: -race caught this intermittently, so CI would have too,
+	// eventually and at the least convenient moment.
+	stopped atomic.Bool
+	seq     int
 }
 
 func newFakeClock() *fakeClock {
@@ -260,9 +266,9 @@ func (c *fakeClock) AfterFunc(d time.Duration, fn func()) Timer {
 }
 
 func (t *fakeTimer) Stop() bool {
-	was := t.stopped
-	t.stopped = true
-	return !was
+	// Swap, not load-then-store: two concurrent Stop()s must not both report
+	// that they were the one to stop the timer.
+	return !t.stopped.Swap(true)
 }
 
 // Advance moves the clock and fires due timers in (deadline, seq) order.
@@ -273,9 +279,9 @@ func (c *fakeClock) Advance(d time.Duration) {
 	var due []*fakeTimer
 	var keep []*fakeTimer
 	for _, t := range c.timers {
-		if !t.stopped && !t.deadline.After(now) {
+		if !t.stopped.Load() && !t.deadline.After(now) {
 			due = append(due, t)
-		} else if !t.stopped {
+		} else if !t.stopped.Load() {
 			keep = append(keep, t)
 		}
 	}

@@ -131,6 +131,7 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`always`](#alwayspredicate-between),
 [`await_event`](#await_eventpredicate_or_matcher),
 [`await_stable`](#await_stablequiescence_window-ignore),
+[`sleep`](#sleepduration-clockwall-v0141),
 [`test`](#testname-body-setup-expect-timeout-terminate_when-clock),
 [`match`](#the-match-module).
 
@@ -2660,7 +2661,7 @@ it from the spec-wide list so it doesn't double-register.
 **Sandbox restrictions** — `update` and `check` lambdas run in a
 restricted Starlark thread. Calls to `fault`, `service`, `assert_*`,
 `parallel`, `partition`, `eventually`, `always`, `monitor`,
-`await_stable`, `await_event`, `determinism`, `trace`, `trace_start`,
+`await_stable`, `await_event`, `sleep`, `determinism`, `trace`, `trace_start`,
 `trace_stop`, `events`, and friends are rejected at spec load with a
 clear error message. See
 [docs/temporal.md](temporal.md#sandbox-restrictions) for the full
@@ -2739,6 +2740,66 @@ def body():
 
 `ignore=` accepts a matcher or callable for events that should not
 reset the quiescence timer (heartbeats, telemetry, metric flushes).
+
+> **`await_stable` cannot hold a fault open for a fixed time.** An active
+> fault emits the events that prevent quiescence — see `sleep()` below.
+
+### `sleep(duration, clock="wall")` (v0.14.1)
+
+Blocks the body for a wall-clock duration, regardless of what the event log
+is doing. Only valid inside a test body.
+
+```python
+def test_transfer_during_partition():
+    partition_start(node1, node2)
+    sleep("400ms")                    # hold the partition open
+    node1.admin.post(path = "/transfer")
+    partition_stop(node1, node2)
+```
+
+**Use `sleep()` when you mean elapsed time, `await_stable()` when you mean
+"the system settled."** They are not interchangeable, and the difference
+matters most while a fault is installed:
+
+| | waits for | during an active fault |
+|---|---|---|
+| `await_stable(quiescence_window=W)` | no events for W | may never return |
+| `sleep(W)` | W of wall clock | returns after W |
+
+`await_stable` returns on quiescence, and a fault under test generates the
+events that prevent it. Measured on a 3-node `hashicorp/raft` cluster with a
+partition installed: **6681 events in three minutes, longest quiet gap 338 ms.**
+Every dropped packet and failed heartbeat resets the timer, so any window above
+~340 ms blocked until the per-test deadline and reported INCONCLUSIVE. `ignore=`
+does not rescue it — the noise is the SUT's own stdout, which specs
+legitimately wait on. Full measurement:
+[timing-exploration experiment](design/2026-07-28-timing-exploration-experiment.md).
+
+This makes `sleep()` the primitive for exploring fault *timing*:
+
+```python
+def test_transfer_timing():
+    gap = choose("gap", ["0ms", "400ms", "1200ms"])
+    partition_start(node1, node2)
+    sleep(gap)
+    node1.admin.post(path = "/transfer")
+```
+
+Notes:
+
+- **`sleep("0ms")` is a no-op, not an error** — deliberately unlike
+  `await_stable`, whose window must be positive. A `choose()` axis wants "no
+  delay" as its baseline, and a value that aborts the leaf instead of running
+  it turns a search into silence. A negative duration errors.
+- **A sleep longer than the test's remaining budget is refused up front**,
+  naming both numbers, rather than running into the deadline and reporting a
+  bare timeout.
+- **Emits no event.** A sleep is supervisor-side, not something the SUT did,
+  and emitting one would reset the quiescence timer of any `await_stable` in a
+  `parallel()` branch.
+- Rejected inside `monitor()` and `assume()` predicates, like the `await_*`
+  family.
+- `clock=` is reserved; `"wall"` is the only accepted value in this release.
 
 ### `test(name, body=, setup=, expect=, timeout=, terminate_when=, assume=, clock=)`
 

@@ -52,6 +52,7 @@ var assumeSandboxDenylist = map[string]string{
 	// (top-level assume) or the body-entry path (per-test assume).
 	"await_stable": "await_* primitives block the test body and cannot be called from a predicate",
 	"await_event":  "await_* primitives block the test body and cannot be called from a predicate",
+	"sleep":        "sleep() blocks the test body and cannot be called from a predicate",
 
 	// Assertion builtins — predicates signal failure via their bool
 	// return value, not via assert_*.

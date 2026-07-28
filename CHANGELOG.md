@@ -13,6 +13,31 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+### Added
+- **`sleep(duration, clock="wall")`** — a wall-clock wait that is indifferent
+  to event traffic. Faultbox had two ways to wait and both were conditional on
+  the SUT: `await_stable()` returns on quiescence, `await_event()` on a
+  matching event. Neither can hold a fault open for a fixed time, and
+  `await_stable` fails at it in exactly the situation the wait is for — **an
+  active fault emits the events that prevent quiescence.** Measured on a 3-node
+  `hashicorp/raft` cluster under partition: 6681 events in three minutes,
+  longest quiet gap 338 ms, so every window above ~340 ms blocked until the
+  per-test deadline and reported INCONCLUSIVE. A fault-timing search that
+  should have run 18 configurations ran 6 and hung on 12, spending 36 minutes
+  to produce no signal; with `sleep()` the same search runs all 18 in about two
+  minutes. See
+  [the experiment](docs/design/2026-07-28-timing-exploration-experiment.md).
+
+  `sleep("0ms")` is a no-op rather than an error — deliberately unlike
+  `await_stable`, whose window must be positive — because the primary use is as
+  a `choose()` axis and "no delay" is that axis's natural baseline. A sleep
+  longer than the test's remaining budget is refused up front, naming both
+  numbers, instead of running into the deadline and reporting a bare timeout.
+  It emits no event (a supervisor-side wait is not something the SUT did, and
+  emitting one would reset the quiescence timer of an `await_stable` in a
+  `parallel()` branch) and is rejected inside `monitor()` / `assume()`
+  predicates like the `await_*` family.
+
 ## [0.14.0] - 2026-07-28
 
 Packet-level network faults. Faultbox mediated at two layers — individual

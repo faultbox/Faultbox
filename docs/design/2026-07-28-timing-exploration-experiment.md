@@ -121,12 +121,24 @@ Without that check this document would report "bug 2 does not reproduce across
 18 timing configurations", which would have been the third false conclusion in
 this line of work.
 
-## Recommendation
+## Resolution of the first recommendation
 
-- **`sleep(duration)` / `hold(duration)`** — a real wall-clock wait, independent
-  of event traffic. Small, and it is the only thing standing between the current
-  harness and a genuine search over fault timing. This is now measured rather
-  than assumed.
+`sleep(duration, clock="wall")` shipped in the same branch. The identical
+18-leaf search, with `await_stable(quiescence_window=gap)` replaced by
+`sleep(gap)`:
+
+```
+BEFORE   6 passed, 0 failed, 12 inconclusive     36 minutes
+AFTER   18 passed, 0 failed                      ~2 minutes
+```
+
+Every leaf ran, the unwired-gateway guard stayed silent (so the partitions were
+real), and the full grid — `warmup` × `gap` × `hold` — was covered for the
+first time. `hashicorp/raft` still did not fail, but this is the first run of
+which that statement means anything: bug 2's timing space has now actually been
+sampled rather than skipped.
+
+## Remaining recommendations
 - Fix defects 1 and 2 together: signal-safe teardown plus a unique device name.
   Both are user-facing and both brick a machine until manually cleaned.
 - Defects 3 and 4 are honesty gaps of the same family as §4.2 — a number that

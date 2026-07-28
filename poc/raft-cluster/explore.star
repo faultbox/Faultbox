@@ -22,18 +22,22 @@
 #   bug 3  the follower's log must be in a particular state when the
 #          snapshot arrives
 #
-# HOW, WITH NO NEW PRIMITIVES
+# HOW
 #
-# choose() + --explore already fan a test into one leaf per combination
-# (RFC-043 §5.2). The two knobs that matter are expressible today:
+# choose() + --explore fan a test into one leaf per combination (RFC-043
+# §5.2). The two knobs that matter:
 #
-#   work volume   submit(choose(...))                      — cluster state
-#   wall clock    await_stable(quiescence_window=choose(…)) — elapsed time
+#   work volume   submit(choose(...))   — how much log/state exists
+#   wall clock    sleep(choose(...))    — how long the fault is held
 #
-# await_stable is not a sleep; it blocks until the event log is quiet for the
-# window, so it is a *floor* on elapsed time, not an exact delay. That is the
-# right shape here anyway — the question is whether the leader has noticed it
-# lost quorum yet, and that is what quiescence measures.
+# The first worked from v0.14.0. The second did NOT: the only wall-clock
+# primitive was await_stable(), which returns on quiescence — and an active
+# partition emits an event per dropped packet, so the log never quiesces.
+# Measured here: 6681 events in one three-minute leaf, longest quiet gap
+# 338ms. Twelve of these eighteen leaves blocked until the test deadline and
+# reported INCONCLUSIVE, burning 36 minutes for no signal. v0.14.1 adds
+# sleep() for exactly this. See
+# docs/design/2026-07-28-timing-exploration-experiment.md.
 
 determinism(runtime = "gvisor")
 
@@ -130,10 +134,13 @@ def converged():
 
 def test_transfer_timing():
     warmup = choose("warmup", [0, 10, 40])
-    # NOT "0ms": await_stable rejects a non-positive quiescence window
-    # ("window must be > 0"), which aborts the leaf as INCONCLUSIVE rather
-    # than running it. 50ms is the shortest honest "immediately".
-    gap  = choose("gap", ["50ms", "400ms", "1200ms"])
+    # sleep(), not await_stable(): the partition installed below emits an
+    # event per dropped packet, and every raft retry adds more, so the event
+    # log never quiesces. Measured: max quiet gap 338ms under partition, so
+    # await_stable(quiescence_window="900ms") blocked until the 3-minute test
+    # deadline. 12 of these 18 leaves died that way before sleep() existed.
+    # "0ms" is a legal sleep and the right baseline for this axis.
+    gap  = choose("gap", ["0ms", "400ms", "1200ms"])
     hold = choose("hold", ["100ms", "900ms"])
 
     tag = "warmup=%d gap=%s hold=%s" % (warmup, gap, hold)
@@ -145,9 +152,9 @@ def test_transfer_timing():
     partition_start(node1, node2)
     partition_start(node1, node3)
 
-    await_stable(quiescence_window = gap)
+    sleep(gap)
     node1.admin.post(path = "/transfer")
-    await_stable(quiescence_window = hold)
+    sleep(hold)
 
     partition_stop(node1, node2)
     partition_stop(node1, node3)
