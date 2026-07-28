@@ -620,12 +620,28 @@ repeat exactly the overclaiming RFC-040 was written to stop.
 
 ## Future work
 
-- **`watch()` filesystem observation — v0.14.1.** The sink ships in v0.14.0; the primitive
-  is gated off until trace sessions can be installed at sandbox boot via
-  `-pod-init-config`. See Decision record M5.
+Ordered. The first item is first because of a measurement, not a preference —
+see below.
+
+- **Fault-timing exploration — v0.14.1, ahead of the shapers.** `choose()` over
+  *when* a fault lands (partition onset, hold duration) driven by `--explore`.
+  This RFC delivered the ability to *express* a packet fault; it did not deliver
+  the ability to *search* for the interleaving that triggers a bug, and those are
+  different capabilities. The Raft harness made the gap concrete: 45 runs against
+  the exact `hashicorp/raft` commit the Antithesis study reported bugs in, all
+  green — but every run executed one identical fault schedule, because
+  `--runs N` only varies a seed and nothing in that spec consumes a seed. See
+  [the results write-up §4.2](../design/2026-07-28-raft-mesh-results.md). Until
+  this lands, a green multi-run result is a flake check wearing the costume of a
+  search.
+  - Sibling, small: `--runs N` should say when the spec has no seed-sensitive
+    construct. Silence there is what made the Raft result readable as evidence.
 - **`bandwidth(rate=)` and `mtu(size=)` — v0.14.1.** Link-scoped shapers, deferred from
   v0.14.0 because they need a token bucket and real fragmentation/PMTUD handling rather
   than the per-packet match-and-act pipeline. `mtu()` is what scenario 8 actually wants.
+- **`watch()` filesystem observation — v0.14.1.** The sink ships in v0.14.0; the primitive
+  is gated off until trace sessions can be installed at sandbox boot via
+  `-pod-init-config`. See Decision record M5.
 - **FUSE datapath for byte-level filesystem injection** — short writes, torn writes, fsync
   lies, bit-rot, `ENOSPC` after N bytes. The natural v0.15.x follow-on, and the reason
   `watch()` is specified as observation-only rather than as a fault primitive: the fault
