@@ -29,6 +29,13 @@ type Match struct {
 	// Port matches the destination port. Zero means any.
 	Port uint16
 
+	// DstIP matches the destination address. Empty means any.
+	//
+	// Used to scope a rule to one (consumer, service, interface) triple: the
+	// gateway allocates a distinct address per triple, so the destination
+	// identifies the sender even though Docker masquerades the source IP.
+	DstIP string
+
 	// Payload-length bounds. LenGT/LenLT are exclusive; Len is exact.
 	// The Has* flags distinguish "unset" from "zero", which matters because a
 	// zero-length payload is a real and interesting case (a bare ACK).
@@ -92,6 +99,9 @@ func (m *Match) matchesDeclarative(p *PacketView) bool {
 		return false
 	}
 	if m.Port != 0 && p.DstPort != m.Port {
+		return false
+	}
+	if m.DstIP != "" && p.DstIP != m.DstIP {
 		return false
 	}
 	if m.HasLen && p.PayloadLen != m.Len {
@@ -172,6 +182,9 @@ func (m *Match) String() string {
 	}
 	if m.Port != 0 {
 		parts = append(parts, fmt.Sprintf("port=%d", m.Port))
+	}
+	if m.DstIP != "" {
+		parts = append(parts, "dst="+m.DstIP)
 	}
 	if m.HasLen {
 		parts = append(parts, fmt.Sprintf("len=%d", m.Len))

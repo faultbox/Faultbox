@@ -60,15 +60,15 @@ type CrashInfo struct {
 // bypass is an ambiguity signal ("we don't know if the service is
 // resilient"), not a failure. Rendered in grey, reported separately.
 type Summary struct {
-	Total                      int `json:"total"`
-	Passed                     int `json:"passed"`
-	Failed                     int `json:"failed"`
-	Errored                    int `json:"errored"`
+	Total   int `json:"total"`
+	Passed  int `json:"passed"`
+	Failed  int `json:"failed"`
+	Errored int `json:"errored"`
 	// Inconclusive counts RFC-041 §5.5(c) timeouts — tests that ran past
 	// their wall-clock budget with temporal expectations still pending.
 	// Distinct from Passed and Failed so CI gates can choose to flag,
 	// fail, or ignore them.
-	Inconclusive               int `json:"inconclusive,omitempty"`
+	Inconclusive int `json:"inconclusive,omitempty"`
 	// Halted counts RFC-043 §5.3 plan-tree pruning — tests whose body
 	// called halt(). Not a verdict; CI typically ignores this column.
 	Halted                     int `json:"halted,omitempty"`
@@ -165,7 +165,7 @@ type Env struct {
 type RemoteRecord struct {
 	Service    string `json:"service"`
 	Interface  string `json:"interface"`
-	Host       string `json:"host"`           // resolved upstream addr ("host" or "host:port")
-	Protocol   string `json:"protocol"`       // "http", "grpc", "postgres", ...
-	ResolvedAt string `json:"resolved_at"`    // RFC3339 timestamp
+	Host       string `json:"host"`        // resolved upstream addr ("host" or "host:port")
+	Protocol   string `json:"protocol"`    // "http", "grpc", "postgres", ...
+	ResolvedAt string `json:"resolved_at"` // RFC3339 timestamp
 }

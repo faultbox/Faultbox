@@ -22,9 +22,9 @@ type TopologyConfig struct {
 
 // ServiceConfig describes one service in the topology.
 type ServiceConfig struct {
-	Binary    string                     `yaml:"binary"`
-	Args      []string                   `yaml:"args"`
-	DependsOn []string                   `yaml:"depends_on"`
+	Binary    string   `yaml:"binary"`
+	Args      []string `yaml:"args"`
+	DependsOn []string `yaml:"depends_on"`
 
 	// New: named interfaces (protocol + port).
 	Interfaces map[string]InterfaceConfig `yaml:"interfaces"`
@@ -84,12 +84,12 @@ type FaultSpec struct {
 	// Raw is the string form: "write=delay:500ms:100%"
 	Raw string
 	// Object form fields:
-	Syscall     string  `yaml:"syscall"`
-	Action      string  `yaml:"action"`      // "delay" or "deny"
-	Errno       string  `yaml:"errno"`       // for deny
-	Delay       string  `yaml:"delay"`       // for delay (duration string)
-	Probability string  `yaml:"probability"` // "100%" or "0.5"
-	PathGlob    string  `yaml:"path"`
+	Syscall     string       `yaml:"syscall"`
+	Action      string       `yaml:"action"`      // "delay" or "deny"
+	Errno       string       `yaml:"errno"`       // for deny
+	Delay       string       `yaml:"delay"`       // for delay (duration string)
+	Probability string       `yaml:"probability"` // "100%" or "0.5"
+	PathGlob    string       `yaml:"path"`
 	Trigger     *TriggerSpec `yaml:"trigger"`
 }
 
@@ -180,8 +180,8 @@ type StepConfig struct {
 	Sleep *Duration `yaml:"sleep,omitempty"`
 	// Action is a service.operation or service.interface.operation step.
 	// Populated during parsing from the dynamic YAML key.
-	Action   string            `yaml:"-"`
-	Args     map[string]any    `yaml:"-"`
+	Action string         `yaml:"-"`
+	Args   map[string]any `yaml:"-"`
 }
 
 // UnmarshalYAML handles the dynamic step format:

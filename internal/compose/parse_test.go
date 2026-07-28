@@ -94,8 +94,8 @@ func TestGenerateSpec(t *testing.T) {
 		{Name: "redis", Image: "redis:7", Protocol: "redis", Port: 6379,
 			Healthcheck: `tcp("localhost:6379")`},
 		{Name: "api", Image: "myapp:latest", Protocol: "http", Port: 8080,
-			DependsOn: []string{"db", "redis"},
-			Env:       map[string]string{"DATABASE_URL": "postgres://db:5432/mydb"},
+			DependsOn:   []string{"db", "redis"},
+			Env:         map[string]string{"DATABASE_URL": "postgres://db:5432/mydb"},
 			Healthcheck: `http("localhost:8080/health")`},
 	}
 

@@ -21,10 +21,10 @@ import (
 //   - ping                         → ok: 1
 //   - buildInfo                    → ok: 1 + minimal version
 //   - find                         → cursor with firstBatch from config
-//                                    collections["<name>"]
+//     collections["<name>"]
 //   - findOne (implemented as find with limit=1)
 //   - insert / update / delete     → ok: 1 + n (writes discarded — this
-//                                    mock is for read-through tests)
+//     mock is for read-through tests)
 //   - getMore                      → empty cursor (terminates iteration)
 //
 // Any unrecognized command returns ok: 1 with no payload — lenient by
@@ -242,10 +242,10 @@ func (s *mongoMockState) respondToCommand(cmd, coll string, body []byte) bson.M 
 		return bson.M{"ok": 1.0}
 	case "buildInfo", "buildinfo":
 		return bson.M{
-			"ok":           1.0,
-			"version":      "7.0.0",
-			"gitVersion":   "faultbox-mock",
-			"versionArray": bson.A{7, 0, 0, 0},
+			"ok":                1.0,
+			"version":           "7.0.0",
+			"gitVersion":        "faultbox-mock",
+			"versionArray":      bson.A{7, 0, 0, 0},
 			"maxBsonObjectSize": 16777216,
 		}
 	case "find", "findOne":
@@ -266,8 +266,8 @@ func (s *mongoMockState) respondToCommand(cmd, coll string, body []byte) bson.M 
 		return bson.M{
 			"ok": 1.0,
 			"cursor": bson.M{
-				"id":       int64(0),
-				"ns":       "mock." + coll,
+				"id":        int64(0),
+				"ns":        "mock." + coll,
 				"nextBatch": bson.A{},
 			},
 		}

@@ -112,12 +112,12 @@ func (c *Client) ImageDigest(ctx context.Context, ref string) (string, error) {
 type CreateOpts struct {
 	Name       string
 	Image      string
-	Entrypoint []string          // override entrypoint (faultbox-shim)
-	Cmd        []string          // original cmd from image
-	Env        []string          // KEY=VALUE environment
-	Binds      []string          // host:container volume mounts
-	Ports      map[int]int       // container_port → host_port (0 = auto)
-	NetworkID  string            // Docker network to join
+	Entrypoint []string    // override entrypoint (faultbox-shim)
+	Cmd        []string    // original cmd from image
+	Env        []string    // KEY=VALUE environment
+	Binds      []string    // host:container volume mounts
+	Ports      map[int]int // container_port → host_port (0 = auto)
+	NetworkID  string      // Docker network to join
 
 	// Runtime overrides the OCI runtime, e.g. "runsc" for gVisor
 	// (RFC-054 M5). Empty uses the daemon default, which stays "runc" —
@@ -432,9 +432,9 @@ type ShimConfig struct {
 	SyscallNrs []uint32 `json:"syscall_nrs"`
 	Entrypoint []string `json:"entrypoint"`
 	Cmd        []string `json:"cmd"`
-	SocketPath string   `json:"socket_path,omitempty"`  // Unix socket for fd passing (preferred)
-	ReportPath string   `json:"report_path,omitempty"`  // legacy file-based reporting
-	AckPath    string   `json:"ack_path,omitempty"`     // legacy ACK file
+	SocketPath string   `json:"socket_path,omitempty"` // Unix socket for fd passing (preferred)
+	ReportPath string   `json:"report_path,omitempty"` // legacy file-based reporting
+	AckPath    string   `json:"ack_path,omitempty"`    // legacy ACK file
 }
 
 // ShimConfigJSON serializes a ShimConfig to JSON for the env var.

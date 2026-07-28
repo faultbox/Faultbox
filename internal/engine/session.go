@@ -35,8 +35,8 @@ type SyscallEvent struct {
 	Decision string        `json:"decision"` // "allow", "deny(ERRNO)", "delay(500ms)"
 	Path     string        `json:"path,omitempty"`
 	Latency  time.Duration `json:"latency_ns,omitempty"` // time spent in fault (delay duration)
-	Label    string        `json:"label,omitempty"`       // optional fault label from deny/delay
-	Op       string        `json:"op,omitempty"`          // named operation (e.g., "persist")
+	Label    string        `json:"label,omitempty"`      // optional fault label from deny/delay
+	Op       string        `json:"op,omitempty"`         // named operation (e.g., "persist")
 
 	// DestIP / DestPort are populated only for connect() syscalls — read
 	// from the SUT's sockaddr argument once at the top of handleNotification

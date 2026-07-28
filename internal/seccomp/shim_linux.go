@@ -32,7 +32,6 @@ type ShimConfig struct {
 	PipeFd int `json:"pipe_fd"`
 }
 
-
 // IsShimChild returns true if this process is a re-exec'd shim child.
 func IsShimChild() bool {
 	return os.Getenv(ShimEnvKey) != ""

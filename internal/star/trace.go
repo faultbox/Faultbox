@@ -235,11 +235,26 @@ func (e *EventVal) AttrNames() []string {
 		"preceded_by", "preceded_by_within",
 		"same_correlation_as", "same_service_as",
 		"seq", "service", "timestamp", "type",
+		"data", "fields",
 	}
 }
 
 func (e *EventVal) Attr(name string) (starlark.Value, error) {
 	switch name {
+	// Structured payload. Mirrors StarlarkEvent so a monitor check= and a
+	// where= predicate see the same surface.
+	//
+	// docs/spec-language.md has always documented
+	//   check = lambda event, state: "ERROR" not in event.data.get("level", "")
+	// but EventVal had no .data, so the call fell through to the flat-field
+	// lookup below, returned a string, and failed with
+	// "string has no .get field or method". Flat access (event.level) already
+	// worked and keeps working; this only adds the documented form.
+	case "data":
+		return eventFieldsAsData(e.ev), nil
+	case "fields":
+		return eventFieldsDict(e.ev), nil
+
 	// Plain field accessors.
 	case "type":
 		return starlark.String(e.ev.Type), nil

@@ -450,17 +450,17 @@ func errnoName(e syscall.Errno) string {
 
 var errnoMap = map[string]syscall.Errno{
 	// File/IO errors
-	"ENOENT":  syscall.ENOENT,
-	"EACCES":  syscall.EACCES,
-	"EPERM":   syscall.EPERM,
-	"EIO":     syscall.EIO,
-	"ENOSPC":  syscall.ENOSPC,
-	"EROFS":   syscall.EROFS,
-	"EEXIST":  syscall.EEXIST,
+	"ENOENT":    syscall.ENOENT,
+	"EACCES":    syscall.EACCES,
+	"EPERM":     syscall.EPERM,
+	"EIO":       syscall.EIO,
+	"ENOSPC":    syscall.ENOSPC,
+	"EROFS":     syscall.EROFS,
+	"EEXIST":    syscall.EEXIST,
 	"ENOTEMPTY": syscall.ENOTEMPTY,
-	"ENFILE":  syscall.ENFILE,
-	"EMFILE":  syscall.EMFILE,
-	"EFBIG":   syscall.EFBIG,
+	"ENFILE":    syscall.ENFILE,
+	"EMFILE":    syscall.EMFILE,
+	"EFBIG":     syscall.EFBIG,
 
 	// Network errors
 	"ECONNREFUSED":  syscall.ECONNREFUSED,

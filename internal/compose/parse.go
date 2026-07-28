@@ -18,14 +18,14 @@ type ComposeFile struct {
 
 // ComposeService represents a single service in docker-compose.yml.
 type ComposeService struct {
-	Image       string            `yaml:"image"`
-	Build       interface{}       `yaml:"build"` // string or struct
-	Ports       []string          `yaml:"ports"`
-	DependsOn   interface{}       `yaml:"depends_on"` // []string or map
-	Environment interface{}       `yaml:"environment"` // []string or map
-	Healthcheck *ComposeHealth    `yaml:"healthcheck"`
-	Command     interface{}       `yaml:"command"`
-	Volumes     []string          `yaml:"volumes"`
+	Image       string         `yaml:"image"`
+	Build       interface{}    `yaml:"build"` // string or struct
+	Ports       []string       `yaml:"ports"`
+	DependsOn   interface{}    `yaml:"depends_on"`  // []string or map
+	Environment interface{}    `yaml:"environment"` // []string or map
+	Healthcheck *ComposeHealth `yaml:"healthcheck"`
+	Command     interface{}    `yaml:"command"`
+	Volumes     []string       `yaml:"volumes"`
 }
 
 // ComposeHealth represents a healthcheck in docker-compose.yml.

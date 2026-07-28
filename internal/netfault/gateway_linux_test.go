@@ -173,7 +173,7 @@ func TestGatewayDropBlocksRealConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFlagSpec: %v", err)
 	}
-	if err := g.InstallRules("echo", "main", []*Rule{{
+	if err := g.InstallRules("", "echo", "main", []*Rule{{
 		Action: ActionDrop,
 		Label:  "blackhole-syn",
 		Match:  Match{Dir: dirPtr(DirC2S), FlagsSet: set, FlagsClear: clear},
@@ -196,7 +196,7 @@ func TestGatewayDropBlocksRealConnection(t *testing.T) {
 	}
 
 	// And with the rule cleared, the same address works again.
-	if err := g.ClearRules("echo", "main"); err != nil {
+	if err := g.ClearRules("", "echo", "main"); err != nil {
 		t.Fatalf("ClearRules: %v", err)
 	}
 	conn2, err := net.DialTimeout("tcp", ga.Addr(), 3*time.Second)
@@ -223,7 +223,7 @@ func TestGatewayIgnoresHostChatter(t *testing.T) {
 	}
 
 	// A rule scoped to our port only.
-	if err := g.InstallRules("echo", "main", []*Rule{{
+	if err := g.InstallRules("", "echo", "main", []*Rule{{
 		Action: ActionDrop,
 		Match:  Match{Port: uint16(ga.Port)},
 	}}); err != nil {

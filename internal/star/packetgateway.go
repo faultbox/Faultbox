@@ -14,10 +14,11 @@ import (
 // interface is the seam so the DSL and the gateway can be built and tested
 // independently.
 type PacketGateway interface {
-	// InstallRules replaces the packet rules on one service interface.
-	InstallRules(service, iface string, rules []*netfault.Rule) error
+	// InstallRules replaces the packet rules on one (consumer, service,
+	// interface) triple. An empty consumer means every consumer.
+	InstallRules(consumer, service, iface string, rules []*netfault.Rule) error
 	// ClearRules removes them.
-	ClearRules(service, iface string) error
+	ClearRules(consumer, service, iface string) error
 }
 
 // packetRuleRegistry records what the spec asked for, per interface. It exists
@@ -66,14 +67,16 @@ func (r *packetRuleRegistry) SetGateway(g PacketGateway) {
 	r.gateway = g
 }
 
-func regKey(service, iface string) string { return service + "\x00" + iface }
+func regKey(consumer, service, iface string) string {
+	return consumer + "\x00" + service + "\x00" + iface
+}
 
 // install pushes rules to the gateway, or counts the attempt when no gateway
 // is attached.
-func (r *packetRuleRegistry) install(service, iface string, rules []*netfault.Rule) error {
+func (r *packetRuleRegistry) install(consumer, service, iface string, rules []*netfault.Rule) error {
 	r.mu.Lock()
 	g := r.gateway
-	r.installs[regKey(service, iface)] = rules
+	r.installs[regKey(consumer, service, iface)] = rules
 	if g == nil {
 		r.unwired++
 	}
@@ -81,18 +84,18 @@ func (r *packetRuleRegistry) install(service, iface string, rules []*netfault.Ru
 	if g == nil {
 		return nil
 	}
-	return g.InstallRules(service, iface, rules)
+	return g.InstallRules(consumer, service, iface, rules)
 }
 
-func (r *packetRuleRegistry) clear(service, iface string) error {
+func (r *packetRuleRegistry) clear(consumer, service, iface string) error {
 	r.mu.Lock()
 	g := r.gateway
-	delete(r.installs, regKey(service, iface))
+	delete(r.installs, regKey(consumer, service, iface))
 	r.mu.Unlock()
 	if g == nil {
 		return nil
 	}
-	return g.ClearRules(service, iface)
+	return g.ClearRules(consumer, service, iface)
 }
 
 // unwiredInstalls reports how many packet-fault windows ran with no data path
@@ -110,15 +113,15 @@ func (r *packetRuleRegistry) unwiredInstalls() int {
 }
 
 // rulesFor returns the rules currently installed on an interface. Test-facing.
-func (r *packetRuleRegistry) rulesFor(service, iface string) []*netfault.Rule {
+func (r *packetRuleRegistry) rulesFor(consumer, service, iface string) []*netfault.Rule {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.installs[regKey(service, iface)]
+	return r.installs[regKey(consumer, service, iface)]
 }
 
 // applyPacketFaults compiles and installs a set of packet fault defs for the
 // duration of a fault window. Returns a cleanup func.
-func (rt *Runtime) applyPacketFaults(thread *starlark.Thread, svcName, ifaceName string, defs []*PacketFaultDef) (func(), error) {
+func (rt *Runtime) applyPacketFaults(thread *starlark.Thread, consumer, svcName, ifaceName string, defs []*PacketFaultDef) (func(), error) {
 	rules := make([]*netfault.Rule, 0, len(defs))
 	for _, d := range defs {
 		r, err := d.Compile(thread, rt.recordWhereError)
@@ -127,18 +130,22 @@ func (rt *Runtime) applyPacketFaults(thread *starlark.Thread, svcName, ifaceName
 		}
 		rules = append(rules, r)
 	}
-	if err := rt.packetRules.install(svcName, ifaceName, rules); err != nil {
+	if err := rt.packetRules.install(consumer, svcName, ifaceName, rules); err != nil {
 		return nil, fmt.Errorf("install packet rules on %s.%s: %w", svcName, ifaceName, err)
 	}
 
-	rt.events.Emit("packet_fault_applied", svcName, map[string]string{
+	fields := map[string]string{
 		"interface": ifaceName,
 		"rules":     describePacketFaults(defs),
 		"count":     fmt.Sprintf("%d", len(rules)),
-	})
+	}
+	if consumer != "" {
+		fields["source"] = consumer
+	}
+	rt.events.Emit("packet_fault_applied", svcName, fields)
 
 	return func() {
-		_ = rt.packetRules.clear(svcName, ifaceName)
+		_ = rt.packetRules.clear(consumer, svcName, ifaceName)
 		for i, r := range rules {
 			if r.MatchCount() == 0 {
 				rt.events.Emit("packet_fault_no_match", svcName, map[string]string{

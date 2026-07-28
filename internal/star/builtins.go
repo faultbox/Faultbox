@@ -47,6 +47,8 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"parallel":          starlark.NewBuiltin("parallel", rt.builtinParallel),
 		"monitor":           starlark.NewBuiltin("monitor", rt.builtinMonitor),
 		"partition":         starlark.NewBuiltin("partition", rt.builtinPartition),
+		"partition_start":   starlark.NewBuiltin("partition_start", rt.builtinPartitionStart),
+		"partition_stop":    starlark.NewBuiltin("partition_stop", rt.builtinPartitionStop),
 		"nondet":            starlark.NewBuiltin("nondet", rt.builtinNondet),
 		// RFC-043 §5.2 — finite non-deterministic choice. Zero-arg
 		// `nondet()` is sugar for `choose([True, False])`; that
@@ -2259,95 +2261,6 @@ func (rt *Runtime) builtinMonitor(thread *starlark.Thread, fn *starlark.Builtin,
 	return m, nil
 }
 
-// partition(svc_a, svc_b, run=callback)
-// Creates a network partition between two services. While the callback runs,
-// svc_a cannot connect to svc_b and svc_b cannot connect to svc_a.
-func (rt *Runtime) builtinPartition(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if len(args) < 2 {
-		return nil, fmt.Errorf("partition() requires two service arguments")
-	}
-	svcA, ok := args[0].(*ServiceDef)
-	if !ok {
-		return nil, fmt.Errorf("partition() first arg must be a service, got %s", args[0].Type())
-	}
-	svcB, ok := args[1].(*ServiceDef)
-	if !ok {
-		return nil, fmt.Errorf("partition() second arg must be a service, got %s", args[1].Type())
-	}
-
-	var bodyFn starlark.Callable
-	for _, kv := range kwargs {
-		key, _ := starlark.AsString(kv[0])
-		if key == "run" {
-			cb, cbOk := kv[1].(starlark.Callable)
-			if !cbOk {
-				return nil, fmt.Errorf("partition() run= must be a callable")
-			}
-			bodyFn = cb
-		}
-	}
-	if bodyFn == nil {
-		return nil, fmt.Errorf("partition() requires run= keyword with a callback function")
-	}
-
-	// Resolve destination addresses from service interfaces.
-	// svc_a blocks connect to all of svc_b's interface ports, and vice versa.
-	var rulesA, rulesB []engine.FaultRule
-	for _, iface := range svcB.Interfaces {
-		rulesA = append(rulesA, engine.FaultRule{
-			Syscall:     "connect",
-			Action:      engine.ActionDeny,
-			Errno:       111, // ECONNREFUSED
-			Probability: 1.0,
-			DestAddr:    fmt.Sprintf("127.0.0.1:%d", iface.Port),
-		})
-	}
-	for _, iface := range svcA.Interfaces {
-		rulesB = append(rulesB, engine.FaultRule{
-			Syscall:     "connect",
-			Action:      engine.ActionDeny,
-			Errno:       111, // ECONNREFUSED
-			Probability: 1.0,
-			DestAddr:    fmt.Sprintf("127.0.0.1:%d", iface.Port),
-		})
-	}
-
-	// Apply partition rules.
-	rsA, okA := rt.sessions[svcA.Name]
-	rsB, okB := rt.sessions[svcB.Name]
-	if !okA {
-		return nil, fmt.Errorf("partition(): service %q is not running", svcA.Name)
-	}
-	if !okB {
-		return nil, fmt.Errorf("partition(): service %q is not running", svcB.Name)
-	}
-	rsA.session.SetDynamicFaultRules(rulesA)
-	rsB.session.SetDynamicFaultRules(rulesB)
-	rt.events.Emit("partition_applied", "", map[string]string{
-		"between": svcA.Name + "," + svcB.Name,
-	})
-
-	// Run body, then remove partition.
-	defer func() {
-		rsA.session.ClearDynamicFaultRules()
-		rsB.session.ClearDynamicFaultRules()
-		rt.events.Emit("partition_removed", "", map[string]string{
-			"between": svcA.Name + "," + svcB.Name,
-		})
-	}()
-
-	result, err := starlark.Call(thread, bodyFn, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	if result == nil {
-		return starlark.None, nil
-	}
-	return result, nil
-}
-
-// assert_before(first={filters}, then={filters})
-// Asserts that the first matching event for "first" occurs before the first matching event for "then".
 func (rt *Runtime) builtinAssertBefore(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var firstDict, thenDict *starlark.Dict
 	for _, kv := range kwargs {
@@ -2524,9 +2437,11 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 			}
 			bodyFn = cb
 		} else if key == "source" {
-			if s, ok := kv[1].(*ServiceDef); ok {
-				sourceSvc = s.Name
+			s, ok := kv[1].(*ServiceDef)
+			if !ok {
+				return nil, fmt.Errorf("fault() source= must be a service, got %s", kv[1].Type())
 			}
+			sourceSvc = s.Name
 		}
 	}
 
@@ -2562,6 +2477,15 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 		if err := rt.requirePacketRuntime(describePacketFaults(packetFaults)); err != nil {
 			return nil, err
 		}
+		// A source= naming a service that does not reach this interface would
+		// scope the rules to an address that was never allocated, so they would
+		// match nothing — silently, which is how the pre-v0.14.0 source= bug
+		// hid for so long.
+		if sourceSvc != "" {
+			if err := rt.validateFaultSource(sourceSvc, svcName, ifaceName); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Resolve target address (RFC-036 aware: remote services dial the
@@ -2590,7 +2514,7 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 
 	// Packet-level rules install onto the netstack gateway for the same window.
 	if len(packetFaults) > 0 {
-		cleanup, err := rt.applyPacketFaults(thread, svcName, ifaceName, packetFaults)
+		cleanup, err := rt.applyPacketFaults(thread, sourceSvc, svcName, ifaceName, packetFaults)
 		if err != nil {
 			return nil, fmt.Errorf("fault(): %w", err)
 		}

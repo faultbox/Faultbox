@@ -218,21 +218,26 @@ func (p *mysqlProxy) checkRules(clientConn net.Conn, seqID byte, query string) b
 //
 // AuthMoreData second byte (caching_sha2_password):
 // 0x03 fast_auth_success — server immediately sends OK after, NO
-//      client packet between, so the proxy must keep reading server.
+//
+//	client packet between, so the proxy must keep reading server.
+//
 // 0x04 perform_full_authentication — client must respond with either
-//      a public-key request (0x02) or, under TLS, the cleartext
-//      password.
+//
+//	a public-key request (0x02) or, under TLS, the cleartext
+//	password.
+//
 // (other) — typically a public-key payload during full-auth; client
-//      replies with the encrypted password.
+//
+//	replies with the encrypted password.
 //
 // Sources:
 // - https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_response_packets.html
 // - https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase_authentication_methods_authentication_caching_sha2_password.html
 const (
-	mysqlPktOK              = 0x00
-	mysqlPktAuthMoreData    = 0x01
-	mysqlPktAuthSwitchReq   = 0xFE
-	mysqlPktERR             = 0xFF
+	mysqlPktOK               = 0x00
+	mysqlPktAuthMoreData     = 0x01
+	mysqlPktAuthSwitchReq    = 0xFE
+	mysqlPktERR              = 0xFF
 	mysqlSha2FastAuthSuccess = 0x03
 )
 

@@ -197,25 +197,54 @@ func closeWrite(c net.Conn) {
 	}
 }
 
-func ruleKey(service, iface string) string { return service + "\x00" + iface }
+// ruleKey identifies the (consumer, service, interface) triple a rule set is
+// scoped to. An empty consumer means "every consumer of this interface".
+func ruleKey(consumer, service, iface string) string {
+	return consumer + "\x00" + service + "\x00" + iface
+}
 
 // InstallRules implements the star.PacketGateway seam.
-func (g *Gateway) InstallRules(service, iface string, rules []*Rule) error {
+//
+// consumer scopes the rules to traffic from one peer. That is what makes
+// `fault(node2.raft, source=node1, ...)` express a pairwise partition: the
+// allocator already gave every (consumer, service, interface) triple its own
+// gateway address, so scoping is a destination-port predicate rather than
+// packet inspection. Docker masquerades container source IPs, so the source
+// address could not have identified the sender anyway.
+//
+// An empty consumer keeps the previous meaning: all sources.
+func (g *Gateway) InstallRules(consumer, service, iface string, rules []*Rule) error {
 	rs, err := NewRuleSet(rules...)
 	if err != nil {
 		return err
 	}
+	// Scope by the destination the allocator assigned to this triple. Without
+	// it a rule on node2.raft fires for traffic from every peer, and asymmetric
+	// partitions — where Raft's interesting failures live — are inexpressible.
+	if consumer != "" {
+		ga, ok := g.alloc.lookup(consumer, service, iface)
+		if !ok {
+			return fmt.Errorf("no gateway address for consumer %q of %s.%s; "+
+				"does %q actually reach that interface?", consumer, service, iface, consumer)
+		}
+		for _, r := range rs.rules {
+			if r.Match.Port == 0 {
+				r.Match.Port = uint16(ga.Port)
+			}
+			r.Match.DstIP = ga.IP
+		}
+	}
 	g.mu.Lock()
-	g.rules[ruleKey(service, iface)] = rs
+	g.rules[ruleKey(consumer, service, iface)] = rs
 	g.mu.Unlock()
 	g.republish()
 	return nil
 }
 
 // ClearRules implements the star.PacketGateway seam.
-func (g *Gateway) ClearRules(service, iface string) error {
+func (g *Gateway) ClearRules(consumer, service, iface string) error {
 	g.mu.Lock()
-	delete(g.rules, ruleKey(service, iface))
+	delete(g.rules, ruleKey(consumer, service, iface))
 	g.mu.Unlock()
 	g.republish()
 	return nil

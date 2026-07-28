@@ -7,13 +7,13 @@ import (
 
 type testSource struct{ name string }
 
-func (s *testSource) Name() string                              { return s.name }
+func (s *testSource) Name() string                                      { return s.name }
 func (s *testSource) Start(ctx context.Context, cfg SourceConfig) error { return nil }
-func (s *testSource) Stop() error                               { return nil }
+func (s *testSource) Stop() error                                       { return nil }
 
 type testDecoder struct{ name string }
 
-func (d *testDecoder) Name() string                               { return d.name }
+func (d *testDecoder) Name() string { return d.name }
 func (d *testDecoder) Decode(raw []byte) (map[string]string, error) {
 	return map[string]string{"raw": string(raw)}, nil
 }

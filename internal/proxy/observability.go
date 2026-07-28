@@ -33,10 +33,10 @@ import (
 // these so the runtime callback maps them to a distinct event-log
 // type (vs the legacy empty-Type → "proxy" path).
 const (
-	EventTypeConnOpen           = "proxy_conn_open"
-	EventTypeConnClose          = "proxy_conn_close"
-	EventTypeHandshakeComplete  = "proxy_handshake_complete"
-	EventTypeStall              = "proxy_stall"
+	EventTypeConnOpen          = "proxy_conn_open"
+	EventTypeConnClose         = "proxy_conn_close"
+	EventTypeHandshakeComplete = "proxy_handshake_complete"
+	EventTypeStall             = "proxy_stall"
 )
 
 // Stall thresholds. RFC §"Open Question 1" — two-tier was preferred

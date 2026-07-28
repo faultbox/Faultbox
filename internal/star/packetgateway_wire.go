@@ -97,7 +97,15 @@ func (rt *Runtime) gatewaySeed() int64 {
 // service.iface through the packet gateway, starting the relay on first use.
 // Returns "" when no gateway is active, so callers fall back to the proxy.
 func (rt *Runtime) gatewayAddrFor(consumer, service, iface string, port int, upstream string) string {
-	if !rt.packetGatewayEnabled() || upstream == "" {
+	if !rt.packetGatewayEnabled() {
+		return ""
+	}
+	if upstream == "" {
+		// Both call sites supply a fallback to the real upstream, so an empty
+		// one here is a bug rather than a state to tolerate. Returning ""
+		// silently is what left peer-mesh links unmediated.
+		rt.log.Error("packet gateway: empty upstream",
+			"consumer", consumer, "service", service, "interface", iface)
 		return ""
 	}
 	gw, err := rt.ensurePacketGateway()
@@ -201,4 +209,37 @@ func joinComma(s []string) string {
 		out += v
 	}
 	return out
+}
+
+// validateFaultSource rejects a source= that does not actually consume the
+// target interface.
+//
+// source= was parsed, stored and emitted into the trace since before v0.14.0
+// but never reached rule installation, so `fault(kafka.main, source=worker,
+// drop(...))` — the exact example in the docs — installed a rule that fired for
+// every consumer. Now that it is honoured, a source= that names the wrong
+// service must fail loudly rather than scope the rules to an address that was
+// never allocated and therefore match nothing.
+func (rt *Runtime) validateFaultSource(consumer, service, iface string) error {
+	rt.mu.Lock()
+	_, known := rt.services[consumer]
+	rt.mu.Unlock()
+	if !known {
+		return fmt.Errorf("fault() source=%q: no such service", consumer)
+	}
+	if consumer == service {
+		return fmt.Errorf("fault() source=%q targets %s.%s, which is the same service; "+
+			"source= names the *consumer* of the interface, not its owner", consumer, service, iface)
+	}
+	gw, err := rt.ensurePacketGateway()
+	if err != nil || gw == nil {
+		// No gateway yet (or unavailable): allocation is checked at install
+		// time instead, which still fails loudly.
+		return nil
+	}
+	if _, ok := gw.Lookup(consumer, service, iface); !ok {
+		return fmt.Errorf("fault() source=%q: %q has no route to %s.%s, so the rule would match nothing. "+
+			"Does %q reference %s.%s in its env?", consumer, consumer, service, iface, consumer, service, iface)
+	}
+	return nil
 }

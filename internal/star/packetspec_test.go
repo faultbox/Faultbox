@@ -174,15 +174,22 @@ func newStubGateway() *stubGateway {
 	return &stubGateway{installed: make(map[string][]*netfault.Rule)}
 }
 
-func (g *stubGateway) InstallRules(service, iface string, rules []*netfault.Rule) error {
-	g.installed[service+"."+iface] = rules
+func (g *stubGateway) InstallRules(consumer, service, iface string, rules []*netfault.Rule) error {
+	g.installed[stubKey(consumer, service, iface)] = rules
 	return nil
 }
 
-func (g *stubGateway) ClearRules(service, iface string) error {
-	delete(g.installed, service+"."+iface)
+func (g *stubGateway) ClearRules(consumer, service, iface string) error {
+	delete(g.installed, stubKey(consumer, service, iface))
 	g.cleared++
 	return nil
+}
+
+func stubKey(consumer, service, iface string) string {
+	if consumer == "" {
+		return service + "." + iface
+	}
+	return consumer + "->" + service + "." + iface
 }
 
 func TestPacketRegistryInstallsToGateway(t *testing.T) {
@@ -191,7 +198,7 @@ func TestPacketRegistryInstallsToGateway(t *testing.T) {
 	reg.SetGateway(g)
 
 	rules := []*netfault.Rule{{Action: netfault.ActionDrop}}
-	if err := reg.install("db", "main", rules); err != nil {
+	if err := reg.install("", "db", "main", rules); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	if len(g.installed["db.main"]) != 1 {
@@ -201,7 +208,7 @@ func TestPacketRegistryInstallsToGateway(t *testing.T) {
 		t.Errorf("unwiredInstalls = %d, want 0 with a gateway attached", reg.unwiredInstalls())
 	}
 
-	if err := reg.clear("db", "main"); err != nil {
+	if err := reg.clear("", "db", "main"); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if len(g.installed) != 0 {
@@ -217,7 +224,7 @@ func TestPacketRegistryInstallsToGateway(t *testing.T) {
 // fault that touched nothing.
 func TestPacketRegistryCountsUnwiredInstalls(t *testing.T) {
 	reg := newPacketRuleRegistry()
-	if err := reg.install("db", "main", []*netfault.Rule{{Action: netfault.ActionDrop}}); err != nil {
+	if err := reg.install("", "db", "main", []*netfault.Rule{{Action: netfault.ActionDrop}}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	if got := reg.unwiredInstalls(); got != 1 {

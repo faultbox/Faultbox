@@ -53,8 +53,8 @@ func TestSplitHostPort(t *testing.T) {
 	}{
 		{"localhost:9042", "localhost", 9042},
 		{"10.0.0.1:9999", "10.0.0.1", 9999},
-		{"cassandra", "cassandra", 9042},           // default port
-		{"cassandra:", "cassandra", 9042},          // empty port → default
+		{"cassandra", "cassandra", 9042},  // default port
+		{"cassandra:", "cassandra", 9042}, // empty port → default
 	}
 	for _, c := range cases {
 		host, port := splitHostPort(c.in, 9042)

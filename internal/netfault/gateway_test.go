@@ -138,9 +138,9 @@ func TestRulePublishOrderIsDeterministic(t *testing.T) {
 		g.endpoint = ep
 		defer ep.Close()
 
-		_ = g.InstallRules("zeta", "main", []*Rule{{Action: ActionDrop, Label: "z"}})
-		_ = g.InstallRules("alpha", "main", []*Rule{{Action: ActionDelay, Delay: 1, Label: "a"}})
-		_ = g.InstallRules("mid", "main", []*Rule{{Action: ActionPass, Label: "m"}})
+		_ = g.InstallRules("", "zeta", "main", []*Rule{{Action: ActionDrop, Label: "z"}})
+		_ = g.InstallRules("", "alpha", "main", []*Rule{{Action: ActionDelay, Delay: 1, Label: "a"}})
+		_ = g.InstallRules("", "mid", "main", []*Rule{{Action: ActionPass, Label: "m"}})
 		return ep.Rules().Rules()
 	}
 	first := build()
@@ -173,19 +173,19 @@ func TestClearRulesRemovesOnlyThatInterface(t *testing.T) {
 	defer ep.Close()
 	g.endpoint = ep
 
-	_ = g.InstallRules("db", "main", []*Rule{{Action: ActionDrop, Label: "db"}})
-	_ = g.InstallRules("cache", "main", []*Rule{{Action: ActionDrop, Label: "cache"}})
+	_ = g.InstallRules("", "db", "main", []*Rule{{Action: ActionDrop, Label: "db"}})
+	_ = g.InstallRules("", "cache", "main", []*Rule{{Action: ActionDrop, Label: "cache"}})
 	if got := len(ep.Rules().Rules()); got != 2 {
 		t.Fatalf("installed %d rules, want 2", got)
 	}
 
-	_ = g.ClearRules("db", "main")
+	_ = g.ClearRules("", "db", "main")
 	rules := ep.Rules().Rules()
 	if len(rules) != 1 || rules[0].Label != "cache" {
 		t.Errorf("after clearing db.main, rules = %v, want [cache]", labels(rules))
 	}
 
-	_ = g.ClearRules("cache", "main")
+	_ = g.ClearRules("", "cache", "main")
 	if rs := ep.Rules(); rs != nil && len(rs.Rules()) != 0 {
 		t.Errorf("rules remain after clearing everything: %v", labels(rs.Rules()))
 	}

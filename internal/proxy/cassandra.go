@@ -15,13 +15,15 @@ import (
 // Cassandra CQL binary protocol v4 framing.
 //
 // Frame header (9 bytes):
-//   version (1) + flags (1) + stream_id (2) + opcode (1) + length (4)
+//
+//	version (1) + flags (1) + stream_id (2) + opcode (1) + length (4)
 //
 // Relevant opcodes:
-//   0x00 ERROR, 0x01 STARTUP, 0x02 READY, 0x03 AUTHENTICATE, 0x05 OPTIONS,
-//   0x06 SUPPORTED, 0x07 QUERY, 0x08 RESULT, 0x09 PREPARE, 0x0A EXECUTE,
-//   0x0B REGISTER, 0x0C EVENT, 0x0D BATCH, 0x0E AUTH_CHALLENGE,
-//   0x0F AUTH_RESPONSE, 0x10 AUTH_SUCCESS
+//
+//	0x00 ERROR, 0x01 STARTUP, 0x02 READY, 0x03 AUTHENTICATE, 0x05 OPTIONS,
+//	0x06 SUPPORTED, 0x07 QUERY, 0x08 RESULT, 0x09 PREPARE, 0x0A EXECUTE,
+//	0x0B REGISTER, 0x0C EVENT, 0x0D BATCH, 0x0E AUTH_CHALLENGE,
+//	0x0F AUTH_RESPONSE, 0x10 AUTH_SUCCESS
 const (
 	cqlOpError   byte = 0x00
 	cqlOpQuery   byte = 0x07

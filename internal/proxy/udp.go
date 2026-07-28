@@ -18,14 +18,14 @@ import (
 // implemented; they need new Action variants and are tracked as open
 // questions on that RFC.
 type udpProxy struct {
-	mu       sync.RWMutex
-	rules    []Rule
-	target   string
-	conn     *net.UDPConn
-	onEvent  OnProxyEvent
-	svcName  string
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	mu      sync.RWMutex
+	rules   []Rule
+	target  string
+	conn    *net.UDPConn
+	onEvent OnProxyEvent
+	svcName string
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 func newUDPProxy(onEvent OnProxyEvent, svcName string) *udpProxy {

@@ -731,25 +731,32 @@ func (e *StarlarkEvent) AttrNames() []string {
 }
 
 // fieldsDict returns all event fields as a Starlark dict.
-func (e *StarlarkEvent) fieldsDict() *starlark.Dict {
-	d := starlark.NewDict(len(e.ev.Fields))
-	for k, v := range e.ev.Fields {
+func (e *StarlarkEvent) fieldsDict() *starlark.Dict { return eventFieldsDict(e.ev) }
+
+// fieldsAsData returns event fields as a Starlark dict.
+// If a "data" field exists containing JSON, it's auto-decoded.
+// Otherwise returns all fields as a dict.
+func (e *StarlarkEvent) fieldsAsData() starlark.Value { return eventFieldsAsData(e.ev) }
+
+// eventFieldsDict and eventFieldsAsData are shared by StarlarkEvent (where=
+// predicates) and EventVal (monitor check=), so the two event surfaces cannot
+// drift. They did drift once: EventVal had no .data at all, which made the
+// documented monitor example in spec-language.md impossible to run.
+func eventFieldsDict(ev Event) *starlark.Dict {
+	d := starlark.NewDict(len(ev.Fields))
+	for k, v := range ev.Fields {
 		d.SetKey(starlark.String(k), starlark.String(v))
 	}
 	return d
 }
 
-// fieldsAsData returns event fields as a Starlark dict.
-// If a "data" field exists containing JSON, it's auto-decoded.
-// Otherwise returns all fields as a dict.
-func (e *StarlarkEvent) fieldsAsData() starlark.Value {
-	if jsonStr, ok := e.ev.Fields["data"]; ok && len(jsonStr) > 0 {
+func eventFieldsAsData(ev Event) starlark.Value {
+	if jsonStr, ok := ev.Fields["data"]; ok && len(jsonStr) > 0 {
 		if decoded := jsonToStarlark(jsonStr); decoded != nil {
 			return decoded
 		}
 	}
-	// Fallback: return all fields as a dict.
-	return e.fieldsDict()
+	return eventFieldsDict(ev)
 }
 
 // jsonToStarlark attempts to decode a JSON string into Starlark values.

@@ -441,6 +441,10 @@ type Runtime struct {
 	// once per run rather than once per service.
 	fsSkipReported bool
 
+	// partitions tracks partition_start() windows so partition_stop() undoes
+	// exactly what was installed, and so a leaked one cannot cross tests.
+	partitions *partitionRegistry
+
 	// packetGW holds the spec-wide netstack packet gateway (RFC-054 M4).
 	// nil-safe: only started when the runtime provides one.
 	packetGW *packetGatewayState
@@ -481,6 +485,7 @@ func New(logger *slog.Logger) *Runtime {
 	rt.packetRules = newPacketRuleRegistry()
 	rt.packetGW = newPacketGatewayState()
 	rt.watches = newWatchRegistry()
+	rt.partitions = newPartitionRegistry()
 	rt.fsObs = newFSObservation()
 	return rt
 }
@@ -3028,6 +3033,10 @@ func (rt *Runtime) stopServices() {
 		os.RemoveAll(socketBase)
 	}
 
+	// Any partition left open by partition_start() is removed here, so it
+	// cannot leak into the next test.
+	rt.clearPartitions()
+
 	// Clear active faults.
 	rt.faultsMu.Lock()
 	rt.faults = make(map[string]map[string]*FaultDef)
@@ -3094,9 +3103,23 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 			host, port := "localhost", iface.Port
 			mediated := rt.proxyMgr.GetProxyAddr(name, ifName)
 			// RFC-054: under the gVisor runtime the SUT dials the packet
-			// gateway instead, which relays into the proxy. Packet faults then
-			// act on the leg the SUT actually experiences.
-			if gwAddr := rt.gatewayAddrFor(svc.Name, name, ifName, iface.Port, mediated); gwAddr != "" {
+			// gateway instead, which relays onward. Packet faults then act on
+			// the leg the SUT actually experiences.
+			//
+			// The relay target is the proxy when one is running, and the real
+			// upstream otherwise. That distinction is load-bearing for a peer
+			// mesh: preStartProxies starts an interface's proxy when its owning
+			// service starts, and only services launched afterwards see it. A
+			// mesh is a cycle, so for at least one link the proxy is always
+			// absent when the consumer's env is built. Gating the gateway on a
+			// proxy address therefore left that link unmediated, and packet
+			// rules installed into a link no traffic crossed. Chaining through
+			// a proxy is an optimization, not a precondition.
+			upstream := mediated
+			if upstream == "" {
+				upstream = proxyTargetAddr(s, iface)
+			}
+			if gwAddr := rt.gatewayAddrFor(svc.Name, name, ifName, iface.Port, upstream); gwAddr != "" {
 				mediated = gwAddr
 			}
 			if mediated != "" {
@@ -3244,26 +3267,44 @@ func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer st
 	//     bridge-bind).
 	faulted := rt.faultedInterfaces()
 	for name, s := range rt.services {
+		// Never rewrite a service's own interface addresses in its own env.
+		//
+		// The substitution is a *dial*-address rewrite, but it is applied by
+		// substring match over every user env value — so a bind address like
+		// RAFT_BIND="127.0.0.1:8301" would be rewritten to the gateway address
+		// too, and the service would try to bind an address it does not own
+		// and exit. This only became reachable once the gateway stopped
+		// requiring a proxy: before that, a mesh link usually had no
+		// substitution at all.
+		//
+		// The FAULTBOX_<SVC>_<IFACE>_* vars are built separately in buildEnv
+		// and still carry the gateway address for the service's own
+		// interfaces, which is what a peer advertises.
+		if name == consumer {
+			continue
+		}
 		for ifName, iface := range s.Interfaces {
 			if mode == containerConsumer && !faulted[name][ifName] {
 				continue
 			}
 			proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName)
-			if proxyAddr == "" {
-				continue
+			// A missing proxy is not a reason to skip the gateway — see the
+			// mesh-cycle note in buildEnv. Fall back to the real upstream so
+			// every link is still mediated at the packet layer.
+			gwUpstream := proxyAddr
+			if gwUpstream == "" {
+				gwUpstream = proxyTargetAddr(s, iface)
 			}
-			target := proxyAddr
-			// RFC-054: under the gVisor runtime the SUT dials the packet
-			// gateway, which relays into this proxy. Applied before the
-			// container-consumer rewrite because the gateway address is
-			// already routable from a container (it is a host subnet, not a
-			// loopback listener).
-			if gwAddr := rt.gatewayAddrFor(consumer, name, ifName, iface.Port, proxyAddr); gwAddr != "" {
+			if gwAddr := rt.gatewayAddrFor(consumer, name, ifName, iface.Port, gwUpstream); gwAddr != "" {
 				out[fmt.Sprintf("localhost:%d", iface.Port)] = gwAddr
 				out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = gwAddr
 				out[fmt.Sprintf("%s:%d", name, iface.Port)] = gwAddr
 				continue
 			}
+			if proxyAddr == "" {
+				continue
+			}
+			target := proxyAddr
 			if mode == containerConsumer {
 				if _, pp, err := splitHostPort(proxyAddr); err == nil {
 					target = fmt.Sprintf("host.docker.internal:%d", pp)
@@ -3778,10 +3819,13 @@ func (rt *Runtime) requiredSyscalls() []string {
 		}
 	}
 
-	// partition() always needs connect.
-	if strings.Contains(src, "partition(") {
-		found["connect"] = true
-	}
+	// partition() no longer needs a seccomp filter. It used to install a
+	// connect() deny, which is why "connect" was requested here; since
+	// v0.14.0 it drops packets on the gateway instead, because connect-deny
+	// only blocks connection *setup* and every consensus protocol pools
+	// long-lived connections. Requesting connect now would install a filter
+	// on services that need none, slowing them for no benefit.
+	_ = src
 
 	// Virtual time needs time syscalls.
 	if rt.virtualTime {
@@ -3891,13 +3935,8 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 			}
 		}
 
-		// partition(VAR_A, VAR_B, ...) needs connect for both services.
-		for _, line := range lines {
-			if strings.Contains(line, "partition(") &&
-				(strings.Contains(line, varName+",") || strings.Contains(line, ", "+varName)) {
-				found["connect"] = true
-			}
-		}
+		// partition() deliberately contributes no syscalls — see the note in
+		// requiredSyscalls.
 	}
 
 	// Virtual time needs time syscalls on all services.

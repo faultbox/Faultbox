@@ -2070,11 +2070,21 @@ Optional `source=` targets a specific consumer when multiple services
 connect to the same interface:
 
 ```python
-fault(kafka.main, source=worker,
+fault(kafka.main,
     drop(topic="orders.*"),
+    source=worker,
     run=scenario,
 )
 ```
+
+> Positional arguments must come before keyword arguments — that is Starlark's
+> grammar, not a Faultbox rule. Writing `source=` ahead of the fault rules
+> fails to parse with *"positional argument may not follow named"*.
+
+`source=` scopes the rules to traffic from one consumer, which is what makes
+pairwise and one-way partitions expressible in a peer mesh. A `source=` naming
+a service that does not reach the interface is rejected at fault time rather
+than silently matching nothing.
 
 ### Protocol fault builtins
 

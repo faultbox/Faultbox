@@ -13,7 +13,7 @@ type testProtocol struct {
 }
 
 func (p *testProtocol) Name() string      { return p.name }
-func (p *testProtocol) Methods() []string  { return p.methods }
+func (p *testProtocol) Methods() []string { return p.methods }
 func (p *testProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
 	return nil
 }
