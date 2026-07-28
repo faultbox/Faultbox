@@ -288,11 +288,14 @@ matters because the existing per-notification-goroutine model in
 refuses to promise ordering for. Packet faults should be *better* than that, not equally
 vague.
 
-### Insertion — deliberately unresolved
+### Insertion — resolved by spike
 
-**This is the RFC's primary open question and is resolved by a Milestone 0 spike, not by
-this document.** Getting the SUT's traffic into netstack is the highest-risk unknown, and
-committing to a mechanism before prototyping it would be guessing. Three candidates:
+> **Resolved 2026-07-28: candidate A (TUN + routed subnet).** Full evidence in
+> [Decision record M0.2](#decision-record-m02--insertion-mechanism). The table below is the
+> pre-spike framing, kept for context.
+
+Getting the SUT's traffic into netstack was the highest-risk unknown, so it was prototyped
+rather than argued. Three candidates were considered:
 
 | Candidate | How | Pros | Cons |
 |---|---|---|---|
@@ -300,14 +303,9 @@ committing to a mechanism before prototyping it would be guessing. Three candida
 | **B. veth + AF_PACKET** | Docker creates the netns; Faultbox attaches a raw socket to the host-side veth peer and feeds L2 frames to netstack | Captures **all** container traffic, including hardcoded addresses — closes the RFC-024 bypass that is also L1's `network-unmediated` blind spot | Container mode only; more sensitive to Docker version and network driver |
 | **C. netns + fdbased** | Faultbox pre-creates a netns with a TAP device, container joins via `NetworkMode: container:<sidecar>` | Cleanest isolation | Most Docker plumbing; interacts badly with the existing container network setup |
 
-Milestone 0 builds a throwaway prototype of A and B against a real Postgres container and
-picks on evidence: does traffic actually arrive, what is the added latency, does it survive
-container restart, does it work in the Lima VM and in CI. The spike's output is a decision
-record appended to this RFC.
-
 The rule engine, matcher, DSL, and event schema are **independent of this choice** — they
-sit above the link endpoint — so Milestones 1–3 proceed in parallel against a
-`link/channel` endpoint regardless of how the spike lands.
+sit above the link endpoint — so Milestones 1–3 proceed against a `link/channel` endpoint
+regardless.
 
 ### File-level I/O observation
 
@@ -513,10 +511,12 @@ become natural — ordered by how often they correspond to a real outage.
    — target a specific message type inside a custom binary protocol Faultbox has no plugin
    for. This is the InfoSec-persona case from RFC-046 that motivated Path B.
 
-10. **WAL durability audit.** `watch(pg, files=["**/pg_wal/*"], ops=["write","fsync"])` plus
-    `assert_ordered(fsync_event, http_200_event)` — prove the database fsynced the WAL
-    *before* the commit was acknowledged. Provable only with exact-path and per-operation
-    ordering.
+10. ~~**WAL durability audit.**~~ **Withdrawn** — gVisor has no `fsync` trace point. See
+    [Decision record M0.3](#decision-record-m03--runsc--seccheck). The nearest shippable
+    substitute is a **WAL write-ordering audit**:
+    `watch(pg, files=["**/pg_wal/*"], ops=["write"])` plus `assert_ordered(wal_write, http_200)`
+    — proves the WAL was *written* before the commit was acknowledged, but not that it was
+    *durable*.
 
 11. **I/O surface audit.** `assert_never(lambda e: e.type == "file_io" and not
     e.data["path"].startswith("/var/lib/app"))` — the SUT never touches anything outside
@@ -590,8 +590,8 @@ repeat exactly the overclaiming RFC-040 was written to stop.
 
 ## Open questions
 
-1. **Insertion mechanism** — TUN+routed subnet, veth+AF_PACKET, or netns+fdbased. Resolved
-   by the Milestone 0 spike. *Blocking for Milestone 4, not for 1–3.*
+1. ~~**Insertion mechanism**~~ — **RESOLVED**: candidate A (TUN + routed subnet).
+   [Decision record M0.2](#decision-record-m02--insertion-mechanism).
 2. **`gvisor-net` as a distinct runtime value** — accept the three-value matrix proposed
    here, or keep RFC-046's binary `gvisor` and require runsc for packet faults too? This
    RFC argues for the split; RFC-046's author should weigh in.
@@ -600,9 +600,8 @@ repeat exactly the overclaiming RFC-040 was written to stop.
    be per-rule rather than global?
 4. **`where=` lambda budget** — warn only, or fail the test past a threshold? Warning risks
    a user shipping a spec that is 100× slower than they think.
-5. **Does `runsc` availability gate spec load or service start?** Spec load gives a better
-   error; service start allows a spec to be valid on a machine without runsc and merely
-   unrunnable.
+5. ~~**Does `runsc` availability gate spec load or service start?**~~ — **RESOLVED**: spec
+   load. [Decision record M0.3](#decision-record-m03--runsc--seccheck).
 6. **Do packet faults participate in `fault_matrix()` generation?** They have a much larger
    parameter space than syscall faults, and naive enumeration would explode the plan tree.
 7. **Interaction with TLS (RFC-038).** Packet faults operate below TLS, so a corrupt on an
@@ -691,6 +690,209 @@ all three targets, so an attempted bump fails loudly.
 
 **No `nogvisor` build tag is needed.** The standing-risk fallback in the plan is withdrawn:
 +13% is not worth a second build configuration and the maintenance it implies.
+
+### Decision record M0.2 — Insertion mechanism
+
+**Date:** 2026-07-28. **Status:** resolved. **Resolves open question 1.**
+
+**Candidate A (TUN + routed subnet) is the fault gateway. Candidate B (veth + AF_PACKET) is
+retained as a future opt-in *detection* mode.** Both were prototyped in the Lima VM
+(kernel 6.8.0, Docker 29.3.1) against real containers.
+
+#### What the spike proved
+
+Both candidates deliver real traffic to a real `FaultEndpoint`, with headers parsed off
+`*stack.PacketBuffer` exactly as the design assumes. Candidate A, VM host → netstack:
+
+```
+IN  tcp 10.99.0.1:58362 -> 10.99.0.5:8080 flags= S    seq=1525207598 win=64240 len=0
+OUT tcp 10.99.0.5:8080 -> 10.99.0.1:58362 flags= S  A seq=4021171399 win=29184 len=0
+IN  tcp 10.99.0.1:58362 -> 10.99.0.5:8080 flags=   PA seq=1525207599 win=502   len=82
+*** ACCEPTED from 10.99.0.1:58362 ***
+*** READ 82 bytes: "GET /hello HTTP/1.1\r\nHost: 10.99.0.5:8080..." ***
+```
+
+Every field the RFC's matcher needs — `dir`, `flags`, `seq`, `window`, `len` — is present
+on a live connection. **A container reached netstack with no iptables changes at all**, which
+contradicts this RFC's original prediction that Docker's `FORWARD policy DROP` would block
+it; Docker 29's `DOCKER-FORWARD` chain already permits it.
+
+#### The decisive difference: gateway vs tap
+
+**Candidate B cannot drop a packet.** `AF_PACKET`/`ETH_P_ALL` *copies* frames the kernel has
+already delivered — it observes, it does not divert. Turning B into a real gateway means
+taking the container's veth peer out of `docker0`'s bridge and having netstack drive it,
+which is substantially more container-network surgery than A.
+
+Candidate A **terminates**: netstack owns the address the SUT dials, so Faultbox controls
+the entire SUT-facing leg. That is the leg the SUT experiences, and it is what every
+`packet_*` fault in this RFC acts on.
+
+#### Source attribution — a concern that dissolved
+
+With default Docker NAT, container traffic arrives masqueraded as `10.99.0.1`, losing the
+sender's identity. Exempting the subnet from NAT *does* preserve the real source:
+
+```
+IN  tcp 172.17.0.2:35922 -> 10.99.0.5:8080 flags= S seq=3220560321 win=64240 len=0
+```
+
+…but then the SYN-ACK is dropped on the return path, because Docker's `FORWARD` chain only
+accepts `in docker0`. Restoring connectivity needs **two** iptables rules, and Docker 29
+rearranged these chains (`DOCKER-FORWARD` / `DOCKER-CT` / `DOCKER-BRIDGE`) relative to
+older versions — a standing support burden.
+
+**Faultbox does not need the source IP.** The proxy manager already assigns a distinct
+listen *port* per interface; the gateway assigns a distinct netstack *address* per
+`(consumer, target-interface)` pair. The destination then identifies both ends uniquely, so
+`fault(db.main, source=worker)` targeting works with **zero firewall mutation**. The NAT
+exemption is not adopted.
+
+#### Comparison
+
+| | **A — TUN + routed subnet** | **B — veth + AF_PACKET** |
+|---|---|---|
+| Traffic reaches netstack | ✅ | ✅ |
+| **Can drop/delay/reorder** | ✅ terminates | ❌ **tap only** |
+| Binary-mode services | ✅ | ❌ container-only |
+| Firewall/NAT mutation | **none** | none |
+| Source IP preserved | not needed (per-pair addresses) | ✅ natively |
+| Sees traffic to hardcoded addresses | ❌ | ✅ **all** container traffic |
+| Docker-version sensitivity | low (as adopted) | low |
+
+#### Consequences
+
+- **M4 implements candidate A.** Faultbox creates the TUN, assigns `10.99.0.0/16`, and
+  allocates one address per `(consumer, target-interface)` pair. RFC-024's env-rewrite
+  insertion contract is reused unchanged.
+- **Candidate B is promoted to a future feature, not discarded.** It captures *all* container
+  traffic with true source IPs and zero setup — precisely the RFC-024 env-rewrite bypass
+  that is also L1's `network-unmediated` blind spot. As an observation-only mode it is a
+  strong **detection** feature. Filed as future work, not v0.14.0 scope.
+- **Noise:** a routed subnet also receives unrelated host traffic (mDNS to `224.0.0.251`
+  was observed). The gateway filters to its own addresses; the event log must not surface
+  host chatter as SUT traffic. Added as an M4 test.
+- **Latency measurement deferred to M1**, where it can be done without the spike's
+  per-packet `printf` dominating the result.
+
+### Decision record M0.3 — runsc + seccheck
+
+**Date:** 2026-07-28. **Status:** resolved. **Outcome:** Path C-lite is viable and adopted,
+with **one scenario withdrawn**. **Resolves open question 5.**
+
+Environment: Lima `faultbox-dev`, kernel 6.8.0, Docker 29.3.1,
+`runsc release-20260721.0`, `postgres:16-alpine`.
+
+#### Compatibility — the load-bearing question
+
+**Postgres and Redis both run correctly under runsc.** `pg_isready` in 3 s; `CREATE TABLE`
+/ `INSERT` / `SELECT` / `CHECKPOINT` all succeeded across 1000 rows; `redis-cli SET`/`GET`
+round-tripped. `uname` inside the sandbox reports `4.19.0-gvisor`, confirming the Sentry.
+The RFC-046 worry that "Postgres may break under gVisor" did not materialize for the
+images Faultbox's own demos use.
+
+Installation is non-invasive: `runsc install` adds a `runtimes` entry to
+`/etc/docker/daemon.json`. **The default runtime stays `runc`** — nothing changes for
+existing specs.
+
+#### The sink works end-to-end
+
+A `SOCK_SEQPACKET` UDS server completed the handshake and streamed points:
+
+```
+sink listening on /tmp/faultbox-seccheck.sock (SOCK_SEQPACKET, mode 0600)
+*** sandbox connected ***
+handshake in: version=1
+handshake out: version=1 — streaming
+```
+
+The Sentry writes its `Handshake` first and reads the monitor's reply; after that the
+monitor only reads, as the README specifies. 1054 points were captured in one run.
+
+#### What the decoded points actually give us
+
+Decoding a Postgres write workload produced exactly the `file_io` fields the RFC promises,
+and one better than promised:
+
+```
+write points by sysno: map[64:5 68:263]        # 64=write, 68=pwrite64 (aarch64)
+writes carrying has_offset: 263
+  sysno=68 path=/var/lib/postgresql/data/pg_wal/000000010000000000000001 offset=7815168 count=8192  result=8192
+  sysno=68 path=/var/lib/postgresql/data/pg_wal/000000010000000000000001 offset=7815168 count=81920 result=81920
+  sysno=68 path=/var/lib/postgresql/data/pg_xact/0000                    offset=0       count=8192  result=8192
+
+FAILED opens (real errno): 57
+  pathname=/lib/libpq.so.5      errno=2
+  pathname=/lib/libssl.so.3     errno=2
+
+bytes written per path (top 3):
+  /var/lib/postgresql/data/base/5/16403                     2080768 bytes
+  /var/lib/postgresql/data/pg_wal/000000010000000000000001    98304 bytes
+  /var/lib/postgresql/data/base/5/16409                       24576 bytes
+```
+
+- **Real byte offsets are populated** for positional I/O — `pwrite64` accounted for 263 of
+  268 writes. Scenario 12 (write amplification / torn-record detection) is viable.
+- **Per-path byte accounting works**, so `file_io().bytes_written` is directly implementable.
+- **Failed opens carry the true errno**, which Faultbox has no equivalent of today.
+- `pwrite64` shares `MESSAGE_SYSCALL_WRITE` and is distinguished by `sysno` — a decoder
+  that switches on message type alone will silently conflate them.
+
+#### Finding 1 — there is no `fsync` trace point. Scenario 10 is withdrawn
+
+gVisor's seccheck covers 42 syscalls. `fsync`, `fdatasync`, `msync`, and `sync_file_range`
+are **not among them**:
+
+```
+accept accept4 bind chdir chroot clone close connect dup dup3 eventfd2 execve execveat
+fchdir fcntl inotify_add_watch inotify_init1 inotify_rm_watch mmap openat pipe2 pread64
+preadv preadv2 prlimit64 pwrite64 pwritev pwritev2 read readv setgid setresgid setresuid
+setsid setuid signalfd4 socket socketpair timerfd_create timerfd_gettime timerfd_settime
+write writev
+```
+
+**Scenario 10 (WAL durability audit — "prove fsync precedes the 200") cannot be built on
+Path C-lite** and is withdrawn from v0.14.0. Options considered:
+
+- *Merge seccomp-notify for fsync.* Path A already traces `fsync`/`fdatasync`. But under
+  `runtime="gvisor"` the SUT runs inside the Sentry, and `SECCOMP_RET_USER_NOTIF` support
+  in the guest is unverified. Not adopted without its own spike.
+- *Contribute an fsync point upstream.* Correct long-term; not a v0.14.0 dependency.
+- **Adopted:** `watch(ops=[...])` rejects `"fsync"` at spec load under `runtime="gvisor"`
+  with an error naming the limitation, rather than silently emitting nothing.
+
+`mmap` *is* traced, which partially closes the "mmap'd I/O is invisible" gap this RFC lists
+under Path A — we see the mapping, though not per-page faults.
+
+#### Finding 2 — `openat` path resolution needs assembly
+
+`Open.pathname` is the **raw syscall argument**, which is frequently relative
+(`global/pg_filenode.map`, `base/5/PG_VERSION`), while `Read`/`Write.fd_path` is the
+Sentry-**resolved absolute** path. Resolving an `openat` therefore means combining
+`Open.fd_path` (the dirfd's path) with `pathname`, falling back to the `cwd` context field
+for `AT_FDCWD`. The `cwd` context field must be requested explicitly.
+
+Practical consequence: **`watch(files=)` matching should key on `fd_path` from
+read/write/close**, which is unambiguous, and treat `openat` as a secondary signal.
+
+#### Finding 3 — session naming and fixtures
+
+- Trace sessions **must be named `Default`**; any other name fails with *"only a single
+  \"Default\" session is supported"*.
+- `fd_path` is an **optional field** and must be requested per point, or it arrives empty.
+- **Fixtures work.** 392 captured messages were decoded on **darwin/arm64 with no runsc and
+  no Linux**, recovering paths, offsets, byte counts, and errnos. The plan's claim that the
+  M5 decoder is fully testable on a macOS host is now demonstrated rather than assumed.
+
+#### Consequences
+
+- Path C-lite is adopted for M5.
+- **Scenario 10 is withdrawn**; the scenario list for v0.14.0 is 11, not 12.
+- Open question 5 resolves to **spec load**: runsc availability is checked when a spec
+  declares `runtime="gvisor"`, since the error is far more actionable there.
+- M5 gains three tests from these findings: `sysno` disambiguation of write/pwrite64,
+  `openat` path assembly from dirfd + pathname + cwd, and a spec-load rejection of
+  `ops=["fsync"]`.
 
 ## Dependencies
 
