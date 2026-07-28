@@ -355,3 +355,54 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// SetBandwidth paces the link at rate (a human string like "1mbit" or
+// "2MB/s"), in the given direction, holding at most maxBacklog before it
+// drops. An empty rate clears the shaper.
+//
+// Link-scoped by design, not per-triple: bandwidth describes the path, and
+// there is one TUN link under one FaultEndpoint. Scoping it per interface
+// would imply per-interface capacity the gateway does not have — better to be
+// honest about what the model is than to offer a knob that lies.
+func (g *Gateway) SetBandwidth(rate string, dir Direction, maxBacklog time.Duration) error {
+	ep := g.Endpoint()
+	if ep == nil {
+		return fmt.Errorf("bandwidth: gateway is not started")
+	}
+	if rate == "" {
+		ep.SetBandwidth(dir, 0, 0)
+		return nil
+	}
+	bps, err := ParseRate(rate)
+	if err != nil {
+		return fmt.Errorf("bandwidth: %w", err)
+	}
+	ep.SetBandwidth(dir, bps, maxBacklog)
+	return nil
+}
+
+// SetMTU overrides the link MTU; 0 restores the underlying device's.
+func (g *Gateway) SetMTU(mtu uint32) error {
+	ep := g.Endpoint()
+	if ep == nil {
+		return fmt.Errorf("mtu: gateway is not started")
+	}
+	ep.SetMTU(mtu)
+	return nil
+}
+
+// ShaperStats reports what a direction's shaper did, and whether one exists.
+func (g *Gateway) ShaperStats(dir Direction) (ShaperStats, bool) {
+	ep := g.Endpoint()
+	if ep == nil {
+		return ShaperStats{}, false
+	}
+	return ep.ShaperStatsFor(dir)
+}
+
+// ClearShapers removes both bandwidth shapers and any MTU override.
+func (g *Gateway) ClearShapers() {
+	if ep := g.Endpoint(); ep != nil {
+		ep.ClearShapers()
+	}
+}

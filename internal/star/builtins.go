@@ -167,6 +167,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// for a fixed time — an active fault emits the very events
 		// that stop await_stable quiescing. See sleep.go.
 		"sleep": starlark.NewBuiltin("sleep", rt.builtinSleep),
+		// Link shapers (RFC-054, deferred from v0.14.0). No matcher: these
+		// describe the link, not any packet crossing it. See shaper.go.
+		"bandwidth": starlark.NewBuiltin("bandwidth", rt.builtinBandwidth),
+		"mtu":       starlark.NewBuiltin("mtu", rt.builtinMTU),
 		// Declarative test definition (RFC-041 §8.6). Augments the
 		// def test_*() function-style declaration with per-test
 		// timeout, expect=, setup=, and terminate_when= temporal

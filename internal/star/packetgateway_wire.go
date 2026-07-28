@@ -83,6 +83,16 @@ func (rt *Runtime) ensurePacketGateway() (*netfault.Gateway, error) {
 	return gw, nil
 }
 
+// packetGatewayHandle returns the running gateway, or nil when none is up.
+// Unlike ensurePacketGateway it never starts one — teardown paths must not
+// create a TUN device on their way out.
+func (rt *Runtime) packetGatewayHandle() *netfault.Gateway {
+	st := rt.packetGW
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.gw
+}
+
 // gatewaySeed returns the spec seed for probabilistic packet rules, or 0 when
 // the spec did not set one — matching how the rest of the runtime treats an
 // unset seed.

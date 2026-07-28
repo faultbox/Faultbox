@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -68,6 +69,18 @@ type FaultEndpoint struct {
 
 	flows   sync.Map // flow string -> *atomic.Int64 (per-flow packet ordinal)
 	stopped atomic.Bool
+
+	// clock is retained so the shaper can read the same time source the defer
+	// queue schedules against; a pacer computing waits from wall time while
+	// the queue runs on a fake clock would be untestable.
+	clock Clock
+
+	// Link shapers (RFC-054 v0.14.1). Nil when unset — the common case — so
+	// an unshaped link pays one atomic load per packet.
+	shapeC2S atomic.Pointer[shaper]
+	shapeS2C atomic.Pointer[shaper]
+	// mtuOverride is 0 when the lower endpoint's MTU stands.
+	mtuOverride atomic.Uint32
 }
 
 // Options configures a FaultEndpoint.
@@ -85,8 +98,13 @@ type Options struct {
 
 // New wraps lower in a FaultEndpoint.
 func New(lower stack.LinkEndpoint, opts Options) *FaultEndpoint {
+	clock := opts.Clock
+	if clock == nil {
+		clock = RealClock
+	}
 	return &FaultEndpoint{
 		LinkEndpoint: lower,
+		clock:        clock,
 		deferQ:       newDeferQueue(opts.Clock),
 		reorder:      newReorderBuffer(),
 		onEvent:      opts.OnEvent,
@@ -109,6 +127,103 @@ func (e *FaultEndpoint) WhereEvaluations() int64 { return e.whereEvals.Load() }
 // be applied. Non-zero means a fault the spec asked for did not happen, and
 // the runtime must say so rather than report a clean pass.
 func (e *FaultEndpoint) MutationsSkipped() int64 { return e.mutationsSkipped.Load() }
+
+// SetBandwidth paces one or both directions at bytesPerSec, holding at most
+// maxBacklog worth of traffic before it starts dropping. A rate of 0 clears
+// the shaper for that direction.
+func (e *FaultEndpoint) SetBandwidth(dir Direction, bytesPerSec float64, maxBacklog time.Duration) {
+	set := func(p *atomic.Pointer[shaper]) {
+		if bytesPerSec <= 0 {
+			p.Store(nil)
+			return
+		}
+		p.Store(newShaper(bytesPerSec, maxBacklog))
+	}
+	switch dir {
+	case DirC2S:
+		set(&e.shapeC2S)
+	case DirS2C:
+		set(&e.shapeS2C)
+	default:
+		set(&e.shapeC2S)
+		set(&e.shapeS2C)
+	}
+}
+
+// SetMTU overrides the link MTU. Zero restores the lower endpoint's.
+func (e *FaultEndpoint) SetMTU(mtu uint32) { e.mtuOverride.Store(mtu) }
+
+// MTU reports the link MTU, honouring any override.
+//
+// This is what makes mtu() a real small-MTU path rather than a size filter:
+// netstack derives the TCP MSS it advertises and its IP fragmentation
+// threshold from this value, so lowering it makes the peer send smaller
+// segments instead of making oversized ones vanish.
+func (e *FaultEndpoint) MTU() uint32 {
+	if v := e.mtuOverride.Load(); v > 0 {
+		return v
+	}
+	return e.LinkEndpoint.MTU()
+}
+
+// ShaperStatsFor reports what a direction's shaper did, and whether one is
+// installed at all.
+func (e *FaultEndpoint) ShaperStatsFor(dir Direction) (ShaperStats, bool) {
+	var sh *shaper
+	if dir == DirC2S {
+		sh = e.shapeC2S.Load()
+	} else {
+		sh = e.shapeS2C.Load()
+	}
+	if sh == nil {
+		return ShaperStats{}, false
+	}
+	return sh.stats(), true
+}
+
+// ClearShapers removes both bandwidth shapers and any MTU override.
+func (e *FaultEndpoint) ClearShapers() {
+	e.shapeC2S.Store(nil)
+	e.shapeS2C.Store(nil)
+	e.mtuOverride.Store(0)
+}
+
+// paced wraps a release callback with this direction's bandwidth shaper.
+//
+// Applied before the rule pipeline runs, and therefore also when no rules are
+// installed: bandwidth is a property of the link, so a spec that sets a rate
+// and no rules must still see a slow link.
+func (e *FaultEndpoint) paced(dir Direction, release func(*stack.PacketBuffer)) func(*stack.PacketBuffer) {
+	var sh *shaper
+	if dir == DirC2S {
+		sh = e.shapeC2S.Load()
+	} else {
+		sh = e.shapeS2C.Load()
+	}
+	if sh == nil {
+		return release
+	}
+	return func(p *stack.PacketBuffer) {
+		wait, ok := sh.admit(p.Size(), e.clock.Now())
+		if !ok {
+			// Queue full. A real bottleneck drops here, and the drop is the
+			// signal that makes the sender back off.
+			return
+		}
+		if wait <= 0 {
+			release(p)
+			return
+		}
+		held := p.IncRef()
+		if !e.deferQ.schedule(wait, func() {
+			release(held)
+			held.DecRef()
+		}) {
+			release(held)
+			held.DecRef()
+		}
+	}
+}
 
 // Close drains deferred and held packets, then closes the wrapped endpoint.
 // Deferred packets are flushed rather than discarded — silently dropping them
@@ -170,14 +285,14 @@ func (e *FaultEndpoint) DeliverLinkPacket(proto tcpip.NetworkProtocolNumber, pkt
 // would make netstack treat it as backpressure and retry, which is not what
 // "drop" means — the SUT should observe loss, not the sender.
 func (e *FaultEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
-	var forward stack.PacketBufferList
-	defer forward.DecRef()
+	batch := &egressBatch{e: e}
+	defer batch.seal()
 
 	total := pkts.Len()
 	for _, pkt := range pkts.AsSlice() {
 		e.handle(pkt, DirS2C,
 			// forward: on down the wire toward the SUT.
-			func(p *stack.PacketBuffer) { forward.PushBack(p.IncRef()) },
+			batch.release,
 			// reverse: up into the local stack, so netstack sees the peer
 			// (the SUT) as having sent it.
 			func(p *stack.PacketBuffer) {
@@ -187,14 +302,58 @@ func (e *FaultEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Er
 			},
 		)
 	}
-	if forward.Len() == 0 {
-		return total, nil
-	}
-	n, err := e.LinkEndpoint.WritePackets(forward)
-	if err != nil {
-		return n, err
-	}
 	return total, nil
+}
+
+// egressBatch routes a released packet either into the current write batch or,
+// once that batch is gone, straight down the wire.
+//
+// The distinction is the difference between delaying a packet and losing it.
+// Actions that hold a packet — delay, reorder, and bandwidth pacing — release
+// it later, from the defer queue's timer goroutine, long after WritePackets
+// has returned. The previous implementation gave `release` a closure appending
+// to a local list that was written once the loop finished and DecRef'd on
+// return, so every late release appended to a list nobody would ever write:
+// `packet_delay(dir="s2c")` was a silent drop wearing a delay's name. Both
+// delay tests drove the ingress path, where release goes straight to the
+// dispatcher, so nothing caught it.
+type egressBatch struct {
+	e *FaultEndpoint
+
+	mu     sync.Mutex
+	list   stack.PacketBufferList
+	sealed bool
+}
+
+// release is safe to call from any goroutine at any time, including after
+// seal.
+func (b *egressBatch) release(p *stack.PacketBuffer) {
+	b.mu.Lock()
+	if !b.sealed {
+		b.list.PushBack(p.IncRef())
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+	// The batch is closed; this packet was held past the write. Send it on its
+	// own rather than dropping it.
+	b.e.writeDown(p)
+}
+
+// seal writes whatever the batch accumulated and marks it closed, so any
+// later release takes the direct path.
+func (b *egressBatch) seal() {
+	b.mu.Lock()
+	b.sealed = true
+	list := b.list
+	b.list = stack.PacketBufferList{}
+	b.mu.Unlock()
+
+	defer list.DecRef()
+	if list.Len() == 0 {
+		return
+	}
+	b.e.LinkEndpoint.WritePackets(list)
 }
 
 // handle runs one packet through the rule pipeline.
@@ -207,6 +366,10 @@ func (e *FaultEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Er
 // Unparseable packets pass through untouched: a rule cannot meaningfully match
 // what we could not parse.
 func (e *FaultEndpoint) handle(pkt *stack.PacketBuffer, dir Direction, release, reverse func(*stack.PacketBuffer)) {
+	// Shaping wraps release before anything else, so it applies even on the
+	// no-rules fast path below. bandwidth() describes the link, not a packet.
+	release = e.paced(dir, release)
+
 	rs := e.rules.Load()
 	if rs == nil || len(rs.rules) == 0 || e.stopped.Load() {
 		release(pkt)

@@ -38,7 +38,42 @@ Next-version work is tracked in
   `parallel()` branch) and is rejected inside `monitor()` / `assume()`
   predicates like the `await_*` family.
 
+- **`bandwidth(rate, dir="both", queue="250ms")` and `mtu(size)`** — the two
+  link shapers deferred from v0.14.0. They take no matcher: a `packet_*` rule
+  says what happens to packets that look like a certain way, a shaper says what
+  kind of link this is.
+
+  `rate` accepts bit units (`"1mbit"`, `"512kbps"`) or byte units, which must
+  say so explicitly (`"2MB/s"`). A bare `"1000000"` is **rejected** — it could
+  be bits or bytes, and guessing would be a silent factor-of-eight error in the
+  one number the fault depends on. `queue=` bounds the backlog in *time*, so
+  the shaper drops when saturated the way a real bottleneck does; a rate
+  limiter with an unbounded queue is a memory leak with latency, and the sender
+  never observes the congestion a congestion-control bug needs to surface.
+
+  `mtu()` overrides the link MTU, so netstack advertises a smaller TCP MSS and
+  fragments — a real small-MTU path. v0.14.0 had to approximate this with
+  `packet_drop(len_gt=576)`, which drops oversized packets: that looks like a
+  black hole and behaves like nothing real. Sizes below the IPv4 minimum of 68
+  are rejected.
+
+  Both are gateway-wide (one TUN link, one NIC — a per-target knob would be one
+  that lies), both are cleared at test end, and both **error** on
+  `runtime="default"` rather than silently no-opping. Each run records what the
+  shaper did — `bandwidth_stats dir=c2s admitted=76 dropped=0
+  peak_backlog=38ms` — so "the link was configured slow" can be distinguished
+  from "the link was the bottleneck".
+
 ### Fixed
+- **`packet_delay(dir="s2c")` was a silent drop, not a delay.** Egress builds a
+  batch list, hands `release` a closure that appends to it, writes the batch
+  when the loop ends and frees it on return — so a packet released *later*, by
+  the defer queue's timer, was appended to a list nobody would ever write.
+  `packet_reorder` on egress had the same fate, and bandwidth pacing would have
+  inherited it. Both existing delay tests drove the ingress path, where release
+  goes straight to the dispatcher, so nothing caught it. A fault that silently
+  becomes a *different* fault is the exact failure this release line exists to
+  prevent. Late releases now take a direct path to the wire.
 - **The packet gateway's TUN device no longer bricks a host when a run is
   interrupted.** The device was the shared constant `faultbox0` and it is
   *persistent* — it survives the process. Two consequences, both live in

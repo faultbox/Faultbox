@@ -420,3 +420,31 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// PROBE: does delay work on EGRESS (S2C), or is it a silent drop?
+//
+// Both existing delay tests drive DeliverNetworkPacket (ingress). WritePackets
+// builds a local `forward` list, hands `release` a closure that appends to it,
+// writes the list once the loop finishes, and DecRefs it on return — so a
+// release that fires later, from the defer queue's timer, appends to a list
+// nobody will ever write.
+func TestDelayOnEgressActuallyDelivers(t *testing.T) {
+	clock := newFakeClock()
+	fe, _, lower := newTestEndpoint(t, Options{Clock: clock})
+	fe.SetRules(mustRules(t, &Rule{
+		Action: ActionDelay,
+		Delay:  250 * time.Millisecond,
+		Match:  Match{Dir: dirPtr(DirS2C)},
+	}))
+
+	writeOne(fe, makePacket(defaultPkt()))
+
+	if got := lower.count(); got != 0 {
+		t.Fatalf("packet written immediately (%d); the delay did not hold it", got)
+	}
+	clock.Advance(250 * time.Millisecond)
+	if !waitFor(t, 2*time.Second, func() bool { return lower.count() == 1 }) {
+		t.Fatalf("egress packet never written after the delay elapsed (count=%d) "+
+			"— delay on dir=\"s2c\" is silently dropping instead of delaying", lower.count())
+	}
+}

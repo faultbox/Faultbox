@@ -441,6 +441,11 @@ type Runtime struct {
 
 	// fsObs holds the seccheck sink and per-service trace sessions.
 	fsObs *fsObservation
+	// shapersActive records whether bandwidth()/mtu() installed anything, so
+	// teardown can clear it without touching the gateway when they did not.
+	// One test's slow link must not become the next test's baseline.
+	shapersActive atomic.Bool
+
 	// specUsesWatch records whether any test calls watch(). Filesystem
 	// observation requires runsc, so a spec that never watches must not be
 	// forced onto it — the runsc requirement follows the feature, not the
@@ -3091,6 +3096,10 @@ func (rt *Runtime) stopServices() {
 	// Any partition left open by partition_start() is removed here, so it
 	// cannot leak into the next test.
 	rt.clearPartitions()
+
+	// Same for link shapers: a bandwidth() or mtu() from one test must not
+	// silently become the next test's baseline.
+	rt.clearShapers()
 
 	// Clear active faults.
 	rt.faultsMu.Lock()

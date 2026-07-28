@@ -1916,9 +1916,56 @@ packet_window(size = 0, **match)        # rewrite the advertised receive window
 Rules are evaluated in declaration order and **first match wins**, so a narrow
 `packet_pass` above a broad `packet_drop` carves out an exception.
 
-> `bandwidth()` and `mtu()` are **not** in v0.14.0. They are link-scoped shapers
-> needing a token bucket and real fragmentation handling rather than the
-> match-and-act pipeline above; they land in v0.14.1.
+### Link shapers: `bandwidth()` and `mtu()` (v0.14.1)
+
+These take **no matcher**. Every `packet_*` rule answers "what happens to
+packets that look like this"; a shaper answers "what kind of link is this",
+which is a property of the path rather than of any packet crossing it.
+
+```python
+def test_slow_link():
+    bandwidth(rate = "1mbit")            # both directions
+    bandwidth(rate = "256kbit", dir = "s2c")
+    mtu(size = 576)
+    api.get(path = "/report")
+```
+
+**`bandwidth(rate, dir="both", queue="250ms")`**
+
+`rate` accepts bit units (`"1mbit"`, `"512kbps"`, `"1gbit"`) or byte units,
+which must say so explicitly (`"2MB/s"`, `"64kB/s"`). A bare number is
+**rejected** — `"1000000"` could be bits or bytes, and guessing would be a
+silent factor-of-eight error in the one value the whole fault depends on.
+
+`queue=` bounds how much traffic the shaper holds before it starts discarding.
+A rate limiter with an unbounded queue is not a slow link, it is a memory leak
+with latency: the sender never observes congestion, which is precisely the
+signal a congestion-control bug needs to surface. Expressed as time so it means
+the same thing at 1 Mbit and at 1 Gbit.
+
+**`mtu(size)`**
+
+A real small-MTU path: netstack derives its advertised TCP MSS and its IP
+fragmentation threshold from the link MTU, so the peer sends smaller segments.
+This is the difference from approximating it with `packet_drop(len_gt=576)`,
+which drops oversized packets — that looks like a black hole and behaves like
+nothing real. Sizes below the IPv4 minimum of 68 bytes are rejected.
+
+**Both are gateway-wide**, not per-target. There is one TUN link under one
+netstack NIC, so per-interface capacity is not something the gateway has to
+give; a per-target knob would be one that lies. Both are cleared at test end,
+so one test's slow link cannot become the next test's baseline.
+
+**Both refuse on `runtime="default"`** rather than silently doing nothing — a
+shaper that quietly no-ops leaves the test passing against a link that was
+never slow, and the run still looks like evidence.
+
+Each run records what the shaper actually did, so "the link was configured
+slow" can be told apart from "the link was the bottleneck":
+
+```
+bandwidth_stats  dir=c2s  admitted=76  dropped=0  peak_backlog=38ms
+```
 
 ### The matcher
 
