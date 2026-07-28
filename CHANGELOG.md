@@ -77,6 +77,33 @@ was unreachable. It is now one line.
 - Container launches accept an OCI runtime override. The Docker default stays
   `runc`; nothing changes for specs that did not ask for gVisor.
 
+### Fixed — peer-mesh topologies
+- **Packet faults now reach a peer mesh.** Gateway address allocation was gated
+  on a *proxy* address existing, and `preStartProxies` only gives an
+  interface's proxy to services launched afterwards. A mesh is a cycle, so for
+  at least one link the proxy is always absent when the consumer's env is
+  built — that link went unmediated and packet rules installed into a link no
+  traffic crossed. Measured on a 3-node `hashicorp/raft` cluster: a leader cut
+  off from both followers committed **88** applies before, **0** after.
+- **`source=` reaches rule installation.** It was parsed, stored and emitted
+  into the trace but dropped before the rule was installed, so
+  `fault(kafka.main, source=worker, drop(...))` — the documented example — fired
+  for every consumer. Rules now scope to the `(consumer, service, interface)`
+  triple, which is what makes pairwise and one-way partitions expressible.
+- **`partition()` rebuilt on the packet gateway**, with `direction=` and
+  `partition_start()` / `partition_stop()`. The old implementation denied
+  `connect()`, which only blocks connection *setup* — against any service that
+  pools connections it silently did nothing. It is **not** downgraded under
+  `runtime="default"`; it errors.
+- **`EventVal` gained `.data` / `.fields`.** The documented `monitor()` example
+  (`event.data.get("level", "")`) could not run: only `StarlarkEvent`
+  auto-decoded, so monitors failed with *"string has no .get field or method"*.
+- A service's own bind addresses are no longer rewritten by the dial-address
+  substitution table. `RAFT_BIND="127.0.0.1:8301"` became a gateway address and
+  the service tried to bind an address it does not own.
+- The documented `source=` example did not parse — it put `source=` ahead of
+  the positional fault rules, which Starlark forbids.
+
 ### Known limitations
 - **`watch()` (filesystem observation) is deferred to v0.14.1.** The sink and
   DSL are complete, but `runsc trace create` instruments only tasks created
