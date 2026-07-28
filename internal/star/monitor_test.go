@@ -23,7 +23,7 @@ func TestMonitor_OnMatcherFiltersEvents(t *testing.T) {
 	}
 	rt.RegisterMonitor(m)
 
-	rt.events.Emit("noise", "svc", nil) // ignored
+	rt.events.Emit("noise", "svc", nil)  // ignored
 	rt.events.Emit("target", "svc", nil) // matches
 	rt.events.Emit("other", "svc", nil)  // ignored
 

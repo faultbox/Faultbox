@@ -619,6 +619,9 @@ repeat exactly the overclaiming RFC-040 was written to stop.
 
 ## Future work
 
+- **`watch()` filesystem observation — v0.14.1.** The sink ships in v0.14.0; the primitive
+  is gated off until trace sessions can be installed at sandbox boot via
+  `-pod-init-config`. See Decision record M5.
 - **`bandwidth(rate=)` and `mtu(size=)` — v0.14.1.** Link-scoped shapers, deferred from
   v0.14.0 because they need a token bucket and real fragmentation/PMTUD handling rather
   than the per-packet match-and-act pipeline. `mtu()` is what scenario 8 actually wants.
@@ -905,6 +908,57 @@ read/write/close**, which is unambiguous, and treat `openat` as a secondary sign
 - M5 gains three tests from these findings: `sysno` disambiguation of write/pwrite64,
   `openat` path assembly from dirfd + pathname + cwd, and a spec-load rejection of
   `ops=["fsync"]`.
+
+### Decision record M5 — Filesystem observation deferred to v0.14.1
+
+**Date:** 2026-07-28. **Status:** resolved. **Outcome:** `watch()` is **withdrawn from
+v0.14.0**. The sink ships; the primitive does not.
+
+#### What works
+
+`internal/gvisor/seccheck` is complete: the SOCK_SEQPACKET server, handshake, wire framing,
+protobuf decode, and both M0.3 corrections (pwrite64 vs write by `sysno`; `openat` path
+assembly from dirfd + pathname + cwd). A real Postgres stream captured under runsc is
+committed as a fixture and decodes on darwin/arm64 with no runsc and no Linux — 102 writes
+(97 positional with true byte offsets), 120 opens (36 failed with real errno), 46 paths.
+The `watch()` DSL, `file_io` event schema, and path matching are implemented and tested.
+
+#### What does not
+
+**`runsc trace create` instruments only tasks created *after* the session starts.**
+
+Faultbox attaches a trace session once a service is up and healthchecked — by which point
+every worker thread already exists, so none of them is instrumented. Measured in the Lima
+VM against `postgres:16-alpine`:
+
+| Workload driving the same SQL | Trace points |
+|---|---|
+| Network query to the already-running backend | **2** |
+| `docker exec psql` — a newly spawned process | **1054** |
+
+The M0.3 spike used the second shape, which is why the limitation did not surface then.
+That is a genuine gap in the spike, not a change upstream.
+
+#### Why it is withdrawn rather than shipped with a caveat
+
+A `watch()` that observes almost nothing still *runs*, and every assertion under it still
+*passes*. An I/O-surface audit asserting "this service never writes outside its data
+directory" would go green having seen two operations. That is precisely the failure mode
+this release exists to eliminate — the same reasoning that makes a packet fault under
+`runtime="default"` a hard error rather than a warning. A documentation caveat does not fix
+a vacuous green test.
+
+So `watch()` fails at spec load in v0.14.0, naming the limitation and the release it lands
+in. Packet faults are unaffected.
+
+#### The fix, for v0.14.1
+
+runsc's `-pod-init-config` installs trace sessions at sandbox boot, so every task is
+instrumented from the first instruction. It is a **runtime-level** flag registered in
+`daemon.json` (`runtimeArgs`), not a per-container option, so it needs its own design:
+the config is host-wide and shared by every runsc container, which interacts badly with
+concurrent runs and with users who already run gVisor for other reasons. That design is
+v0.14.1 work, alongside `bandwidth()` and `mtu()`.
 
 ## Dependencies
 

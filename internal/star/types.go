@@ -28,10 +28,10 @@ type OpDef struct {
 var _ starlark.Value = (*OpDef)(nil)
 
 func (o *OpDef) String() string        { return fmt.Sprintf("<op %s syscalls=%v>", o.Name, o.Syscalls) }
-func (o *OpDef) Type() string           { return "op" }
-func (o *OpDef) Freeze()                {}
-func (o *OpDef) Truth() starlark.Bool   { return true }
-func (o *OpDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: op") }
+func (o *OpDef) Type() string          { return "op" }
+func (o *OpDef) Freeze()               {}
+func (o *OpDef) Truth() starlark.Bool  { return true }
+func (o *OpDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: op") }
 
 // ObserveConfig describes an event source attached to a service.
 type ObserveConfig struct {
@@ -58,24 +58,24 @@ func (r *RemotesVal) Truth() starlark.Bool  { return starlark.Bool(len(r.Hosts) 
 func (r *RemotesVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: remotes") }
 
 type ServiceDef struct {
-	Name       string
-	Binary     string            // local binary path (binary mode)
-	Image      string            // container image reference (container mode)
-	Build      string            // Dockerfile context path (container mode)
-	Args       []string
-	Interfaces map[string]*InterfaceDef
-	Env        map[string]string
-	DependsOn  []string
-	Volumes    map[string]string // host:container volume mounts (container mode)
-	Ports      map[int]int       // container_port → host_port override (0 = Docker picks)
+	Name        string
+	Binary      string // local binary path (binary mode)
+	Image       string // container image reference (container mode)
+	Build       string // Dockerfile context path (container mode)
+	Args        []string
+	Interfaces  map[string]*InterfaceDef
+	Env         map[string]string
+	DependsOn   []string
+	Volumes     map[string]string // host:container volume mounts (container mode)
+	Ports       map[int]int       // container_port → host_port override (0 = Docker picks)
 	Healthcheck *HealthcheckDef
-	Observe    []ObserveConfig   // event sources to attach
-	Ops        map[string]*OpDef // named operations (e.g., "persist" → write+fsync+path)
+	Observe     []ObserveConfig   // event sources to attach
+	Ops         map[string]*OpDef // named operations (e.g., "persist" → write+fsync+path)
 
 	// Container reuse lifecycle (RFC-015).
-	Reuse bool               // keep container alive between tests
-	Seed  starlark.Callable  // initialize service state (runs once after healthcheck)
-	Reset starlark.Callable  // re-initialize between tests (defaults to Seed if nil)
+	Reuse bool              // keep container alive between tests
+	Seed  starlark.Callable // initialize service state (runs once after healthcheck)
+	Reset starlark.Callable // re-initialize between tests (defaults to Seed if nil)
 
 	// NoSeccomp opts out of seccomp-notify / syscall interception for this
 	// service. Set via `seccomp = False` in the Starlark spec. Proxy-level
@@ -109,7 +109,7 @@ type ServiceDef struct {
 	// whether to fail. Populated by service(nondeterministic_ok=[...]).
 	NondeterministicOK map[string]bool
 
-	rt         *Runtime // set by runtime after registration
+	rt *Runtime // set by runtime after registration
 }
 
 // IsContainer returns true if this service uses a container image.
@@ -144,10 +144,10 @@ var _ starlark.Value = (*ServiceDef)(nil)
 var _ starlark.HasAttrs = (*ServiceDef)(nil)
 
 func (s *ServiceDef) String() string        { return fmt.Sprintf("<service %s>", s.Name) }
-func (s *ServiceDef) Type() string           { return "service" }
-func (s *ServiceDef) Freeze()                {}
-func (s *ServiceDef) Truth() starlark.Bool   { return true }
-func (s *ServiceDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: service") }
+func (s *ServiceDef) Type() string          { return "service" }
+func (s *ServiceDef) Freeze()               {}
+func (s *ServiceDef) Truth() starlark.Bool  { return true }
+func (s *ServiceDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: service") }
 
 func (s *ServiceDef) Attr(name string) (starlark.Value, error) {
 	// Direct interface access: service.main, service.public, etc.
@@ -275,11 +275,13 @@ func (t *TLSConfigDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable
 
 var _ starlark.Value = (*InterfaceDef)(nil)
 
-func (i *InterfaceDef) String() string        { return fmt.Sprintf("<interface %s %s:%d>", i.Name, i.Protocol, i.Port) }
-func (i *InterfaceDef) Type() string           { return "interface" }
-func (i *InterfaceDef) Freeze()                {}
-func (i *InterfaceDef) Truth() starlark.Bool   { return true }
-func (i *InterfaceDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: interface") }
+func (i *InterfaceDef) String() string {
+	return fmt.Sprintf("<interface %s %s:%d>", i.Name, i.Protocol, i.Port)
+}
+func (i *InterfaceDef) Type() string          { return "interface" }
+func (i *InterfaceDef) Freeze()               {}
+func (i *InterfaceDef) Truth() starlark.Bool  { return true }
+func (i *InterfaceDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: interface") }
 
 // ---------------------------------------------------------------------------
 // InterfaceRef — service.main, exposes .addr, .post(), .get(), .send()
@@ -296,11 +298,13 @@ type InterfaceRef struct {
 var _ starlark.Value = (*InterfaceRef)(nil)
 var _ starlark.HasAttrs = (*InterfaceRef)(nil)
 
-func (r *InterfaceRef) String() string        { return fmt.Sprintf("<interface_ref %s.%s>", r.Service.Name, r.Interface.Name) }
-func (r *InterfaceRef) Type() string           { return "interface_ref" }
-func (r *InterfaceRef) Freeze()                {}
-func (r *InterfaceRef) Truth() starlark.Bool   { return true }
-func (r *InterfaceRef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: interface_ref") }
+func (r *InterfaceRef) String() string {
+	return fmt.Sprintf("<interface_ref %s.%s>", r.Service.Name, r.Interface.Name)
+}
+func (r *InterfaceRef) Type() string          { return "interface_ref" }
+func (r *InterfaceRef) Freeze()               {}
+func (r *InterfaceRef) Truth() starlark.Bool  { return true }
+func (r *InterfaceRef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: interface_ref") }
 
 func (r *InterfaceRef) Attr(name string) (starlark.Value, error) {
 	switch name {
@@ -365,12 +369,14 @@ type StepMethod struct {
 
 var _ starlark.Callable = (*StepMethod)(nil)
 
-func (m *StepMethod) String() string  { return fmt.Sprintf("<step %s.%s.%s>", m.Ref.Service.Name, m.Ref.Interface.Name, m.Method) }
-func (m *StepMethod) Type() string    { return "step_method" }
-func (m *StepMethod) Freeze()         {}
-func (m *StepMethod) Truth() starlark.Bool { return true }
+func (m *StepMethod) String() string {
+	return fmt.Sprintf("<step %s.%s.%s>", m.Ref.Service.Name, m.Ref.Interface.Name, m.Method)
+}
+func (m *StepMethod) Type() string          { return "step_method" }
+func (m *StepMethod) Freeze()               {}
+func (m *StepMethod) Truth() starlark.Bool  { return true }
 func (m *StepMethod) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: step_method") }
-func (m *StepMethod) Name() string    { return m.Method }
+func (m *StepMethod) Name() string          { return m.Method }
 
 func (m *StepMethod) CallInternal(thread *starlark.Thread, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	rt := m.Ref.runtime
@@ -401,10 +407,10 @@ func (r *Response) String() string {
 	}
 	return fmt.Sprintf("<response error=%q>", r.Error)
 }
-func (r *Response) Type() string           { return "response" }
-func (r *Response) Freeze()                {}
-func (r *Response) Truth() starlark.Bool   { return starlark.Bool(r.Ok) }
-func (r *Response) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: response") }
+func (r *Response) Type() string          { return "response" }
+func (r *Response) Freeze()               {}
+func (r *Response) Truth() starlark.Bool  { return starlark.Bool(r.Ok) }
+func (r *Response) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: response") }
 
 func (r *Response) Attr(name string) (starlark.Value, error) {
 	switch name {
@@ -438,17 +444,17 @@ func (r *Response) AttrNames() []string {
 // ---------------------------------------------------------------------------
 
 type HealthcheckDef struct {
-	Test    string        // "tcp://host:port" or "http://host/path"
+	Test    string // "tcp://host:port" or "http://host/path"
 	Timeout time.Duration
 }
 
 var _ starlark.Value = (*HealthcheckDef)(nil)
 
 func (h *HealthcheckDef) String() string        { return fmt.Sprintf("<healthcheck %s>", h.Test) }
-func (h *HealthcheckDef) Type() string           { return "healthcheck" }
-func (h *HealthcheckDef) Freeze()                {}
-func (h *HealthcheckDef) Truth() starlark.Bool   { return true }
-func (h *HealthcheckDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: healthcheck") }
+func (h *HealthcheckDef) Type() string          { return "healthcheck" }
+func (h *HealthcheckDef) Freeze()               {}
+func (h *HealthcheckDef) Truth() starlark.Bool  { return true }
+func (h *HealthcheckDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: healthcheck") }
 
 // ---------------------------------------------------------------------------
 // FaultDef — returned by delay() / deny() builtins
@@ -507,10 +513,10 @@ var _ starlark.Value = (*ProxyFaultDef)(nil)
 func (f *ProxyFaultDef) String() string {
 	return fmt.Sprintf("<proxy_fault %s>", f.Action)
 }
-func (f *ProxyFaultDef) Type() string           { return "proxy_fault" }
-func (f *ProxyFaultDef) Freeze()                {}
-func (f *ProxyFaultDef) Truth() starlark.Bool   { return true }
-func (f *ProxyFaultDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: proxy_fault") }
+func (f *ProxyFaultDef) Type() string          { return "proxy_fault" }
+func (f *ProxyFaultDef) Freeze()               {}
+func (f *ProxyFaultDef) Truth() starlark.Bool  { return true }
+func (f *ProxyFaultDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: proxy_fault") }
 
 var _ starlark.Value = (*FaultDef)(nil)
 
@@ -526,10 +532,10 @@ func (f *FaultDef) String() string {
 	}
 	return s + ">"
 }
-func (f *FaultDef) Type() string           { return "fault" }
-func (f *FaultDef) Freeze()                {}
-func (f *FaultDef) Truth() starlark.Bool   { return true }
-func (f *FaultDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: fault") }
+func (f *FaultDef) Type() string          { return "fault" }
+func (f *FaultDef) Freeze()               {}
+func (f *FaultDef) Truth() starlark.Bool  { return true }
+func (f *FaultDef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: fault") }
 
 // ---------------------------------------------------------------------------
 // FaultAssumptionDef — named, reusable fault configuration
@@ -538,7 +544,7 @@ func (f *FaultDef) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: f
 // FaultAssumptionRule is a single syscall-level fault targeting a service.
 type FaultAssumptionRule struct {
 	Target  *ServiceDef
-	Syscall string    // resolved syscall name (after family expansion)
+	Syscall string // resolved syscall name (after family expansion)
 	Fault   *FaultDef
 }
 
@@ -573,9 +579,9 @@ func (a *FaultAssumptionDef) String() string {
 	}
 	return fmt.Sprintf("<fault_assumption %s %s>", a.Name, strings.Join(parts, " "))
 }
-func (a *FaultAssumptionDef) Type() string           { return "fault_assumption" }
-func (a *FaultAssumptionDef) Freeze()                {}
-func (a *FaultAssumptionDef) Truth() starlark.Bool   { return true }
+func (a *FaultAssumptionDef) Type() string         { return "fault_assumption" }
+func (a *FaultAssumptionDef) Freeze()              {}
+func (a *FaultAssumptionDef) Truth() starlark.Bool { return true }
 func (a *FaultAssumptionDef) Hash() (uint32, error) {
 	// Hash by name — names are unique in the registry.
 	var h uint32
@@ -685,10 +691,10 @@ var _ starlark.HasAttrs = (*StarlarkEvent)(nil)
 func (e *StarlarkEvent) String() string {
 	return fmt.Sprintf("<event #%d %s %s>", e.ev.Seq, e.ev.Service, e.ev.EventType)
 }
-func (e *StarlarkEvent) Type() string           { return "event" }
-func (e *StarlarkEvent) Freeze()                {}
-func (e *StarlarkEvent) Truth() starlark.Bool   { return true }
-func (e *StarlarkEvent) Hash() (uint32, error)  { return 0, fmt.Errorf("unhashable: event") }
+func (e *StarlarkEvent) Type() string          { return "event" }
+func (e *StarlarkEvent) Freeze()               {}
+func (e *StarlarkEvent) Truth() starlark.Bool  { return true }
+func (e *StarlarkEvent) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: event") }
 
 func (e *StarlarkEvent) Attr(name string) (starlark.Value, error) {
 	switch name {

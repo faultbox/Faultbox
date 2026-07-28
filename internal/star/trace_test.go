@@ -148,13 +148,13 @@ func TestTraceEventsBetween(t *testing.T) {
 func TestEventValHappensBefore(t *testing.T) {
 	// vc1 → vc2: A's clock is strictly dominated by B's.
 	evA := Event{
-		Type:    "a",
-		Service: "svc",
+		Type:        "a",
+		Service:     "svc",
 		VectorClock: map[string]int64{"svc": 1},
 	}
 	evB := Event{
-		Type:    "b",
-		Service: "svc",
+		Type:        "b",
+		Service:     "svc",
 		VectorClock: map[string]int64{"svc": 2},
 	}
 

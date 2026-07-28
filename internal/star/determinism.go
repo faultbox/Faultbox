@@ -294,10 +294,10 @@ func strictViolationReason(ev *Event) string {
 //
 // Categories handled here:
 //   - clock_gettime → "clock" (gettimeofday omitted: always VDSO on
-//                    amd64/arm64, absent from the seccomp arch tables)
+//     amd64/arm64, absent from the seccomp arch tables)
 //   - getrandom     → "rand"
 //   - connect       → "dns" (port 53) / "network-unmediated" (other ports
-//                     not bound to a declared interface or a Faultbox proxy)
+//     not bound to a declared interface or a Faultbox proxy)
 //
 // fs-unmediated is a reserved category in v0.13.0 — accepted in allow= lists
 // but no events are emitted yet (deferred to a future release).

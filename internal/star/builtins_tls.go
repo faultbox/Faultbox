@@ -75,7 +75,7 @@ func (rt *Runtime) builtinTLSCert(thread *starlark.Thread, fn *starlark.Builtin,
 		s, _ := starlark.AsString(v)
 		cfg.ClientKey = s
 	}
-	if v, ok := starKwarg(kwargs, "ca") ; ok {
+	if v, ok := starKwarg(kwargs, "ca"); ok {
 		s, _ := starlark.AsString(v)
 		cfg.CA = s
 	}

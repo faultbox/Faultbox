@@ -40,8 +40,8 @@ type TestResult struct {
 	Seed        uint64         `json:"seed"`
 	DurationMs  int64          `json:"duration_ms"`
 	Events      []Event        `json:"events,omitempty"`
-	ReturnValue starlark.Value `json:"-"`          // scenario return value for fault_scenario/fault_matrix
-	Matrix      *MatrixInfo    `json:"-"`          // non-nil if from fault_matrix()
+	ReturnValue starlark.Value `json:"-"` // scenario return value for fault_scenario/fault_matrix
+	Matrix      *MatrixInfo    `json:"-"` // non-nil if from fault_matrix()
 
 	// ExpectationName is the callable.Name() of the fs.Expect predicate
 	// used by this test, when one was provided. Empty for bare tests and
@@ -206,9 +206,9 @@ type CrashInfo struct {
 
 // Runtime is the Starlark execution environment.
 type Runtime struct {
-	log      *slog.Logger
-	events   *EventLog
-	eng      *engine.Engine
+	log    *slog.Logger
+	events *EventLog
+	eng    *engine.Engine
 
 	// Service registry — populated during .star file load.
 	mu       sync.Mutex
@@ -234,13 +234,13 @@ type Runtime struct {
 	globals starlark.StringDict
 
 	// Container support.
-	dockerClient   *container.Client      // lazy-initialized Docker client
-	networkID      string                 // Faultbox Docker network ID
-	containerIDs   map[string]string      // service name → container ID (for cleanup)
-	baseDir        string                 // directory of the loaded .star file (for build= paths)
-	sourceText     string                 // raw .star source for syscall scanning
-	loadedSpecs    map[string][]byte      // absolute path → bytes of every local .star loaded (RFC-025 Phase 4)
-	rootSpec       string                 // absolute path of the root spec (LoadFile argument)
+	dockerClient *container.Client // lazy-initialized Docker client
+	networkID    string            // Faultbox Docker network ID
+	containerIDs map[string]string // service name → container ID (for cleanup)
+	baseDir      string            // directory of the loaded .star file (for build= paths)
+	sourceText   string            // raw .star source for syscall scanning
+	loadedSpecs  map[string][]byte // absolute path → bytes of every local .star loaded (RFC-025 Phase 4)
+	rootSpec     string            // absolute path of the root spec (LoadFile argument)
 
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
@@ -249,9 +249,9 @@ type Runtime struct {
 	virtualTime bool
 
 	// Exploration mode: "all", "sample", or "".
-	exploreMode    string
-	explorePerm    int // current permutation index for explore mode
-	exploreHeldN   int // number of held syscalls observed in last explore run
+	exploreMode  string
+	explorePerm  int // current permutation index for explore mode
+	exploreHeldN int // number of held syscalls observed in last explore run
 
 	// Services excluded from interleaving control in parallel().
 	nondetServices map[string]bool
@@ -424,6 +424,23 @@ type Runtime struct {
 	detExplicit       bool
 	detStrictOverride *bool
 
+	// watches tracks active watch() windows for file I/O observation
+	// (RFC-054 M5).
+	watches *watchRegistry
+
+	// fsObs holds the seccheck sink and per-service trace sessions.
+	fsObs *fsObservation
+	// specUsesWatch records whether any test calls watch(). Filesystem
+	// observation requires runsc, so a spec that never watches must not be
+	// forced onto it — the runsc requirement follows the feature, not the
+	// runtime (RFC-054 §"Runtime selection").
+	specUsesWatch bool
+	// watchRan records that a watch window opened during the current test.
+	watchRan bool
+	// fsSkipReported ensures the "observation skipped" diagnostic is emitted
+	// once per run rather than once per service.
+	fsSkipReported bool
+
 	// packetGW holds the spec-wide netstack packet gateway (RFC-054 M4).
 	// nil-safe: only started when the runtime provides one.
 	packetGW *packetGatewayState
@@ -444,9 +461,9 @@ type runningSession struct {
 // New creates a new Starlark runtime.
 func New(logger *slog.Logger) *Runtime {
 	rt := &Runtime{
-		log:           logging.WithComponent(logger, "starlark"),
-		events:        NewEventLog(),
-		eng:           engine.New(logger),
+		log:               logging.WithComponent(logger, "starlark"),
+		events:            NewEventLog(),
+		eng:               engine.New(logger),
 		services:          make(map[string]*ServiceDef),
 		sessions:          make(map[string]*runningSession),
 		faults:            make(map[string]map[string]*FaultDef),
@@ -463,6 +480,8 @@ func New(logger *slog.Logger) *Runtime {
 	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
 	rt.packetRules = newPacketRuleRegistry()
 	rt.packetGW = newPacketGatewayState()
+	rt.watches = newWatchRegistry()
+	rt.fsObs = newFSObservation()
 	return rt
 }
 
@@ -526,6 +545,12 @@ func (rt *Runtime) LoadFile(path string) error {
 		rt.loadedSpecs[absPath] = append([]byte(nil), src...)
 	}
 
+	// RFC-054 M5: same static scan as LoadString. Both load paths must set
+	// this — the CLI uses LoadFile, so patching only LoadString left
+	// filesystem observation silently disabled for every real run while the
+	// unit tests passed.
+	rt.specUsesWatch = sourceUsesWatch(string(src))
+
 	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
 	// violations surface as load errors instead of mid-test panics.
 	if err := validateMonitorLambdasInSource(path, string(src)); err != nil {
@@ -556,6 +581,12 @@ func (rt *Runtime) LoadString(name, src string) error {
 	if err := validateMonitorLambdasInSource(name, src); err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
+	// RFC-054 M5: filesystem observation needs runsc, and the container
+	// runtime must be chosen before the first service launches — long before
+	// any test body calls watch(). So it is detected from the source, the same
+	// static-scan approach the monitor and assume validators above use.
+	rt.specUsesWatch = sourceUsesWatch(src)
+
 	// RFC-043 §8.7 — same model for assume() predicates.
 	if err := validateAssumeLambdasInSource(name, src); err != nil {
 		return fmt.Errorf("load: %w", err)
@@ -705,8 +736,8 @@ func (rt *Runtime) Services() []*ServiceDef {
 
 // ScenarioRegistration records a happy-path function registered via scenario().
 type ScenarioRegistration struct {
-	Name string             // function name (e.g., "order_flow")
-	Fn   starlark.Callable  // the Starlark callable
+	Name string            // function name (e.g., "order_flow")
+	Fn   starlark.Callable // the Starlark callable
 }
 
 // Scenarios returns all registered scenario functions.
@@ -1741,6 +1772,20 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// strict_determinism_violation → fault_bypassed. This means a concurrent
 	// monitor violation and unmediated_io event are reported as "monitor
 	// violation"; the unmediated_io event is still in the trace for the report.
+	// A watch() that saw nothing is the filesystem analogue of an unwired
+	// packet gateway: its assertions are vacuous.
+	if reason := rt.fsObservationFailure(); reason != "" && rt.watchRan {
+		return TestResult{
+			Name:            name,
+			Result:          "fail",
+			Reason:          reason,
+			DurationMs:      time.Since(start).Milliseconds(),
+			Events:          events,
+			Matrix:          matrixInfo,
+			ExpectationName: expectName,
+		}
+	}
+
 	// A packet fault that installed onto no data path injected nothing, so a
 	// "pass" here would mean "the SUT tolerated a fault that never happened".
 	// Fail loudly instead — this is the same reasoning as the fault_bypassed
@@ -2441,6 +2486,14 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 	shimPath := rt.findShimPath()
 
 	// Launch container.
+	// RFC-054 M5: the sink must be listening before the sandbox starts. The
+	// trace config sets ignore_setup_error=false, so a Sentry that cannot
+	// reach the sink refuses to boot — which beats a sandbox that runs while
+	// watch() silently observes nothing.
+	if err := rt.ensureFSObservation(ctx); err != nil {
+		return fmt.Errorf("filesystem observation: %w", err)
+	}
+
 	result, err := container.Launch(ctx, rt.dockerClient, container.LaunchConfig{
 		Name:       svcName,
 		Image:      imageName,
@@ -2452,11 +2505,21 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		NetworkID:  rt.networkID,
 		SkipPull:   svc.Build != "", // locally built images don't need pull
 		NoSeccomp:  svc.NoSeccomp,   // honor `seccomp = False` opt-out
+		// RFC-054 M5: "runsc" when the spec uses watch(), else empty so the
+		// daemon default (runc) is untouched.
+		Runtime: rt.containerRuntimeName(),
 	}, rt.log)
 	if err != nil {
 		return fmt.Errorf("launch container %q: %w", svcName, err)
 	}
 	rt.containerIDs[svcName] = result.ContainerID
+
+	// RFC-054 M5: attach the trace session now that the sandbox exists. Done
+	// after the container ID is recorded, because routeFileIO attributes each
+	// point back to a service through that map.
+	if err := rt.attachTrace(ctx, svcName, result.ContainerID); err != nil {
+		return fmt.Errorf("filesystem observation: %w", err)
+	}
 
 	// Set up stdout / stderr observation for container services. Same
 	// surface as the binary path (svc.Observe with stdout()/stderr()
@@ -2977,6 +3040,7 @@ func (rt *Runtime) stopServices() {
 	// gateway, since their connections are still live.
 	if len(reused) == 0 {
 		rt.closePacketGateway()
+		rt.closeFSObservation(context.Background())
 	}
 }
 

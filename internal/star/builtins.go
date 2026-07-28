@@ -26,18 +26,18 @@ type parallelResult struct {
 // builtins returns all Starlark built-in functions for a runtime.
 func (rt *Runtime) builtins() starlark.StringDict {
 	out := starlark.StringDict{
-		"service":     starlark.NewBuiltin("service", rt.builtinService),
-		"interface":   starlark.NewBuiltin("interface", builtinInterface),
-		"tcp":         starlark.NewBuiltin("tcp", builtinTCP),
-		"http":        starlark.NewBuiltin("http", builtinHTTP),
-		"kafka_ready": starlark.NewBuiltin("kafka_ready", builtinKafkaReady),
-		"delay":       starlark.NewBuiltin("delay", builtinDelay),
-		"deny":        starlark.NewBuiltin("deny", builtinDeny),
-		"allow":       starlark.NewBuiltin("allow", builtinAllow),
-		"fault":       starlark.NewBuiltin("fault", rt.builtinFault),
-		"fault_all":   starlark.NewBuiltin("fault_all", rt.builtinFaultAll),
-		"fault_start": starlark.NewBuiltin("fault_start", rt.builtinFaultStart),
-		"fault_stop":  starlark.NewBuiltin("fault_stop", rt.builtinFaultStop),
+		"service":           starlark.NewBuiltin("service", rt.builtinService),
+		"interface":         starlark.NewBuiltin("interface", builtinInterface),
+		"tcp":               starlark.NewBuiltin("tcp", builtinTCP),
+		"http":              starlark.NewBuiltin("http", builtinHTTP),
+		"kafka_ready":       starlark.NewBuiltin("kafka_ready", builtinKafkaReady),
+		"delay":             starlark.NewBuiltin("delay", builtinDelay),
+		"deny":              starlark.NewBuiltin("deny", builtinDeny),
+		"allow":             starlark.NewBuiltin("allow", builtinAllow),
+		"fault":             starlark.NewBuiltin("fault", rt.builtinFault),
+		"fault_all":         starlark.NewBuiltin("fault_all", rt.builtinFaultAll),
+		"fault_start":       starlark.NewBuiltin("fault_start", rt.builtinFaultStart),
+		"fault_stop":        starlark.NewBuiltin("fault_stop", rt.builtinFaultStop),
 		"assert_true":       starlark.NewBuiltin("assert_true", rt.builtinAssertTrue),
 		"assert_eq":         starlark.NewBuiltin("assert_eq", rt.builtinAssertEq),
 		"assert_eventually": starlark.NewBuiltin("assert_eventually", rt.builtinAssertEventually),
@@ -52,56 +52,60 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// `nondet()` is sugar for `choose([True, False])`; that
 		// overload is wired in builtinNondet itself to avoid renaming
 		// the existing nondet(service, ...) variant.
-		"choose":            starlark.NewBuiltin("choose", rt.builtinChoose),
+		"choose": starlark.NewBuiltin("choose", rt.builtinChoose),
 		// RFC-043 §5.3 — halt the current plan-tree branch. Body
 		// execution stops at the call site; the test is recorded as
 		// "halted" (not pass/fail/inconclusive).
-		"halt":              starlark.NewBuiltin("halt", rt.builtinHalt),
+		"halt": starlark.NewBuiltin("halt", rt.builtinHalt),
 		// RFC-043 §5.4 — assume(predicate) spec-wide constraint. rc1
 		// evaluates at spec-load against the current choice snapshot
 		// and errors immediately on violation; rc2 will defer to
 		// per-leaf pruning.
-		"assume":            starlark.NewBuiltin("assume", rt.builtinAssume),
-		"trace":             starlark.NewBuiltin("trace", rt.builtinTrace),
-		"trace_start":       starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
-		"trace_stop":        starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
-		"scenario":          starlark.NewBuiltin("scenario", rt.builtinScenario),
-		"fault_assumption":  starlark.NewBuiltin("fault_assumption", rt.builtinFaultAssumption),
-		"fault_scenario":    starlark.NewBuiltin("fault_scenario", rt.builtinFaultScenario),
-		"fault_matrix":      starlark.NewBuiltin("fault_matrix", rt.builtinFaultMatrix),
-		"op":                starlark.NewBuiltin("op", builtinOp),
-		"response":          starlark.NewBuiltin("response", builtinProxyResponse),
-		"error":             starlark.NewBuiltin("error", builtinProxyError),
-		"drop":              starlark.NewBuiltin("drop", builtinProxyDrop),
-		"duplicate":         starlark.NewBuiltin("duplicate", builtinProxyDuplicate),
+		"assume": starlark.NewBuiltin("assume", rt.builtinAssume),
+		"trace":  starlark.NewBuiltin("trace", rt.builtinTrace),
+		// RFC-054 M5 — file-scoped I/O observation via gVisor trace points.
+		"watch":            starlark.NewBuiltin("watch", rt.builtinWatch),
+		"watch_start":      starlark.NewBuiltin("watch_start", rt.builtinWatchStart),
+		"watch_stop":       starlark.NewBuiltin("watch_stop", rt.builtinWatchStop),
+		"trace_start":      starlark.NewBuiltin("trace_start", rt.builtinTraceStart),
+		"trace_stop":       starlark.NewBuiltin("trace_stop", rt.builtinTraceStop),
+		"scenario":         starlark.NewBuiltin("scenario", rt.builtinScenario),
+		"fault_assumption": starlark.NewBuiltin("fault_assumption", rt.builtinFaultAssumption),
+		"fault_scenario":   starlark.NewBuiltin("fault_scenario", rt.builtinFaultScenario),
+		"fault_matrix":     starlark.NewBuiltin("fault_matrix", rt.builtinFaultMatrix),
+		"op":               starlark.NewBuiltin("op", builtinOp),
+		"response":         starlark.NewBuiltin("response", builtinProxyResponse),
+		"error":            starlark.NewBuiltin("error", builtinProxyError),
+		"drop":             starlark.NewBuiltin("drop", builtinProxyDrop),
+		"duplicate":        starlark.NewBuiltin("duplicate", builtinProxyDuplicate),
 		// RFC-044 §8.6 — `observe` module is the canonical surface for
 		// event-source factories. Legacy top-level stdout/stderr remain
 		// registered as deprecated aliases that emit a one-time stderr
 		// warning before producing the same value the new form does.
 		// Removal in v0.14.0.
-		"observe":           makeObserveModule(),
-		"stdout":            starlark.NewBuiltin("stdout", builtinStdoutDeprecated),
-		"stderr":            starlark.NewBuiltin("stderr", builtinStderrDeprecated),
+		"observe": makeObserveModule(),
+		"stdout":  starlark.NewBuiltin("stdout", builtinStdoutDeprecated),
+		"stderr":  starlark.NewBuiltin("stderr", builtinStderrDeprecated),
 		// RFC-044 §8.7 — `decoder("name", ...)` is the unified
 		// dispatcher; the three legacy names are deprecated aliases.
 		// All four routes converge in builtinDecoder so DecoderVal
 		// construction has a single source of truth.
-		"decoder":           starlark.NewBuiltin("decoder", builtinDecoder),
-		"json_decoder":      starlark.NewBuiltin("json_decoder", builtinJSONDecoderDeprecated),
-		"logfmt_decoder":    starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoderDeprecated),
-		"regex_decoder":     starlark.NewBuiltin("regex_decoder", builtinRegexDecoderDeprecated),
+		"decoder":        starlark.NewBuiltin("decoder", builtinDecoder),
+		"json_decoder":   starlark.NewBuiltin("json_decoder", builtinJSONDecoderDeprecated),
+		"logfmt_decoder": starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoderDeprecated),
+		"regex_decoder":  starlark.NewBuiltin("regex_decoder", builtinRegexDecoderDeprecated),
 		// struct(**kwargs) — namespace objects. Used by recipe modules so
 		// protocol-specific helpers don't collide on common names (e.g.
 		// mongodb.disk_full vs postgres.disk_full).
 		"struct": starlark.NewBuiltin("struct", starlarkstruct.Make),
 		// Mock services (RFC-017).
-		"mock_service":   starlark.NewBuiltin("mock_service", rt.builtinMockService),
-		"json_response":  starlark.NewBuiltin("json_response", builtinJSONResponse),
-		"text_response":  starlark.NewBuiltin("text_response", builtinTextResponse),
-		"bytes_response": starlark.NewBuiltin("bytes_response", builtinBytesResponse),
-		"status_only":    starlark.NewBuiltin("status_only", builtinStatusOnly),
-		"redirect":       starlark.NewBuiltin("redirect", builtinRedirect),
-		"dynamic":        starlark.NewBuiltin("dynamic", builtinDynamic),
+		"mock_service":        starlark.NewBuiltin("mock_service", rt.builtinMockService),
+		"json_response":       starlark.NewBuiltin("json_response", builtinJSONResponse),
+		"text_response":       starlark.NewBuiltin("text_response", builtinTextResponse),
+		"bytes_response":      starlark.NewBuiltin("bytes_response", builtinBytesResponse),
+		"status_only":         starlark.NewBuiltin("status_only", builtinStatusOnly),
+		"redirect":            starlark.NewBuiltin("redirect", builtinRedirect),
+		"dynamic":             starlark.NewBuiltin("dynamic", builtinDynamic),
 		"grpc_response":       starlark.NewBuiltin("grpc_response", builtinGRPCResponse),
 		"grpc_typed_response": starlark.NewBuiltin("grpc_typed_response", builtinGRPCTypedResponse),
 		"grpc_raw_response":   starlark.NewBuiltin("grpc_raw_response", builtinGRPCRawResponse),
@@ -1508,7 +1512,7 @@ func (rt *Runtime) builtinFaultAssumption(thread *starlark.Thread, fn *starlark.
 	}
 
 	// Parse kwargs.
-	var target starlark.Value   // *ServiceDef or *InterfaceRef
+	var target starlark.Value // *ServiceDef or *InterfaceRef
 	var description string
 	var monitors []*MonitorDef
 	var children []*FaultAssumptionDef
@@ -2477,10 +2481,10 @@ type ObserveSourceVal struct {
 
 var _ starlark.Value = (*ObserveSourceVal)(nil)
 
-func (v *ObserveSourceVal) String() string      { return fmt.Sprintf("<observe %s>", v.Config.SourceName) }
-func (v *ObserveSourceVal) Type() string         { return "observe_source" }
-func (v *ObserveSourceVal) Freeze()              {}
-func (v *ObserveSourceVal) Truth() starlark.Bool { return true }
+func (v *ObserveSourceVal) String() string        { return fmt.Sprintf("<observe %s>", v.Config.SourceName) }
+func (v *ObserveSourceVal) Type() string          { return "observe_source" }
+func (v *ObserveSourceVal) Freeze()               {}
+func (v *ObserveSourceVal) Truth() starlark.Bool  { return true }
 func (v *ObserveSourceVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: observe_source") }
 
 // DecoderVal is a Starlark value representing a decoder config.
@@ -2491,10 +2495,10 @@ type DecoderVal struct {
 
 var _ starlark.Value = (*DecoderVal)(nil)
 
-func (v *DecoderVal) String() string      { return fmt.Sprintf("<decoder %s>", v.Name) }
-func (v *DecoderVal) Type() string         { return "decoder" }
-func (v *DecoderVal) Freeze()              {}
-func (v *DecoderVal) Truth() starlark.Bool { return true }
+func (v *DecoderVal) String() string        { return fmt.Sprintf("<decoder %s>", v.Name) }
+func (v *DecoderVal) Type() string          { return "decoder" }
+func (v *DecoderVal) Freeze()               {}
+func (v *DecoderVal) Truth() starlark.Bool  { return true }
 func (v *DecoderVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: decoder") }
 
 // stdout(decoder=) — creates an observe source config for stdout capture.

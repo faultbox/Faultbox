@@ -37,9 +37,9 @@ log_d = deny("EIO", probability=0.3, max_fires=2, mode="exhaustive", label="log"
 		// nil-session bail-out path because we don't start the service.
 		rt.faults = map[string]map[string]*FaultDef{
 			"svc": {
-				"write":   rt.globals["wal_d"].(*FaultDef),
-				"read":    rt.globals["cache_d"].(*FaultDef),
-				"openat":  rt.globals["log_d"].(*FaultDef),
+				"write":  rt.globals["wal_d"].(*FaultDef),
+				"read":   rt.globals["cache_d"].(*FaultDef),
+				"openat": rt.globals["log_d"].(*FaultDef),
 			},
 		}
 		rt.sessions = map[string]*runningSession{"svc": {session: nil}}

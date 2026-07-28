@@ -573,7 +573,6 @@ func (l *EventListVal) listReduce(thread *starlark.Thread, _ *starlark.Builtin, 
 	return acc, nil
 }
 
-
 // ---------------------------------------------------------------------------
 // Vector-clock helpers.
 // ---------------------------------------------------------------------------

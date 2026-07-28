@@ -1,0 +1,52 @@
+# RFC-054 M5 — file-scoped I/O observation.
+#
+# Requires Linux with runsc registered as a Docker runtime:
+#     sudo runsc install && sudo systemctl restart docker
+#     sudo faultbox test poc/gvisor-rfc054/watch.star
+#
+# Scenario 10 (WAL *durability* audit) is absent on purpose: gVisor has no
+# fsync trace point, so "fsync happened before the ack" is unobservable.
+# What follows is the surviving substitute — write ordering, which is a
+# weaker claim and labelled as such.
+
+determinism(runtime = "gvisor")
+
+pg = service("pg",
+    interface("main", "postgres", 5432),
+    image = "postgres:16-alpine",
+    env = {"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "app"},
+    healthcheck = tcp("localhost:5432", timeout = "60s"),
+)
+
+def write_rows():
+    pg.main.query(sql = "create table if not exists t(id serial primary key, v text)")
+    pg.main.query(sql = "insert into t(v) select repeat('x', 2000) from generate_series(1,200)")
+
+# 11. I/O surface audit — the SUT writes only inside its data directory.
+def test_io_surface_audit():
+    watch(pg, files = ["/var/lib/postgresql/**"], ops = ["write"], run = write_rows)
+
+    seen = events(where = lambda e: e.type == "file_io")
+    assert_true(len(seen) > 0,
+        "no file_io observed; the watch proves nothing")
+
+    stray = events(where = lambda e: e.type == "file_io" and
+        not e.fields.get("path", "").startswith("/var/lib/postgresql"))
+    assert_true(len(stray) == 0, "service wrote outside its data directory")
+
+# 12. Write shape — offset and count per operation, which seccomp-notify
+#     cannot report at all.
+def test_write_offsets_visible():
+    watch(pg, files = ["/var/lib/postgresql/**"], ops = ["write"], run = write_rows)
+
+    positional = events(where = lambda e: e.type == "file_io" and
+        e.fields.get("offset") != None)
+    assert_true(len(positional) > 0,
+        "no write carried a byte offset; positional I/O detection is not working")
+
+# 10 (substitute). WAL write ordering — weaker than durability, and named so.
+def test_wal_write_ordering():
+    watch(pg, files = ["**/pg_wal/*"], ops = ["write"], run = write_rows)
+
+    wal = events(where = lambda e: e.type == "file_io" and "pg_wal" in e.fields.get("path", ""))
+    assert_true(len(wal) > 0, "no WAL write observed")

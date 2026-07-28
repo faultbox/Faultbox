@@ -476,10 +476,10 @@ func TestShiVizViolationMarker(t *testing.T) {
 				Reason: "assert_true failed: expected 5xx on DB write failure",
 				Events: []Event{
 					{Seq: 1, Type: "syscall", Service: "db", EventType: "syscall.write",
-						Fields: map[string]string{"syscall": "write", "decision": "deny(EIO)"},
+						Fields:      map[string]string{"syscall": "write", "decision": "deny(EIO)"},
 						VectorClock: map[string]int64{"db": 1}},
 					{Seq: 2, Type: "syscall", Service: "api", EventType: "syscall.connect",
-						Fields: map[string]string{"syscall": "connect", "decision": "allow"},
+						Fields:      map[string]string{"syscall": "connect", "decision": "allow"},
 						VectorClock: map[string]int64{"api": 1}},
 				},
 			},
