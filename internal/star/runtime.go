@@ -187,6 +187,17 @@ type SuiteResult struct {
 	// the way out is marked partial so downstream tools (and humans)
 	// know not to interpret silence as success. Issue #76.
 	Crash *CrashInfo `json:"crash,omitempty"`
+
+	// Aborted counts tests that were never attempted because the run was
+	// cancelled — Ctrl-C, SIGTERM, or a CI job timeout.
+	//
+	// They are NOT counted as Inconclusive. A cancelled run used to walk the
+	// whole remaining plan, starting and stopping services for each test only
+	// for its already-dead context to fail it instantly; an 18-leaf search
+	// interrupted after one leaf reported "1 passed, 17 inconclusive". Those
+	// 17 were not indeterminate results, they were results that do not exist,
+	// and recording them as verdicts overstates what the run measured.
+	Aborted int `json:"aborted,omitempty"`
 }
 
 // CrashInfo captures what was known at the moment a panic
@@ -928,6 +939,22 @@ func matchTestFilter(testName, filter string, matrixBases map[string]bool) bool 
 	return false
 }
 
+// Close releases process-level resources the runtime owns — today, the packet
+// gateway's TUN device.
+//
+// RunAll tears the gateway down alongside the services it fronted, so on the
+// happy path this is a no-op. It exists for the paths RunAll does not finish:
+// a cancelled context (SIGINT/SIGTERM), a spec that errored mid-suite, or
+// reuse=True services that deliberately kept their gateway alive past the last
+// test. A TUN device created with `ip tuntap add` is persistent — it outlives
+// the process unconditionally — so "nobody ran the teardown" does not mean a
+// tidy exit, it means a device left on the host.
+//
+// Idempotent, and safe to defer immediately after New().
+func (rt *Runtime) Close() {
+	rt.closePacketGateway()
+}
+
 // RunAll executes all (or filtered) test functions.
 func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, error) {
 	start := time.Now()
@@ -959,14 +986,29 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 	// Auto-calculate permutation count for --explore=all without --runs.
 	autoExplore := cfg.ExploreMode == "all" && cfg.Runs <= 0
 
+	// cancelled reports whether the run has been interrupted. Checked between
+	// tests and between leaves so Ctrl-C / SIGTERM stops the suite instead of
+	// racing through the remainder: every derived per-test context is already
+	// dead, so each would start services, fail instantly, and be recorded as a
+	// verdict that was never measured.
+	cancelled := func() bool { return ctx.Err() != nil }
+
 	for _, name := range tests {
 		if cfg.Filter != "" && !matchTestFilter(name, cfg.Filter, matrixBases) {
 			continue
 		}
 		suite.Matched++
+		if cancelled() {
+			suite.Aborted++
+			continue
+		}
 
 		testRuns := runs
 		for run := 0; run < testRuns; run++ {
+			if cancelled() {
+				suite.Aborted++
+				break
+			}
 			// Determine seed for this run.
 			var seed uint64
 			if cfg.Seed != nil {
@@ -993,7 +1035,8 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 			// is produced and each goes through the per-result switch
 			// below independently (each leaf gets its own pass/fail
 			// counter and Seed stamp).
-			leafResults := rt.runTestFanout(ctx, name)
+			leafResults, skippedLeaves := rt.runTestFanout(ctx, name)
+			suite.Aborted += skippedLeaves
 			if len(leafResults) == 0 {
 				// runTestFanout always returns at least one result;
 				// this branch is defensive only.
@@ -1198,7 +1241,11 @@ func (rt *Runtime) runTestSafelyLeaf(ctx context.Context, name string, leaf *Pla
 // missing axes silently fall back to FirstOption inside Selected.
 // This is the documented rc2 boundary — RFC-042 §8.8 covers the
 // majority case where the axes are leaf-independent.
-func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult {
+// runTestFanout returns the per-leaf results plus the number of leaves that
+// were skipped because the run was cancelled. The caller adds `skipped` to
+// SuiteResult.Aborted: an interrupted 18-leaf search that silently reported on
+// 2 leaves would read as a complete run of a small suite.
+func (rt *Runtime) runTestFanout(ctx context.Context, name string) (results []TestResult, skipped int) {
 	rt.resetBodyChoices()
 	rt.resetBodyProbFaults()
 	rt.resetBodyParallelSites()
@@ -1232,11 +1279,11 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 		// that don't use choose() / exhaustive probability= /
 		// interleavings= fan-out.
 		tr0.LeafID = ""
-		return []TestResult{tr0}
+		return []TestResult{tr0}, 0
 	}
 
 	leaves := enumerateLeaves(axes, probAxes, parAxes)
-	results := make([]TestResult, 0, len(leaves))
+	results = make([]TestResult, 0, len(leaves))
 	// Always re-execute leaf 0 with its explicit axis assignment.
 	// The discovery run produced tr0 against a synthetic IsDiscovery
 	// leaf with no axes pinned and assume= evaluation suppressed; the
@@ -1252,13 +1299,21 @@ func (rt *Runtime) runTestFanout(ctx context.Context, name string) []TestResult 
 	leaf := leaves[0]
 	results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	for i := 1; i < len(leaves); i++ {
+		// A fan-out is where an interrupted run does the most damage: the
+		// remaining leaves would each start services against an already-dead
+		// context and be recorded as verdicts nobody measured. Stop instead;
+		// RunAll counts the shortfall as Aborted.
+		if ctx.Err() != nil {
+			skipped = len(leaves) - i
+			break
+		}
 		rt.resetBodyChoices()
 		rt.resetBodyProbFaults()
 		rt.resetBodyParallelSites()
 		leaf := leaves[i]
 		results = append(results, rt.runTestSafelyLeaf(ctx, name, &leaf))
 	}
-	return results
+	return results, skipped
 }
 
 // RunTest executes a single test function with fresh services under

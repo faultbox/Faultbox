@@ -18,6 +18,10 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	// SIGTERM as well as SIGINT: `timeout`, most CI runners, and Docker all
+	// send SIGTERM, and v0.14.0 handled only SIGINT — so the common way to
+	// stop a run was also the one that leaked the TUN device.
+	"syscall"
 	"time"
 
 	faultbox "github.com/faultbox/Faultbox"
@@ -154,7 +158,7 @@ doneFlags:
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	eng := engine.New(logger)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	ctx = logging.NewContext(ctx, logger)
 
@@ -178,8 +182,9 @@ doneFlags:
 }
 
 // testCmd handles:
-//   faultbox test faultbox.star [--test name] [--output results.json]
-//   faultbox test --config faultbox.yaml --spec spec.yaml [--output results.json]
+//
+//	faultbox test faultbox.star [--test name] [--output results.json]
+//	faultbox test --config faultbox.yaml --spec spec.yaml [--output results.json]
 func testCmd(args []string) int {
 	logFormat := logging.FormatAuto
 	logLevel := slog.LevelInfo
@@ -372,6 +377,11 @@ func testCmd(args []string) int {
 func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level, dryRun bool, bundlePath string, noBundle, noPlan bool) int {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
+	// The packet gateway's TUN device is persistent: it survives the process
+	// unless something removes it. Every return path from here — a spec that
+	// fails to load, a suite error, a signal — must go through teardown, or
+	// the host is left with an orphan.
+	defer rt.Close()
 
 	// When --format json, redirect service stdout to stderr to keep stdout clean.
 	if formatFlag == "json" {
@@ -408,7 +418,7 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		return 0
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// RFC-042 §8.7 — enumerate the plan tree BEFORE RunAll so plan.json
@@ -511,6 +521,12 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	}
 	if result.Halted > 0 {
 		summary += fmt.Sprintf(", %d halted", result.Halted)
+	}
+	if result.Aborted > 0 {
+		// Say "not run", never fold these into inconclusive. A summary that
+		// reports verdicts for tests an interrupt prevented from starting
+		// overstates what the run measured.
+		summary += fmt.Sprintf(", %d not run (interrupted)", result.Aborted)
 	}
 	fmt.Fprintln(os.Stderr, summary)
 
@@ -981,7 +997,7 @@ func testYAMLCmd(configPath, specPath, outputPath string, logFormat logging.Form
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	eng := engine.New(logger)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	ctx = logging.NewContext(ctx, logger)
 
@@ -1069,7 +1085,6 @@ func initCmd(args []string) int {
 			return initClaude()
 		}
 	}
-
 
 	name := "myapp"
 	port := "8080"
@@ -2445,9 +2460,10 @@ func faultboxVersion() string {
 }
 
 // inspectCmd handles: `faultbox inspect <bundle.fb>`
-//   faultbox inspect run.fb                    # summary + file list
-//   faultbox inspect run.fb <path-in-archive>  # dump one file to stdout
-//   faultbox inspect run.fb --extract <dir>    # extract all to dir
+//
+//	faultbox inspect run.fb                    # summary + file list
+//	faultbox inspect run.fb <path-in-archive>  # dump one file to stdout
+//	faultbox inspect run.fb --extract <dir>    # extract all to dir
 //
 // Implements RFC-025 Phase 2. Version mismatches between the producer
 // and this binary are surfaced as warnings; inspect never refuses on

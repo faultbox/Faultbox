@@ -38,6 +38,35 @@ Next-version work is tracked in
   `parallel()` branch) and is rejected inside `monitor()` / `assume()`
   predicates like the `await_*` family.
 
+### Fixed
+- **The packet gateway's TUN device no longer bricks a host when a run is
+  interrupted.** The device was the shared constant `faultbox0` and it is
+  *persistent* — it survives the process. Two consequences, both live in
+  v0.14.0: concurrent runs on one machine collided, and any run that died
+  without teardown left a device that failed **every later packet-fault run**
+  with `TUNSETIFF faultbox0: device or resource busy`, recoverable only by
+  `sudo ip link delete faultbox0`, documented nowhere. Three layers now:
+  devices are named per-process (`fbox<pid>`), so a leak is clutter rather than
+  an outage; `SIGTERM` is handled alongside `SIGINT` (`timeout`, CI runners and
+  Docker all send SIGTERM — the most common way to stop a run was the one that
+  leaked); and every run sweeps orphaned `fbox<pid>` devices whose owning
+  process is gone, which is what recovers a machine after a `SIGKILL` no signal
+  handler can catch. Devices owned by live processes are never touched.
+  New [troubleshooting §13](docs/troubleshooting.md).
+- **An interrupted suite no longer invents verdicts for tests it never ran.**
+  `RunAll` had no cancellation check anywhere in its loop, so Ctrl-C cancelled
+  the context and the walk continued: each remaining test started its services,
+  inherited an already-dead context, failed instantly, and was recorded as
+  INCONCLUSIVE. An 18-leaf search interrupted after one leaf reported
+  `1 passed, 17 inconclusive`. It now stops and says what did not happen —
+  `2 passed, 0 failed, 1 inconclusive, 15 not run (interrupted)` — with the new
+  `SuiteResult.Aborted` counter kept **distinct** from `Inconclusive`, since
+  "the test was indeterminate" and "the test never started" call for different
+  responses.
+- Data race in `netfault`'s test `fakeClock`: the defer-queue goroutine called
+  `Stop()` while the test goroutine read `stopped` under the clock mutex. It
+  did not fire during the v0.14.0 release gate and did fire here.
+
 ## [0.14.0] - 2026-07-28
 
 Packet-level network faults. Faultbox mediated at two layers — individual

@@ -4,13 +4,33 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
 
+// DevicePrefix starts every TUN interface name Faultbox creates.
+//
+// It exists so orphans are identifiable: a run killed by SIGKILL, an OOM, or a
+// panic cannot clean up after itself, and the only way to recover the host is
+// to recognise the leftovers. See reapOrphanDevices.
+const DevicePrefix = "fbox"
+
+// deviceNameFor builds the per-process TUN name.
+//
+// Linux caps interface names at IFNAMSIZ-1 = 15 bytes. "fbox" plus a 7-digit
+// pid (the kernel default pid_max is 4194304) is 11, so this cannot truncate.
+// The earlier name — a constant "faultbox0" — is why v0.14.0 had two separate
+// failure modes: concurrent runs on one host collided, and a leaked device
+// broke every later run with an EBUSY naming a device the user had never
+// heard of. A per-process name makes a leak clutter rather than a stoppage.
+func deviceNameFor(pid int) string {
+	return fmt.Sprintf("%s%d", DevicePrefix, pid)
+}
+
 // GatewayConfig configures the packet gateway.
 type GatewayConfig struct {
-	// Device is the TUN interface name. Defaults to "faultbox0".
+	// Device is the TUN interface name. Defaults to "fbox<pid>".
 	Device string
 	// Subnet is the address space the gateway owns. Defaults to DefaultSubnet.
 	Subnet string
@@ -25,7 +45,7 @@ type GatewayConfig struct {
 func (c *GatewayConfig) withDefaults() GatewayConfig {
 	out := *c
 	if out.Device == "" {
-		out.Device = "faultbox0"
+		out.Device = deviceNameFor(os.Getpid())
 	}
 	if out.Subnet == "" {
 		out.Subnet = DefaultSubnet
