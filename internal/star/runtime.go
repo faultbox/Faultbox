@@ -4118,6 +4118,22 @@ func (rt *Runtime) removeFaults(svcName string) {
 			if r.Label != "" {
 				fields["label"] = r.Label
 			}
+			// A path-filtered rule that matched nothing is ambiguous: the app
+			// may have done no matching I/O, or Faultbox may have failed to
+			// recover the path from /proc and had nothing to match against.
+			// Say which, instead of leaving the author to guess.
+			if r.PathGlob != "" {
+				fields["path"] = r.PathGlob
+				if r.UnresolvedPaths > 0 {
+					fields["unresolved_paths"] = fmt.Sprintf("%d", r.UnresolvedPaths)
+					fields["hint"] = "path filter never matched, and " +
+						fmt.Sprintf("%d", r.UnresolvedPaths) +
+						" syscall path(s) could not be resolved from /proc — the filter may be correct but unmatched"
+				} else {
+					fields["hint"] = "path filter never matched any resolved path; " +
+						"check the glob (use ** to cross directories, e.g. /data/**/*.wal)"
+				}
+			}
 			rt.events.Emit("fault_zero_traffic", svcName, fields)
 		}
 		rs.session.ClearDynamicFaultRules()

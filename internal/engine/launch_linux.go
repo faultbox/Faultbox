@@ -308,6 +308,11 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 	// For file syscalls, read the path argument for filtering and logging.
 	// For fd-based syscalls (write, read, fsync), resolve the fd to a path
 	// via /proc/PID/fd/N for path-based fault matching.
+	// A failed resolution is counted, not swallowed. Path recovery races the
+	// SUT and truncates at 256 bytes, so it does fail in practice — and when
+	// it does, a path-filtered rule simply never matches, which is
+	// indistinguishable from "the app did no matching I/O". The counter lets
+	// the teardown report tell those two apart.
 	var path string
 	if IsFileSyscall(syscallName) {
 		argIdx := 1 // openat and friends: arg1 is path
@@ -317,12 +322,17 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 		p, err := seccomp.ReadStringFromProcess(req.PID, req.Data.Args[argIdx], 256)
 		if err == nil {
 			path = p
+		} else {
+			s.unresolvedPaths.Add(1)
 		}
 	} else if IsFdSyscall(syscallName) {
 		// Resolve fd → path via /proc for write/read/fsync path targeting.
 		fd := req.Data.Args[0]
 		p, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", req.PID, fd))
-		if err == nil && !IsSystemPath(p) {
+		switch {
+		case err != nil:
+			s.unresolvedPaths.Add(1)
+		case !IsSystemPath(p):
 			path = p
 		}
 	}
