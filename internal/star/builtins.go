@@ -169,7 +169,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 
 	// RFC-054 §"DSL extensions" — packet_* fault family. Registered
 	// unconditionally so a spec that uses one gets a precise
-	// "requires runtime=gvisor-net" error at spec load, rather than
+	// "requires runtime=gvisor" error at spec load, rather than
 	// "undefined: packet_drop", which would send the author looking
 	// for a typo instead of a missing runtime declaration.
 	for name, b := range packetFaultBuiltins() {

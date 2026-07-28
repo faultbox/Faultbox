@@ -17,31 +17,34 @@ const (
 	DeterminismL1 = "L1"
 )
 
-// Determinism runtime values.
+// Determinism runtime values. Two, matching RFC-046's original matrix.
 //
-// RFC-054 splits RFC-046's single "gvisor" value in two. The two mechanisms
-// have very different adoption costs: the packet gateway is a library import
-// that works for binary *and* container services, while filesystem observation
-// requires every container in the spec to run under runsc. Gating the cheap
-// half behind the expensive half would be a mistake, so they are separate
-// values and a spec adopts only what it needs.
+// An earlier RFC-054 draft split this into "gvisor-net" and "gvisor" so a spec
+// that only wanted packet faults would not drag runsc adoption along with it.
+// That turned out to be the wrong lever: the cost is not the *runtime*, it is
+// the *feature*. So there is one runtime, and the runsc requirement is driven
+// by whether the spec actually uses filesystem observation:
 //
-// All three cap at L1 — the mediated surface widens, the promise does not.
+//   - runtime="gvisor"                  → netstack packet gateway. No runsc.
+//   - runtime="gvisor" + watch(...)     → additionally requires runsc and
+//     container mode, checked at spec load.
+//
+// A spec that never calls watch() never needs runsc, which is what the split
+// was protecting — without a second runtime name to explain.
+//
+// Both values cap at L1: the mediated surface widens, the promise does not.
 const (
 	DeterminismRuntimeDefault = "default" // seccomp-notify (Path A)
-	// DeterminismRuntimeGVisorNet enables the netstack packet gateway
-	// (RFC-054 Path B). No runsc required.
-	DeterminismRuntimeGVisorNet = "gvisor-net"
-	// DeterminismRuntimeGVisor is the packet gateway plus filesystem
-	// observation via runsc + seccheck (RFC-054 Path C-lite). Container mode
-	// only.
+	// DeterminismRuntimeGVisor enables the gVisor substrate: the netstack
+	// packet gateway (Path B) always, plus filesystem observation via
+	// runsc + seccheck (Path C-lite) for specs that ask for it.
 	DeterminismRuntimeGVisor = "gvisor"
 )
 
 // runtimeSupportsPacketFaults reports whether a runtime provides the packet
 // gateway that packet_* faults need.
 func runtimeSupportsPacketFaults(rt string) bool {
-	return rt == DeterminismRuntimeGVisorNet || rt == DeterminismRuntimeGVisor
+	return rt == DeterminismRuntimeGVisor
 }
 
 // requirePacketRuntime rejects packet faults declared under a runtime that has
@@ -64,8 +67,8 @@ func (rt *Runtime) requirePacketRuntime(what string) error {
 	}
 	return fmt.Errorf(
 		"%s require the netstack packet gateway, but this spec runs on runtime=%q; "+
-			"add determinism(runtime=%q) at the top of the spec (or %q if you also need filesystem observation)",
-		subject, runtimeName, DeterminismRuntimeGVisorNet, DeterminismRuntimeGVisor)
+			"add determinism(runtime=%q) at the top of the spec",
+		subject, runtimeName, DeterminismRuntimeGVisor)
 }
 
 // unmediated_io categories. RFC-040 §8.1 enumerates the five classes of
@@ -165,11 +168,11 @@ func (rt *Runtime) builtinDeterminism(thread *starlark.Thread, fn *starlark.Buil
 	}
 
 	switch rtName {
-	case DeterminismRuntimeDefault, DeterminismRuntimeGVisorNet, DeterminismRuntimeGVisor:
-		// supported — all three cap at L1 (RFC-054).
+	case DeterminismRuntimeDefault, DeterminismRuntimeGVisor:
+		// supported — both cap at L1 (RFC-054).
 	default:
-		return nil, fmt.Errorf("determinism(runtime=%q): must be one of %q, %q, %q",
-			rtName, DeterminismRuntimeDefault, DeterminismRuntimeGVisorNet, DeterminismRuntimeGVisor)
+		return nil, fmt.Errorf("determinism(runtime=%q): must be %q or %q",
+			rtName, DeterminismRuntimeDefault, DeterminismRuntimeGVisor)
 	}
 
 	// strict has no effect at L0 — there are no detection events to gate.

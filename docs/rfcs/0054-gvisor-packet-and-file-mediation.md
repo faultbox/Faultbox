@@ -333,25 +333,27 @@ Enabling this requires the container to run under `runsc`, which is a Docker dae
 runtime registration. Faultbox detects its availability and fails at spec load with an
 actionable message rather than at run time.
 
-### Runtime selection — a proposed refinement to RFC-046
+### Runtime selection — RFC-046's two values, unchanged
 
-RFC-046's capability matrix has a single `runtime="gvisor"` value. That conflates two
-mechanisms with very different adoption costs: the packet gateway needs no runsc at all,
-while FS observation requires every container in the spec to run under runsc. Gating the
-cheap half behind the expensive half would be a mistake.
+**Resolved 2026-07-28 (open question 2): keep RFC-046's single `gvisor` value.**
 
-Proposed values (spec-wide, per RFC-040's rule that the engine is one choice for the whole
-spec):
+An earlier draft of this RFC proposed splitting it into `gvisor-net` (packet gateway) and
+`gvisor` (gateway + FS observation), on the grounds that FS observation requires runsc
+while the packet gateway does not, and gating the cheap half behind the expensive half
+would be a mistake.
+
+The concern was right; the lever was wrong. **The cost is not the runtime, it is the
+feature.** So there is one runtime, and the runsc requirement is driven by whether the spec
+actually asks for filesystem observation:
 
 | `runtime=` | Packet gateway | FS observation | Requires | Caps at |
 |---|---|---|---|---|
 | `"default"` | — | — | — | L1 |
-| `"gvisor-net"` | ✅ | — | `CAP_NET_ADMIN` | L1 |
-| `"gvisor"` | ✅ | ✅ | runsc + container mode for every service | L1 |
+| `"gvisor"` | ✅ always | ✅ when the spec calls `watch()` | `CAP_NET_ADMIN`; **runsc + container mode only if `watch()` is used** | L1 |
 
-Consistent with RFC-046's honesty rule: a spec that can't run every service under the
-chosen engine lowers the runtime rather than silently mixing engines. **This deviates from
-RFC-046's binary matrix and is listed as an open question.**
+A spec that never calls `watch()` never needs runsc — which is exactly what the split was
+protecting — without a second runtime name to explain or document. This also keeps RFC-046's
+capability matrix intact rather than amending it.
 
 ## DSL extensions
 
@@ -377,12 +379,19 @@ packet_reset(**match)                         # synthesize RST, drop the origina
 packet_window(size=0, **match)                # rewrite advertised receive window
 ```
 
-Plus two link-scoped shapers that take no matcher:
+**Deferred to v0.14.1:** two link-scoped shapers that take no matcher.
 
 ```python
-bandwidth(rate="1mbps", dir="c2s")
-mtu(size=576)
+bandwidth(rate="1mbps", dir="c2s")   # NOT in v0.14.0
+mtu(size=576)                        # NOT in v0.14.0
 ```
+
+These are not per-packet rules — they need a token bucket and real
+fragmentation/PMTUD handling respectively, which is a different mechanism from the
+match-and-act pipeline above. Shipping a `mtu()` that merely drops oversized packets would
+look like a black hole without behaving like one, so scenario 8 uses
+`packet_drop(len_gt=576)` in v0.14.0 and is documented as an approximation. Both land in
+v0.14.1 as a focused follow-up.
 
 ### The matcher — declarative fast path, lambda escape hatch
 
@@ -592,9 +601,9 @@ repeat exactly the overclaiming RFC-040 was written to stop.
 
 1. ~~**Insertion mechanism**~~ — **RESOLVED**: candidate A (TUN + routed subnet).
    [Decision record M0.2](#decision-record-m02--insertion-mechanism).
-2. **`gvisor-net` as a distinct runtime value** — accept the three-value matrix proposed
-   here, or keep RFC-046's binary `gvisor` and require runsc for packet faults too? This
-   RFC argues for the split; RFC-046's author should weigh in.
+2. ~~**`gvisor-net` as a distinct runtime value**~~ — **RESOLVED**: keep RFC-046's single
+   `gvisor`. The runsc requirement is driven by `watch()` usage, not by a second runtime
+   name. See §"Runtime selection".
 3. **Payload cap for `Packet.payload`** — 4 KiB default proposed. Too small for
    payload-matching on large messages, too large to copy per packet at line rate. Should it
    be per-rule rather than global?
@@ -610,6 +619,9 @@ repeat exactly the overclaiming RFC-040 was written to stop.
 
 ## Future work
 
+- **`bandwidth(rate=)` and `mtu(size=)` — v0.14.1.** Link-scoped shapers, deferred from
+  v0.14.0 because they need a token bucket and real fragmentation/PMTUD handling rather
+  than the per-packet match-and-act pipeline. `mtu()` is what scenario 8 actually wants.
 - **FUSE datapath for byte-level filesystem injection** — short writes, torn writes, fsync
   lies, bit-rot, `ENOSPC` after N bytes. The natural v0.15.x follow-on, and the reason
   `watch()` is specified as observation-only rather than as a fault primitive: the fault

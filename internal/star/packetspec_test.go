@@ -21,20 +21,26 @@ func evalIn(t *testing.T, rt *Runtime, expr string) (starlark.Value, error) {
 	return starlark.Eval(&starlark.Thread{Name: "test"}, "test.star", expr, rt.builtins())
 }
 
-func TestRuntimeGVisorNetAccepted(t *testing.T) {
-	rt := New(testLogger())
-	if err := rt.LoadString("test.star", `determinism(runtime = "gvisor-net")`); err != nil {
-		t.Fatalf("runtime=\"gvisor-net\" rejected: %v", err)
-	}
-	if rt.detRuntime != DeterminismRuntimeGVisorNet {
-		t.Errorf("detRuntime = %q, want %q", rt.detRuntime, DeterminismRuntimeGVisorNet)
-	}
-}
-
 func TestRuntimeGVisorAccepted(t *testing.T) {
 	rt := New(testLogger())
 	if err := rt.LoadString("test.star", `determinism(runtime = "gvisor")`); err != nil {
 		t.Fatalf("runtime=\"gvisor\" rejected: %v", err)
+	}
+	if rt.detRuntime != DeterminismRuntimeGVisor {
+		t.Errorf("detRuntime = %q, want %q", rt.detRuntime, DeterminismRuntimeGVisor)
+	}
+}
+
+// TestRuntimeGVisorNetNoLongerExists pins the collapse back to RFC-046's two
+// values. An earlier RFC-054 draft added "gvisor-net" so a packet-faults-only
+// spec would not drag runsc along; the runsc requirement is now driven by
+// whether the spec calls watch(), which achieves the same thing without a
+// second runtime name.
+func TestRuntimeGVisorNetNoLongerExists(t *testing.T) {
+	rt := New(testLogger())
+	err := rt.LoadString("test.star", `determinism(runtime = "gvisor-net")`)
+	if err == nil {
+		t.Fatal("runtime=\"gvisor-net\" was accepted; there are only two runtimes")
 	}
 }
 
@@ -44,7 +50,7 @@ func TestRuntimeUnknownRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown runtime accepted")
 	}
-	for _, want := range []string{"default", "gvisor-net", "gvisor"} {
+	for _, want := range []string{"default", "gvisor"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should list %q as valid, got: %v", want, err)
 		}
@@ -93,8 +99,8 @@ def test_packets():
 	if !strings.Contains(res.Reason, "runtime=") {
 		t.Errorf("reason should name the runtime problem, got: %s", res.Reason)
 	}
-	if !strings.Contains(res.Reason, "gvisor-net") {
-		t.Errorf("reason should name the fix (gvisor-net), got: %s", res.Reason)
+	if !strings.Contains(res.Reason, "gvisor") {
+		t.Errorf("reason should name the fix (runtime=gvisor), got: %s", res.Reason)
 	}
 }
 
