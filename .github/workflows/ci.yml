@@ -38,3 +38,17 @@ jobs:
         run: |
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null ./cmd/faultbox/
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null ./cmd/faultbox-shim/
+
+      # RFC-054 decision record M0.1: gVisor HEAD does not build as a Go module
+      # dependency — pkg/tcpip/stack carries two different external test package
+      # names in one directory, which fails at import resolution. gVisor is
+      # Bazel-built upstream, so their CI never sees it. The dependency is
+      # therefore pinned, and this step makes an attempted bump fail loudly here
+      # instead of silently breaking the packet gateway.
+      - name: Verify pinned gVisor builds on every target
+        run: |
+          set -e
+          for target in darwin/arm64 linux/arm64 linux/amd64; do
+            echo "==> netfault on $target"
+            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 go build ./internal/netfault/
+          done
