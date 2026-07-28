@@ -307,3 +307,100 @@ def test_x(): return None
 		}
 	}
 }
+
+// A choose()-driven test must contribute its full fan-out to the plan tree.
+// Before v0.14.1 the runtime discovered axes by executing a body, which `plan`
+// cannot do, so every such test counted as one instance — the exploration spec
+// that runs 24 leaves reported "Total: 2 plan instances", and
+// --check-cost --max-instances was blind to the construct most likely to blow
+// a budget.
+func TestEnumerate_ChooseAxesCountTowardInstances(t *testing.T) {
+	rt := newRuntime(t)
+	src := `
+def test_transfer():
+    a = choose("warmup", [0, 10, 40])
+    b = choose("gap", ["0ms", "400ms", "1200ms"])
+    c = choose("hold", ["100ms", "900ms"])
+
+def test_snapshot():
+    d = choose("behind", [25, 120, 400])
+    e = choose("snap_when", ["during", "after"])
+
+def test_plain():
+    assert_true(True, "")
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	pt := Enumerate(rt)
+
+	byName := map[string]PlanTest{}
+	for _, tst := range pt.Tests {
+		byName[tst.Name] = tst
+	}
+	if got := byName["test_transfer"].Instances; got != 18 {
+		t.Errorf("test_transfer instances = %d, want 18", got)
+	}
+	if got := byName["test_snapshot"].Instances; got != 6 {
+		t.Errorf("test_snapshot instances = %d, want 6", got)
+	}
+	if got := byName["test_plain"].Instances; got != 1 {
+		t.Errorf("test_plain instances = %d, want 1", got)
+	}
+	if pt.Totals.Instances != 25 {
+		t.Errorf("total instances = %d, want 25 (18+6+1)", pt.Totals.Instances)
+	}
+	if pt.Totals.Estimated {
+		t.Error("all option lists are literal; the total must not be flagged as an estimate")
+	}
+
+	// The axes must be recorded, not just counted — the rendered tree shows
+	// the user where the cost comes from.
+	comps := byName["test_transfer"].Compositions
+	if len(comps) != 1 || comps[0].Kind != CompositionChoose {
+		t.Fatalf("expected one choose composition, got %+v", comps)
+	}
+	if len(comps[0].Axes) != 3 {
+		t.Errorf("expected 3 axes, got %d", len(comps[0].Axes))
+	}
+}
+
+// A computed option list must widen the total to a lower bound rather than
+// contribute a silent factor of 1. A cost gate that rounds down is trusted and
+// wrong, which is worse than absent.
+func TestEnumerate_ComputedChooseListMarksEstimate(t *testing.T) {
+	rt := newRuntime(t)
+	src := `
+OPTS = [1, 2, 3, 4]
+def test_dyn():
+    a = choose("dyn", OPTS)
+    b = choose("lit", ["x", "y"])
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+	pt := Enumerate(rt)
+	if !pt.Totals.Estimated {
+		t.Error("totals must be flagged estimated when an axis is not statically readable")
+	}
+	if pt.Totals.Instances != 2 {
+		t.Errorf("instances = %d, want 2 (lower bound: 1 unknown x 2 literal)", pt.Totals.Instances)
+	}
+	var found bool
+	for _, c := range pt.Tests[0].Compositions {
+		for _, ax := range c.Axes {
+			if ax.Name == "dyn" {
+				found = true
+				if !ax.Estimated {
+					t.Error("the unreadable axis must be marked Estimated")
+				}
+				if len(ax.Values) != 0 {
+					t.Errorf("an unreadable axis must not claim values, got %v", ax.Values)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("the computed axis should still appear in the tree")
+	}
+}

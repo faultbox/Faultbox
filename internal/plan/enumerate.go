@@ -65,12 +65,20 @@ func buildTests(rt *star.Runtime) []PlanTest {
 	seen := make(map[string]bool)
 	var tests []PlanTest
 
+	// choose() axes are discovered statically (star.ChooseAxesByTest). The
+	// runtime discovers them by executing a body, which `plan` cannot do, so
+	// without this every choose()-driven test counted as one instance and
+	// --check-cost was blind to the main fan-out construct.
+	chooseAxes := rt.ChooseAxesByTest()
+
 	for _, name := range sortedStrings(defNames) {
-		tests = append(tests, PlanTest{
+		entry := PlanTest{
 			Name:      name,
 			Kind:      KindDef,
 			Instances: 1,
-		})
+		}
+		applyChooseAxes(&entry, chooseAxes[name])
+		tests = append(tests, entry)
 		seen[name] = true
 	}
 
@@ -312,12 +320,41 @@ func buildTopology(rt *star.Runtime) PlanTopology {
 	return PlanTopology{Services: out}
 }
 
+// applyChooseAxes multiplies a test's instance count by its choose() fan-out
+// and records the axes so the rendered tree shows where the cost comes from.
+//
+// Estimated is set when any axis had an option list the scanner could not read
+// (a computed list, a variable). The count is then a floor, and every renderer
+// must say so — a cost gate that silently rounds down is how the missing
+// feature read as a working one for two releases.
+func applyChooseAxes(entry *PlanTest, axes []star.ChooseAxis) {
+	if len(axes) == 0 {
+		return
+	}
+	planAxes := make([]PlanAxis, 0, len(axes))
+	for _, a := range axes {
+		planAxes = append(planAxes, PlanAxis{Name: a.Name, Values: a.Values, Estimated: !a.Known})
+	}
+	entry.Instances *= star.ChooseLeafCount(axes)
+	entry.Compositions = append(entry.Compositions, PlanComposition{
+		Kind: CompositionChoose,
+		Axes: planAxes,
+	})
+	if !star.ChooseAxesComplete(axes) {
+		entry.Estimated = true
+	}
+}
+
 func computeTotals(tests []PlanTest) PlanTotals {
 	n := 0
+	estimated := false
 	for _, t := range tests {
 		n += t.Instances
+		if t.Estimated {
+			estimated = true
+		}
 	}
-	return PlanTotals{Instances: n}
+	return PlanTotals{Instances: n, Estimated: estimated}
 }
 
 // sortedKeys is the generic map-key sorter used throughout this file.

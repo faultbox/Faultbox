@@ -66,6 +66,38 @@ Next-version work is tracked in
 - Data race in `netfault`'s test `fakeClock`: the defer-queue goroutine called
   `Stop()` while the test goroutine read `stopped` under the clock mutex. It
   did not fire during the v0.14.0 release gate and did fire here.
+- **`faultbox plan` was blind to `choose()`**, the construct most likely to
+  blow a budget. The runtime discovers axes by *executing* a test body once;
+  `plan` is static and executes nothing, so every `choose()`-driven test counted
+  as a single instance — the exploration spec that runs 24 leaves reported
+  `Total: 2 plan instances`. `--check-cost --max-instances N` exists to catch
+  fan-out blowups before they run and was under-reporting by 12×, which is
+  worse than having no gate, because a gate is trusted. Axes are now read
+  statically from the spec AST and multiplied into `Instances`, and the tree
+  shows where the cost comes from:
+
+  ```
+  ├── test "test_transfer_timing"  [def]
+  │   ├── 18 instances
+  │   └── choose
+  │       ├── warmup: [0, 10, 40]
+  │       ├── gap: [0ms, 400ms, 1200ms]
+  │       └── hold: [100ms, 900ms]
+  ```
+
+  Where an option list is computed rather than literal, its size is not
+  knowable without running the spec. That axis is reported as
+  `(computed — size unknown)` and the total becomes `at least N` — an estimate
+  that admits its gaps, rather than one that quietly rounds down. A `choose()`
+  reached through a helper function is likewise not attributed to the calling
+  test: static analysis cannot resolve the call graph, and inventing axes would
+  be worse than missing them.
+- **Inconclusive verdicts now print their reason.** `TestResult.Reason` has
+  always carried the explanation — `test timeout: body did not complete within
+  3m0.1s` — and the summary discarded it, leaving a bare `12 inconclusive`.
+  Diagnosing one such run took 36 minutes of log archaeology to establish that
+  every leaf had blocked in the same `await_stable`; the answer was in the
+  struct the whole time. Identical reasons are grouped with a count.
 
 ## [0.14.0] - 2026-07-28
 

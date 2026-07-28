@@ -529,6 +529,7 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		summary += fmt.Sprintf(", %d not run (interrupted)", result.Aborted)
 	}
 	fmt.Fprintln(os.Stderr, summary)
+	printInconclusiveReasons(os.Stderr, result)
 
 	// Terminal replay hint per failed test (RFC-025 §Observability).
 	// Makes `replay_command` visible without digging into JSON. Skipped
@@ -580,6 +581,51 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		return 3
 	}
 	return 0
+}
+
+// printInconclusiveReasons explains every INCONCLUSIVE verdict under the
+// summary line.
+//
+// TestResult.Reason has always carried the explanation — "test timeout: body
+// did not complete within 3m0.1s" — and the summary has always thrown it away,
+// printing a bare "12 inconclusive". Diagnosing one such run took 36 minutes of
+// manual log archaeology to establish that every leaf had blocked in the same
+// await_stable; the answer was already in the struct.
+//
+// Reasons are grouped, because a fan-out that fails the same way 12 times
+// should say so once with a count rather than scroll the real signal off the
+// screen.
+func printInconclusiveReasons(w io.Writer, result *star.SuiteResult) {
+	if result == nil || result.Inconclusive == 0 {
+		return
+	}
+	counts := make(map[string]int)
+	var order []string
+	for i := range result.Tests {
+		tr := &result.Tests[i]
+		if tr.Result != "inconclusive" {
+			continue
+		}
+		reason := tr.Reason
+		if reason == "" {
+			reason = "(no reason recorded)"
+		}
+		if _, seen := counts[reason]; !seen {
+			order = append(order, reason)
+		}
+		counts[reason]++
+	}
+	if len(order) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\ninconclusive:")
+	for _, reason := range order {
+		if n := counts[reason]; n > 1 {
+			fmt.Fprintf(w, "  %s (x%d)\n", reason, n)
+			continue
+		}
+		fmt.Fprintf(w, "  %s\n", reason)
+	}
 }
 
 // printMultiRunSummary prints compact output for multi-run mode.
