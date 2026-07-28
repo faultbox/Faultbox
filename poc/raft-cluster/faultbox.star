@@ -1,8 +1,15 @@
-# Chain-of-blocks Raft workload against hashicorp/raft v1.7.3.
+# Chain-of-blocks Raft workload against hashicorp/raft main @ 4c8f61ac.
 #
 # Port of the Antithesis Raft study harness
 # (https://antithesis.com/blog/2026/finding-bugs-in-raft-implementations/)
-# to Faultbox.
+# to Faultbox. The raft pin is the commit their fork branched from, not the
+# v1.7.3 tag — see the comment in go.mod.
+#
+# NOTE ON --runs: the fault schedule here is unconditional, so the run seed
+# reaches nothing. `--runs 25` is 25 repetitions of one schedule that differ
+# only in OS scheduling, NOT 25 samples of a fault-timing space. Searching
+# that space needs choose() over partition onset/duration; see
+# docs/design/2026-07-28-raft-mesh-results.md §4.
 #
 #   sudo faultbox test poc/raft-cluster/faultbox.star
 #

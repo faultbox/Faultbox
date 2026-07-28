@@ -3,7 +3,7 @@
 **Date:** 2026-07-28
 **Status:** Results. Follow-up to the [gap analysis](2026-07-28-raft-antithesis-gap-analysis.md) and the [mesh proposal](2026-07-28-v0.14.0-mesh-topology-proposal.md)
 **Branch:** `epic/v0.14.0-gvisor` @ `6ceb279`
-**Harness:** [`poc/raft-cluster/`](../../poc/raft-cluster/) — 3-node `hashicorp/raft` **v1.7.3**, chain-of-blocks FSM
+**Harness:** [`poc/raft-cluster/`](../../poc/raft-cluster/) — 3-node `hashicorp/raft` **main @ `4c8f61ac`**, chain-of-blocks FSM
 **Environment:** Lima `faultbox-dev`, kernel 6.8.0, `determinism(runtime = "gvisor")`
 
 ---
@@ -13,10 +13,9 @@
 The four proposed changes landed. The fault model now reaches the consensus
 layer, which it demonstrably did not before.
 
-**It did not reproduce the Antithesis bugs.** Across 40 randomized runs,
-`hashicorp/raft` v1.7.3 behaved correctly in every scenario the harness can
-now express. That is a real result and this document treats it as one, rather
-than reporting a bug that is not there.
+**It did not reproduce the Antithesis bugs** — including against the exact
+commit their study forked from. §4 explains why, and the answer turned out to
+be a defect in this harness rather than an open question about `hashicorp/raft`.
 
 | Claim | Evidence |
 |---|---|
@@ -26,6 +25,7 @@ than reporting a bug that is not there.
 | Antithesis bug 2 (transfer deadlock) | **Not reproduced** — 25 runs |
 | Antithesis bug 3 (snapshot livelock) | **Not reproduced** — 15 runs |
 | Antithesis bug 1 (heartbeat race) | Out of scope; needs RFC-053 Path D |
+| Those 40 runs explored 40 fault schedules | **False.** They explored one. §4.2 |
 
 ---
 
@@ -143,7 +143,18 @@ test_transfer_during_partition   --runs 25   →  25 passed, 0 failed
 test_snapshot_install_livelock   --runs 15   →  15 passed, 0 failed
 ```
 
-### A false positive, caught
+Three findings sit behind that, and the notable thing is that **none of them is
+a finding about `hashicorp/raft`.** All three are defects in this harness or in
+this document: a false positive caught before it shipped (§4.0), a wrong claim
+about *which version* was under test (§4.1), and a wrong claim about how much of
+the fault space those runs covered (§4.2).
+
+Two of the three were introduced by the first draft of this document. They are
+recorded rather than quietly corrected because the failure mode — a test that
+passes for the wrong reason, described in language that sounds like evidence —
+is the one this project exists to catch in other people's systems.
+
+### 4.0 A false positive, caught
 
 The first run of the snapshot scenario looked like a textbook livelock:
 
@@ -174,49 +185,98 @@ not exist.
 The lesson generalises: **a liveness assertion needs an explicit convergence
 window, or it is really an assertion about how fast the test ran.**
 
-### Why the bugs did not appear
+### 4.1 "Fixed upstream" — refuted
 
-Two candidate explanations, and the honest answer is that this harness cannot
-distinguish them:
+The first draft of this document offered two explanations and said the harness
+could not distinguish them. It can now. The first was **wrong**, and wrong in a
+way worth recording:
 
-1. **Fixed upstream.** The harness pins `hashicorp/raft` v1.7.3. If the
-   Antithesis findings were reported and fixed, correct behaviour is exactly
-   what we should see. Confirming this needs a run against the version their
-   study used.
-2. **Not enough search.** Antithesis found these through massive randomized
-   exploration of interleavings and fault timings. Forty scripted runs with a
-   fixed fault sequence is a very different search. Both bugs are races — bug 2
-   needs the transfer goroutine to be mid-replication exactly when the leader
-   steps down; bug 3 needs the follower's log in a specific state when the
-   snapshot lands. A fixed script hits one point in that space per run.
+> *Fixed upstream. The harness pins `hashicorp/raft` v1.7.3. If the Antithesis
+> findings were reported and fixed, correct behaviour is exactly what we should
+> see.*
 
-Reaching them plausibly needs the fault *timing* to vary, not just the seed:
-partition onset relative to the transfer call, isolation duration relative to
-`SnapshotInterval`. `choose()` over those parameters with `--explore` is the
-natural next step, and is not something this epic scoped.
+There is no release in which they could have been fixed. **v1.7.3 (2025-03-18)
+is still the newest tag**, and `main` is 48 commits ahead of it.
+
+Worse, the study did not use v1.7.3 at all. Their harness
+([`antithesishq/hashicorp-raft-poc`](https://github.com/antithesishq/hashicorp-raft-poc/tree/antithesis))
+is not a *consumer* of raft — its `go.mod` reads `module github.com/hashicorp/raft`.
+It is a fork of raft itself with the Antithesis SDK wired in, branched from
+`main` at **`4c8f61ac`, 2026-05-19** — 37 commits and fourteen months *newer*
+than the tag this harness was pinned to.
+
+So the harness was testing older code than the study, and the report claimed
+the opposite direction. Both halves of that were checkable in about ten minutes
+and neither was checked.
+
+The harness is now pinned to `4c8f61ac`. It builds unchanged against it, and:
+
+```
+full suite                        →   5 passed, 0 failed
+test_transfer_during_partition    →  25 passed, 0 failed     (--runs 25)
+test_snapshot_install_livelock    →  15 passed, 0 failed     (--runs 15)
+```
+
+45 runs against the exact code the bugs were reported in. Still nothing.
+
+### 4.2 "Not enough search" — confirmed, and sharper than stated
+
+Which leaves the second explanation. Checking it properly turned up something
+the first draft asserted without verifying: **the 40 runs were never randomized.**
+
+`--runs N` does vary the seed — [`runtime.go:975`](../../internal/star/runtime.go#L975)
+sets `seed = uint64(run)`. But a seed only matters if something consumes it, and
+the only consumer is probabilistic packet rules
+([`packetgateway_wire.go:89`](../../internal/star/packetgateway_wire.go#L89)).
+This spec has no `probability=` on any rule and no `choose()` axis. The seed
+reaches nothing.
+
+All 45 runs therefore execute the **same fault schedule**: partition at the same
+point in the workload, hold for the same duration, release. They differ only in
+OS scheduling jitter. Describing that as "40 randomized runs" — as the first
+draft of this document did — overstates the search by roughly the entire search.
+
+That is the answer. Both target bugs are races: bug 2 needs the transfer
+goroutine mid-replication exactly as the leader steps down; bug 3 needs the
+follower's log in a particular state when the snapshot lands. Antithesis reached
+them by exploring *when* faults land. This harness explores one point in that
+space and repeats it. Forty-five samples of one point is one sample.
+
+**This does not exonerate `hashicorp/raft`, and it is not evidence the bugs are
+absent.** It is evidence the experiment was not run.
 
 ## 5. Where each Antithesis bug now stands
 
 | Bug | Blocker in the gap analysis | Status |
 |---|---|---|
 | 1 — async heartbeat race | Needs per-message hold/release attributed to a goroutine | **Still out of scope.** Packet timing influences the window; it does not control it. Needs [RFC-053](https://github.com/faultbox/Faultbox/issues/143) Path D — seccomp reports M, not G. |
-| 2 — leadership-transfer deadlock | Gaps 1 and 3: partition on established connections | **Expressible now.** `partition_start` + `/transfer` + `partition_stop` runs as intended. Not triggered in 25 runs. |
-| 3 — snapshot-install livelock | Gaps 1 and 3: sustained isolation of a live peer | **Expressible now.** Follower falls 200 commands behind and needs `InstallSnapshot`. Not triggered in 15 runs. |
+| 2 — leadership-transfer deadlock | Gaps 1 and 3: partition on established connections | **Expressible, not yet searched.** `partition_start` + `/transfer` + `partition_stop` runs as intended. 25 runs of one fault schedule; the timing space is unexplored. |
+| 3 — snapshot-install livelock | Gaps 1 and 3: sustained isolation of a live peer | **Expressible, not yet searched.** Follower falls 200 commands behind and needs `InstallSnapshot`. 15 runs of one fault schedule. |
 
 The gap analysis's verdict was *"Faultbox can host the workload but cannot yet
 break the cluster."* It can break the cluster now — the isolation test proves
-it. What it has not yet done is break `hashicorp/raft`.
+it. What it has not yet done is *search*, and §4.2 is the reason. Expressing a
+fault and exploring when it lands are different capabilities, and this epic
+delivered only the first.
 
 ## 6. What is still missing
 
 - **Fault-timing exploration.** `choose()` over partition onset and duration,
   driven by `--explore`, so the search covers the space rather than one point
-  in it. This is the most likely route to bugs 2 and 3.
+  in it. §4.2 promotes this from "most likely route to bugs 2 and 3" to **the
+  precondition for the question being open at all**. Until it lands, "not
+  reproduced" here carries no information about `hashicorp/raft`.
+- **A `--runs` that says what it does.** `--runs N` on a spec with no
+  seed-consuming construct repeats one schedule N times. That is a reasonable
+  flake check and a useless search, and nothing in the output distinguishes
+  them. At minimum it should say so.
 - **Pre-starting all proxies.** Packet faults reach every mesh link; L7 faults
   (`error()`, `response()`) still do not for links whose peer started later.
   Deferred to v0.14.1 with the caveat documented.
 - **RFC-053 Path D** for bug 1. Unchanged.
-- **A run against the version Antithesis studied**, to settle §4's ambiguity.
+
+§4's open question — *which version?* — is closed: `main @ 4c8f61ac`, the
+study's own base, 45 runs, no reproduction.
 
 ## 7. Reproducing
 
@@ -228,10 +288,17 @@ sudo faultbox test poc/raft-cluster/faultbox.star
 ```
 
 ```
---- PASS: test_baseline_replication        (588ms)
---- PASS: test_isolate_leader_from_quorum  (846ms)   isolate: applies with no quorum = 0
---- PASS: test_one_way_partition           (433ms)
---- PASS: test_snapshot_install_livelock  (1604ms)   converged after round 0
---- PASS: test_transfer_during_partition  (2674ms)   accepted after recovery = 10
+--- PASS: test_baseline_replication        (736ms)
+--- PASS: test_isolate_leader_from_quorum  (819ms)   isolate: applies with no quorum = 0
+--- PASS: test_one_way_partition           (668ms)
+--- PASS: test_snapshot_install_livelock  (2534ms)   converged after round 0
+--- PASS: test_transfer_during_partition  (2761ms)   accepted after recovery = 10
 5 passed, 0 failed
+```
+
+Those timings are from `main @ 4c8f61ac`. Re-running against the v1.7.3 tag —
+the original pin — gives the same verdict:
+
+```bash
+go get github.com/hashicorp/raft@v1.7.3 && go build -o /tmp/raft-node .
 ```
