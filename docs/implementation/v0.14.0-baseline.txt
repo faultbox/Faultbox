@@ -1,0 +1,54 @@
+# v0.14.0 RFC-054 regression baseline
+#
+# Captured: 2026-07-28 on epic/v0.14.0-gvisor @ a47b5d9 (docs-only ahead of main @ 5cab15e)
+# Host: darwin/arm64, go version go1.26.1 darwin/arm64
+#
+# Every milestone diffs its regression-gate output against this file.
+# A pre-existing failure must not be read as a regression; a newly-skipped
+# test must not hide behind a green run.
+
+## go build ./...  +  go vet ./...  +  go test -race -count=1
+
+BUILD_OK
+VET_OK
+?   	github.com/faultbox/Faultbox	[no test files]
+ok  	github.com/faultbox/Faultbox/cmd/faultbox	2.201s
+ok  	github.com/faultbox/Faultbox/docs	5.898s
+ok  	github.com/faultbox/Faultbox/internal/bundle	5.415s
+ok  	github.com/faultbox/Faultbox/internal/compose	5.524s
+ok  	github.com/faultbox/Faultbox/internal/config	3.055s
+ok  	github.com/faultbox/Faultbox/internal/container	5.158s
+ok  	github.com/faultbox/Faultbox/internal/engine	3.643s
+ok  	github.com/faultbox/Faultbox/internal/eventsource	3.103s
+ok  	github.com/faultbox/Faultbox/internal/eventsource/decoder	2.282s
+ok  	github.com/faultbox/Faultbox/internal/generate	7.068s
+ok  	github.com/faultbox/Faultbox/internal/jwt	3.806s
+ok  	github.com/faultbox/Faultbox/internal/lock	6.256s
+?   	github.com/faultbox/Faultbox/internal/logging	[no test files]
+?   	github.com/faultbox/Faultbox/internal/mcp	[no test files]
+ok  	github.com/faultbox/Faultbox/internal/plan	4.986s
+ok  	github.com/faultbox/Faultbox/internal/protocol	8.659s
+ok  	github.com/faultbox/Faultbox/internal/proxy	8.599s
+ok  	github.com/faultbox/Faultbox/internal/proxy/sqlmatch	5.879s
+ok  	github.com/faultbox/Faultbox/internal/report	5.647s
+?   	github.com/faultbox/Faultbox/internal/seccomp	[no test files]
+ok  	github.com/faultbox/Faultbox/internal/star	6.738s
+?   	github.com/faultbox/Faultbox/internal/templates	[no test files]
+?   	github.com/faultbox/Faultbox/poc/demo/inventory-svc	[no test files]
+?   	github.com/faultbox/Faultbox/poc/demo/order-svc	[no test files]
+?   	github.com/faultbox/Faultbox/poc/mock-api	[no test files]
+?   	github.com/faultbox/Faultbox/poc/mock-db	[no test files]
+?   	github.com/faultbox/Faultbox/poc/target	[no test files]
+
+## Cross-compile gate (linux/arm64, CGO_ENABLED=0)
+
+CROSS_COMPILE_OK   ./cmd/faultbox/
+CROSS_COMPILE_OK   ./cmd/faultbox-shim/
+
+## Dependency-cost reference (RFC-054 M0.1 / M1 exit criteria)
+
+bin/faultbox (darwin/arm64, no gvisor):  47.4 MB
+
+# M1 reports the delta after gvisor.dev/gvisor lands. If the growth is
+# unacceptable, the fallback is a `nogvisor` build tag per the plan's
+# standing-risk table.

@@ -120,6 +120,12 @@ level below the glob.
 Claims below were checked against `gvisor.dev/gvisor@v0.0.0-20260728023034-41cfc418a32b`
 (resolved 2026-07-28), not from memory.
 
+> **Version caveat, from the M0.1 spike:** that pseudo-version is the correct source for the
+> API and schema facts below, but it **does not build as a module dependency** — see
+> [Decision record M0.1](#decision-record-m01--dependency-viability). The version this RFC
+> proposes to depend on is `v0.0.0-20260224225140-573d5e7127a8`. The API surface cited here
+> is unchanged between the two.
+
 ### Netstack is importable standalone
 
 `gvisor.dev/gvisor/pkg/tcpip` resolves as a normal Go module via pseudo-version. It is
@@ -634,6 +640,57 @@ per-milestone test lists live in
 Milestone 3 is deliberately placed early and is independent of every gVisor decision: it
 fixes a real bug (`/data/**` silently not matching) that users hit today, so the release
 delivers value even if a later milestone slips.
+
+## Decision records
+
+Milestone 0 produces evidence-backed answers to the open questions. Recorded here as they
+land.
+
+### Decision record M0.1 — Dependency viability
+
+**Date:** 2026-07-28. **Status:** resolved. **Outcome:** proceed, with a pinned version.
+
+**Pin `gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8` (2026-02-24). Do not track
+master.**
+
+The head pseudo-version `v0.0.0-20260728023034-41cfc418a32b` **cannot be built as a Go
+module dependency at all**:
+
+```
+$ go build gvisor.dev/gvisor/pkg/tcpip/stack
+found packages stack (addressable_endpoint_state.go) and bridge (bridge_test.go)
+  in .../gvisor.dev/gvisor@v0.0.0-20260728023034-41cfc418a32b/pkg/tcpip/stack
+```
+
+`pkg/tcpip/stack` contains two *different* external test package names in one directory —
+35 files `package stack`, 6 files `package stack_test`, and one file `package bridge_test`.
+That is invalid Go packaging, and it fails at import resolution, so no consumer of
+`pkg/tcpip/stack` can build. gVisor is built with Bazel upstream, which does not enforce
+the go-tool rule, so this is invisible to the gVisor CI.
+
+The chosen pin is the version [Tailscale](https://github.com/tailscale/tailscale/blob/main/go.mod)
+depends on — a useful canary, since a break there is noticed quickly by a large consumer.
+
+**Consequence for the plan:** dependency updates are a deliberate, tested step, never a
+routine `go get -u`. Milestone 1 adds a CI check that the pinned version still builds on
+all three targets, so an attempted bump fails loudly.
+
+**Everything else measured green:**
+
+| Check | Result |
+|---|---|
+| `darwin/arm64` build | ✅ |
+| `linux/arm64`, `CGO_ENABLED=0` | ✅ |
+| `linux/amd64`, `CGO_ENABLED=0` | ✅ |
+| `link/fdbased` (Linux insertion path, M4) | ✅ |
+| `link/channel`, `link/sniffer`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `adapters/gonet` | ✅ all targets |
+| **Go version bump required?** | **No.** The pin declares `go 1.25.5`; the project is on `go 1.26.1`. (Head would have forced `go >= 1.26.3` — another reason not to track master.) |
+| **`FaultEndpoint` decorator shape compiles and runs?** | **Yes.** A `stack.LinkEndpoint` decorator wrapping `link/channel` was accepted by `stack.CreateNIC`; NIC came up at MTU 1500. The design in §"The packet gateway" is validated, not assumed. |
+| Binary cost | Minimal main + the full netstack set = **6.5 MB**. Against `bin/faultbox`'s 47.4 MB baseline that is roughly **+13%** |
+| `go mod tidy` cost | ~4 min cold — gVisor's module graph is large. A CI cold-cache consideration, not a build-time one |
+
+**No `nogvisor` build tag is needed.** The standing-risk fallback in the plan is withdrawn:
++13% is not worth a second build configuration and the maintenance it implies.
 
 ## Dependencies
 
