@@ -232,7 +232,9 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 		}
 	}
 
-	rt.registerService(svc)
+	if err := rt.registerService(svc); err != nil {
+		return nil, err
+	}
 	return svc, nil
 }
 

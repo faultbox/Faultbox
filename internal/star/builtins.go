@@ -26,7 +26,11 @@ type parallelResult struct {
 // builtins returns all Starlark built-in functions for a runtime.
 func (rt *Runtime) builtins() starlark.StringDict {
 	out := starlark.StringDict{
-		"service":           starlark.NewBuiltin("service", rt.builtinService),
+		"service": starlark.NewBuiltin("service", rt.builtinService),
+		// Contract-driven callers (RFC-055). A topology entity in the same
+		// tier as service() and mock_service(): declared at spec load,
+		// bound to an interface, and its own actor in the trace.
+		"client":            starlark.NewBuiltin("client", rt.builtinClient),
 		"interface":         starlark.NewBuiltin("interface", builtinInterface),
 		"tcp":               starlark.NewBuiltin("tcp", builtinTCP),
 		"http":              starlark.NewBuiltin("http", builtinHTTP),
@@ -543,7 +547,9 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 		}
 	}
 
-	rt.registerService(svc)
+	if err := rt.registerService(svc); err != nil {
+		return nil, err
+	}
 	return svc, nil
 }
 

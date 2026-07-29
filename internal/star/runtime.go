@@ -226,6 +226,11 @@ type Runtime struct {
 	services map[string]*ServiceDef
 	order    []string // dependency order
 
+	// Declared clients (RFC-055) — populated at spec load by client().
+	// Guarded by rt.mu alongside the service registry, since the two share
+	// a name namespace.
+	clients map[string]*ClientVal
+
 	// Running sessions — populated during test execution.
 	sessions map[string]*runningSession
 
@@ -485,6 +490,7 @@ func New(logger *slog.Logger) *Runtime {
 		events:            NewEventLog(),
 		eng:               engine.New(logger),
 		services:          make(map[string]*ServiceDef),
+		clients:           make(map[string]*ClientVal),
 		sessions:          make(map[string]*runningSession),
 		faults:            make(map[string]map[string]*FaultDef),
 		proxyPlaceholders: make(map[string]proxyPlaceholderRef),
@@ -2021,13 +2027,24 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 }
 
 // registerService adds a service to the registry.
-func (rt *Runtime) registerService(svc *ServiceDef) {
+//
+// A name already taken by a client is refused: services and clients are
+// both trace actors keyed by name, so sharing one would fold two
+// participants into a single lane and vector clock (RFC-055 OQ-8). The
+// mirror check lives in client().
+func (rt *Runtime) registerService(svc *ServiceDef) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	if c, clash := rt.clients[svc.Name]; clash {
+		return fmt.Errorf("service(%q): a client is already named %q (bound to %s.%s)\n"+
+			"  clients and services share the trace's lane and vector-clock namespace; pick a distinct name",
+			svc.Name, svc.Name, c.Target.Service.Name, c.Target.Interface.Name)
+	}
 	svc.rt = rt
 	rt.services[svc.Name] = svc
 	// Rebuild dependency order.
 	rt.order = rt.dependencyOrder()
+	return nil
 }
 
 // dependencyOrder returns service names in topological order.
