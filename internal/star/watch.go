@@ -276,6 +276,16 @@ func (rt *Runtime) markWatchRan() {
 	rt.mu.Lock()
 	rt.watchRan = true
 	rt.mu.Unlock()
+
+	// Baseline the drop counter as the window opens. Everything dropped before
+	// this point belongs to work the watch is not looking at — most often the
+	// service's own boot, which for a database dwarfs the workload under test.
+	st := rt.fsObs
+	st.mu.Lock()
+	if st.sink != nil {
+		st.dropBaseline = st.sink.Dropped()
+	}
+	st.mu.Unlock()
 }
 
 // builtinWatchStop implements watch_stop(service).

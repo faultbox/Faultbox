@@ -135,6 +135,7 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`await_event`](#await_eventpredicate_or_matcher),
 [`await_stable`](#await_stablequiescence_window-ignore),
 [`sleep`](#sleepduration-clockwall-v0141),
+[`watch`](#watchservice-files-ops-runcallback-v0160),
 [`test`](#testname-body-setup-expect-timeout-terminate_when-clock),
 [`match`](#the-match-module).
 
@@ -1889,6 +1890,76 @@ def test_observe_then_fault():
     assert_eventually(service="inventory", syscall="write", path="*.wal")
     trace_stop(inventory)
 ```
+
+### `watch(service, files=[...], ops=[...], run=callback)` (v0.16.0)
+
+Observe a service's **file** I/O with resolved paths, for the duration of
+`run`. `watch_start()` / `watch_stop()` provide imperative control.
+
+```python
+def test_io_surface():
+    watch(pg, files = ["/**"], ops = ["write"], run = workload)
+
+    assert_never(lambda e: e.type == "file_io" and
+                 not e.data["path"].startswith("/var/lib/postgresql"))
+```
+
+**What this adds over syscall faults.** `trace()` can tell you a service made
+4,000 `write` calls; it cannot reliably tell you *which file*. A syscall
+carries a file descriptor, and resolving it means reading `/proc` out of band
+— which races the SUT and truncates. `watch()` gets the path from inside the
+sandbox at the moment of the call.
+
+Emits `file_io` events with `op`, `path`, `fd`, `result`, `pid`, and where
+applicable `count`, `offset`, `errno`, `process`, and `short` (a short
+transfer, the precondition for a torn record).
+
+#### Requirements
+
+- **Container-mode services only.** Trace sessions are a sandbox property; a
+  host binary has none.
+- **`determinism(runtime = "gvisor")`.**
+- **One-time host registration:** `sudo faultbox setup-trace`, then restart
+  Docker. A test run never does this for you — it writes `daemon.json`, and
+  applying it stops every container on the host.
+
+Each requirement fails at spec load naming the fix, rather than running and
+observing nothing.
+
+#### Which ops are available
+
+`open` and `write` are on by default. `read`, `close` and `connect` are
+**opt-in** at registration time (`setup-trace --with-read`, `--with-close`,
+`--with-connect`), because they roughly double trace traffic and risk dropped
+points — see below. Asking for an op the host does not send is a spec-load
+error, not a silent empty result.
+
+`fsync` is rejected outright: gVisor has no such trace point, so write
+*ordering* is provable and *durability* is not. A `watch()` cannot be turned
+into a durability audit.
+
+#### Completeness is enforced
+
+The canonical assertion here is negative — *"this service never wrote outside
+its data directory"* — and a negative assertion is only as strong as the trace
+behind it. So a run **fails** rather than passing when:
+
+| Condition | Why it cannot be trusted |
+|---|---|
+| No sandbox connected | Nothing was ever reported |
+| Points dropped during the window | The trace is a subset; the dropped one could be the violation |
+| Points matched no launched service | Observation ran and was discarded |
+| Decode error | The trace is incomplete |
+
+Measured: the sink starts dropping between roughly 17k and 47k points per
+second. Drops from *before* the watch window — a database's own boot, for
+instance — do not count against it.
+
+#### Observation only
+
+A trace point fires *after* the syscall completed. Short writes, torn writes,
+`fsync` lies and `ENOSPC`-after-N-bytes need a datapath that can change what
+the SUT sees; that is future work, not this primitive.
 
 ### `op(syscalls=[...], path=)`
 

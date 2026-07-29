@@ -27,6 +27,26 @@ type fsObservation struct {
 	containers map[string]string
 	sessions   map[string]*gvisor.TraceSession // service → session (unused; see attachTrace)
 	started    bool
+	// dropBaseline is the sink's drop count when the current watch window
+	// opened. Only drops DURING a window invalidate that window.
+	//
+	// Measured why: a bare postgres:16-alpine boot produces ~29k trace points
+	// and ~1.2k drops before any test body runs. A lifetime drop count would
+	// therefore fail every watch() on a real database for I/O the spec never
+	// looked at and could not have asserted on. The question the guard must
+	// answer is "was the observation complete while the watch was open", not
+	// "has this sink ever been overrun".
+	dropBaseline int64
+	// final is the observation summary captured at teardown.
+	//
+	// It exists because stopServices() — which closes the sink — runs BEFORE
+	// the per-test guard reads the state. Without it the guard sees started=
+	// false and connected=false on a run that observed perfectly well, and
+	// fails it claiming observation never started. A guard that fails correct
+	// runs is worse than no guard: it makes the feature unusable while looking
+	// like a safety feature. Caught on the first real end-to-end run, which
+	// resolved 128 paths and was then failed for seeing nothing.
+	final *fsSummary
 	// connected records whether any sandbox ever completed the handshake.
 	// A watch() window that ran while this is false observed nothing, and
 	// must not be reported as a pass.
@@ -36,6 +56,15 @@ type fsObservation struct {
 	// service. Non-zero means observation is running but the trace is being
 	// discarded — which looks exactly like "the SUT did no I/O".
 	unattributed int
+}
+
+// fsSummary is what the guard needs after the sink is gone.
+type fsSummary struct {
+	started      bool
+	connected    bool
+	windowDrops  int64
+	unattributed int
+	decodeErr    error
 }
 
 func newFSObservation() *fsObservation {
@@ -191,7 +220,28 @@ func (rt *Runtime) closeFSObservation(ctx context.Context) {
 	st.mu.Lock()
 	sink := st.sink
 	sessions := st.sessions
+	// Snapshot before the reset, so the guard can still tell a healthy run
+	// from a broken one after the sink is gone.
+	summary := &fsSummary{
+		started:      st.started,
+		connected:    st.connected,
+		unattributed: st.unattributed,
+		decodeErr:    st.decodeErr,
+	}
+	if sink != nil {
+		summary.windowDrops = sink.Dropped() - st.dropBaseline
+	}
+	st.final = summary
 	st.sink, st.sessions, st.started = nil, make(map[string]*gvisor.TraceSession), false
+	// Clear the container map too. It was left behind, so each test added its
+	// new sandbox's ID and the map grew: after the first test len(containers)
+	// was 2, which silently disabled the single-sandbox attribution fallback
+	// and made every ID mismatch an unattributed point. Symptom was the first
+	// tests in a suite passing and the later ones failing with "matched no
+	// launched service" — state leaking between tests, presenting as a
+	// property of test order.
+	st.containers = make(map[string]string)
+	st.unattributed = 0
 	st.mu.Unlock()
 
 	for svc, sess := range sessions {
@@ -243,7 +293,19 @@ func (rt *Runtime) routeFileIO(io seccheck.FileIO) {
 	}
 	if service == "" {
 		rt.fsObs.mu.Lock()
-		rt.fsObs.unattributed++
+		// Points that arrive before ANY container is registered are boot
+		// noise, not lost observation: --pod-init-config starts tracing at the
+		// sandbox's first instruction, which is necessarily before Docker has
+		// returned a container ID for Faultbox to record. Measured on a live
+		// Postgres: 3 such points per run, every run.
+		//
+		// Counting them would fail every watch() on a container that traces
+		// from boot — which is all of them — for I/O no watch window could
+		// have covered. Once at least one container IS known, an unattributed
+		// point is a genuine mismatch and does count.
+		if len(rt.fsObs.containers) > 0 {
+			rt.fsObs.unattributed++
+		}
 		rt.fsObs.mu.Unlock()
 		return
 	}
@@ -299,17 +361,31 @@ func (rt *Runtime) fsObservationFailure() string {
 	st := rt.fsObs
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if !st.started {
+
+	// Read the teardown snapshot when there is one: the sink is closed with
+	// the services, which happens before this runs.
+	started, connected := st.started, st.connected
+	unattributed, decodeErr := st.unattributed, st.decodeErr
+	var windowDrops int64
+	if st.sink != nil {
+		windowDrops = st.sink.Dropped() - st.dropBaseline
+	}
+	if f := st.final; f != nil {
+		started, connected = f.started, f.connected
+		unattributed, decodeErr, windowDrops = f.unattributed, f.decodeErr, f.windowDrops
+	}
+
+	if !started {
 		return "watch() ran but filesystem observation never started, so no I/O was seen"
 	}
-	if !st.connected {
+	if !connected {
 		return "watch() ran but no sandbox ever connected to the trace sink, so no I/O was seen. " +
 			"The services must be container-mode and launched under the " + gvisor.TraceRuntimeName +
 			" runtime, which carries the boot-time trace session; a container under plain runsc " +
 			"starts normally and reports nothing. Check: faultbox setup-trace --check"
 	}
-	if st.decodeErr != nil {
-		return fmt.Sprintf("filesystem observation hit a decode error, so the trace is incomplete: %v", st.decodeErr)
+	if decodeErr != nil {
+		return fmt.Sprintf("filesystem observation hit a decode error, so the trace is incomplete: %v", decodeErr)
 	}
 	// Dropped points make the observation a SUBSET of what happened, and the
 	// canonical watch() assertion is a negative one — "this service never
@@ -320,20 +396,18 @@ func (rt *Runtime) fsObservationFailure() string {
 	// Measured: the sink starts losing points between roughly 17k and 47k per
 	// second, and enabling read tracing took a read-heavy workload from zero
 	// drops to 1,488. Hence read being opt-in — see RFC-056 §0c.
-	if st.sink != nil {
-		if reason := droppedFailure(st.sink.Dropped()); reason != "" {
-			return reason
-		}
+	if reason := droppedFailure(windowDrops); reason != "" {
+		return reason
 	}
 	// Points arrived but belonged to no service we launched. Observation is
 	// running and the trace is being discarded, which looks identical to "the
 	// SUT did no I/O".
-	if st.unattributed > 0 {
+	if unattributed > 0 {
 		return fmt.Sprintf(
 			"filesystem observation received %d trace point(s) that matched no launched "+
 				"service, so they were discarded. The watch below saw less than the run "+
 				"produced; this usually means a container ID the Sentry reports differs from "+
-				"the one Faultbox recorded", st.unattributed)
+				"the one Faultbox recorded", unattributed)
 	}
 	return ""
 }

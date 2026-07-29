@@ -1,6 +1,7 @@
 package star
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -184,5 +185,78 @@ func TestGuard_DroppedPointsFail(t *testing.T) {
 	// Must not read as a spec bug: the author did nothing wrong.
 	if strings.Contains(got, "invalid") || strings.Contains(got, "error in") {
 		t.Errorf("reason should not blame the spec: %q", got)
+	}
+}
+
+// The guard must survive teardown. stopServices() closes the sink and resets
+// the live state BEFORE the per-test guard runs, so a guard reading only live
+// state sees started=false on a run that observed perfectly well and fails it
+// for seeing nothing.
+//
+// Caught on the first real end-to-end run: 128 paths resolved from a live
+// Postgres, then failed with "filesystem observation never started". A guard
+// that fails correct runs is worse than no guard — it makes the feature
+// unusable while looking like a safety feature.
+func TestGuard_ReadsTeardownSnapshot(t *testing.T) {
+	rt := gvisorRT(t)
+
+	// Simulate a healthy run that has already been torn down.
+	rt.fsObs.started = false
+	rt.fsObs.connected = false
+	rt.fsObs.final = &fsSummary{started: true, connected: true}
+
+	if got := rt.fsObservationFailure(); got != "" {
+		t.Errorf("a healthy run must stay healthy after teardown, got: %q", got)
+	}
+
+	// And a genuinely broken run must still be caught through the snapshot.
+	rt.fsObs.final = &fsSummary{started: true, connected: false}
+	if got := rt.fsObservationFailure(); !strings.Contains(got, "no sandbox ever connected") {
+		t.Errorf("a broken run must still fail through the snapshot, got: %q", got)
+	}
+
+	rt.fsObs.final = &fsSummary{started: true, connected: true, windowDrops: 12}
+	if got := rt.fsObservationFailure(); !strings.Contains(got, "dropped 12") {
+		t.Errorf("drops recorded at teardown must still fail the run, got: %q", got)
+	}
+}
+
+// Drops before the watch window opened belong to work the spec never looked
+// at — most often the service's own boot. A bare postgres:16-alpine boot
+// produces ~29k points and ~1.2k drops, which under a lifetime count would
+// fail every watch() on a real database.
+func TestGuard_DropsBeforeTheWindowDoNotCount(t *testing.T) {
+	rt := gvisorRT(t)
+	rt.fsObs.final = &fsSummary{started: true, connected: true, windowDrops: 0}
+	if got := rt.fsObservationFailure(); got != "" {
+		t.Errorf("boot-time drops outside the window must not fail the run, got: %q", got)
+	}
+}
+
+// Per-test state must not leak. closeFSObservation reset the sink and the
+// session map but left `containers` populated, so each test added its new
+// sandbox's ID and the map grew. With two entries the single-sandbox
+// attribution fallback disables itself, and every container-ID mismatch
+// becomes an unattributed point.
+//
+// The symptom was the first tests in a suite passing and the later ones
+// failing — state leaking between tests, presenting as a property of test
+// order rather than of the tests themselves.
+func TestCloseFSObservationClearsPerTestState(t *testing.T) {
+	rt := gvisorRT(t)
+	rt.fsObs.started = true
+	rt.fsObs.connected = true
+	rt.fsObs.containers = map[string]string{"container-from-test-1": "pg"}
+	rt.fsObs.unattributed = 3
+
+	rt.closeFSObservation(context.Background())
+
+	if n := len(rt.fsObs.containers); n != 0 {
+		t.Errorf("containers survived teardown (%d entries); the next test would see a "+
+			"stale sandbox and lose its attribution fallback", n)
+	}
+	if rt.fsObs.unattributed != 0 {
+		t.Errorf("unattributed count survived teardown (%d); the next test would inherit "+
+			"a failure it did not cause", rt.fsObs.unattributed)
 	}
 }

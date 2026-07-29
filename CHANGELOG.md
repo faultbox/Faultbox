@@ -13,6 +13,51 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+### Added — filesystem observation (RFC-056, v0.16.0)
+
+- **`watch(service, files=, ops=, run=)`** reports a service's file I/O with
+  **resolved paths**. Faultbox could already count `write` calls; it could not
+  reliably say *which file*, because a syscall carries a descriptor and
+  resolving it meant reading `/proc` out of band, racing the SUT. This closes
+  `fs-unmediated`, a determinism category that had emitted no events since
+  RFC-040 — file I/O outside declared paths was **silently undetected**.
+
+  Built in v0.14.0 and withdrawn before release: `runsc trace create`
+  instruments only tasks created *after* it attaches, so a network-driven
+  query against a running Postgres produced **2** trace points where the same
+  SQL from a freshly spawned process produced 1054. A watch that observes
+  nothing still runs, and every assertion under it still passes.
+
+  `--pod-init-config` installs the session at sandbox boot instead, so every
+  task is traced from its first instruction — **236** points on that same
+  workload, and 11,295 before any query at all.
+
+- **`faultbox setup-trace`** — one-time host registration, since the flag lives
+  in `daemon.json` rather than per container. Idempotent, reports every change
+  *and what it left alone*, and prints the Docker restart rather than
+  performing it: that restart stops every container on the host, so it belongs
+  to the operator. A test run never edits Docker configuration.
+
+- **Completeness is enforced, not assumed.** The canonical assertion is
+  negative — *"never wrote outside its data directory"* — and is only as strong
+  as the trace behind it. A run **fails** when no sandbox connected, when
+  points were dropped during the window, when points matched no launched
+  service, or on a decode error. Measured: the sink drops between roughly 17k
+  and 47k points/second. Drops from before the window — a database's own boot
+  — do not count against it.
+
+- **`read`, `close` and `connect` are opt-in** (`setup-trace --with-read`
+  etc.). Measured on a read-heavy workload, enabling reads took a run from
+  25,015 points and **zero** drops to 48,576 and **1,488** — which, under the
+  rule above, would fail the test. Asking for an op the host does not send is a
+  spec-load error naming the flag, not a silent empty result.
+
+Observation only: a trace point fires *after* the syscall, so short writes,
+torn writes and `fsync` lies need a datapath that can change what the SUT sees.
+gVisor has no `fsync` point at all, so write *ordering* is provable and
+durability is not — `ops=["fsync"]` is rejected rather than quietly returning
+nothing.
+
 ## [0.15.0] - 2026-07-29
 
 Contract-driven clients. Faultbox already read your OpenAPI and protobuf

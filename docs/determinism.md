@@ -158,7 +158,7 @@ These are intentional trade-offs accepted for the initial L1 contract. Each has 
 | **VDSO clock reads** | Go's `time.Now()` and many libc clock calls use the kernel VDSO fast path (`__vdso_clock_gettime`), which bypasses seccomp-notify entirely. The `clock` category therefore under-reports. | The `clock_gettime` raw syscall path IS caught; the VDSO path is not. Services that use `time.Now()` exclusively will not trigger `unmediated_io[clock]` even without tolerating the category. |
 | **`gettimeofday` VDSO** | `gettimeofday` is also VDSO-accelerated on all supported targets (amd64 and arm64). Faultbox intercepts the `gettimeofday` *syscall* path for completeness, but most callers never reach it. | Same as above — under-reports on platforms that stay in VDSO. |
 | **DNS over HTTPS/TLS (DoH/DoT)** | DNS queries tunnelled through HTTPS or TLS look like plain TCP/443 connects to Faultbox. They are classified as `network-unmediated` (port 443 is not port 53), not as `dns`. | The `dns` category only covers wire-DNS on port 53. |
-| **`fs-unmediated` not yet emitted** | The `fs-unmediated` category constant is accepted in `allow=` / `nondeterministic_ok=` lists but Faultbox does not emit events for it yet. | File I/O outside declared volume paths is silently undetected at L1. |
+| **Filesystem observation is opt-in and container-only** | `watch()` (v0.16.0) reports file I/O with resolved paths, but only for container-mode services on a host registered with `faultbox setup-trace`, and only for the trace points that host installs. | A binary-mode service, or an unregistered host, gets no file I/O visibility. Both fail loudly at spec load rather than observing nothing. |
 
 ## See also
 
@@ -195,8 +195,32 @@ Two honest caveats under the gVisor runtime:
   replay, and Faultbox cannot detect that. A predicate that *raises* is caught and fails
   the test.
 
-`fs-unmediated` remains a reserved category emitting no events. The `watch()` primitive
-that would implement it is specified in
-[RFC-056](rfcs/0056-filesystem-observation.md), target v0.16.0. The tracing mechanism is
-settled — see the [`-pod-init-config` spike](design/2026-07-29-pod-init-config-spike.md) —
-and what remains is host-configuration lifecycle.
+### `fs-unmediated` — implemented in v0.16.0
+
+The category emitted no events through v0.14.x: Faultbox could count a service's
+`write` calls but not name the file, because a syscall carries a descriptor and
+resolving it meant reading `/proc` out-of-band, which races the SUT. File I/O
+outside declared paths was therefore **silently undetected**.
+
+[`watch()`](spec-language.md) closes it. gVisor reports each operation from
+inside the sandbox with the path already resolved, so an audit can be written
+directly:
+
+```python
+watch(pg, files = ["/**"], ops = ["write"], run = workload)
+assert_never(lambda e: e.type == "file_io" and
+             not e.data["path"].startswith("/var/lib/postgresql"))
+```
+
+Two limits are worth stating plainly, because both were measured rather than
+assumed:
+
+- **Observation only.** A trace point fires *after* the syscall completed, so
+  short writes, torn writes and `fsync` lies cannot be injected here. That needs
+  a datapath that can change what the SUT sees — FUSE, deliberately out of scope
+  in [RFC-056](rfcs/0056-filesystem-observation.md).
+- **Completeness is enforced, not assumed.** A negative assertion is only as
+  strong as the trace behind it, so a run whose sandbox never connected, whose
+  points were dropped, or whose points could not be attributed **fails** rather
+  than passing on a partial view. The sink starts dropping between roughly 17k
+  and 47k points per second, which is why `read` tracing is opt-in.
