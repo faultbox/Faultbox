@@ -199,8 +199,10 @@ fault(db.main,
 
 - **It is below TLS.** Corrupting an encrypted stream gives you a MAC failure,
   not a semantic corruption.
-- **`bandwidth()` and `mtu()` are not here yet** — they need a token bucket and
-  real fragmentation handling. v0.14.1.
+- **`bandwidth()` and `mtu()` are link shapers, not packet rules** — they take
+  no matcher, because they describe the link rather than any packet crossing
+  it. Shipped in v0.14.1; see
+  [the spec reference](../../spec-language.md#link-shapers-bandwidth-and-mtu-v0141).
 - **Netstack's timers are wall-clock**, so a test that hinges on a TCP
   retransmit deadline is timing-sensitive.
 

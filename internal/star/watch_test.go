@@ -98,8 +98,14 @@ def test_w():
 	if res.Result != "fail" {
 		t.Fatal("watch() was accepted; it cannot observe reliably in this release")
 	}
-	if !strings.Contains(res.Reason, "v0.14.1") {
-		t.Errorf("reason should name the release it lands in, got: %s", res.Reason)
+	// The message must name a release that has NOT shipped. It said "v0.14.1"
+	// until v0.14.1 shipped without watch(), at which point the guidance users
+	// saw was simply false — the hazard of naming a version in a user-facing
+	// string. Assert on both the RFC and the target so the pair stays honest.
+	for _, want := range []string{"RFC-056", "v0.15.0"} {
+		if !strings.Contains(res.Reason, want) {
+			t.Errorf("reason should name %s, got: %s", want, res.Reason)
+		}
 	}
 	if !strings.Contains(res.Reason, "Packet faults") {
 		t.Errorf("reason should say packet faults still work, got: %s", res.Reason)

@@ -305,15 +305,21 @@ func (rt *Runtime) builtinWatchStop(thread *starlark.Thread, fn *starlark.Builti
 // than not shipping it.
 //
 // The fix is runsc's -pod-init-config, which installs trace sessions at
-// sandbox boot so every task is instrumented. That is a runtime-level flag
-// registered in daemon.json rather than a per-container option, so it needs a
-// design of its own; it lands in v0.14.1.
+// sandbox boot so every task is instrumented. A 2026-07-29 spike confirmed it
+// works: 236 trace points on the same network-driven query that yielded 2, and
+// 11,295 before any query at all.
+//
+// What is left is not tracing. -pod-init-config is a runtime-level flag in
+// daemon.json, so the sink path becomes host-wide state that concurrent runs
+// collide on — the same class of problem as the shared faultbox0 TUN name
+// v0.14.1 fixed, one layer up. That is specified in RFC-056, target v0.15.0.
 func (rt *Runtime) requireFileObservation(what string) error {
 	return fmt.Errorf(
-		"%s is not available in v0.14.0. gVisor's trace sessions only instrument tasks created "+
+		"%s is not available yet. gVisor's trace sessions only instrument tasks created "+
 			"after the session starts, and Faultbox attaches one after the service is healthy — so a "+
 			"watch would observe almost nothing and its assertions would be vacuous. "+
-			"Landing in v0.14.1 via runsc -pod-init-config (see RFC-054 decision record M5). "+
+			"The tracing fix is proven (runsc -pod-init-config); what remains is that the flag is "+
+			"host-wide daemon.json state. Tracked as RFC-056, target v0.15.0. "+
 			"Packet faults (packet_drop, packet_delay, ...) are unaffected and work today",
 		what)
 }

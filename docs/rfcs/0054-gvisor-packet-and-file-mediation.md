@@ -1,6 +1,10 @@
 # RFC-054: gVisor Adoption — Packet-Level Network Faults & File-Level I/O Observation
 
-> **Status: Implemented (v0.14.0)** for packet faults; `watch()` deferred to v0.14.1.
+> **Status: Implemented.** Packet faults v0.14.0; `bandwidth()`/`mtu()` v0.14.1.
+> `watch()` is **split out to [RFC-056](0056-filesystem-observation.md)**, target v0.15.0 —
+> the tracing mechanism is settled (see the
+> [`-pod-init-config` spike](../design/2026-07-29-pod-init-config-spike.md)); what remains
+> is host-configuration lifecycle, which is its own design.
 > 2026-07-28. Target: **v0.14.0**. Branch: `epic/v0.14.0-gvisor`.
 > Implements [RFC-046](0046-beyond-l1-roadmap.md) **Path B** and introduces a third path
 > (**Path C-lite**) that RFC-046 did not consider. Uses the L0–L5 vocabulary from
@@ -643,9 +647,11 @@ see below.
   TCP MSS and fragments — a real small-MTU path, not the `packet_drop(len_gt=)`
   approximation scenario 8 had to use. Measured on the corpus: at 64kbit the c2s
   direction admitted 76 packets with a 38ms peak backlog; at 256kbit, 9ms.
-- **`watch()` filesystem observation — v0.14.1.** The sink ships in v0.14.0; the primitive
-  is gated off until trace sessions can be installed at sandbox boot via
-  `-pod-init-config`. See Decision record M5.
+- **`watch()` filesystem observation — [RFC-056](0056-filesystem-observation.md), v0.15.0.**
+  The sink ships in v0.14.0 and is unchanged. A 2026-07-29 spike confirmed
+  `-pod-init-config` fixes the tracing gap M5 measured (236 points on a network-driven
+  query, versus 2; 11,295 at sandbox boot). What remains is that the flag is host-wide
+  `daemon.json` state, which needs its own design — hence a separate RFC.
 - **FUSE datapath for byte-level filesystem injection** — short writes, torn writes, fsync
   lies, bit-rot, `ENOSPC` after N bytes. The natural v0.15.x follow-on, and the reason
   `watch()` is specified as observation-only rather than as a fault primitive: the fault
@@ -979,7 +985,9 @@ instrumented from the first instruction. It is a **runtime-level** flag register
 `daemon.json` (`runtimeArgs`), not a per-container option, so it needs its own design:
 the config is host-wide and shared by every runsc container, which interacts badly with
 concurrent runs and with users who already run gVisor for other reasons. That design is
-v0.14.1 work, alongside `bandwidth()` and `mtu()`.
+its own design. **Resolved 2026-07-29:** the mechanism works — see the
+[spike](../design/2026-07-29-pod-init-config-spike.md) — and the remaining host-config
+problem is specified in [RFC-056](0056-filesystem-observation.md), target v0.15.0.
 
 ## Dependencies
 
