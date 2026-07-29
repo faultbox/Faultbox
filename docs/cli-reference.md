@@ -194,6 +194,7 @@ instead). See [bundles.md](bundles.md) for the archive layout.
 faultbox inspect <bundle.fb>                    # summary + file list
 faultbox inspect <bundle.fb> <path-in-archive>  # dump one file to stdout
 faultbox inspect <bundle.fb> --extract <dir>    # extract all to dir
+faultbox inspect --clients <spec.star>          # generated client operations
 ```
 
 **Summary mode** prints a scannable header (producer version, run
@@ -206,6 +207,22 @@ the archive file list.
 **Extract mode** writes every file to a directory, preserving the
 `spec/`, `services/` substructure and setting `replay.sh` executable.
 
+**Clients mode** (RFC-055) takes a `.star` spec rather than a bundle and
+prints each [`client()`](spec-language.md#clientname-target-openapi-descriptors-)'s
+generated operation table — the call you would write next to the wire
+target it maps to. This is the answer to "what can I call?", and it's
+where an unknown-operation error points you.
+
+```
+mobile-app
+  target:    orders.public (http)
+  contract:  openapi:./orders.openapi.yaml@1.4.0
+  validate:  response
+  operations (2):
+    create_order(body)     POST /orders
+    get_order(order_id)    GET /orders/{orderId}
+```
+
 **Examples:**
 
 ```bash
@@ -213,6 +230,7 @@ faultbox inspect run-2026-04-22-42.fb
 faultbox inspect run-*.fb manifest.json | jq '.summary'
 faultbox inspect run-*.fb trace.json | jq '.tests[0].diagnostics'
 faultbox inspect run-*.fb --extract ./unpacked/
+faultbox inspect --clients faultbox.star
 ```
 
 **Version banner:** if the bundle was produced by a different

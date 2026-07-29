@@ -2517,9 +2517,12 @@ func faultboxVersion() string {
 func inspectCmd(args []string) int {
 	var extractDir string
 	var bundlePath, fileArg string
+	var clients bool
 
 	for len(args) > 0 {
 		switch {
+		case args[0] == "--clients":
+			clients = true
 		case strings.HasPrefix(args[0], "--extract="):
 			extractDir = strings.TrimPrefix(args[0], "--extract=")
 		case args[0] == "--extract" && len(args) > 1:
@@ -2542,6 +2545,22 @@ func inspectCmd(args []string) int {
 			return 1
 		}
 		args = args[1:]
+	}
+
+	// --clients inspects a .star spec rather than a bundle: the generated
+	// operation table is a property of the contract, not of a run.
+	if clients {
+		if bundlePath == "" {
+			fmt.Fprintln(os.Stderr, "faultbox inspect --clients: spec path required")
+			printInspectUsage()
+			return 1
+		}
+		if extractDir != "" || fileArg != "" {
+			fmt.Fprintln(os.Stderr, "faultbox inspect --clients takes a spec path only")
+			printInspectUsage()
+			return 1
+		}
+		return printSpecClients(os.Stdout, bundlePath)
 	}
 
 	if bundlePath == "" {
@@ -2687,11 +2706,13 @@ USAGE
   faultbox inspect <bundle.fb>                    # summary + file list
   faultbox inspect <bundle.fb> <path-in-archive>  # dump one file to stdout
   faultbox inspect <bundle.fb> --extract <dir>    # extract all to dir
+  faultbox inspect --clients <spec.star>          # generated client operations
 
 EXAMPLES
   faultbox inspect run-2026-04-22-42.fb
   faultbox inspect run-2026-04-22-42.fb manifest.json | jq .summary
   faultbox inspect run-2026-04-22-42.fb --extract ./unpacked/
+  faultbox inspect --clients faultbox.star
 `
 	fmt.Fprint(os.Stderr, usage)
 }

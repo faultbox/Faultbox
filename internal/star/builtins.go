@@ -2367,7 +2367,7 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 		// never have matched. Same for unmediated_io (RFC-040) and packet
 		// (RFC-054): a predicate naming them returned an empty list and the
 		// author had no way to tell "no such events" from "not allowed here".
-		if whereFn == nil && ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
+		if whereFn == nil && !dictFilterQueryable(ev.Type) {
 			continue
 		}
 
@@ -2389,6 +2389,28 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 	}
 
 	return starlark.NewList(result), nil
+}
+
+// dictFilterQueryable gates which event types the *dict-filter* form of
+// events() returns — events(service=…, syscall=…, decision=…). The where=
+// form has no type gate at all; see the call site.
+//
+// The original four are observation streams: syscalls and event-source
+// output. RFC-055 adds the client types, because a spec's whole reason to
+// name a client is to ask what that client did, and `events(service=
+// "mobile-app")` should answer it.
+//
+// step_send / step_recv stay out deliberately. Admitting them would change
+// what events() returns for every spec written before now — a silent
+// behaviour change to existing assertions. Client events are additive: no
+// spec predating RFC-055 can have any.
+func dictFilterQueryable(typ string) bool {
+	switch typ {
+	case "syscall", "stdout", "topic", "wal",
+		"client_call", "client_return", "contract_violation":
+		return true
+	}
+	return false
 }
 
 func formatFilters(filters []eventFilter) string {
