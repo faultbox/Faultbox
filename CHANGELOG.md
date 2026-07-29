@@ -13,6 +13,20 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.15.0] - 2026-07-29
+
+Contract-driven clients. Faultbox already read your OpenAPI and protobuf
+contracts to build the dependencies you can't run; this release reads them
+from the other side, to build the callers that drive your service — and
+makes each caller a named actor in the trace rather than one anonymous
+`test` lane.
+
+The half that isn't ergonomics: with the contract loaded caller-side,
+"under fault, the service still returned what it published" becomes a
+one-kwarg check. Degraded-but-schema-invalid responses and undeclared
+status codes surface as findings without anyone guessing which field to
+assert on.
+
 ### Added
 
 - **Contract-driven clients — `client()`
