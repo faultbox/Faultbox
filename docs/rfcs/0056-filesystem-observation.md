@@ -33,6 +33,11 @@ collide on.
 That is a smaller uncertainty and a larger plumbing problem than RFC-054 deferred, which
 is why it is a release rather than a patch.
 
+The proposed resolution is to stop asking the host to enforce honesty. Configure the trace
+session to **tolerate** an absent sink, so a registration left on an idle machine is inert,
+and enforce "this run observed nothing" in Faultbox — which already does exactly that for
+packet faults, and has caught two real false passes doing it.
+
 ## Motivation
 
 ### What users cannot express today
@@ -74,7 +79,8 @@ The spike confirmed all three concerns and sharpened them into concrete failure 
    including ones unrelated to Faultbox.
 
 Point 3 is the one that makes this a design problem rather than a plumbing task: the
-honest configuration is also the dangerous one, and the RFC has to reconcile that.
+honest configuration is also the dangerous one. The proposed design reconciles it by
+moving the honesty requirement off the host and into Faultbox.
 
 ## Verified ground truth
 
@@ -90,10 +96,15 @@ and the [2026-07-29 spike](../design/2026-07-29-pod-init-config-spike.md).
 | `pwrite64` is distinguishable from `write` | By `sysno`, with true byte offsets (M0.3) |
 | `openat` paths reconstruct correctly | From dirfd + pathname + cwd (M0.3) |
 | gVisor has no `fsync` trace point | M0.3 — see "Open questions" |
+| `ignore_setup_error: true` + **absent** sink | Container boots normally, untraced — a stale registration is inert, not a landmine |
+| `ignore_setup_error: true` + **present** sink | Tracing works unchanged; points arrive as usual |
 
-**The one thing not yet measured** is whether the per-run daemon reconfiguration this RFC
-proposes is fast enough to be tolerable. That is the first implementation milestone, and
-it gates the rest.
+The last two are what make the proposed design possible and were measured on 2026-07-29
+specifically to check it, because the design rests entirely on them.
+
+**Still unmeasured:** the overhead a traced-but-unwatched container pays, which bears on
+whether the runtime can be registered broadly or must be opt-in per service. That is the
+first implementation milestone.
 
 ## Non-goals
 
@@ -126,53 +137,77 @@ faultbox run ──> needs a UDS sink at a path only it knows
 ```
 
 The sink path must reach the sandbox through host configuration, but it is per-run data.
-Three candidate resolutions.
 
-### Candidate A — dedicated runtime, stable socket directory
+Two constraints follow, and they shape everything below:
 
-Register one runtime, `faultbox-trace`, pointing at a **fixed** pod-init config whose sink
-endpoint is a **fixed** path (`/run/faultbox/seccheck.sock`). Each run binds that path;
-concurrent runs are serialised by a lock file.
+1. **Host setup must be one-time and explicit.** A test run that rewrites `daemon.json`
+   and restarts the Docker daemon would kill every unrelated container on the machine.
+   Whatever the design, per-run it must touch no host state.
+2. **A stale registration must not break the host.** With `ignore_setup_error: false` —
+   the setting the spike used — a sandbox refuses to boot when the sink is absent. Between
+   Faultbox runs there *is* no sink, so a one-time registration would stop **every** gVisor
+   container on that machine, including ones unrelated to Faultbox.
 
-- **Pro:** `daemon.json` is written once, at `faultbox init`, never per run. No daemon
-  restarts on the hot path.
-- **Con:** concurrent runs cannot both trace. Acceptable for a laptop, wrong for CI.
-- **Con:** a crashed run leaves a dead socket and the next sandbox refuses to boot —
-  needing exactly the orphan-reaping logic v0.14.1 added for TUN devices.
+Constraint 2 is the hard one, because the honest setting is the dangerous one.
 
-### Candidate B — per-run runtime registration
+### Proposed: tolerate the missing sink, and fail loudly on our side
 
-Write `faultbox-trace-<pid>` into `daemon.json` at run start, restart the daemon, remove
-it at teardown.
+Set **`ignore_setup_error: true`** and move the honesty requirement out of the host
+config and into Faultbox, where it already has a proven home.
 
-- **Pro:** concurrent runs are fully isolated, by construction.
-- **Con:** a Docker daemon restart per run. Cost unmeasured; likely seconds, and it
-  disrupts every other container on the host. Probably disqualifying, but it should be
-  measured rather than assumed.
+**Measured 2026-07-29**, both halves:
 
-### Candidate C — sink multiplexer (**recommended**)
+| Sink | `ignore_setup_error` | Result |
+|---|---|---|
+| absent | `true` | container **boots normally**, untraced |
+| present | `true` | tracing **works** — points arrive as usual |
 
-One long-lived registration as in A, but the fixed socket is served by a **demultiplexer**
-that routes points to the run that owns the container.
+So a registration left on a machine with no Faultbox running is inert, not a landmine.
+Unrelated gVisor containers are unaffected whether or not a sink exists.
 
-Each trace point carries `container_id` in its context fields — already requested by
-`FileIOPoints()` and already decoded. A small resident sink accepts every sandbox's
-connection and forwards each point to whichever run has registered an interest in that
-container ID.
+That trade would be unacceptable on its own — a run could now be silently untraced, which
+is precisely why v0.14.0 withdrew `watch()` rather than shipping it with a caveat. What
+makes it acceptable is that Faultbox already has the guard, and it is proven:
 
-- **Pro:** concurrent runs work, with no daemon restart on the hot path.
-- **Pro:** the socket is always present, so the `ignore_setup_error: false` hazard —
-  a stale registration breaking unrelated gVisor containers — disappears. Points for
-  containers nobody claims are simply discarded.
-- **Con:** a resident process, with its own lifecycle, upgrade story, and failure modes.
-- **Con:** points for unclaimed containers cross the socket and are dropped. That is
-  overhead the user did not ask for on containers they did not fault, which needs
-  measuring against the "unfaulted services run at native speed" principle.
+```
+packet faults were installed 8 time(s) but no netstack gateway was attached,
+so no packet was affected; the result below would be meaningless
+```
 
-**Recommendation: C**, with A as the fallback if the resident process proves unjustified.
-C is the only candidate where the honest configuration (`ignore_setup_error: false`) is
-also the safe one, and that reconciliation is the central problem this RFC exists to
-solve.
+That check (`packetRuleRegistry.unwiredInstalls`) turned a run of 18 leaves that all
+reported success into a loud failure, twice during v0.14.1's development — once from a
+leaked TUN device, once from a leaked one under a different cause. The same shape applies
+directly: **`watch()` was installed, zero trace points arrived → fail the test.** The
+spec author cannot get a vacuous green either way; the difference is only whether the
+enforcement lives in the host's config or in ours.
+
+Ours is better placed. It knows whether this run asked for observation, and the host does
+not.
+
+### What the user does, once
+
+```json
+"faultbox-trace": {
+  "path": "/usr/local/bin/runsc",
+  "runtimeArgs": ["--pod-init-config=/etc/faultbox/trace.json"]
+}
+```
+
+Plus one daemon restart, at install time, and only for users of `watch()`. Packet faults,
+syscall faults and the proxies need none of it. Per run, Faultbox writes no host state at
+all: it binds its sink at the configured path, runs, and unbinds.
+
+### Concurrency, deliberately deferred
+
+Two runs on one host both want the same socket path. The second `bind` fails, its
+containers boot untraced, and the guard fails that run with a clear message naming the
+cause. That is a correct outcome, if a blunt one, and it needs no extra machinery.
+
+Routing by `container_id` — which every trace point already carries, and which the decoder
+already parses — would let concurrent runs share one sink. That is a worthwhile follow-on
+and explicitly **not** a precondition: it buys throughput, not correctness, and pricing a
+resident multiplexer process into v1 to buy throughput nobody has asked for yet is the
+wrong trade.
 
 ### What does not change
 
@@ -208,6 +243,20 @@ free and should not be described as if it were.
   primitive, with the container-only limitation stated at the point of use.
 
 ## Alternatives considered
+
+- **A resident sink multiplexer** (the first draft's recommendation). One long-lived
+  process owning the socket permanently, routing by `container_id`, so the endpoint is
+  always present and `ignore_setup_error: false` stays safe. Superseded: measuring
+  `ignore_setup_error: true` showed the socket does not need to be always present, which
+  removes the entire reason for the resident process. Its routing idea survives as the
+  concurrency follow-on above.
+- **Per-run runtime registration** — write `faultbox-trace-<pid>` into `daemon.json` at
+  run start, restart the daemon, remove it at teardown. Fully isolates concurrent runs,
+  and disqualified by the restart: seconds of latency per run, and it disrupts every other
+  container on the host.
+- **A fixed socket path with `ignore_setup_error: false`** and a lock file to serialise
+  runs. Simple, and it leaves the landmine: any period with no Faultbox running breaks
+  every gVisor container on the machine.
 
 - **Ship `watch()` with a caveat in v0.14.0.** Rejected then and still rejected: a
   `watch()` that observes 2 of 1054 operations still *runs*, and every assertion under it

@@ -105,21 +105,43 @@ implementation must answer:
    gVisor container on the host, including ones that have nothing to do with
    Faultbox.
 
-A dedicated runtime name (`faultbox-runsc-trace`) registered on demand and
-pointing at a stable per-run socket directory is the obvious direction, but the
-daemon restart is the sticking point and needs a real answer before this is
-worth building.
+A dedicated runtime name (`faultbox-trace`) registered once at install time is
+the obvious direction; the daemon restart is only tolerable if it happens then
+and never per run.
+
+**Follow-up measurement, same day.** Problem 3 turns out to be avoidable.
+Setting `ignore_setup_error: true` was measured both ways:
+
+| Sink | Result |
+|---|---|
+| absent | container **boots normally**, untraced |
+| present | tracing **works** — points arrive as usual |
+
+So a registration left on an idle machine is inert rather than a landmine, and
+unrelated gVisor containers are never affected. The honesty that setting gives
+up is recovered on the Faultbox side by the guard that already exists for
+packet faults (`unwiredInstalls`): *`watch()` was installed, zero trace points
+arrived → fail the test.* That check turned an 18-leaf run reporting all-success
+into a loud failure twice during v0.14.1, so it is not a hypothetical.
+
+This removes the need for a resident multiplexer process entirely. See
+[RFC-056](../rfcs/0056-filesystem-observation.md).
 
 ## Verdict
 
-`watch()` is **unblocked on the mechanism** and **blocked on the integration**.
-The decoder, the DSL, the event schema and the path matching all shipped in
-v0.14.0 and are unchanged by this. What remains is host-config lifecycle, not
-tracing.
+`watch()` is **unblocked**. The decoder, the DSL, the event schema and the path
+matching all shipped in v0.14.0 and are unchanged by any of this.
 
-That is a materially different problem from the one M5 deferred — smaller in
-uncertainty, larger in plumbing — so `watch()` should be scoped as its own
-release rather than folded into a patch line.
+What remains is host-config lifecycle rather than tracing, and the follow-up
+measurement shrank it further: with `ignore_setup_error: true` the registration
+is inert when idle, so there is no resident process to build and no landmine to
+defuse. The residue is a one-time `daemon.json` entry, a Faultbox-side guard
+that already exists in another form, and a concurrency story that can be blunt
+in v1.
+
+Still its own release rather than a patch line — it introduces a host setup
+step, and that deserves a version boundary and release notes rather than
+arriving inside a patch. But the uncertainty M5 deferred is gone.
 
 ## Reproducing
 
