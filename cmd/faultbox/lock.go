@@ -26,9 +26,9 @@ func newQuietLogger() *slog.Logger {
 
 // lockCmd implements `faultbox lock` per RFC-030. Three modes:
 //
-//	faultbox lock [spec.star]            # generate, write faultbox.lock
-//	faultbox lock --check [spec.star]    # exit 0 if matches, 2 if drifted
-//	faultbox lock --update [spec.star]   # alias for the default; explicit-update intent
+//   faultbox lock [spec.star]            # generate, write faultbox.lock
+//   faultbox lock --check [spec.star]    # exit 0 if matches, 2 if drifted
+//   faultbox lock --update [spec.star]   # alias for the default; explicit-update intent
 //
 // All three resolve the same way: load the spec to enumerate every
 // image= reference, then ask Docker for the canonical digest of each.
