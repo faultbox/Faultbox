@@ -215,6 +215,44 @@ can only claim "never, among those I saw", which is not the assertion the author
 `watch()` installed with zero points observed. Both are cases where the run saw less than
 it claims to have seen, and neither is a number to tune quietly.
 
+### The default trace point set must be narrow
+
+RFC-054's `FileIOPoints()` requests **eight** points: `openat`, `write`, `pwrite64`,
+`writev`, `read`, `pread64`, `close`, `connect`. That was written before drops were known
+to matter. Measured on a read-heavy workload — write 20 MB, read it back four times:
+
+| Trace points requested | Points delivered | **Dropped** |
+|---|---|---|
+| 3 — `openat`, `write`, `pwrite64` | 25,015 | **0** |
+| 8 — the RFC-054 default | 48,576 | **1,488** |
+
+Reads roughly double the volume, and the drop count goes from zero to fifteen hundred on
+a workload that is not extreme. Under the rule above — drops fail the test — **the
+inherited default would make `watch()` fail on ordinary read-heavy services.**
+
+So the shipped default is the narrow set: `openat`, `write`, `pwrite64`, `writev`.
+`read`, `pread64`, `close` and `connect` are **opt-in at `setup-trace` time**, with this
+measurement as the stated reason.
+
+Two consequences for the implementation:
+
+- **The DSL must reject ops the installed session cannot deliver.** `watchableOps`
+  already accepts `read` and `close`; if the host's trace config does not request them, a
+  `watch(ops=["read"])` would observe nothing and its assertions would pass vacuously —
+  the precise failure v0.14.0 withdrew `watch()` to avoid, reintroduced through the back
+  door. It must fail at spec load naming the fix
+  (`faultbox setup-trace --with-read`), exactly as `ops=["fsync"]` already fails naming
+  gVisor's missing trace point.
+- **Volume reaching the event log is already bounded.** `onFileIO` discards any operation
+  no active `watch()` matches before it becomes an event, so `watch(files=["/var/lib/**"])`
+  costs report size proportional to what the spec asked about, not to what the service
+  did. The cost this section is about is upstream of that: points that cross the socket
+  only to be discarded, and the drops they cause.
+
+The division of labour: **the spec author declares what matters** (`files=`, `ops=`), and
+the host config is the conservative floor that keeps the channel honest. Neither should
+try to capture everything.
+
 ### What the user does, once
 
 ```json
@@ -304,10 +342,12 @@ free and should not be described as if it were.
 
 ## Open questions
 
-1. **Does `close` matter?** Without it, a "file was opened and never closed" assertion is
-   inexpressible. gVisor has the point; the cost is more traffic on the sink.
-2. **`read` points** — RFC-054 scoped to writes and opens. Reads would make "did the
-   config reload actually re-read the file" expressible, at a large volume increase.
+1. ~~**Does `close` matter?**~~ **Resolved:** available, but off by default and opt-in via
+   `setup-trace`, on the volume evidence above. "Opened and never closed" stays
+   expressible for those who turn it on and accept the cost.
+2. ~~**`read` points**~~ **Resolved:** off by default. Measured at ~2× volume and 1,488
+   dropped points on a read-heavy workload, which under the drop rule would fail the test
+   outright. Opt-in, with the measurement as the documented reason.
 3. **`fsync` has no trace point** (M0.3). Durability auditing — RFC-054's scenario 10 —
    stays impossible. Is that worth an upstream contribution to gVisor?
 4. **Multiplexer overhead on unclaimed containers.** How much does a traced-but-unwatched
