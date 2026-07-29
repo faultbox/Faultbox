@@ -102,9 +102,17 @@ and the [2026-07-29 spike](../design/2026-07-29-pod-init-config-spike.md).
 The last two are what make the proposed design possible and were measured on 2026-07-29
 specifically to check it, because the design rests entirely on them.
 
-**Still unmeasured:** the overhead a traced-but-unwatched container pays, which bears on
-whether the runtime can be registered broadly or must be opt-in per service. That is the
-first implementation milestone.
+| Traced-but-unwatched overhead | **~18%** on a 280 k points/sec workload; **zero** when the runtime is registered but idle |
+| Sink drop threshold | **0 drops below ~17 k points/sec; drops appear by ~47 k/s** |
+
+The last two were measured on 2026-07-29 as milestone 0 (see the
+[implementation plan](../implementation/v0.16.0-rfc-056-plan.md)). They settle the
+open design branch — **the runtime is registered broadly, not opt-in per service** —
+because the idle cost is nil and the active cost is bounded and only reached by
+workloads that are themselves unusual.
+
+The drop threshold was not anticipated by this RFC and changes it; see
+"Dropped points are a correctness boundary" below.
 
 ## Non-goals
 
@@ -183,6 +191,29 @@ enforcement lives in the host's config or in ours.
 
 Ours is better placed. It knows whether this run asked for observation, and the host does
 not.
+
+### Dropped points are a correctness boundary
+
+Milestone 0 measured the sink losing points above roughly 17,000 per second:
+
+| Trace points | Rate | Dropped |
+|---|---|---|
+| 4,910 | 17 k/s | 0 |
+| 19,927 | 47 k/s | 76 |
+| 104,212 | 280 k/s | 94 |
+
+`seccheck.Sink.Dropped()` already exists, and its v0.14.0 comment anticipated why it
+would matter: *"Non-zero means the sink could not keep up and the observation is
+incomplete — which must be surfaced, not averaged away."*
+
+That is now load-bearing rather than defensive. The canonical use of `watch()` is an
+audit — *this service never writes outside its data directory* — and a dropped point
+could be the violating one. An audit that missed 76 operations cannot claim "never"; it
+can only claim "never, among those I saw", which is not the assertion the author wrote.
+
+**So a non-zero drop count fails the test**, by the same rule and for the same reason as
+`watch()` installed with zero points observed. Both are cases where the run saw less than
+it claims to have seen, and neither is a number to tune quietly.
 
 ### What the user does, once
 
