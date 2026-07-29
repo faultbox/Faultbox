@@ -30,9 +30,11 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// Contract-driven callers (RFC-055). A topology entity in the same
 		// tier as service() and mock_service(): declared at spec load,
 		// bound to an interface, and its own actor in the trace.
-		"client":            starlark.NewBuiltin("client", rt.builtinClient),
-		"interface":         starlark.NewBuiltin("interface", builtinInterface),
-		"tcp":               starlark.NewBuiltin("tcp", builtinTCP),
+		"client":    starlark.NewBuiltin("client", rt.builtinClient),
+		"interface": starlark.NewBuiltin("interface", builtinInterface),
+		"tcp":       starlark.NewBuiltin("tcp", builtinTCP),
+		// Protocol-aware readiness — asks the service, not the port.
+		"ready":             starlark.NewBuiltin("ready", builtinReady),
 		"http":              starlark.NewBuiltin("http", builtinHTTP),
 		"kafka_ready":       starlark.NewBuiltin("kafka_ready", builtinKafkaReady),
 		"delay":             starlark.NewBuiltin("delay", builtinDelay),
@@ -607,6 +609,42 @@ func builtinInterface(thread *starlark.Thread, fn *starlark.Builtin, args starla
 }
 
 // tcp(addr, timeout=)
+// builtinReady implements ready(timeout=) — protocol-aware readiness.
+//
+// tcp() and http() ask whether something is listening. For a container that
+// becomes true the moment Docker's port proxy binds, which is before the
+// service itself has started: measured at 0ms against a Postgres needing ~10
+// seconds. Every test then ran against a backend that was not up, and — with
+// no assertion on the result — passed.
+//
+// ready() asks the service instead, using the protocol plugin for the
+// interface and the credentials the spec already declared. "Ready" then means
+// the server answered a query, not that a port was bound.
+// readyScheme marks a healthcheck that resolves against the service's own
+// protocol at launch time, when the interface, its mapped port and the
+// declared credentials are all known.
+const readyScheme = "ready://"
+
+func builtinReady(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) > 0 {
+		return nil, fmt.Errorf("ready() takes no positional arguments; it uses the service's own " +
+			"interface and credentials. Pass timeout= if the default is too short")
+	}
+	timeout := 30 * time.Second
+	if ts, ok := starKwarg(kwargs, "timeout"); ok {
+		s, _ := starlark.AsString(ts)
+		d, err := parseStarDuration(s)
+		if err != nil {
+			return nil, fmt.Errorf("ready() bad timeout: %w", err)
+		}
+		if d <= 0 {
+			return nil, fmt.Errorf("ready() timeout must be positive, got %q", s)
+		}
+		timeout = d
+	}
+	return &HealthcheckDef{Test: readyScheme, Timeout: timeout}, nil
+}
+
 func builtinTCP(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var addr string
 	if err := starlark.UnpackPositionalArgs("tcp", args, nil, 1, &addr); err != nil {

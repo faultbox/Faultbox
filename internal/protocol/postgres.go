@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -23,27 +24,77 @@ func (p *postgresProtocol) Methods() []string {
 	return []string{"query", "exec"}
 }
 
+// Healthcheck reports whether Postgres is ready to serve queries.
+//
+// addr may be a bare "host:port" or a full "postgres://user:pass@host:port/db"
+// URL. The URL form matters: a TCP connect proves only that something is
+// listening, and for a container that is true the instant Docker's port proxy
+// binds — before the database has started. Measured: ready in 0ms against a
+// backend that needed ~10 seconds.
+//
+// With credentials this instead runs a real query, so "ready" means the server
+// authenticated us and answered. That is the difference between a readiness
+// check and a liveness guess.
 func (p *postgresProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
-	// Try TCP first (faster), then Postgres ping.
-	if err := TCPHealthcheck(ctx, addr, timeout); err != nil {
+	hostPort, user, password, database := parsePostgresURL(addr)
+
+	if err := TCPHealthcheck(ctx, hostPort, timeout); err != nil {
 		return err
 	}
-	// Verify it's actually Postgres by opening a connection.
-	//
-	// No credentials: this ping is unauthenticated, so on a password-protected
-	// server it proves the port speaks Postgres and nothing more. That is the
-	// same limit the tcp() healthcheck has, and closing it properly belongs
-	// with the readiness-gate work rather than here.
-	connStr := buildConnStr(addr, "", "", "")
+
+	connStr := buildConnStr(hostPort, user, password, database)
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return fmt.Errorf("postgres open: %w", err)
 	}
 	defer db.Close()
 
-	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return db.PingContext(pingCtx)
+
+	// Retry until the budget runs out. A booting Postgres refuses, resets, or
+	// accepts-then-drops for several seconds before it serves anything, so a
+	// single attempt reports "not ready" for a server that is merely still
+	// starting — which is the failure this check exists to avoid, inverted.
+	//
+	// A query rather than Ping: Ping is satisfied by a connection the server
+	// has accepted but not yet made usable, which is precisely the state a
+	// booting Postgres passes through.
+	var lastErr error
+	for {
+		var one int
+		attemptCtx, attemptCancel := context.WithTimeout(deadlineCtx, 3*time.Second)
+		err := db.QueryRowContext(attemptCtx, "SELECT 1").Scan(&one)
+		attemptCancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		select {
+		case <-deadlineCtx.Done():
+			return fmt.Errorf("postgres not ready after %s: %w", timeout, lastErr)
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// parsePostgresURL splits an optional postgres:// URL into its parts. A bare
+// host:port yields empty credentials, preserving the old behaviour for callers
+// that have none to give.
+func parsePostgresURL(addr string) (hostPort, user, password, database string) {
+	if !strings.HasPrefix(addr, "postgres://") {
+		return addr, "", "", ""
+	}
+	u, err := url.Parse(addr)
+	if err != nil {
+		return strings.TrimPrefix(addr, "postgres://"), "", "", ""
+	}
+	if u.User != nil {
+		user = u.User.Username()
+		password, _ = u.User.Password()
+	}
+	return u.Host, user, password, strings.TrimPrefix(u.Path, "/")
 }
 
 func (p *postgresProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {

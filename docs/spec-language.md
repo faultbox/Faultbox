@@ -135,6 +135,7 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`await_event`](#await_eventpredicate_or_matcher),
 [`await_stable`](#await_stablequiescence_window-ignore),
 [`sleep`](#sleepduration-clockwall-v0141),
+[`ready`](#readytimeout-v0160),
 [`watch`](#watchservice-files-ops-runcallback-v0160),
 [`test`](#testname-body-setup-expect-timeout-terminate_when-clock),
 [`match`](#the-match-module).
@@ -1890,6 +1891,40 @@ def test_observe_then_fault():
     assert_eventually(service="inventory", syscall="write", path="*.wal")
     trace_stop(inventory)
 ```
+
+### `ready(timeout=)` (v0.16.0)
+
+Protocol-aware readiness. Use it instead of `tcp()` for anything that has a
+startup sequence.
+
+```python
+pg = service("pg",
+    interface("sql", "postgres", 5432),
+    image = "postgres:16-alpine",
+    env = {"POSTGRES_PASSWORD": "faultbox", "POSTGRES_DB": "app"},
+    healthcheck = ready(timeout = "90s"),
+)
+```
+
+**`tcp()` answers the wrong question.** It asks whether something is listening,
+and for a container that becomes true the instant Docker's port proxy binds —
+before the service has started. Measured against `postgres:16-alpine`: ready in
+**0 ms** for a backend that needed ~10 s. Every test then ran against a
+database that was not there, and passed, because nothing asserted otherwise.
+
+`ready()` asks the *service*, using the protocol plugin for its interface and
+the credentials the spec already declared in `env=`. For Postgres that is a
+real `SELECT 1`, retried until the timeout. "Ready" then means the server
+authenticated and answered.
+
+It takes no address — it uses the service's own interface and its mapped port,
+which is the confusion it exists to remove. Protocols with no richer notion of
+readiness fall back to a TCP connect, so `ready()` is never worse than the
+`tcp()` it replaces.
+
+Measured on the RFC-056 corpus: `tcp()` plus a hand-tuned `sleep("25s")` took
+25 s per test and was correct only by guesswork; `ready()` takes ~2.4 s and is
+correct by construction.
 
 ### `watch(service, files=[...], ops=[...], run=callback)` (v0.16.0)
 

@@ -31,7 +31,7 @@ pg = service("pg",
         "POSTGRES_PASSWORD": "faultbox",
         "POSTGRES_DB":       "app",
     },
-    healthcheck = tcp("localhost:5432", timeout = "60s"),
+    healthcheck = ready(timeout = "90s"),
 )
 
 
@@ -52,29 +52,6 @@ def paths_touched():
     for e in io_events():
         seen[e.fields.get("path", "?")] = True
     return sorted(seen.keys())
-
-
-def wait_ready():
-    """Give Postgres time to finish booting before opening a watch window.
-
-    A fixed settle, which is uglier than a readiness probe and is the honest
-    option here. Two things rule out the alternatives:
-
-    The tcp healthcheck cannot do it. It probes the port Docker published, and
-    Docker's proxy binds that port the moment the container starts — before
-    Postgres is listening, let alone accepting queries. Measured: ready in 0 ms
-    against a backend that needed ~10 s, so the body ran and tore the sink down
-    mid-boot; the trace held 18 points where a standalone sink over the same
-    boot saw 29,426.
-
-    Probing with SQL does not work either. An exec against a backend that is
-    not yet accepting takes ~30 s to fail, so a retry loop burns the test
-    deadline: measured at 3m5s, INCONCLUSIVE.
-
-    Faultbox has no exec- or log-line-based readiness gate, which is the real
-    gap. Until it does, a settle is what a spec can honestly express.
-    """
-    sleep("25s")
 
 
 def workload():
@@ -114,7 +91,6 @@ def test_io_surface_audit():
     never connected all fail the test rather than letting it pass on a partial
     trace.
     """
-    wait_ready()
     watch(pg, files = ["/**"], ops = ["write"], run = workload)
 
     outside = []
@@ -133,7 +109,6 @@ def test_io_surface_audit():
 
 def test_paths_are_resolved():
     """The point of watch(): a path, not a file descriptor number."""
-    wait_ready()
     watch(pg, files = ["/var/lib/postgresql/**"], run = workload)
 
     paths = paths_touched()
@@ -159,7 +134,6 @@ def test_wal_written_during_workload():
     reason, and calling this one a durability audit would be the same
     overclaim in a new place.
     """
-    wait_ready()
     watch(pg, files = ["**/pg_wal/**"], ops = ["write"], run = workload)
 
     wal = io_events(op = "write")
@@ -177,7 +151,6 @@ def test_files_filter_excludes_the_rest():
     before they become events, so cost is proportional to what the spec asked
     about rather than to what the service did.
     """
-    wait_ready()
     watch(pg, files = ["/var/lib/postgresql/**/pg_wal/**"], run = workload)
 
     for e in io_events():

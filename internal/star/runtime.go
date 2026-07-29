@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -2803,6 +2804,13 @@ func (rt *Runtime) resolveHealthcheck(svc *ServiceDef) string {
 		return ""
 	}
 	test := svc.Healthcheck.Test
+
+	// ready() defers everything to launch time, when the interface, its
+	// mapped port and the service's declared credentials are all known.
+	if test == readyScheme {
+		return rt.resolveReadyCheck(svc)
+	}
+
 	if !svc.IsContainer() {
 		return test
 	}
@@ -2815,6 +2823,51 @@ func (rt *Runtime) resolveHealthcheck(svc *ServiceDef) string {
 		}
 	}
 	return test
+}
+
+// resolveReadyCheck turns ready() into a protocol URL the dispatcher can act
+// on, carrying the credentials the spec already declared.
+//
+// Falls back to a TCP check when the interface's protocol has no better idea
+// of readiness — that is still what tcp() would have done, so ready() is never
+// worse than the thing it replaces.
+func (rt *Runtime) resolveReadyCheck(svc *ServiceDef) string {
+	iface, err := svc.DefaultInterface()
+	if err != nil || iface == nil {
+		return ""
+	}
+	port := iface.Port
+	if svc.IsContainer() && iface.HostPort > 0 {
+		port = iface.HostPort
+	}
+	addr := fmt.Sprintf("localhost:%d", port)
+
+	creds := map[string]any{}
+	applyServiceCredentials(creds, svc, iface.Protocol)
+	user, _ := creds["user"].(string)
+	password, _ := creds["password"].(string)
+	database, _ := creds["database"].(string)
+
+	switch iface.Protocol {
+	case "postgres":
+		u := &url.URL{Scheme: "postgres", Host: addr, Path: "/" + database}
+		if user != "" {
+			if password != "" {
+				u.User = url.UserPassword(user, password)
+			} else {
+				u.User = url.User(user)
+			}
+		}
+		return u.String()
+	case "http":
+		return "http://" + addr + "/"
+	}
+	// Every other protocol: the plugin's own healthcheck if it has one,
+	// reached through the scheme dispatcher, else plain TCP.
+	if _, ok := protocol.Get(iface.Protocol); ok {
+		return iface.Protocol + "://" + addr
+	}
+	return "tcp://" + addr
 }
 
 // decoderParams strips the `decoder_` prefix from observation
@@ -4740,6 +4793,14 @@ func waitReady(ctx context.Context, check string, timeout time.Duration) error {
 		}
 		return fmt.Errorf("HTTP protocol not registered")
 	default:
+		// Any registered protocol may name itself as a scheme. This is what
+		// lets ready() reach a plugin's own notion of readiness — asking the
+		// service rather than the port — without a case per protocol here.
+		if i := strings.Index(check, "://"); i > 0 {
+			if p, ok := protocol.Get(check[:i]); ok {
+				return p.Healthcheck(ctx, check, timeout)
+			}
+		}
 		return fmt.Errorf("unsupported healthcheck scheme in %q", check)
 	}
 }

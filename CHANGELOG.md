@@ -13,6 +13,39 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+### Fixed — postgres steps could never authenticate
+
+Two bugs, both predating this release and confirmed against v0.15.0.
+`pg.sql.exec()` has never worked against a realistically configured Postgres.
+
+- **The connection string carried no credentials.** `buildConnStr` emitted
+  host/port/sslmode only, so lib/pq fell back to the OS user running Faultbox —
+  `root` under sudo, which exists in no Postgres installation. Credentials now
+  come from the service's own `env=` (explicit step kwargs win; `connstr=`
+  remains the escape hatch).
+- **The auth handshake was relayed in one direction.** The proxy pumped
+  server→client only, which suffices for trust auth. Every method requiring a
+  client answer — **SCRAM-SHA-256, the postgres:14+ default**, plus MD5 and
+  cleartext — deadlocked until the client's 60-second read deadline produced
+  `connection reset by peer`.
+
+It survived because no spec asserted on the result of a postgres step. The
+RFC-056 corpus initially did not either: it observed 125 file paths and passed
+while every one of its SQL statements was failing — the paths came from
+Postgres's own boot.
+
+### Added — `ready(timeout=)`, protocol-aware readiness
+
+`tcp()` asks whether something is listening. For a container that is true the
+moment Docker's port proxy binds, before the service starts: measured at
+**0 ms** against a Postgres needing ~10 s. `ready()` asks the service instead,
+using its interface's protocol plugin and the declared credentials — for
+Postgres a real `SELECT 1`, retried to the timeout.
+
+On the RFC-056 corpus: `tcp()` plus a hand-tuned `sleep("25s")` took 25 s per
+test and was correct by guesswork; `ready()` takes ~2.4 s and is correct by
+construction.
+
 ### Added — filesystem observation (RFC-056, v0.16.0)
 
 - **`watch(service, files=, ops=, run=)`** reports a service's file I/O with
