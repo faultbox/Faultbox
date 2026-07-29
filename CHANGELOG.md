@@ -13,6 +13,17 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.16.0] - 2026-07-29
+
+Filesystem observation — and two bugs found by being the first thing to assert
+on a database.
+
+`watch()` closes `fs-unmediated`, a determinism category that had emitted no
+events since RFC-040: Faultbox could count a service's `write` calls but not
+name the file. Building a corpus for it turned out to be the first spec that
+ever checked the result of a postgres step, which is how the other two landed
+in this release.
+
 ### Fixed — postgres steps could never authenticate
 
 Two bugs, both predating this release and confirmed against v0.15.0.
