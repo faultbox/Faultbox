@@ -1,9 +1,10 @@
 # RFC-055: `client()` — Contract-Driven Callers as First-Class Trace Actors
 
-- **Status:** Accepted — implementation in progress on `epic/rfc-055-clients`
+- **Status:** Implemented — all four phases shipped on `epic/rfc-055-clients`
 - **Target:** v0.15.0 (candidate; independent of the v0.14.0 gVisor epic)
 - **Created:** 2026-07-28
 - **Accepted:** 2026-07-29 — all eight open questions resolved per strawman
+- **Implemented:** 2026-07-29 — Phases 1–4 (see "What shipped" below)
 - **Discussion:** TBD
 - **Depends on:** RFC-021 (OpenAPI ingestion — v0.9.3), RFC-023 (proto descriptor ingestion — v0.9.0), RFC-024 (proxy datapath — v0.9.5)
 - **Relates to:** RFC-041 (temporal anchors), RFC-050 (`load()` traffic driver), RFC-052 (agent-first surface)
@@ -636,6 +637,45 @@ Revisit only if someone needs to inject syscall faults into the caller.
 - End-to-end: a `poc/` spec driving a `mock_service(openapi=)` with a
   `client(openapi=)` over the *same* document, under a proxy fault, asserting
   the contract violation is detected.
+
+## What shipped
+
+| Phase | Landed |
+|---|---|
+| 1 | `internal/protocol/client_contract.go` (OperationTable, naming, collisions, suggestions), `openapi_client.go` (operation walk, request binding, request/response conformance), `grpc_client.go` (descriptor walk, dynamicpb encode, unary invoke, typed decode). `http.go` accepts HEAD/OPTIONS and reports the response content type. |
+| 2 | `internal/star/client.go` (ClientVal, OperationVal, call path, `before=` hook, event emission), `client_builtins.go` (the builtin, contract resolution, name validation). `Response` gains `.client` / `.operation` / `.contract_ok` / `.contract_error`. `registerService` returns an error so names can't collide. |
+| 3 | `report.go` anchorTypes, `app.js` (`isCallEvent`/`isSendEvent`/`isRecvEvent` replacing ten inline checks), `results.go` normalized trace, `recentAssertionContext`, dotted `event_type` in `events.go`. |
+| 4 | `faultbox inspect --clients`, `docs/spec-language.md` §Contract-Driven Clients, `docs/cli-reference.md`, `poc/client-rfc055/`. |
+
+### Deviations from the design above
+
+- **`events()` needed widening.** §5.6 assumed client events would be
+  queryable. They were not: `events()` filtered to a hard-coded four types
+  (`syscall`, `stdout`, `topic`, `wal`), so `step_send`/`step_recv` had
+  never been visible to it either. Client types were added;
+  `step_send`/`step_recv` deliberately were not, because admitting them
+  would silently change what `events()` returns for every spec written
+  before now.
+- **A pre-existing path bug surfaced.** `mock_service(openapi=)` and
+  `(descriptors=)` resolved against the process CWD, not the spec
+  directory, so `"./api.yaml"` only worked when `faultbox` ran from the
+  spec's own directory. Fixed to match `load_file()`, `build=`, and the
+  new `client()`.
+- **`grpcProtocol.ExecuteStep` was already non-functional for typed
+  services.** It invokes with raw `[]byte` against grpc-go's proto codec,
+  which only accepts `proto.Message`. Clients do not go through it; they
+  invoke with dynamicpb messages, which is what makes typed calls work.
+  The existing `call()` step method is left as-is — untangling it is not
+  this RFC's business, but it should not be mistaken for a working path.
+- **`before=` is HTTP-only.** The hook reads `headers` and `body` off the
+  returned dict; gRPC calls take client-level and per-call headers but do
+  not run the hook. No design reason, just unbuilt — the auth use case the
+  hook exists for is HTTP-shaped.
+- **Reserved-parameter collisions are load-time errors, not silent
+  renames.** A contract parameter normalizing to `body`, `headers`, or
+  `timeout` can't be bound by name, so the table build fails and points at
+  `client.call(name, params={...})`. This wasn't spelled out in §5.3 and is
+  the reason `call()` takes an explicit `params=` dict.
 
 ## References
 
