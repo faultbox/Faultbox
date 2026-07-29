@@ -1,11 +1,13 @@
 package star
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -555,4 +557,161 @@ func TestClientEvents_WorkAsTemporalAnchors(t *testing.T) {
 	if ev.Fields["operation"] != "get_order" {
 		t.Errorf("anchor resolved to operation %q, want get_order", ev.Fields["operation"])
 	}
+}
+
+// TestClientGRPC_EndToEnd is the RFC-055 gRPC path exercised the way a
+// user meets it: declared in a spec, called as a generated attribute, with
+// the result read off the trace.
+//
+// Every other client test in this package is HTTP. The protocol-layer gRPC
+// tests cover encode/invoke/decode, but nothing joined that to the Starlark
+// surface — client(descriptors=) → attribute call → client event was
+// untested as a whole, which is the shape of the RFC's own example.
+//
+// The mock and the client are built from the *same* descriptor set, so a
+// pass means the typed encoder and the typed decoder agree on the wire.
+func TestClientGRPC_EndToEnd(t *testing.T) {
+	pbPath := writeTestDescriptorSet(t)
+	port := freePortForTest(t)
+
+	rt := New(testLogger())
+	src := `
+geo = mock_service("geo",
+    interface("main", "grpc", ` + strconv.Itoa(port) + `),
+    descriptors = "` + pbPath + `",
+    routes = {
+        "/test.geo.GeoService/GetCity": grpc_typed_response(
+            body = {"id": 42, "name": "Almaty", "country": "KZ", "currency": "KZT"},
+        ),
+    },
+)
+
+geo_client = client("geo-client", target = geo.main, descriptors = "` + pbPath + `")
+`
+	if err := rt.LoadString("grpc_client.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	c, ok := rt.Client("geo-client")
+	if !ok {
+		t.Fatal("geo-client not registered")
+	}
+
+	// The single service in the set is selected without grpc_service=, and
+	// GetCity normalizes to get_city.
+	if names := c.Table.Names(); len(names) != 1 || names[0] != "get_city" {
+		t.Fatalf("operations = %v, want [get_city]", names)
+	}
+	if got := c.Table.Contract.Version; got != "test.geo.GeoService" {
+		t.Errorf("contract version = %q, want the service FQN", got)
+	}
+
+	// Start the mock the same way a test run would.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	resp := callOp(t, rt, "geo-client", "get_city", map[string]any{"id": int64(42)})
+	if !resp.Ok {
+		t.Fatalf("call failed: %s", resp.Error)
+	}
+
+	// The response decoded as the real message type, not google.protobuf.Struct.
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(resp.Body), &decoded); err != nil {
+		t.Fatalf("response body is not JSON: %v (%s)", err, resp.Body)
+	}
+	if decoded["name"] != "Almaty" {
+		t.Errorf("response name = %v, want Almaty (body %s)", decoded["name"], resp.Body)
+	}
+	if decoded["currency"] != "KZT" {
+		t.Errorf("response currency = %v, want KZT", decoded["currency"])
+	}
+	if resp.Client != "geo-client" || resp.Operation != "get_city" {
+		t.Errorf("provenance = client %q operation %q", resp.Client, resp.Operation)
+	}
+
+	// The trace records it on the client's own lane, with the gRPC status.
+	calls := eventsOfType(rt, "client_call")
+	returns := eventsOfType(rt, "client_return")
+	if len(calls) != 1 || len(returns) != 1 {
+		t.Fatalf("got %d client_call / %d client_return, want 1 each", len(calls), len(returns))
+	}
+	if calls[0].Service != "geo-client" {
+		t.Errorf("client_call service = %q, want geo-client", calls[0].Service)
+	}
+	if got := calls[0].Fields["method_path"]; got != "/test.geo.GeoService/GetCity" {
+		t.Errorf("client_call method_path = %q", got)
+	}
+	if got := calls[0].EventType; got != "client_call.geo" {
+		t.Errorf("client_call event_type = %q, want client_call.geo", got)
+	}
+	if got := returns[0].Fields["grpc_code"]; got != "OK" {
+		t.Errorf("client_return grpc_code = %q, want OK", got)
+	}
+	if got := returns[0].Fields["success"]; got != "true" {
+		t.Errorf("client_return success = %q, want true", got)
+	}
+}
+
+// TestClientGRPC_UnroutedMethodSurfacesStatus checks the failure shape: a
+// gRPC status is an outcome carried on the Response, not a Go error, so a
+// test can assert on it the same way it would on an HTTP status.
+func TestClientGRPC_UnroutedMethodSurfacesStatus(t *testing.T) {
+	pbPath := writeTestDescriptorSet(t)
+	port := freePortForTest(t)
+
+	rt := New(testLogger())
+	src := `
+geo = mock_service("geo",
+    interface("main", "grpc", ` + strconv.Itoa(port) + `),
+    descriptors = "` + pbPath + `",
+    routes = {},
+)
+geo_client = client("geo-client", target = geo.main, descriptors = "` + pbPath + `")
+`
+	if err := rt.LoadString("grpc_client.star", src); err != nil {
+		t.Fatalf("LoadString: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := rt.startServices(ctx); err != nil {
+		t.Fatalf("startServices: %v", err)
+	}
+	defer rt.stopServices()
+
+	resp := callOp(t, rt, "geo-client", "get_city", map[string]any{"id": int64(1)})
+	if resp.Ok {
+		t.Fatal("expected the unrouted method to fail")
+	}
+	if !strings.Contains(resp.Error, "Unimplemented") {
+		t.Errorf("error = %q, want an Unimplemented status", resp.Error)
+	}
+
+	returns := eventsOfType(rt, "client_return")
+	if len(returns) != 1 {
+		t.Fatalf("got %d client_return events, want 1", len(returns))
+	}
+	if got := returns[0].Fields["grpc_code"]; got != "Unimplemented" {
+		t.Errorf("client_return grpc_code = %q, want Unimplemented", got)
+	}
+	if got := returns[0].Fields["success"]; got != "false" {
+		t.Errorf("client_return success = %q, want false", got)
+	}
+}
+
+// freePortForTest reserves and releases a loopback port so a spec can name
+// it before the service binds.
+func freePortForTest(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
 }

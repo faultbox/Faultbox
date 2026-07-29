@@ -847,6 +847,19 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 		return rt.builtinFaultProtocol(thread, ifRef, args[1:], kwargs)
 	}
 
+	// A client is a trace actor, not a process: it runs no code of its own,
+	// installs no seccomp filter, and has nothing to fault. What the author
+	// almost certainly means is "make the thing this client calls fail", so
+	// name the interface they already have in hand (RFC-055 §5.7).
+	if c, ok := args[0].(*ClientVal); ok {
+		return nil, fmt.Errorf(
+			"fault(%s): a client is a caller, not a process — it has no syscalls to intercept\n"+
+				"  faults go on the service it calls:\n"+
+				"    fault(%s.%s, response(status = 503), run = ...)   # protocol-level\n"+
+				"    fault(%s, write = deny(\"EIO\"), run = ...)        # syscall-level",
+			c.Name, c.Target.Service.Name, c.Target.Interface.Name, c.Target.Service.Name)
+	}
+
 	svc, ok := args[0].(*ServiceDef)
 	if !ok {
 		return nil, fmt.Errorf("fault() first arg must be a service, interface_ref, or fault_assumption, got %s", args[0].Type())
@@ -1091,6 +1104,12 @@ func (rt *Runtime) builtinFaultAll(thread *starlark.Thread, fn *starlark.Builtin
 func (rt *Runtime) builtinFaultStart(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) < 1 {
 		return nil, fmt.Errorf("fault_start() requires a service argument")
+	}
+	if c, ok := args[0].(*ClientVal); ok {
+		return nil, fmt.Errorf(
+			"fault_start(%s): a client is a caller, not a process — it has no syscalls to intercept\n"+
+				"  fault the service it calls instead: fault_start(%s, write = deny(\"EIO\"))",
+			c.Name, c.Target.Service.Name)
 	}
 	svc, ok := args[0].(*ServiceDef)
 	if !ok {

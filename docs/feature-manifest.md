@@ -67,6 +67,8 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | Kafka mock (kfake) | 2 | testops corpus (kafka_basic, mock_demo) | 🟢 | |
 | MongoDB mock | 2 | testops corpus (mongo_basic, mock_demo) | 🟢 | |
 | gRPC mock | 2 | included in mock_demo | 🟡 | No isolated corpus entry |
+| `client()` — contract-driven callers (RFC-055) | 2 | `internal/protocol/{client_contract,openapi_client,grpc_client}_test.go` (naming, collisions, binding, conformance) + `internal/star/client{,_trace}_test.go` (spec load, events, clocks, HTTP + gRPC end-to-end against the real mocks) | 🟡 | Go coverage is thorough on the critical path; no testops golden yet, so trace-shape regressions across releases are unguarded |
+| Client contract validation (`validate=response`/`strict`) | 2 | Unit tests for schema mismatch, undeclared status, gRPC unknown fields; `poc/client-rfc055` end-to-end | 🟡 | OpenAPI 3.0 only (3.1 untested); JSON bodies only |
 | Stdlib recipes (embedded .star) | 2 | 13 shipped, tested via protocol unit tests | 🟡 | No regression against recipe contents |
 | `monitor()` / `partition()` / `nondet()` / `events()` | 2 | No dedicated coverage | 🔴 | Covered only if a corpus spec uses them |
 | Named operations `op()` | 2 | Unit tests | 🟡 | |
@@ -138,7 +140,7 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 ## Summary counts
 
 - Critical (Tier 1): 15 rows, **100% green**. 🎉
-- Supported (Tier 2): 22 rows, **~55% green**.
+- Supported (Tier 2): 24 rows, **~55% green**.
 - Experimental (Tier 3): 8 rows, **~0% green** — expected; these are checklist-gated.
 
 PR #64 (proxy teardown, closes #57 + #61) + PR #62 (openat matching,

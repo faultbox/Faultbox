@@ -13,6 +13,7 @@ define high-level operations, and integrate with LLM agents.
 | [Mock Services](17-mock-services.md) | 25 min | mock_service(), @faultbox/mocks/ stdlib, TLS, faulting mocks, when to use vs real services |
 | [Typed gRPC Mocks](18-typed-grpc-mocks.md) | 20 min | grpc.server(descriptors=...), FileDescriptorSet ingestion, typed responses for compiled-stub clients, reflection + grpcurl |
 | [OpenAPI Mocks](19-openapi-mocks.md) | 15 min | http.server(openapi=...), example strategies, overrides, strict validation |
+| [Contract-Driven Clients](28-contract-clients.md) | 20 min | client(), generated operations from OpenAPI/proto, named callers as trace actors, contract conformance under fault |
 | [`.fb` Bundles](20-bundles.md) | 10 min | Reproducibility-by-default, `faultbox inspect`, sharing runs, zero-traffic hints |
 | [JWT/JWKS Mocks](21-jwt-mocks.md) | 12 min | jwt.server() stdlib, EdDSA tokens, claim minting, JWKS outage faults |
 | [End-to-End: Go Microservice](22-go-microservice-end-to-end.md) | 30 min | Full stack: real containers + typed gRPC mocks + JWT + fault_matrix in one tutorial |

@@ -49,14 +49,16 @@ make lima-create && make lima-build                 # macOS (one-time)
 
 ## Part 3: Simulate the Boundary
 
-Mock the dependencies you can't run - the fastest path to testing a
-real service whose dependencies belong to other teams.
+Mock the dependencies you can't run, and generate the callers that drive
+your service - both from the contracts you already maintain. The fastest
+path to testing a real service whose neighbours belong to other teams.
 
 | # | Chapter | Duration |
 |---|---------|----------|
 | 17 | [Mock Services](05-advanced/17-mock-services.md) | 25 min |
 | 18 | [Typed gRPC Mocks](05-advanced/18-typed-grpc-mocks.md) | 20 min |
 | 19 | [OpenAPI Mocks](05-advanced/19-openapi-mocks.md) | 20 min |
+| 28 | [Contract-Driven Clients](05-advanced/28-contract-clients.md) | 20 min |
 | 21 | [JWT/JWKS Mocks](05-advanced/21-jwt-mocks.md) | 15 min |
 
 ## Part 4: Real Infrastructure

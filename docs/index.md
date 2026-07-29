@@ -8,9 +8,10 @@ Fault injection for distributed systems using Linux seccomp-notify.
 
 ## Reference
 
-- [Spec Language](spec-language.md) -- Complete Starlark API: services, faults, assertions, protocols
+- [Spec Language](spec-language.md) -- Complete Starlark API: services, clients, faults, assertions, protocols
 - [CLI Reference](cli-reference.md) -- All commands and flags
 - [Error Codes](errno-reference.md) -- Errno values for syscall fault injection
+- [Contract-Driven Clients](tutorial/05-advanced/28-contract-clients.md) -- Generate typed callers from OpenAPI / protobuf; named actors in the trace
 
 ## Design
 

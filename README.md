@@ -56,6 +56,17 @@ Bundle records remotes used; `faultbox replay` warns. Connectivity setup
 (Telepresence, kubectl port-forward, in-cluster, VPN) documented in
 [docs/guides/connectivity.md](docs/guides/connectivity.md).
 
+**Contract-driven clients** (RFC-055) -- `client("mobile-app", target=orders.public,
+openapi="./orders.yaml")` turns an OpenAPI 3.x document or a protobuf
+`FileDescriptorSet` into a **named caller** whose operations are generated from
+the contract: `api.get_order(order_id=42)`, no paths or field names in your spec.
+Each client is its own actor in the trace — its own swim lane and vector-clock
+participant — so a run with a mobile app, a partner integration, and an admin
+tool tells you *which* caller saw the failure. `validate="response"` checks each
+response against the schema the service publishes, catching degraded-but-invalid
+payloads and undeclared status codes without you guessing the field.
+`faultbox inspect --clients` lists what you can call.
+
 **Recipe library** -- curated failure wrappers ship embedded in the binary.
 `load("@faultbox/recipes/mongodb.star", "mongodb")` gets you `mongodb.disk_full()`,
 `mongodb.replica_unavailable()`, and more — no filesystem setup needed.
@@ -95,6 +106,10 @@ Four layers, composable in one spec:
 | **Protocol (request)** | Per-method rules on the wire — e.g., gRPC `UNAVAILABLE` for `/svc/Method`, HTTP 503 for `POST /orders`, Postgres query-level denies, Kafka publish failures | transparent proxy in front of the upstream; 15 protocols today |
 | **Protocol (response)** | Rewrite status, body, or headers the upstream returns — corrupt a Postgres SELECT result, flip a Redis INCR to wrong value, drop a Kafka offset | same proxy, response-side rules |
 | **Mock** | Canned response from a scripted mock service, no real dep | `mock_service()` — HTTP, HTTP/2, gRPC, JWKS, and more |
+
+The same contract drives both boundaries: `mock_service(openapi=…)` generates the
+dependency you can't run, `client(openapi=…)` generates the caller that drives
+your service.
 
 Plus: `monitor()` Starlark callbacks over the event log, `assert_eventually()`
 temporal assertions, `expect_success` / `expect_error_within` / `expect_hang`
@@ -181,6 +196,7 @@ make demo
 | [Temporal Properties](docs/temporal.md) | `eventually` / `always` / `monitor` / `await_*` / `test()` (RFC-041) |
 | [Plan & Coverage](docs/exploration.md) | `faultbox plan`, `plan.json`, coverage, suggestions (RFC-042) |
 | [Non-deterministic Operators](docs/nondeterministic-operators.md) | `choose()` / `nondet()` / `halt()` / `assume()` (RFC-043) |
+| [Contract-Driven Clients](docs/tutorial/05-advanced/28-contract-clients.md) | `client()` — typed callers from OpenAPI / protobuf, named trace actors (RFC-055) |
 
 ### Tutorial Structure
 
@@ -190,7 +206,8 @@ make demo
 | [1: First Taste](docs/tutorial/01-first-taste/) | 1-2 | First fault, first test |
 | [2: Syscall-Level](docs/tutorial/02-syscall-level/) | 3-6 | Fault injection, traces, concurrency, monitors |
 | [3: Protocol-Level](docs/tutorial/03-protocol-level/) | 7-8 | HTTP/Redis faults, database faults |
-| [4: Advanced](docs/tutorial/04-advanced/) | 9-12 | Containers, scenarios, event sources, named ops |
+| [4: Safety](docs/tutorial/04-safety/) | 14-16, 24-26 | Invariants, monitors, partitions, determinism, plan fan-out |
+| [5: Advanced](docs/tutorial/05-advanced/) | 9-13, 17-23, 28 | Containers, scenarios, mocks, clients, bundles, reports |
 
 ## How It Works
 

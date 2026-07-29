@@ -67,10 +67,11 @@ Next-version work is tracked in
   that declares no contract of its own inherits it, choosing the loader by
   extension (`.yaml`/`.yml`/`.json` → OpenAPI, `.pb`/`.desc`/`.protoset` →
   descriptor set).
-- `events()` now returns `client_call`, `client_return`, and
-  `contract_violation` events. `step_send` / `step_recv` remain excluded —
-  admitting them would silently change what `events()` returns for existing
-  specs.
+- The **dict-filter** form of `events()` (`events(service=…)`) now returns
+  `client_call`, `client_return`, and `contract_violation` events.
+  `step_send` / `step_recv` remain excluded there — admitting them would
+  silently change what existing specs see. The `where=` form has had no type
+  gate since v0.14.1 and already returns every family.
 - HTTP `step_recv` events carry a `content_type` field, and the HTTP protocol
   plugin accepts `HEAD` / `OPTIONS` (an OpenAPI document may declare them).
 

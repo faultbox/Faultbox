@@ -385,3 +385,59 @@ def test_positional(t):
 		t.Errorf("error = %v, want a keyword-only complaint", callErr)
 	}
 }
+
+// TestClient_IsNotAFaultTarget checks the diagnostic for a mistake the
+// entity invites: a client looks like a service in a spec, so reaching for
+// fault(client, ...) is a natural first guess. It's wrong — a client runs
+// no code and has no syscalls — and the error has to say what to do
+// instead, not just name the type it rejected (RFC-055 §5.7).
+func TestClient_IsNotAFaultTarget(t *testing.T) {
+	_, specPath := writeSpecFile(t, "orders.yaml", clientOrdersSpec)
+
+	preamble := `
+orders = service("orders", interface("public", "http", 8080), image = "orders:1")
+api = client("mobile-app", target = orders.public, openapi = "` + specPath + `")
+`
+	cases := []struct {
+		name string
+		call string
+		want []string
+	}{
+		{
+			name: "fault()",
+			call: `fault(api, write = deny("EIO"), run = lambda: None)`,
+			// Must name the client, explain why, and show both the
+			// protocol-level and syscall-level forms against the target.
+			want: []string{
+				"fault(mobile-app)",
+				"a client is a caller, not a process",
+				"fault(orders.public, response(status = 503)",
+				`fault(orders, write = deny("EIO")`,
+			},
+		},
+		{
+			name: "fault_start()",
+			call: `fault_start(api, write = deny("EIO"))`,
+			want: []string{
+				"fault_start(mobile-app)",
+				"a client is a caller, not a process",
+				"fault_start(orders,",
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rt := New(testLogger())
+			err := rt.LoadString("client_test.star", preamble+"\n"+c.call+"\n")
+			if err == nil {
+				t.Fatal("expected an error; a client is not a fault target")
+			}
+			for _, w := range c.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error missing %q:\n%s", w, err.Error())
+				}
+			}
+		})
+	}
+}
