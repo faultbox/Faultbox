@@ -31,8 +31,10 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 	pb "gvisor.dev/gvisor/pkg/sentry/seccheck/points/points_go_proto"
@@ -158,8 +160,13 @@ func Listen(cfg Config) (*Sink, error) {
 	if cfg.Path == "" {
 		return nil, errors.New("seccheck: socket path is required")
 	}
-	_ = os.Remove(cfg.Path)
+	if err := clearStaleSocket(cfg.Path); err != nil {
+		return nil, err
+	}
 
+	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o755); err != nil {
+		return nil, fmt.Errorf("seccheck: create %s: %w", filepath.Dir(cfg.Path), err)
+	}
 	ln, err := net.ListenUnix("unixpacket", &net.UnixAddr{Name: cfg.Path, Net: "unixpacket"})
 	if err != nil {
 		return nil, fmt.Errorf("seccheck: listen on %s: %w", cfg.Path, err)
@@ -174,6 +181,41 @@ func Listen(cfg Config) (*Sink, error) {
 	s.wg.Add(1)
 	go s.acceptLoop()
 	return s, nil
+}
+
+// clearStaleSocket removes a leftover socket file, and refuses to remove a
+// live one.
+//
+// The sink path is fixed by the host trace config, so every run on a machine
+// binds the same address. Listen used to `os.Remove` it unconditionally, which
+// meant a second run silently STOLE the socket from a first: the first run's
+// sandbox connections broke and it lost observation without either run
+// noticing. For a feature whose entire purpose is proving what a service did
+// or did not touch, quietly losing the channel is the worst available
+// behaviour — worse than refusing to start.
+//
+// A bind cannot distinguish the two cases on its own: a Unix socket file left
+// by a crashed process fails an unprobed bind exactly like a live one. So
+// probe it. If something answers, another run owns it and this one must stop.
+// If nothing does, it is litter from a run that did not clean up — the same
+// shape as the leaked TUN device v0.14.1 fixed.
+func clearStaleSocket(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return nil // nothing there
+	}
+	c, err := net.DialTimeout("unixpacket", path, 250*time.Millisecond)
+	if err == nil {
+		c.Close()
+		return fmt.Errorf(
+			"seccheck: %s is already in use by another Faultbox run. "+
+				"Filesystem observation binds one socket per host, so runs cannot "+
+				"overlap; wait for the other run to finish", path)
+	}
+	// Nobody is listening: stale.
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("seccheck: remove stale socket %s: %w", path, err)
+	}
+	return nil
 }
 
 // Path returns the socket path, for the trace-session config.
