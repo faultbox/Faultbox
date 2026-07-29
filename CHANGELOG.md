@@ -13,6 +13,78 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+### Added
+
+- **Contract-driven clients — `client()`
+  ([RFC-055](docs/rfcs/0055-clients.md), [#149](https://github.com/faultbox/Faultbox/issues/149)).**
+  A new topology entity that turns an OpenAPI 3.x document or a protobuf
+  `FileDescriptorSet` into a **named caller** bound to a service interface,
+  with its operations generated as callable attributes:
+
+  ```python
+  orders = service("orders", interface("public", "http", 8080), image = "orders:2.1")
+  mobile = client("mobile-app", target = orders.public, openapi = "./orders.yaml",
+                  validate = "response")
+
+  def test_order_flow():
+      r = mobile.get_order(order_id = 42)     # no path, no verb, no field names
+  ```
+
+  This is the caller-side inversion of the loaders RFC-021 and RFC-023 already
+  shipped for mocks — the same document can drive a `mock_service()` (callee)
+  and a `client()` (caller).
+
+  - **Clients are first-class trace actors.** Calls emit `client_call` /
+    `client_return` on the *client's* own swim lane with its own vector-clock
+    participant, so three named callers against one API render as three lanes
+    instead of one anonymous `test` driver. The events work as
+    [temporal anchors](docs/temporal.md) with no new matcher syntax:
+    `match.event(type="client_return", client="gRPC-Courier", success="false")`.
+  - **Contract conformance is assertable.** `validate="response"` checks each
+    response against the schema declared for its status code and records the
+    verdict on `resp.contract_ok` / `resp.contract_error`, emitting a
+    `contract_violation` event. It deliberately does **not** raise — a contract
+    violation under fault is usually the finding, not a harness error. An
+    undeclared status code counts as a violation, which is how the undocumented
+    degraded path surfaces.
+  - **Composes with everything.** Client calls dial through the same proxy
+    resolution as step methods, so `fault(iface, ...)` applies unchanged; TLS
+    (RFC-038) and remote targets (RFC-036) are inherited from the interface.
+    Clients are trace actors, not processes — they take no seccomp filter and
+    are never a fault target.
+  - `faultbox inspect --clients <spec.star>` prints each client's generated
+    operation table.
+  - `Response` gains `.client`, `.operation`, `.contract_ok`, `.contract_error`.
+
+  v1 is unary-only (streaming gRPC methods are skipped, the rest of the
+  descriptor set still loads), stateless per call, and does not synthesize
+  request data. See [spec-language.md](docs/spec-language.md#contract-driven-clients-rfc-055).
+
+### Changed
+
+- `interface(name, protocol, port, spec=)` is now **read**. The kwarg has been
+  parsed and stored since early versions with nothing consuming it; a `client()`
+  that declares no contract of its own inherits it, choosing the loader by
+  extension (`.yaml`/`.yml`/`.json` → OpenAPI, `.pb`/`.desc`/`.protoset` →
+  descriptor set).
+- `events()` now returns `client_call`, `client_return`, and
+  `contract_violation` events. `step_send` / `step_recv` remain excluded —
+  admitting them would silently change what `events()` returns for existing
+  specs.
+- HTTP `step_recv` events carry a `content_type` field, and the HTTP protocol
+  plugin accepts `HEAD` / `OPTIONS` (an OpenAPI document may declare them).
+
+### Fixed
+
+- `mock_service(openapi=)` and `mock_service(descriptors=)` resolved relative
+  paths against the process working directory rather than the spec's own
+  directory, so `"./api.yaml"` only loaded when `faultbox` happened to run from
+  the directory containing the spec. Both now resolve spec-relative, matching
+  `load_file()`, `build=`, and `client()`.
+- `service()` and `client()` now reject a name already taken by the other.
+  Both are trace actors keyed by name, so sharing one silently folded two
+  participants into a single lane and vector clock.
+
 ## [0.14.1] - 2026-07-29
 
 Searching fault *timing*, and fixing what that search exposed.

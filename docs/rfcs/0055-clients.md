@@ -5,7 +5,7 @@
 - **Created:** 2026-07-28
 - **Accepted:** 2026-07-29 — all eight open questions resolved per strawman
 - **Implemented:** 2026-07-29 — Phases 1–4 (see "What shipped" below)
-- **Discussion:** TBD
+- **Discussion:** [#149](https://github.com/faultbox/Faultbox/issues/149)
 - **Depends on:** RFC-021 (OpenAPI ingestion — v0.9.3), RFC-023 (proto descriptor ingestion — v0.9.0), RFC-024 (proxy datapath — v0.9.5)
 - **Relates to:** RFC-041 (temporal anchors), RFC-050 (`load()` traffic driver), RFC-052 (agent-first surface)
 

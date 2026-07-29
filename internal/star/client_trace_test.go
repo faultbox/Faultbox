@@ -449,3 +449,110 @@ func TestClientEvents_ReachDownstreamConsumers(t *testing.T) {
 		}
 	})
 }
+
+// eventMatcher builds the same matcher shape match.event(type=…, **fields)
+// produces, so these tests exercise the real matching path rather than a
+// hand-rolled predicate.
+func eventMatcher(typ string, fields map[string]string) *MatcherVal {
+	criteria := map[string]string{"type": typ}
+	for k, v := range fields {
+		criteria[k] = v
+	}
+	return &MatcherVal{
+		name:    "event(" + typ + ")",
+		matchFn: func(ev Event) bool { return matchEventCriteria(ev, criteria) },
+	}
+}
+
+// TestClientCall_ProxyFaultApplies is the regression guard for RFC-055's
+// central composition claim: a client is the *same caller* as a step
+// method as far as fault injection is concerned.
+//
+// It holds because clientAddr resolves through proxyMgr.GetProxyAddr
+// exactly as executeStep does. Nothing else enforces that — refactor the
+// address resolution and the whole "faults compose for free" story dies
+// silently, with every client test still green. Hence this test.
+func TestClientCall_ProxyFaultApplies(t *testing.T) {
+	addr := startOrdersServer(t)
+	rt := clientRuntime(t, addr, "")
+
+	c, _ := rt.Client("mobile-app")
+	// With no proxy up the client dials the interface directly, spelled
+	// "localhost:<port>" — the same form executeStep builds.
+	_, port, _ := net.SplitHostPort(addr)
+	if got := rt.clientAddr(c); got != "localhost:"+port {
+		t.Fatalf("clientAddr = %q, want localhost:%s with no proxy up", got, port)
+	}
+
+	// Stand in for a running proxy on the target interface. When one is
+	// up, the client must dial *it* rather than the service directly —
+	// that redirection is the entire fault-injection integration.
+	iface := c.Target.Interface
+	rt.proxyMgr.RegisterListenAddr(c.Target.Service.Name, iface.Name, "127.0.0.1:59999")
+
+	if got := rt.clientAddr(c); got != "127.0.0.1:59999" {
+		t.Errorf("clientAddr = %q with a proxy up, want the proxy listener — "+
+			"client calls must traverse the fault path, not bypass it", got)
+	}
+}
+
+// TestClientEvents_WorkAsTemporalAnchors is the regression guard for
+// RFC-055 §5.6. Client events are ordinary events, so match.event() should
+// select them with no new matcher syntax — that "no new syntax" property is
+// what OQ-3 leaned on when it deferred the match.call() sugar, so it needs
+// a test rather than an assurance.
+func TestClientEvents_WorkAsTemporalAnchors(t *testing.T) {
+	addr := startOrdersServer(t)
+	rt := clientRuntime(t, addr, `, validate = "response"`)
+
+	callOp(t, rt, "mobile-app", "get_order", map[string]any{"order_id": int64(42)})
+	callOp(t, rt, "mobile-app", "get_order", map[string]any{"order_id": "degraded"})
+
+	cases := []struct {
+		name    string
+		matcher *MatcherVal
+		want    int
+	}{
+		{
+			name:    "by client and operation",
+			matcher: eventMatcher("client_call", map[string]string{"client": "mobile-app", "operation": "get_order"}),
+			want:    2,
+		},
+		{
+			name:    "by a different client selects nothing",
+			matcher: eventMatcher("client_call", map[string]string{"client": "partner-api"}),
+			want:    0,
+		},
+		{
+			name:    "by contract verdict",
+			matcher: eventMatcher("client_return", map[string]string{"contract_ok": "false"}),
+			want:    1,
+		},
+		{
+			name:    "violations are matchable in their own right",
+			matcher: eventMatcher("contract_violation", map[string]string{"client": "mobile-app"}),
+			want:    1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := len(rt.events.MatchingEvents(tc.matcher))
+			if got != tc.want {
+				t.Errorf("matched %d events, want %d", got, tc.want)
+			}
+		})
+	}
+
+	// An anchor is only useful if it can open a window, which means
+	// FirstMatching has to find it — that is the lookup eventually(anchor=)
+	// and always(between=) both run.
+	anchor := eventMatcher("client_return", map[string]string{"contract_ok": "false"})
+	ev, found := rt.events.FirstMatching(anchor)
+	if !found {
+		t.Fatal("FirstMatching did not resolve the anchor; eventually(anchor=) would never open")
+	}
+	if ev.Fields["operation"] != "get_order" {
+		t.Errorf("anchor resolved to operation %q, want get_order", ev.Fields["operation"])
+	}
+}
