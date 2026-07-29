@@ -250,15 +250,22 @@ func (rt *Runtime) routeFileIO(io seccheck.FileIO) {
 	rt.onFileIO(service, io)
 }
 
-// soleTracedService returns the only service with a trace session, or "".
+// soleTracedService returns the only observed service, or "".
+//
+// Reads st.containers, which is what records an observed sandbox since the
+// trace session moved to sandbox boot. It read st.sessions until M3 stopped
+// populating that map — leaving the fallback silently dead, so every point
+// whose container ID did not match exactly would have been counted as
+// unattributed and thrown away. Precisely the "looks like the SUT did no I/O"
+// failure this fallback exists to prevent.
 func (rt *Runtime) soleTracedService() string {
 	st := rt.fsObs
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if len(st.sessions) != 1 {
+	if len(st.containers) != 1 {
 		return ""
 	}
-	for name := range st.sessions {
+	for _, name := range st.containers {
 		return name
 	}
 	return ""
@@ -296,13 +303,66 @@ func (rt *Runtime) fsObservationFailure() string {
 		return "watch() ran but filesystem observation never started, so no I/O was seen"
 	}
 	if !st.connected {
-		return "watch() ran but no sandbox ever connected to the trace sink, so no I/O was seen; " +
-			"check that the services are container-mode and running under runsc"
+		return "watch() ran but no sandbox ever connected to the trace sink, so no I/O was seen. " +
+			"The services must be container-mode and launched under the " + gvisor.TraceRuntimeName +
+			" runtime, which carries the boot-time trace session; a container under plain runsc " +
+			"starts normally and reports nothing. Check: faultbox setup-trace --check"
 	}
 	if st.decodeErr != nil {
 		return fmt.Sprintf("filesystem observation hit a decode error, so the trace is incomplete: %v", st.decodeErr)
 	}
+	// Dropped points make the observation a SUBSET of what happened, and the
+	// canonical watch() assertion is a negative one — "this service never
+	// wrote outside its data directory". A dropped point could be the
+	// violating one, so the audit can no longer claim "never", only "never,
+	// among those I saw". That is not the assertion the author wrote.
+	//
+	// Measured: the sink starts losing points between roughly 17k and 47k per
+	// second, and enabling read tracing took a read-heavy workload from zero
+	// drops to 1,488. Hence read being opt-in — see RFC-056 §0c.
+	if st.sink != nil {
+		if reason := droppedFailure(st.sink.Dropped()); reason != "" {
+			return reason
+		}
+	}
+	// Points arrived but belonged to no service we launched. Observation is
+	// running and the trace is being discarded, which looks identical to "the
+	// SUT did no I/O".
+	if st.unattributed > 0 {
+		return fmt.Sprintf(
+			"filesystem observation received %d trace point(s) that matched no launched "+
+				"service, so they were discarded. The watch below saw less than the run "+
+				"produced; this usually means a container ID the Sentry reports differs from "+
+				"the one Faultbox recorded", st.unattributed)
+	}
 	return ""
+}
+
+// droppedFailure reports why dropped trace points invalidate a watch, or "".
+//
+// Split from the guard so it is testable on any platform: reading a real drop
+// count needs a live SOCK_SEQPACKET sink, which is Linux-only, and the M0b
+// finding this encodes is too important to be exercised on one OS.
+//
+// Drops make the observation a SUBSET of what happened, and the canonical
+// watch() assertion is negative — "this service never wrote outside its data
+// directory". A dropped point could be the violating one, so the audit can no
+// longer claim "never", only "never, among those I saw". That is not the
+// assertion the author wrote, and the difference is invisible in the result.
+//
+// Measured: the sink starts losing points between roughly 17k and 47k per
+// second, and enabling read tracing took a read-heavy workload from zero drops
+// to 1,488. That measurement is why read is opt-in — see RFC-056 §0c.
+func droppedFailure(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"filesystem observation dropped %d trace point(s), so what was observed is a "+
+			"subset of what happened and a watch() assertion cannot be trusted — a "+
+			"dropped operation could be the one it was looking for. This is a volume "+
+			"limit rather than a mistake in the spec: narrow files= or ops=, or if this "+
+			"host enables read tracing, turn it off (it roughly doubles traffic)", n)
 }
 
 // sourceUsesWatch reports whether a spec calls watch() or watch_start().
