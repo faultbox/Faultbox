@@ -1147,10 +1147,11 @@ func callerPosition(thread *starlark.Thread) (string, int32) {
 // inline with the assertion failure — the value Starlark already
 // folded away by the time we got here.
 //
-// Filter rule: keep step_send / step_recv only, walk backwards until
-// we have `max` entries or run out. Reverse so the slice reads
-// chronologically. Fault / violation events stay out of Context — the
-// drill-down already surfaces those in dedicated sections.
+// Filter rule: keep call/reply events only — step_send / step_recv and
+// their RFC-055 client equivalents — walking backwards until we have
+// `max` entries or run out. Reverse so the slice reads chronologically.
+// Fault / violation events stay out of Context — the drill-down already
+// surfaces those in dedicated sections.
 func (rt *Runtime) recentAssertionContext(max int) []AssertionContext {
 	if rt.events == nil || max <= 0 {
 		return nil
@@ -1159,7 +1160,7 @@ func (rt *Runtime) recentAssertionContext(max int) []AssertionContext {
 	picks := make([]AssertionContext, 0, max)
 	for i := len(all) - 1; i >= 0 && len(picks) < max; i-- {
 		ev := all[i]
-		if ev.Type != "step_send" && ev.Type != "step_recv" {
+		if !isCallEventType(ev.Type) {
 			continue
 		}
 		f := ev.Fields

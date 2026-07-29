@@ -96,6 +96,14 @@ func (l *EventLog) Emit(typ, service string, fields map[string]string) {
 		if target, ok := fields["target"]; ok {
 			eventType = typ + "." + target
 		}
+	} else if typ == "client_call" || typ == "client_return" || typ == "contract_violation" {
+		// RFC-055 §5.5 — same dotted shape as step events, so a client
+		// call reads as "client_call.courier" in PObserve routing and on
+		// the ShiViz host line, naming both the actor (via the event's
+		// service) and the callee (via the suffix).
+		if target, ok := fields["target"]; ok {
+			eventType = typ + "." + target
+		}
 	}
 
 	ev := Event{

@@ -143,8 +143,13 @@ func TestClientCall_EmitsClientLaneEvents(t *testing.T) {
 	if ret.Service != "mobile-app" {
 		t.Errorf("client_return service = %q, want mobile-app", ret.Service)
 	}
-	if call.EventType != "client_call" {
-		t.Errorf("client_call event_type = %q", call.EventType)
+	// The dotted form names the callee; the event's Service names the
+	// caller. Between them a reader gets both ends of the edge.
+	if call.EventType != "client_call.orders" {
+		t.Errorf("client_call event_type = %q, want client_call.orders", call.EventType)
+	}
+	if ret.EventType != "client_return.orders" {
+		t.Errorf("client_return event_type = %q, want client_return.orders", ret.EventType)
 	}
 
 	wantCallFields := map[string]string{
@@ -368,4 +373,79 @@ func TestClientCall_UnknownKwargIsRejectedAtCallTime(t *testing.T) {
 			t.Errorf("error %q missing %q", err.Error(), want)
 		}
 	}
+}
+
+// TestClientEvents_ReachDownstreamConsumers covers the RFC-055 Phase 3
+// migration: every consumer that had step_send/step_recv hard-coded must
+// also recognise the client pair, or client calls go missing exactly where
+// a reader looks for them.
+func TestClientEvents_ReachDownstreamConsumers(t *testing.T) {
+	addr := startOrdersServer(t)
+	rt := clientRuntime(t, addr, `, validate = "response"`)
+
+	callOp(t, rt, "mobile-app", "get_order", map[string]any{"order_id": int64(42)})
+	callOp(t, rt, "mobile-app", "get_order", map[string]any{"order_id": "500"})
+
+	t.Run("assertion context includes client calls", func(t *testing.T) {
+		ctx := rt.recentAssertionContext(4)
+		if len(ctx) == 0 {
+			t.Fatal("recentAssertionContext returned nothing; client calls are invisible at failure time")
+		}
+		var sawCall, sawReturn bool
+		for _, c := range ctx {
+			switch c.Type {
+			case "client_call":
+				sawCall = true
+			case "client_return":
+				sawReturn = true
+				if c.Target != "orders" {
+					t.Errorf("context target = %q, want orders", c.Target)
+				}
+			}
+		}
+		if !sawCall || !sawReturn {
+			t.Errorf("context = %+v, want both client_call and client_return", ctx)
+		}
+		// Chronological order, like the step path.
+		for i := 1; i < len(ctx); i++ {
+			if ctx[i].Seq < ctx[i-1].Seq {
+				t.Errorf("context is not in chronological order: %+v", ctx)
+				break
+			}
+		}
+	})
+
+	t.Run("normalized trace records operation not path", func(t *testing.T) {
+		var lines []string
+		for _, ev := range rt.events.Events() {
+			switch ev.Type {
+			case "client_call", "client_return":
+				lines = append(lines, ev.Fields["operation"])
+			}
+		}
+		if len(lines) != 4 {
+			t.Fatalf("got %d client events, want 4", len(lines))
+		}
+		// Both calls normalize to the same operation even though their
+		// paths differ (/orders/42 vs /orders/500) — that's the point of
+		// keying the normalized line on the operation.
+		for _, l := range lines {
+			if l != "get_order" {
+				t.Errorf("operation = %q, want get_order", l)
+			}
+		}
+	})
+
+	t.Run("isCallEventType covers both pairs", func(t *testing.T) {
+		for _, typ := range []string{"step_send", "step_recv", "client_call", "client_return"} {
+			if !isCallEventType(typ) {
+				t.Errorf("isCallEventType(%q) = false, want true", typ)
+			}
+		}
+		for _, typ := range []string{"syscall", "fault_applied", "contract_violation", ""} {
+			if isCallEventType(typ) {
+				t.Errorf("isCallEventType(%q) = true, want false", typ)
+			}
+		}
+	})
 }

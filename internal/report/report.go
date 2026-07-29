@@ -137,6 +137,13 @@ var anchorTypes = map[string]bool{
 	"service_stopped":          true,
 	"step_send":                true,
 	"step_recv":                true,
+	// RFC-055 client events. These are anchors by construction — the
+	// spec author names them in eventually()/always() windows — so
+	// shedding them at the default downsample level would defeat the
+	// feature outright.
+	"client_call":        true,
+	"client_return":      true,
+	"contract_violation": true,
 }
 
 // Build reads a bundle and writes a single self-contained report.html

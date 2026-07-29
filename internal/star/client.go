@@ -26,6 +26,20 @@ import (
 //     so N logical callers show up as N participants rather than one
 //     anonymous `test` driver.
 
+// isCallEventType reports whether an event type is one half of a
+// request/response pair. step_send/step_recv (test-driver steps) and
+// client_call/client_return (RFC-055 clients) carry the same field
+// schema, so consumers that reason about "a call and its reply" —
+// assertion context, the report's lane rendering, severity scoring —
+// treat both pairs alike rather than growing a parallel branch.
+func isCallEventType(t string) bool {
+	switch t {
+	case "step_send", "step_recv", "client_call", "client_return":
+		return true
+	}
+	return false
+}
+
 // clientReservedAttrs are the ClientVal attributes that are not
 // operations. An operation normalizing to one of these would be
 // unreachable, so client() rejects it at load time.
