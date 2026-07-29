@@ -276,6 +276,45 @@ missing alongside `faultbox`, container services never reach
 [README → Build from source](../README.md#build-from-source)). The shim
 is the container entrypoint; without it the container can't start.
 
+## 13. `TUNSETIFF ...: device or resource busy` on a packet-fault spec
+
+The packet gateway (`determinism(runtime = "gvisor")`) needs a TUN device, and
+a TUN device created with `ip tuntap add` is **persistent** — it outlives the
+process that made it. If a run dies without tearing down (SIGKILL, an OOM kill,
+a panic), the device stays behind.
+
+**In v0.14.1 this is self-healing.** Devices are named per-process
+(`fbox<pid>`), so a leftover cannot collide with a new run, and each run sweeps
+orphans on startup — any `fbox<pid>` whose owning process is gone is removed:
+
+```
+packet gateway: removed orphaned TUN device left by an earlier run
+  device=fbox999999 owner_pid=999999
+```
+
+Devices belonging to *live* processes are never touched, so concurrent runs on
+one host are fine.
+
+**If you are on v0.14.0**, the device was the shared constant `faultbox0` and
+neither property held: two concurrent runs collided, and one leaked device
+broke every later run on that host. Recover with:
+
+```bash
+sudo ip link delete faultbox0
+```
+
+Worth knowing because of how the failure presents: the run **continues**,
+installs its packet rules into a gateway that is not there, and every fault
+silently affects nothing. Faultbox fails the test rather than reporting that as
+a pass —
+
+```
+packet faults were installed 8 time(s) but no netstack gateway was attached,
+so no packet was affected; the result below would be meaningless
+```
+
+— but if you see that message, this is why.
+
 ## See also
 
 - [bundles.md](bundles.md) — bundle inspection (`faultbox inspect`)

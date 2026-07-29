@@ -174,12 +174,21 @@ func (l *linuxGateway) close() error {
 // ensureDevice creates and configures the TUN interface, reporting whether it
 // created it (so teardown only removes what it made).
 func (l *linuxGateway) ensureDevice(g *Gateway) (created bool, err error) {
+	// Sweep orphans before claiming a name. Cheap, and it is the only thing
+	// that recovers a host where a previous run was SIGKILLed.
+	reapOrphanDevices()
+
 	if _, e := net.InterfaceByName(g.cfg.Device); e == nil {
-		// Already present — reuse it, and leave it alone on teardown.
-		if err := run("ip", "link", "set", g.cfg.Device, "up"); err != nil {
-			return false, err
+		// The name is per-process, so a device already holding it is a
+		// leftover from an earlier process that had this pid — we have not
+		// created ours yet. v0.14.0 adopted such a device and left it alone on
+		// teardown; that is how a stale device with stale addresses survived
+		// to break the next run with EBUSY. Replace it instead.
+		if err := run("ip", "link", "del", g.cfg.Device); err != nil {
+			return false, fmt.Errorf(
+				"stale TUN %s exists and could not be removed (needs CAP_NET_ADMIN): %w",
+				g.cfg.Device, err)
 		}
-		return false, nil
 	}
 	if err := run("ip", "tuntap", "add", "dev", g.cfg.Device, "mode", "tun"); err != nil {
 		return false, fmt.Errorf("create TUN %s (needs CAP_NET_ADMIN): %w", g.cfg.Device, err)

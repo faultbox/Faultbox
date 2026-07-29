@@ -13,6 +13,137 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.14.1] - 2026-07-29
+
+Searching fault *timing*, and fixing what that search exposed.
+
+v0.14.0 shipped packet faults and a Raft harness that could express a partition
+but not vary **when** it lands. Closing that gap took one new primitive — and
+turned up four defects, one of them a documented fault that silently did
+something else. So this release is one feature, one deferral delivered, and a
+set of corrections that matter more than either.
+
+### Added
+- **`sleep(duration, clock="wall")`** — a wall-clock wait that is indifferent
+  to event traffic. Faultbox had two ways to wait and both were conditional on
+  the SUT: `await_stable()` returns on quiescence, `await_event()` on a
+  matching event. Neither can hold a fault open for a fixed time, and
+  `await_stable` fails at it in exactly the situation the wait is for — **an
+  active fault emits the events that prevent quiescence.** Measured on a 3-node
+  `hashicorp/raft` cluster under partition: 6681 events in three minutes,
+  longest quiet gap 338 ms, so every window above ~340 ms blocked until the
+  per-test deadline and reported INCONCLUSIVE. A fault-timing search that
+  should have run 18 configurations ran 6 and hung on 12, spending 36 minutes
+  to produce no signal; with `sleep()` the same search runs all 18 in about two
+  minutes. See
+  [the experiment](docs/design/2026-07-28-timing-exploration-experiment.md).
+
+  `sleep("0ms")` is a no-op rather than an error — deliberately unlike
+  `await_stable`, whose window must be positive — because the primary use is as
+  a `choose()` axis and "no delay" is that axis's natural baseline. A sleep
+  longer than the test's remaining budget is refused up front, naming both
+  numbers, instead of running into the deadline and reporting a bare timeout.
+  It emits no event (a supervisor-side wait is not something the SUT did, and
+  emitting one would reset the quiescence timer of an `await_stable` in a
+  `parallel()` branch) and is rejected inside `monitor()` / `assume()`
+  predicates like the `await_*` family.
+
+- **`bandwidth(rate, dir="both", queue="250ms")` and `mtu(size)`** — the two
+  link shapers deferred from v0.14.0. They take no matcher: a `packet_*` rule
+  says what happens to packets that look like a certain way, a shaper says what
+  kind of link this is.
+
+  `rate` accepts bit units (`"1mbit"`, `"512kbps"`) or byte units, which must
+  say so explicitly (`"2MB/s"`). A bare `"1000000"` is **rejected** — it could
+  be bits or bytes, and guessing would be a silent factor-of-eight error in the
+  one number the fault depends on. `queue=` bounds the backlog in *time*, so
+  the shaper drops when saturated the way a real bottleneck does; a rate
+  limiter with an unbounded queue is a memory leak with latency, and the sender
+  never observes the congestion a congestion-control bug needs to surface.
+
+  `mtu()` overrides the link MTU, so netstack advertises a smaller TCP MSS and
+  fragments — a real small-MTU path. v0.14.0 had to approximate this with
+  `packet_drop(len_gt=576)`, which drops oversized packets: that looks like a
+  black hole and behaves like nothing real. Sizes below the IPv4 minimum of 68
+  are rejected.
+
+  Both are gateway-wide (one TUN link, one NIC — a per-target knob would be one
+  that lies), both are cleared at test end, and both **error** on
+  `runtime="default"` rather than silently no-opping. Each run records what the
+  shaper did — `bandwidth_stats dir=c2s admitted=76 dropped=0
+  peak_backlog=38ms` — so "the link was configured slow" can be distinguished
+  from "the link was the bottleneck".
+
+### Fixed
+- **`packet_delay(dir="s2c")` was a silent drop, not a delay.** Egress builds a
+  batch list, hands `release` a closure that appends to it, writes the batch
+  when the loop ends and frees it on return — so a packet released *later*, by
+  the defer queue's timer, was appended to a list nobody would ever write.
+  `packet_reorder` on egress had the same fate, and bandwidth pacing would have
+  inherited it. Both existing delay tests drove the ingress path, where release
+  goes straight to the dispatcher, so nothing caught it. A fault that silently
+  becomes a *different* fault is the exact failure this release line exists to
+  prevent. Late releases now take a direct path to the wire.
+- **The packet gateway's TUN device no longer bricks a host when a run is
+  interrupted.** The device was the shared constant `faultbox0` and it is
+  *persistent* — it survives the process. Two consequences, both live in
+  v0.14.0: concurrent runs on one machine collided, and any run that died
+  without teardown left a device that failed **every later packet-fault run**
+  with `TUNSETIFF faultbox0: device or resource busy`, recoverable only by
+  `sudo ip link delete faultbox0`, documented nowhere. Three layers now:
+  devices are named per-process (`fbox<pid>`), so a leak is clutter rather than
+  an outage; `SIGTERM` is handled alongside `SIGINT` (`timeout`, CI runners and
+  Docker all send SIGTERM — the most common way to stop a run was the one that
+  leaked); and every run sweeps orphaned `fbox<pid>` devices whose owning
+  process is gone, which is what recovers a machine after a `SIGKILL` no signal
+  handler can catch. Devices owned by live processes are never touched.
+  New [troubleshooting §13](docs/troubleshooting.md).
+- **An interrupted suite no longer invents verdicts for tests it never ran.**
+  `RunAll` had no cancellation check anywhere in its loop, so Ctrl-C cancelled
+  the context and the walk continued: each remaining test started its services,
+  inherited an already-dead context, failed instantly, and was recorded as
+  INCONCLUSIVE. An 18-leaf search interrupted after one leaf reported
+  `1 passed, 17 inconclusive`. It now stops and says what did not happen —
+  `2 passed, 0 failed, 1 inconclusive, 15 not run (interrupted)` — with the new
+  `SuiteResult.Aborted` counter kept **distinct** from `Inconclusive`, since
+  "the test was indeterminate" and "the test never started" call for different
+  responses.
+- Data race in `netfault`'s test `fakeClock`: the defer-queue goroutine called
+  `Stop()` while the test goroutine read `stopped` under the clock mutex. It
+  did not fire during the v0.14.0 release gate and did fire here.
+- **`faultbox plan` was blind to `choose()`**, the construct most likely to
+  blow a budget. The runtime discovers axes by *executing* a test body once;
+  `plan` is static and executes nothing, so every `choose()`-driven test counted
+  as a single instance — the exploration spec that runs 24 leaves reported
+  `Total: 2 plan instances`. `--check-cost --max-instances N` exists to catch
+  fan-out blowups before they run and was under-reporting by 12×, which is
+  worse than having no gate, because a gate is trusted. Axes are now read
+  statically from the spec AST and multiplied into `Instances`, and the tree
+  shows where the cost comes from:
+
+  ```
+  ├── test "test_transfer_timing"  [def]
+  │   ├── 18 instances
+  │   └── choose
+  │       ├── warmup: [0, 10, 40]
+  │       ├── gap: [0ms, 400ms, 1200ms]
+  │       └── hold: [100ms, 900ms]
+  ```
+
+  Where an option list is computed rather than literal, its size is not
+  knowable without running the spec. That axis is reported as
+  `(computed — size unknown)` and the total becomes `at least N` — an estimate
+  that admits its gaps, rather than one that quietly rounds down. A `choose()`
+  reached through a helper function is likewise not attributed to the calling
+  test: static analysis cannot resolve the call graph, and inventing axes would
+  be worse than missing them.
+- **Inconclusive verdicts now print their reason.** `TestResult.Reason` has
+  always carried the explanation — `test timeout: body did not complete within
+  3m0.1s` — and the summary discarded it, leaving a bare `12 inconclusive`.
+  Diagnosing one such run took 36 minutes of log archaeology to establish that
+  every leaf had blocked in the same `await_stable`; the answer was in the
+  struct the whole time. Identical reasons are grouped with a count.
+
 ## [0.14.0] - 2026-07-28
 
 Packet-level network faults. Faultbox mediated at two layers — individual

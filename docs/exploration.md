@@ -113,6 +113,59 @@ $ echo $?
 
 The plan output still prints — so the engineer who triggered the gate sees what they're paying for.
 
+#### `choose()` fan-out (v0.14.1)
+
+`choose()` axes count toward the total, and the tree shows where the cost comes
+from:
+
+```
+├── test "test_transfer_timing"  [def]
+│   ├── 18 instances
+│   └── choose
+│       ├── warmup: [0, 10, 40]
+│       ├── gap: [0ms, 400ms, 1200ms]
+│       └── hold: [100ms, 900ms]
+```
+
+Before v0.14.1 they did not. The runtime discovers axes by *executing* a test
+body once and recording the `choose()` calls that ran; `plan` is static and
+executes nothing, so every `choose()`-driven test counted as one instance — a
+spec that runs 24 leaves reported `Total: 2 plan instances`, and the cost gate
+under-reported by 12×. Axes are now read from the spec AST instead.
+
+**Two limits, both deliberate and both visible in the output.**
+
+A computed option list cannot be sized without running the spec:
+
+```
+└── choose
+    ├── dyn: (computed — size unknown)
+    └── lit: [a, b]
+
+Total: at least 2 plan instances
+  (a choose() option list is computed, so its size is not knowable without running the spec)
+```
+
+`at least` is the point. A cost estimate that silently rounds down is worse
+than none, because it is trusted.
+
+A `choose()` reached through a helper function is **not** attributed to the
+calling test — static analysis cannot resolve the call graph without executing
+it, and inventing axes would be worse than missing them. If you want a fan-out
+visible to the cost gate, call `choose()` in the test body:
+
+```python
+def test_x():
+    n = choose("n", [1, 2, 3])   # counted
+    run(n)
+
+def helper():
+    return choose("hidden", [1, 2])   # NOT attributed to test_y
+
+def test_y():
+    run(helper())
+```
+
 ## Plan as a bundle artifact
 
 Every `faultbox test` run writes the same plan tree into the `.fb` archive as `plan.json`, alongside `trace.json`. Pre-RFC-042 bundles stay valid: the report and CLI both treat a missing `plan.json` as "no plan data" rather than an error.

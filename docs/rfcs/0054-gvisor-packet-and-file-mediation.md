@@ -380,11 +380,11 @@ packet_reset(**match)                         # synthesize RST, drop the origina
 packet_window(size=0, **match)                # rewrite advertised receive window
 ```
 
-**Deferred to v0.14.1:** two link-scoped shapers that take no matcher.
+**Shipped in v0.14.1:** two link-scoped shapers that take no matcher.
 
 ```python
-bandwidth(rate="1mbps", dir="c2s")   # NOT in v0.14.0
-mtu(size=576)                        # NOT in v0.14.0
+bandwidth(rate="1mbit", dir="c2s", queue="250ms")
+mtu(size=576)
 ```
 
 These are not per-packet rules — they need a token bucket and real
@@ -636,9 +636,13 @@ see below.
   search.
   - Sibling, small: `--runs N` should say when the spec has no seed-sensitive
     construct. Silence there is what made the Raft result readable as evidence.
-- **`bandwidth(rate=)` and `mtu(size=)` — v0.14.1.** Link-scoped shapers, deferred from
-  v0.14.0 because they need a token bucket and real fragmentation/PMTUD handling rather
-  than the per-packet match-and-act pipeline. `mtu()` is what scenario 8 actually wants.
+- ~~**`bandwidth(rate=)` and `mtu(size=)` — v0.14.1.**~~ **Shipped in v0.14.1.**
+  `bandwidth()` paces via a single-server model whose queue is bounded in *time*
+  (`queue="250ms"`), so it drops when saturated the way a real bottleneck does rather
+  than buffering forever. `mtu()` overrides the link MTU, so netstack derives a smaller
+  TCP MSS and fragments — a real small-MTU path, not the `packet_drop(len_gt=)`
+  approximation scenario 8 had to use. Measured on the corpus: at 64kbit the c2s
+  direction admitted 76 packets with a 38ms peak backlog; at 256kbit, 9ms.
 - **`watch()` filesystem observation — v0.14.1.** The sink ships in v0.14.0; the primitive
   is gated off until trace sessions can be installed at sandbox boot via
   `-pod-init-config`. See Decision record M5.

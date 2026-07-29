@@ -57,6 +57,7 @@ var monitorSandboxDenylist = map[string]string{
 	// Body-blocking primitives (PR 5) — would deadlock the event-log subscriber.
 	"await_stable": "await_* primitives block the test body and cannot be called from a monitor",
 	"await_event":  "await_* primitives block the test body and cannot be called from a monitor",
+	"sleep":        "sleep() blocks the event-log subscriber and cannot be called from a monitor",
 
 	// Determinism / trace family — config or runtime-mutating.
 	"determinism": "determinism() is a spec-load declaration",

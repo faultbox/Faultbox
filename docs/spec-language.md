@@ -131,6 +131,7 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`always`](#alwayspredicate-between),
 [`await_event`](#await_eventpredicate_or_matcher),
 [`await_stable`](#await_stablequiescence_window-ignore),
+[`sleep`](#sleepduration-clockwall-v0141),
 [`test`](#testname-body-setup-expect-timeout-terminate_when-clock),
 [`match`](#the-match-module).
 
@@ -1915,9 +1916,56 @@ packet_window(size = 0, **match)        # rewrite the advertised receive window
 Rules are evaluated in declaration order and **first match wins**, so a narrow
 `packet_pass` above a broad `packet_drop` carves out an exception.
 
-> `bandwidth()` and `mtu()` are **not** in v0.14.0. They are link-scoped shapers
-> needing a token bucket and real fragmentation handling rather than the
-> match-and-act pipeline above; they land in v0.14.1.
+### Link shapers: `bandwidth()` and `mtu()` (v0.14.1)
+
+These take **no matcher**. Every `packet_*` rule answers "what happens to
+packets that look like this"; a shaper answers "what kind of link is this",
+which is a property of the path rather than of any packet crossing it.
+
+```python
+def test_slow_link():
+    bandwidth(rate = "1mbit")            # both directions
+    bandwidth(rate = "256kbit", dir = "s2c")
+    mtu(size = 576)
+    api.get(path = "/report")
+```
+
+**`bandwidth(rate, dir="both", queue="250ms")`**
+
+`rate` accepts bit units (`"1mbit"`, `"512kbps"`, `"1gbit"`) or byte units,
+which must say so explicitly (`"2MB/s"`, `"64kB/s"`). A bare number is
+**rejected** — `"1000000"` could be bits or bytes, and guessing would be a
+silent factor-of-eight error in the one value the whole fault depends on.
+
+`queue=` bounds how much traffic the shaper holds before it starts discarding.
+A rate limiter with an unbounded queue is not a slow link, it is a memory leak
+with latency: the sender never observes congestion, which is precisely the
+signal a congestion-control bug needs to surface. Expressed as time so it means
+the same thing at 1 Mbit and at 1 Gbit.
+
+**`mtu(size)`**
+
+A real small-MTU path: netstack derives its advertised TCP MSS and its IP
+fragmentation threshold from the link MTU, so the peer sends smaller segments.
+This is the difference from approximating it with `packet_drop(len_gt=576)`,
+which drops oversized packets — that looks like a black hole and behaves like
+nothing real. Sizes below the IPv4 minimum of 68 bytes are rejected.
+
+**Both are gateway-wide**, not per-target. There is one TUN link under one
+netstack NIC, so per-interface capacity is not something the gateway has to
+give; a per-target knob would be one that lies. Both are cleared at test end,
+so one test's slow link cannot become the next test's baseline.
+
+**Both refuse on `runtime="default"`** rather than silently doing nothing — a
+shaper that quietly no-ops leaves the test passing against a link that was
+never slow, and the run still looks like evidence.
+
+Each run records what the shaper actually did, so "the link was configured
+slow" can be told apart from "the link was the bottleneck":
+
+```
+bandwidth_stats  dir=c2s  admitted=76  dropped=0  peak_backlog=38ms
+```
 
 ### The matcher
 
@@ -2660,7 +2708,7 @@ it from the spec-wide list so it doesn't double-register.
 **Sandbox restrictions** — `update` and `check` lambdas run in a
 restricted Starlark thread. Calls to `fault`, `service`, `assert_*`,
 `parallel`, `partition`, `eventually`, `always`, `monitor`,
-`await_stable`, `await_event`, `determinism`, `trace`, `trace_start`,
+`await_stable`, `await_event`, `sleep`, `determinism`, `trace`, `trace_start`,
 `trace_stop`, `events`, and friends are rejected at spec load with a
 clear error message. See
 [docs/temporal.md](temporal.md#sandbox-restrictions) for the full
@@ -2739,6 +2787,66 @@ def body():
 
 `ignore=` accepts a matcher or callable for events that should not
 reset the quiescence timer (heartbeats, telemetry, metric flushes).
+
+> **`await_stable` cannot hold a fault open for a fixed time.** An active
+> fault emits the events that prevent quiescence — see `sleep()` below.
+
+### `sleep(duration, clock="wall")` (v0.14.1)
+
+Blocks the body for a wall-clock duration, regardless of what the event log
+is doing. Only valid inside a test body.
+
+```python
+def test_transfer_during_partition():
+    partition_start(node1, node2)
+    sleep("400ms")                    # hold the partition open
+    node1.admin.post(path = "/transfer")
+    partition_stop(node1, node2)
+```
+
+**Use `sleep()` when you mean elapsed time, `await_stable()` when you mean
+"the system settled."** They are not interchangeable, and the difference
+matters most while a fault is installed:
+
+| | waits for | during an active fault |
+|---|---|---|
+| `await_stable(quiescence_window=W)` | no events for W | may never return |
+| `sleep(W)` | W of wall clock | returns after W |
+
+`await_stable` returns on quiescence, and a fault under test generates the
+events that prevent it. Measured on a 3-node `hashicorp/raft` cluster with a
+partition installed: **6681 events in three minutes, longest quiet gap 338 ms.**
+Every dropped packet and failed heartbeat resets the timer, so any window above
+~340 ms blocked until the per-test deadline and reported INCONCLUSIVE. `ignore=`
+does not rescue it — the noise is the SUT's own stdout, which specs
+legitimately wait on. Full measurement:
+[timing-exploration experiment](design/2026-07-28-timing-exploration-experiment.md).
+
+This makes `sleep()` the primitive for exploring fault *timing*:
+
+```python
+def test_transfer_timing():
+    gap = choose("gap", ["0ms", "400ms", "1200ms"])
+    partition_start(node1, node2)
+    sleep(gap)
+    node1.admin.post(path = "/transfer")
+```
+
+Notes:
+
+- **`sleep("0ms")` is a no-op, not an error** — deliberately unlike
+  `await_stable`, whose window must be positive. A `choose()` axis wants "no
+  delay" as its baseline, and a value that aborts the leaf instead of running
+  it turns a search into silence. A negative duration errors.
+- **A sleep longer than the test's remaining budget is refused up front**,
+  naming both numbers, rather than running into the deadline and reporting a
+  bare timeout.
+- **Emits no event.** A sleep is supervisor-side, not something the SUT did,
+  and emitting one would reset the quiescence timer of any `await_stable` in a
+  `parallel()` branch.
+- Rejected inside `monitor()` and `assume()` predicates, like the `await_*`
+  family.
+- `clock=` is reserved; `"wall"` is the only accepted value in this release.
 
 ### `test(name, body=, setup=, expect=, timeout=, terminate_when=, assume=, clock=)`
 

@@ -140,8 +140,12 @@ func planCmd(args []string) int {
 	// exceeds the user's budget, so CI pre-commit hooks can fail loudly
 	// before launching a multi-hour run.
 	if checkCost && maxInstances >= 0 && pt.Totals.Instances > maxInstances {
-		fmt.Fprintf(os.Stderr, "\ncost gate: plan has %d instances; --max-instances=%d exceeded\n",
-			pt.Totals.Instances, maxInstances)
+		atLeast := ""
+		if pt.Totals.Estimated {
+			atLeast = "at least "
+		}
+		fmt.Fprintf(os.Stderr, "\ncost gate: plan has %s%d instances; --max-instances=%d exceeded\n",
+			atLeast, pt.Totals.Instances, maxInstances)
 		return 2
 	}
 	return 0
@@ -205,7 +209,16 @@ func renderPlanText(w io.Writer, pt *plan.PlanTree) {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Total: %d plan instance%s\n", pt.Totals.Instances, planPluralS(pt.Totals.Instances))
+	if pt.Totals.Estimated {
+		// Never print a bare number for an estimate. The whole failure this
+		// replaces is a total that looked authoritative and was not.
+		fmt.Fprintf(w, "Total: at least %d plan instance%s\n",
+			pt.Totals.Instances, planPluralS(pt.Totals.Instances))
+		fmt.Fprintln(w, "  (a choose() option list is computed, so its size is not "+
+			"knowable without running the spec)")
+	} else {
+		fmt.Fprintf(w, "Total: %d plan instance%s\n", pt.Totals.Instances, planPluralS(pt.Totals.Instances))
+	}
 
 	if len(pt.Topology.Services) > 0 {
 		fmt.Fprintf(w, "Services: %d (", len(pt.Topology.Services))
@@ -248,6 +261,12 @@ func renderPlanTest(w io.Writer, t plan.PlanTest, isLast bool) {
 	for _, comp := range t.Compositions {
 		var sub []string
 		for _, ax := range comp.Axes {
+			if ax.Estimated {
+				// Not "[]" — an empty list reads as "zero options" when what
+				// we mean is "we could not read the size without running it".
+				sub = append(sub, fmt.Sprintf("%s: (computed — size unknown)", ax.Name))
+				continue
+			}
 			sub = append(sub, fmt.Sprintf("%s: [%s]", ax.Name, strings.Join(ax.Values, ", ")))
 		}
 		children = append(children, child{label: string(comp.Kind), sub: sub})

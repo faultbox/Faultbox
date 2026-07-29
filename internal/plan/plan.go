@@ -85,6 +85,12 @@ type PlanTest struct {
 	// duration string form ("30s"). Empty for legacy tests, which run
 	// under the 3-minute infrastructure ceiling only.
 	Timeout string `json:"timeout,omitempty"`
+	// Estimated marks Instances as a LOWER BOUND, not an exact count. Set
+	// when a choose() axis had an option list static analysis could not read
+	// (a computed list, a variable). Renderers must show it; a cost estimate
+	// that hides its own uncertainty is how the pre-v0.14.1 plan tree read as
+	// authoritative while reporting 2 instances for a 24-leaf spec.
+	Estimated bool `json:"estimated,omitempty"`
 }
 
 // PlanTestKind is the discriminator for PlanTest entries.
@@ -120,7 +126,7 @@ type PlanCompositionKind string
 const (
 	// CompositionFaultMatrix — fault_matrix's scenarios × faults cross product.
 	CompositionFaultMatrix PlanCompositionKind = "fault_matrix"
-	// CompositionChoose — reserved for RFC-043's choose(); not emitted in v0.13.0-rc1.
+	// CompositionChoose — RFC-043's choose(), discovered by static analysis.
 	CompositionChoose PlanCompositionKind = "choose"
 )
 
@@ -130,6 +136,10 @@ const (
 type PlanAxis struct {
 	Name   string   `json:"name"`
 	Values []string `json:"values"`
+	// Estimated marks an axis whose option list static analysis could not
+	// read. Values is then empty — which must NOT be rendered as "[]", since
+	// an empty list reads as "zero options" when it means "unknown size".
+	Estimated bool `json:"estimated,omitempty"`
 }
 
 // PlanTotals summarizes the cross-product cost across the plan tree.
@@ -137,6 +147,9 @@ type PlanAxis struct {
 // counters (RFC-042 §5.9) land with rc2.
 type PlanTotals struct {
 	Instances int `json:"instances"`
+	// Estimated is true when any test's Instances is a lower bound — see
+	// PlanTest.Estimated. Cost gates should treat the total as ">=".
+	Estimated bool `json:"estimated,omitempty"`
 }
 
 // PlanTopology snapshots services. Dependency edges + their coverage

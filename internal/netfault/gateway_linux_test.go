@@ -29,7 +29,14 @@ func requireRoot(t *testing.T) {
 }
 
 // testGateway builds a gateway on a uniquely-named device so concurrent or
-// interrupted runs cannot collide on faultbox0.
+// interrupted test runs cannot collide.
+//
+// This helper has always done this; the production default did not until
+// v0.14.1, which is the whole bug — the hazard was understood well enough to
+// work around in tests and shipped anyway in the code users run. The prefix
+// stays distinct from DevicePrefix so reapOrphanDevices, which deletes
+// fbox<pid> devices belonging to dead processes, cannot remove a device a
+// concurrent test is using.
 func testGateway(t *testing.T, cfg GatewayConfig) *Gateway {
 	t.Helper()
 	if cfg.Device == "" {

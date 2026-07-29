@@ -162,6 +162,15 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// the per-test context; no own timeout.
 		"await_stable": starlark.NewBuiltin("await_stable", rt.builtinAwaitStable),
 		"await_event":  starlark.NewBuiltin("await_event", rt.builtinAwaitEvent),
+		// Unconditional wall-clock wait. Both await_* forms are
+		// conditional on the SUT, and neither can hold a fault open
+		// for a fixed time — an active fault emits the very events
+		// that stop await_stable quiescing. See sleep.go.
+		"sleep": starlark.NewBuiltin("sleep", rt.builtinSleep),
+		// Link shapers (RFC-054, deferred from v0.14.0). No matcher: these
+		// describe the link, not any packet crossing it. See shaper.go.
+		"bandwidth": starlark.NewBuiltin("bandwidth", rt.builtinBandwidth),
+		"mtu":       starlark.NewBuiltin("mtu", rt.builtinMTU),
 		// Declarative test definition (RFC-041 §8.6). Augments the
 		// def test_*() function-style declaration with per-test
 		// timeout, expect=, setup=, and terminate_when= temporal

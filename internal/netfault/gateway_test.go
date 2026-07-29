@@ -1,6 +1,7 @@
 package netfault
 
 import (
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -116,8 +117,10 @@ func TestAllocatorExhaustionIsAnError(t *testing.T) {
 
 func TestGatewayDefaults(t *testing.T) {
 	g, _ := NewGateway(GatewayConfig{})
-	if g.Device() != "faultbox0" {
-		t.Errorf("Device = %q, want faultbox0", g.Device())
+	// v0.14.1: per-process, not the shared "faultbox0". A constant name meant
+	// concurrent runs collided and one leaked device broke every later run.
+	if want := deviceNameFor(os.Getpid()); g.Device() != want {
+		t.Errorf("Device = %q, want %q", g.Device(), want)
 	}
 	if g.Subnet() != DefaultSubnet {
 		t.Errorf("Subnet = %q, want %q", g.Subnet(), DefaultSubnet)

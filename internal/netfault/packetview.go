@@ -20,6 +20,10 @@ const (
 	DirC2S Direction = iota
 	// DirS2C is Faultbox → SUT (egress out of netstack).
 	DirS2C
+	// DirBoth selects both directions. It is never the direction OF a packet
+	// — Parse only ever yields DirC2S or DirS2C — only a selector for the
+	// link shapers, which are configured per direction or for the whole link.
+	DirBoth
 )
 
 func (d Direction) String() string {
