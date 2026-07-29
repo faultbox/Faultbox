@@ -1283,7 +1283,7 @@
   }
 
   function recentStepRow(c) {
-    var label = c.type === "step_send" ? "→ call" : "← reply";
+    var label = isSendEvent(c.type) ? "→ call" : "← reply";
     var line = label + " · " + (c.target || "?")
       + (c.method ? "." + c.method : "")
       + (c.summary ? "  " + stripArrowFromSummary(c.summary) : "");
@@ -1829,6 +1829,11 @@
   // the test lane buried among other interactions. Falls back to
   // ev.service when fields.target is missing — keeps older bundles
   // and non-step events on their original lanes.
+  //
+  // RFC-055 client events are deliberately NOT re-routed. A step event's
+  // emitter is the anonymous "test" driver, so showing it on the callee's
+  // lane is strictly more informative. A client event's emitter is the
+  // named actor we want on screen, so ev.service is already right.
   function laneFor(ev) {
     if ((ev.type === "step_send" || ev.type === "step_recv") &&
         ev.fields && ev.fields.target) {
@@ -1987,6 +1992,17 @@
   // v0.12.10: spec-anchored steps (events the user wrote directly in
   // the test body) get a +50 bump — a slot containing both a monitor
   // poll and a user-written step always shows the user's call.
+  // RFC-055: client_call / client_return are the client-side twins of
+  // step_send / step_recv and carry the same field schema, so everywhere
+  // the viewer reasons about "a call and its reply" it treats both pairs
+  // alike. laneFor is the deliberate exception — see its comment.
+  function isCallEvent(t) {
+    return t === "step_send" || t === "step_recv" ||
+           t === "client_call" || t === "client_return";
+  }
+  function isSendEvent(t) { return t === "step_send" || t === "client_call"; }
+  function isRecvEvent(t) { return t === "step_recv" || t === "client_return"; }
+
   function severityScore(ev) {
     var t = ev.type || "";
     var bonus = (ev.fields && ev.fields.spec) ? 50 : 0;
@@ -1994,7 +2010,10 @@
     if (t === "fault_applied" || t === "fault_removed" ||
         t === "proxy_fault_applied" || t === "proxy_fault_removed") return 90 + bonus;
     if (t === "fault_zero_traffic" || t === "fault_skipped_no_seccomp") return 85 + bonus;
-    if (t === "step_send" || t === "step_recv") {
+    // A contract violation is a finding in its own right, not a step
+    // outcome — rank it with the faults so it can't fold away.
+    if (t === "contract_violation") return 95 + bonus;
+    if (isCallEvent(t)) {
       var f = ev.fields || {};
       if (f.success === "false" || f.error) return 80 + bonus;
       var sc = parseInt(f.status_code || "0", 10);
@@ -2017,12 +2036,13 @@
     if (t === "fault_applied" || t === "fault_removed" ||
         t === "proxy_fault_applied" || t === "proxy_fault_removed" ||
         t === "fault_skipped_no_seccomp" || t === "fault_zero_traffic" ||
-        t === "violation" ||
+        t === "violation" || t === "contract_violation" ||
         t === "service_started" || t === "service_ready" || t === "service_stopped" ||
         t === "session_completed") {
       return true;
     }
-    if ((t === "step_send" || t === "step_recv") && ev.fields) {
+    if (isCallEvent(t) && ev.fields) {
+      if (ev.fields.contract_ok === "false") return true;
       if (ev.fields.success === "false") return true;
       if (ev.fields.error) return true;
     }
@@ -2036,8 +2056,14 @@
   // never reach this path.
   function laneFoldKey(ev) {
     var t = ev.type || "";
-    if (t !== "step_send" && t !== "step_recv") return "_typed_" + t;
+    if (!isCallEvent(t)) return "_typed_" + t;
     var f = ev.fields || {};
+    // Client calls fold by operation: the path carries a per-call id
+    // ("/orders/42") that would defeat folding, while the operation name
+    // is the stable identity of what was called.
+    if (f.operation) {
+      return "client:" + (f.client || "?") + "." + f.operation;
+    }
     var summary = f.summary || (f.sql || f.query || f.path || f.command || f.topic || "");
     return "step:" + (f.target || "?") + "." + (f.method || "?") + "::" + summary;
   }
@@ -2098,9 +2124,9 @@
     var t = ev.type || "";
     if (t === "fault_applied" || t === "fault_removed" ||
         t === "proxy_fault_applied" || t === "proxy_fault_removed") return "fault";
-    if (t === "violation") return "violation";
+    if (t === "violation" || t === "contract_violation") return "violation";
     if (t === "syscall") return "syscall";
-    if (t === "step_send" || t === "step_recv") {
+    if (isCallEvent(t)) {
       // v0.12.6: failed steps render in the fault palette so the eye
       // finds the DB invalid-connection and the truck-api 500 among
       // a sea of yellow SELECT 1 markers. Without this every step
@@ -2220,8 +2246,8 @@
     // arrow on its own.
     var f = ev.fields || {};
     var headline;
-    if (ev.type === "step_send" || ev.type === "step_recv") {
-      var label = ev.type === "step_send" ? "→ call" : "← reply";
+    if (isCallEvent(ev.type)) {
+      var label = isSendEvent(ev.type) ? "→ call" : "← reply";
       headline = f.summary ? (label + " · " + stripArrowFromSummary(f.summary)) : label;
     } else {
       headline = f.summary || ev.type || "event";
@@ -2512,13 +2538,13 @@
       return head;
     }
 
-    if (t === "step_send" || t === "step_recv") {
+    if (isCallEvent(t)) {
       // v0.12.9: the runtime's `summary` field starts with a bare
       // arrow (→ / ←) which several customers found ambiguous.
       // Pair the arrow with an explicit "call" / "reply" word so
       // the direction is unambiguous on a first read. The arrow
       // still scans faster once learned.
-      var label = t === "step_send" ? "→ call" : "← reply";
+      var label = isSendEvent(t) ? "→ call" : "← reply";
       // v0.12.10: ★ prefix marks spec-anchored steps (calls the user
       // wrote directly in the test body). Helps the eye skim past
       // monitor / proxy noise to land on familiar landmarks.
@@ -2529,9 +2555,11 @@
       var parts = [star + label, "·", (f.target || "?") + (f.method ? "." + f.method : "")];
       var preview = f.sql || f.query || f.path || f.command || f.topic || f.body;
       if (preview) parts.push(clip(preview, 80));
-      if (t === "step_recv" && f.status_code) parts.push("[" + f.status_code + "]");
-      else if (t === "step_recv" && f.status) parts.push("[" + f.status + "]");
-      if (t === "step_recv" && f.error) parts.push("ERR: " + clip(f.error, 60));
+      if (isRecvEvent(t) && f.status_code) parts.push("[" + f.status_code + "]");
+      else if (isRecvEvent(t) && f.status) parts.push("[" + f.status + "]");
+      else if (isRecvEvent(t) && f.grpc_code) parts.push("[" + f.grpc_code + "]");
+      if (isRecvEvent(t) && f.error) parts.push("ERR: " + clip(f.error, 60));
+      if (isRecvEvent(t) && f.contract_ok === "false") parts.push("⚠ contract");
       return parts.join(" ");
     }
 
@@ -2599,7 +2627,8 @@
     }
     var knownTypes = ["syscall", "fault_applied", "fault_removed",
       "service_started", "service_ready", "service_stopped",
-      "step_send", "step_recv", "violation"];
+      "step_send", "step_recv",
+      "client_call", "client_return", "contract_violation", "violation"];
     var typeOpts = [];
     for (var j = 0; j < knownTypes.length; j++) {
       if (typesPresent[knownTypes[j]]) typeOpts.push(knownTypes[j]);

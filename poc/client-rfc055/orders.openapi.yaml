@@ -1,0 +1,52 @@
+openapi: 3.0.3
+info:
+  title: Orders API
+  version: 1.4.0
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [item_id, qty]
+              properties:
+                item_id: {type: string}
+                qty: {type: integer}
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: {type: integer}
+                  status: {type: string}
+  /orders/{orderId}:
+    get:
+      operationId: getOrder
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: one order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, courier_eta]
+                properties:
+                  id: {type: integer}
+                  status: {type: string}
+                  courier_eta:
+                    type: string
+                    description: ETA from the courier service. Non-nullable — the
+                      degraded path that returns null here is the bug this spec catches.

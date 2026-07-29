@@ -114,6 +114,9 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`regex_decoder`](#event-sources),
 [`monitor`](#monitors).
 
+**Contract-driven clients** (RFC-055) —
+[`client`](#clientname-target-openapi-descriptors-).
+
 **Concurrency primitives** —
 [`parallel`](#concurrency).
 
@@ -459,7 +462,7 @@ selects which plugin handles step methods and healthchecks.
 | `name` | string | **yes** | Your name for this interface (arbitrary) |
 | `protocol` | string | **yes** | Plugin name — determines available methods |
 | `port` | int | **yes** | Port number |
-| `spec` | string | no | Path to protocol spec file (OpenAPI, protobuf, Avro) |
+| `spec` | string | no | Path to a contract file (OpenAPI `.yaml`/`.json`, protobuf `.pb`). Read by [`client()`](#clientname-target-openapi-descriptors-) when it declares no contract of its own. |
 | `tls` | `tls_cert(...)` | no | TLS material for the interface's proxy (RFC-038). See [TLS Support](#tls-support). |
 
 **What's user-defined:** The name is yours. The protocol must match a
@@ -1089,6 +1092,146 @@ nicer call site for protocols where `routes={}` doesn't fit.
 
 See the [Mock Services reference](mock-services.md) for the per-protocol
 matrix, scope, and what mocks deliberately don't do.
+
+---
+
+
+## Contract-Driven Clients (RFC-055)
+
+### `client(name, target=, openapi=, descriptors=, ...)`
+
+Turns an API contract into a **named caller** bound to a service
+interface. Operations become callable attributes; the client becomes its
+own actor in the trace.
+
+```python
+orders  = service("orders", interface("public", "http", 8080), image = "orders:2.1")
+courier = service("courier", interface("main", "grpc", 9090, spec = "./courier.pb"),
+                  image = "courier:1.4")
+
+mobile   = client("mobile-app",   target = orders.public, openapi = "./orders.yaml",
+                  headers = {"X-Client": "ios/4.2"}, validate = "response")
+gcourier = client("gRPC-Courier", target = courier.main)   # contract from interface(spec=)
+
+def test_order_flow():
+    o = mobile.create_order(body = {"item_id": "sku-1", "qty": 2})
+    r = gcourier.get_order(order_id = o.data["id"])
+```
+
+| Param | Notes |
+|---|---|
+| `name` | **Required.** The client's trace identity — its swim lane and vector-clock participant. Must not collide with a service name or with `"test"`. |
+| `target` | **Required.** An `InterfaceRef` (`svc.iface`). Calls route through the interface's proxy when one is up, so protocol faults apply unchanged. |
+| `openapi` | Path to an OpenAPI 3.x document. Resolved relative to the spec file. |
+| `descriptors` | Path to a protoc `FileDescriptorSet` (`--include_imports --descriptor_set_out`). |
+| `grpc_service` | Fully-qualified service name. Required when the descriptor set declares more than one; the error lists the candidates. |
+| `base_path` | Prefix prepended to every OpenAPI path (`"/v1"`). |
+| `headers` | Static headers applied to every call. Per-call `headers=` overrides them. |
+| `before` | `lambda req: {...}` run before each HTTP request. Reads `headers` and `body` off the returned dict — the hook for auth tokens and correlation ids. |
+| `rename` | `{contract_name: canonical_name}`. The documented fix for a name collision. A key matching no operation is an error. |
+| `validate` | `"off"` (default), `"request"`, `"response"`, `"strict"`. See below. |
+| `timeout` | Per-call deadline (`"5s"`). |
+
+Pass exactly one of `openapi=` / `descriptors=`, or omit both and declare
+the contract once on the interface with
+[`interface(..., spec=)`](#interfacename-protocol-port-spec-tls). The loader
+is picked by extension: `.yaml` / `.yml` / `.json` → OpenAPI,
+`.pb` / `.desc` / `.protoset` → descriptor set.
+
+### Operation naming
+
+Contract-native names normalize to snake_case, deterministically:
+
+| Contract | Generated |
+|---|---|
+| `getOrder` | `get_order` |
+| `GetOrderByID` | `get_order_by_id` |
+| `ListOrdersV2` | `list_orders_v2` |
+| `HTTPServer` | `http_server` |
+| *(no `operationId`)* `GET /orders/{orderId}/items` | `get_orders_order_id_items` |
+
+Two operations that normalize to the same name are a **load-time error**
+naming both — fix it with `rename=`. Run
+`faultbox inspect --clients <spec.star>` to see the whole table.
+
+### Calling
+
+Parameters bind by name against the contract. Unknown kwargs are an error
+with a nearest-match suggestion; missing required parameters are an error.
+
+```python
+r = mobile.get_order(order_id = 42, include = "items")   # path + query
+r = mobile.create_order(body = {"item_id": "sku-1"})     # requestBody
+r = gcourier.get_order(order_id = 42)                    # proto request fields
+
+# Escape hatch — call by contract-native name, params in an explicit dict.
+r = mobile.call("getOrder", params = {"order_id": 42})
+```
+
+Returns the same [`Response`](#type-response) as a step method, with four
+extra properties: `.client`, `.operation`, `.contract_ok`, `.contract_error`.
+
+Streaming gRPC methods are skipped when the table is built — v1 is
+unary-only. The rest of the descriptor set still loads.
+
+### Validation modes
+
+| `validate=` | Behaviour |
+|---|---|
+| `"off"` (default) | No schema checks. Identical behaviour to a hand-written step method. |
+| `"request"` | The outgoing request is checked **before** it is sent. A failure raises — your test asked for something the contract doesn't describe. |
+| `"response"` | The response is checked against the schema declared for its status code. A failure sets `.contract_ok = False`, records `.contract_error`, and emits a `contract_violation` event — **it does not raise.** |
+| `"strict"` | Both, and a response violation raises. |
+
+`"response"` deliberately doesn't raise: a contract violation under fault
+is usually *the finding*, not a harness error. It belongs in the trace as
+evidence, with the test's own assertions deciding what it means.
+
+An **undeclared status code** counts as a violation — that's the
+undocumented degraded path this is meant to surface. For gRPC, a non-OK
+status is an *outcome*, not a violation; drift shows up as unknown response
+fields (the server's proto is newer than your contract).
+
+### Clients in the trace
+
+Client events carry `service = <client name>`, which is what the event log
+keys lanes and vector clocks on. Three named callers against one API render
+as three lanes, not one anonymous `test` driver.
+
+```
+seq  actor          event                      detail
+ 8   mobile-app     client_call.orders         create_order body={item_id:sku-1,qty:2}
+11   mobile-app     client_return.orders       create_order → 201 (23ms) contract_ok=true
+15   gRPC-Courier   client_call.courier        get_order(order_id=1001)
+17   gRPC-Courier   client_return.courier      get_order → UNAVAILABLE (11ms)
+22   mobile-app     contract_violation.orders  get_order: /courier_eta: got null, want string
+```
+
+Because they're ordinary events, they work as
+[temporal anchors](#temporal-primitives-rfc-041) with no new matcher syntax,
+and as [`events()`](#event-query) queries:
+
+```python
+courier_failed = match.event(type = "client_return",
+                             client = "gRPC-Courier", operation = "get_order",
+                             success = "false")
+
+test("courier_recovers", body = drive, expect = [
+    always(no_dropped_orders, between = ("body_start", courier_failed)),
+])
+
+bad = events(where = lambda e: e.type == "contract_violation" and e.client == "mobile-app")
+```
+
+### What clients are not
+
+A client is a **trace actor, not a process**. It installs no seccomp
+filter and is never a fault target — `fault(<client>, ...)` is an error.
+Faults go on the *service* it calls, and apply to client traffic exactly as
+they do to step methods.
+
+Determinism-wise clients are neutral: parameters are explicit, nothing is
+synthesized, and contracts load once at spec load.
 
 ---
 
@@ -3457,6 +3600,9 @@ Events use dotted `event_type` for PObserve compatibility:
 | `syscall.fsync` | `fsync` syscall intercepted |
 | `step_send.<service>` | Test driver sent request to service |
 | `step_recv.<service>` | Test driver received response from service |
+| `client_call.<service>` | A `client()` sent a contract-bound request. Emitted on the **client's** lane, not `test`. |
+| `client_return.<service>` | The client received a response (or a transport failure) |
+| `contract_violation.<service>` | A response failed schema conformance (`validate="response"` or `"strict"`) |
 | `fault_applied` | Fault rules activated on a service |
 | `fault_removed` | Fault rules deactivated |
 | `proxy_conn_open` | Transparent proxy accepted client + dialed upstream (RFC-034) |

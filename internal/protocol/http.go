@@ -51,7 +51,10 @@ func (p *httpProtocol) Healthcheck(ctx context.Context, addr string, timeout tim
 func (p *httpProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
 	httpMethod := strings.ToUpper(method)
 	switch httpMethod {
-	case "GET", "POST", "PUT", "DELETE", "PATCH":
+	// HEAD and OPTIONS are here for RFC-055 clients: an OpenAPI document
+	// may declare them, and a generated operation must be callable. They
+	// are not exposed as step methods on InterfaceRef.
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
 	default:
 		return nil, fmt.Errorf("unsupported HTTP method %q", method)
 	}
@@ -93,11 +96,21 @@ func (p *httpProtocol) ExecuteStep(ctx context.Context, addr, method string, kwa
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	bodyStr := strings.TrimSpace(string(respBody))
 
+	// content_type rides along in Fields so RFC-055 clients can check the
+	// response against the media type the contract declares. It also lands
+	// on step_recv events, where "what did this endpoint actually return?"
+	// is worth one field.
+	fields := map[string]string{}
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		fields["content_type"] = ct
+	}
+
 	return &StepResult{
 		StatusCode: resp.StatusCode,
 		Body:       bodyStr,
 		Success:    true,
 		DurationMs: elapsed,
+		Fields:     fields,
 	}, nil
 }
 

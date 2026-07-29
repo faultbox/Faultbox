@@ -26,7 +26,11 @@ type parallelResult struct {
 // builtins returns all Starlark built-in functions for a runtime.
 func (rt *Runtime) builtins() starlark.StringDict {
 	out := starlark.StringDict{
-		"service":           starlark.NewBuiltin("service", rt.builtinService),
+		"service": starlark.NewBuiltin("service", rt.builtinService),
+		// Contract-driven callers (RFC-055). A topology entity in the same
+		// tier as service() and mock_service(): declared at spec load,
+		// bound to an interface, and its own actor in the trace.
+		"client":            starlark.NewBuiltin("client", rt.builtinClient),
 		"interface":         starlark.NewBuiltin("interface", builtinInterface),
 		"tcp":               starlark.NewBuiltin("tcp", builtinTCP),
 		"http":              starlark.NewBuiltin("http", builtinHTTP),
@@ -543,7 +547,9 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 		}
 	}
 
-	rt.registerService(svc)
+	if err := rt.registerService(svc); err != nil {
+		return nil, err
+	}
 	return svc, nil
 }
 
@@ -841,6 +847,19 @@ func (rt *Runtime) builtinFault(thread *starlark.Thread, fn *starlark.Builtin, a
 		return rt.builtinFaultProtocol(thread, ifRef, args[1:], kwargs)
 	}
 
+	// A client is a trace actor, not a process: it runs no code of its own,
+	// installs no seccomp filter, and has nothing to fault. What the author
+	// almost certainly means is "make the thing this client calls fail", so
+	// name the interface they already have in hand (RFC-055 §5.7).
+	if c, ok := args[0].(*ClientVal); ok {
+		return nil, fmt.Errorf(
+			"fault(%s): a client is a caller, not a process — it has no syscalls to intercept\n"+
+				"  faults go on the service it calls:\n"+
+				"    fault(%s.%s, response(status = 503), run = ...)   # protocol-level\n"+
+				"    fault(%s, write = deny(\"EIO\"), run = ...)        # syscall-level",
+			c.Name, c.Target.Service.Name, c.Target.Interface.Name, c.Target.Service.Name)
+	}
+
 	svc, ok := args[0].(*ServiceDef)
 	if !ok {
 		return nil, fmt.Errorf("fault() first arg must be a service, interface_ref, or fault_assumption, got %s", args[0].Type())
@@ -1086,6 +1105,12 @@ func (rt *Runtime) builtinFaultStart(thread *starlark.Thread, fn *starlark.Built
 	if len(args) < 1 {
 		return nil, fmt.Errorf("fault_start() requires a service argument")
 	}
+	if c, ok := args[0].(*ClientVal); ok {
+		return nil, fmt.Errorf(
+			"fault_start(%s): a client is a caller, not a process — it has no syscalls to intercept\n"+
+				"  fault the service it calls instead: fault_start(%s, write = deny(\"EIO\"))",
+			c.Name, c.Target.Service.Name)
+	}
 	svc, ok := args[0].(*ServiceDef)
 	if !ok {
 		return nil, fmt.Errorf("fault_start() first arg must be a service, got %s", args[0].Type())
@@ -1141,10 +1166,11 @@ func callerPosition(thread *starlark.Thread) (string, int32) {
 // inline with the assertion failure — the value Starlark already
 // folded away by the time we got here.
 //
-// Filter rule: keep step_send / step_recv only, walk backwards until
-// we have `max` entries or run out. Reverse so the slice reads
-// chronologically. Fault / violation events stay out of Context — the
-// drill-down already surfaces those in dedicated sections.
+// Filter rule: keep call/reply events only — step_send / step_recv and
+// their RFC-055 client equivalents — walking backwards until we have
+// `max` entries or run out. Reverse so the slice reads chronologically.
+// Fault / violation events stay out of Context — the drill-down already
+// surfaces those in dedicated sections.
 func (rt *Runtime) recentAssertionContext(max int) []AssertionContext {
 	if rt.events == nil || max <= 0 {
 		return nil
@@ -1153,7 +1179,7 @@ func (rt *Runtime) recentAssertionContext(max int) []AssertionContext {
 	picks := make([]AssertionContext, 0, max)
 	for i := len(all) - 1; i >= 0 && len(picks) < max; i-- {
 		ev := all[i]
-		if ev.Type != "step_send" && ev.Type != "step_recv" {
+		if !isCallEventType(ev.Type) {
 			continue
 		}
 		f := ev.Fields
@@ -2360,7 +2386,7 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 		// never have matched. Same for unmediated_io (RFC-040) and packet
 		// (RFC-054): a predicate naming them returned an empty list and the
 		// author had no way to tell "no such events" from "not allowed here".
-		if whereFn == nil && ev.Type != "syscall" && ev.Type != "stdout" && ev.Type != "topic" && ev.Type != "wal" {
+		if whereFn == nil && !dictFilterQueryable(ev.Type) {
 			continue
 		}
 
@@ -2382,6 +2408,28 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 	}
 
 	return starlark.NewList(result), nil
+}
+
+// dictFilterQueryable gates which event types the *dict-filter* form of
+// events() returns — events(service=…, syscall=…, decision=…). The where=
+// form has no type gate at all; see the call site.
+//
+// The original four are observation streams: syscalls and event-source
+// output. RFC-055 adds the client types, because a spec's whole reason to
+// name a client is to ask what that client did, and `events(service=
+// "mobile-app")` should answer it.
+//
+// step_send / step_recv stay out deliberately. Admitting them would change
+// what events() returns for every spec written before now — a silent
+// behaviour change to existing assertions. Client events are additive: no
+// spec predating RFC-055 can have any.
+func dictFilterQueryable(typ string) bool {
+	switch typ {
+	case "syscall", "stdout", "topic", "wal",
+		"client_call", "client_return", "contract_violation":
+		return true
+	}
+	return false
 }
 
 func formatFilters(filters []eventFilter) string {

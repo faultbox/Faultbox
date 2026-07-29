@@ -575,6 +575,16 @@ func NormalizeTrace(result *SuiteResult) string {
 			case "step_send", "step_recv":
 				target := ev.Fields["target"]
 				line = fmt.Sprintf("%s %s", ev.Type, target)
+			case "client_call", "client_return":
+				// Operation, not path: the path may carry a run-varying
+				// id while the operation name is the stable identity of
+				// what was called (RFC-055).
+				line = fmt.Sprintf("%s %s %s", ev.Type, ev.Fields["target"], ev.Fields["operation"])
+			case "contract_violation":
+				// The detail text quotes schema paths and values that can
+				// vary between runs; the operation that violated is the
+				// determinism-relevant part.
+				line = fmt.Sprintf("contract_violation %s %s", ev.Fields["target"], ev.Fields["operation"])
 			case "unmediated_io":
 				// RFC-040 §8.1 — keep these in the normalized trace so
 				// determinism goldens can differentiate by category. The

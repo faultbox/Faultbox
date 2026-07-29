@@ -396,6 +396,17 @@ type Response struct {
 	DurationMs int64
 	Ok         bool
 	Error      string
+
+	// RFC-055 client provenance. Empty on responses produced by step
+	// methods; populated when the call came from a client(), so an
+	// assertion can say which caller saw what.
+	Client    string
+	Operation string
+	// ContractOk reports whether the response conformed to the contract.
+	// True when validation is off — "not checked" reads as "no violation
+	// found", which is what an assertion on it should mean.
+	ContractOk    bool
+	ContractError string
 }
 
 var _ starlark.Value = (*Response)(nil)
@@ -431,12 +442,21 @@ func (r *Response) Attr(name string) (starlark.Value, error) {
 		return starlark.String(r.Error), nil
 	case "duration_ms":
 		return starlark.MakeInt64(r.DurationMs), nil
+	case "client":
+		return starlark.String(r.Client), nil
+	case "operation":
+		return starlark.String(r.Operation), nil
+	case "contract_ok":
+		return starlark.Bool(r.ContractOk), nil
+	case "contract_error":
+		return starlark.String(r.ContractError), nil
 	}
 	return nil, starlark.NoSuchAttrError(fmt.Sprintf("response has no .%s attribute", name))
 }
 
 func (r *Response) AttrNames() []string {
-	return []string{"status", "body", "data", "ok", "error", "duration_ms"}
+	return []string{"status", "body", "data", "ok", "error", "duration_ms",
+		"client", "operation", "contract_ok", "contract_error"}
 }
 
 // ---------------------------------------------------------------------------
