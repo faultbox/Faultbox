@@ -13,9 +13,9 @@ import (
 // promised this since v0.9.7; v0.10.0 ships it as the second
 // consumer of the bundle format (after `faultbox inspect`).
 //
-//   faultbox replay run.fb                       # rerun every test
-//   faultbox replay run.fb --test test_foo       # rerun one test
-//   faultbox replay run.fb --extract-only ./out  # extract spec/ but don't run
+//	faultbox replay run.fb                       # rerun every test
+//	faultbox replay run.fb --test test_foo       # rerun one test
+//	faultbox replay run.fb --extract-only ./out  # extract spec/ but don't run
 //
 // Behaviour:
 //
