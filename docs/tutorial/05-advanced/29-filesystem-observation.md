@@ -1,4 +1,4 @@
-# Chapter 28 — Watching the filesystem
+# Chapter 29 — Watching the filesystem
 
 You have made a service fail in every way the network allows. This chapter is
 about a question none of that answers:
@@ -144,7 +144,3 @@ than it measured.
 measured at 1,488 dropped points on a workload where the default set dropped
 none — so enable them deliberately with `setup-trace --with-read` and expect
 to narrow `files=` in exchange.
-
----
-
-**Next:** [Chapter 29 →](29-recipes.md)
