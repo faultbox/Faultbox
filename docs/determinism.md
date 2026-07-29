@@ -196,4 +196,7 @@ Two honest caveats under the gVisor runtime:
   the test.
 
 `fs-unmediated` remains a reserved category emitting no events. The `watch()` primitive
-that would have implemented it is deferred to v0.14.1 (RFC-054 decision record M5).
+that would implement it is specified in
+[RFC-056](rfcs/0056-filesystem-observation.md), target v0.16.0. The tracing mechanism is
+settled — see the [`-pod-init-config` spike](design/2026-07-29-pod-init-config-spike.md) —
+and what remains is host-configuration lifecycle.

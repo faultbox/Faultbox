@@ -271,6 +271,57 @@ func (t *fakeTimer) Stop() bool {
 	return !t.stopped.Swap(true)
 }
 
+// pending reports how many live timers are registered.
+func (c *fakeClock) pending() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, t := range c.timers {
+		if !t.stopped.Load() {
+			n++
+		}
+	}
+	return n
+}
+
+// queueLen reports how many items are waiting in the defer queue's heap.
+func queueLen(q *deferQueue) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.h)
+}
+
+// advanceWhenArmed advances a fake clock only once the defer queue has taken
+// delivery of `want` items and armed its timer for them.
+//
+// Both halves of that wait are load-bearing, and each corresponds to a way the
+// naive `clock.Advance(d)` silently does nothing:
+//
+//   - Items still being scheduled. Every deadline is computed as
+//     clock.Now()+d at schedule time. Advancing mid-loop means the remaining
+//     items are stamped from the ALREADY-ADVANCED now, so their deadlines land
+//     a full interval past anything the test will ever advance to.
+//
+//   - Timer not yet armed. run() computes `wait` against the current time and
+//     then calls AfterFunc. Advancing between those two steps registers the
+//     timer at the advanced now — same outcome, deadline out of reach.
+//
+// Either way the packet is never released and the test fails claiming the
+// datapath dropped it. That is a race in the harness, not in the code under
+// test, and it is exactly the sort of failure that gets waved off as flaky and
+// re-run until green. CI caught it on linux/amd64 where it reproduces; it does
+// not reproduce on darwin/arm64 at all.
+func advanceWhenArmed(t *testing.T, c *fakeClock, q *deferQueue, want int, d time.Duration) {
+	t.Helper()
+	if !waitFor(t, 2*time.Second, func() bool {
+		return queueLen(q) >= want && c.pending() > 0
+	}) {
+		t.Fatalf("defer queue never settled: %d/%d items queued, %d timers armed; "+
+			"Advance(%v) would have fired nothing", queueLen(q), want, c.pending(), d)
+	}
+	c.Advance(d)
+}
+
 // Advance moves the clock and fires due timers in (deadline, seq) order.
 func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
