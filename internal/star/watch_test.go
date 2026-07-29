@@ -102,7 +102,7 @@ def test_w():
 	// until v0.14.1 shipped without watch(), at which point the guidance users
 	// saw was simply false — the hazard of naming a version in a user-facing
 	// string. Assert on both the RFC and the target so the pair stays honest.
-	for _, want := range []string{"RFC-056", "v0.15.0"} {
+	for _, want := range []string{"RFC-056", "v0.16.0"} {
 		if !strings.Contains(res.Reason, want) {
 			t.Errorf("reason should name %s, got: %s", want, res.Reason)
 		}

@@ -1,7 +1,7 @@
 # RFC-054: gVisor Adoption — Packet-Level Network Faults & File-Level I/O Observation
 
 > **Status: Implemented.** Packet faults v0.14.0; `bandwidth()`/`mtu()` v0.14.1.
-> `watch()` is **split out to [RFC-056](0056-filesystem-observation.md)**, target v0.15.0 —
+> `watch()` is **split out to [RFC-056](0056-filesystem-observation.md)**, target v0.16.0 —
 > the tracing mechanism is settled (see the
 > [`-pod-init-config` spike](../design/2026-07-29-pod-init-config-spike.md)); what remains
 > is host-configuration lifecycle, which is its own design.
@@ -647,7 +647,7 @@ see below.
   TCP MSS and fragments — a real small-MTU path, not the `packet_drop(len_gt=)`
   approximation scenario 8 had to use. Measured on the corpus: at 64kbit the c2s
   direction admitted 76 packets with a 38ms peak backlog; at 256kbit, 9ms.
-- **`watch()` filesystem observation — [RFC-056](0056-filesystem-observation.md), v0.15.0.**
+- **`watch()` filesystem observation — [RFC-056](0056-filesystem-observation.md), v0.16.0.**
   The sink ships in v0.14.0 and is unchanged. A 2026-07-29 spike confirmed
   `-pod-init-config` fixes the tracing gap M5 measured (236 points on a network-driven
   query, versus 2; 11,295 at sandbox boot). What remains is that the flag is host-wide
@@ -987,7 +987,7 @@ the config is host-wide and shared by every runsc container, which interacts bad
 concurrent runs and with users who already run gVisor for other reasons. That design is
 its own design. **Resolved 2026-07-29:** the mechanism works — see the
 [spike](../design/2026-07-29-pod-init-config-spike.md) — and the remaining host-config
-problem is specified in [RFC-056](0056-filesystem-observation.md), target v0.15.0.
+problem is specified in [RFC-056](0056-filesystem-observation.md), target v0.16.0.
 
 ## Dependencies
 

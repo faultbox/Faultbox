@@ -1,6 +1,6 @@
 # RFC-056: Filesystem Observation — `watch()` on gVisor Trace Sessions
 
-> **Status: Proposed.** 2026-07-29. Target: **v0.15.0**.
+> **Status: Proposed.** 2026-07-29. Target: **v0.16.0**.
 > Completes the half of [RFC-054](0054-gvisor-packet-and-file-mediation.md) that was
 > withdrawn from v0.14.0 (decision record M5). The tracing mechanism is settled by the
 > [`-pod-init-config` spike](../design/2026-07-29-pod-init-config-spike.md); what this RFC
