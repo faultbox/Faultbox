@@ -13,6 +13,16 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.14.1] - 2026-07-29
+
+Searching fault *timing*, and fixing what that search exposed.
+
+v0.14.0 shipped packet faults and a Raft harness that could express a partition
+but not vary **when** it lands. Closing that gap took one new primitive — and
+turned up four defects, one of them a documented fault that silently did
+something else. So this release is one feature, one deferral delivered, and a
+set of corrections that matter more than either.
+
 ### Added
 - **`sleep(duration, clock="wall")`** — a wall-clock wait that is indifferent
   to event traffic. Faultbox had two ways to wait and both were conditional on
