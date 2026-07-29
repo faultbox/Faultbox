@@ -3432,6 +3432,50 @@ func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer st
 // loopback. svc may be nil for legacy callers — the function then falls
 // back to local-loopback semantics, equivalent to the pre-RFC-036
 // behaviour.
+// applyServiceCredentials fills user/password/database for protocol steps from
+// the service's env, unless the step (or a connstr=) already said otherwise.
+//
+// The mapping follows each image's own published convention, so the common
+// case — a stock postgres/mysql image configured the usual way — works with no
+// extra spec syntax. Explicit step kwargs always win.
+func applyServiceCredentials(args map[string]any, svc *ServiceDef, protocol string) {
+	if svc == nil || args == nil {
+		return
+	}
+	if cs, ok := args["connstr"].(string); ok && cs != "" {
+		return // full escape hatch; do not second-guess it
+	}
+	env := svc.Env
+	if env == nil {
+		return
+	}
+	set := func(key, envKey, fallback string) {
+		if v, ok := args[key].(string); ok && v != "" {
+			return // the step said so explicitly
+		}
+		if v := env[envKey]; v != "" {
+			args[key] = v
+			return
+		}
+		if fallback != "" {
+			args[key] = fallback
+		}
+	}
+	switch protocol {
+	case "postgres":
+		// POSTGRES_USER defaults to "postgres" in the official image, and
+		// POSTGRES_DB defaults to the user name. Without this, lib/pq falls
+		// back to the OS user — "root" under sudo, which exists nowhere.
+		set("user", "POSTGRES_USER", "postgres")
+		set("password", "POSTGRES_PASSWORD", "")
+		set("database", "POSTGRES_DB", "")
+	case "mysql":
+		set("user", "MYSQL_USER", "root")
+		set("password", "MYSQL_PASSWORD", env["MYSQL_ROOT_PASSWORD"])
+		set("database", "MYSQL_DATABASE", "")
+	}
+}
+
 func proxyTargetAddr(svc *ServiceDef, iface *InterfaceDef) string {
 	port := iface.Port
 	if iface.HostPort > 0 {
@@ -4421,6 +4465,13 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 
 	// Convert Starlark kwargs to map[string]any for the protocol plugin.
 	stepArgs := starlarkKwargsToMap(kwargs)
+
+	// Fill protocol credentials from the service's own declaration when the
+	// step did not supply them. A spec that already wrote
+	// env = {"POSTGRES_PASSWORD": "..."} has said what the credentials are;
+	// making it repeat them on every step would be ceremony, and omitting
+	// them entirely is what made postgres steps unable to authenticate at all.
+	applyServiceCredentials(stepArgs, ref.Service, ref.Interface.Protocol)
 
 	// v0.12.10: detect "spec-anchored" steps — calls whose Starlark
 	// callstack contains the currently-running test function. These

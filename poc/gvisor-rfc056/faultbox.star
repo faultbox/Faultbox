@@ -80,15 +80,27 @@ def wait_ready():
 def workload():
     """Real SQL over the network — the shape that v0.14.0 could not observe.
 
-    This is the distinction the whole release turns on. `runsc trace create`
-    instrumented only tasks created after it attached, so a query against an
-    already-running backend produced 2 trace points. The session now comes
-    from --pod-init-config at sandbox boot: 236 for the same work.
+    Every statement is checked. The first version of this corpus did not check
+    them, and every one of them was failing: the postgres proxy relayed only
+    server→client during the startup exchange, so SCRAM auth deadlocked and
+    each exec died at the proxy's 60-second read deadline. The audits still
+    "passed", on file I/O from Postgres's own boot.
+
+    That is the same vacuity this feature exists to prevent, committed in the
+    feature's own corpus. Asserting the workload ran is what makes the
+    observation about the workload.
     """
-    pg.sql.exec(sql = "CREATE TABLE IF NOT EXISTS t (id int, payload text)")
+    ok = 0
+    stmts = ["CREATE TABLE IF NOT EXISTS t (id int, payload text)"]
     for i in range(6):
-        pg.sql.exec(sql = "INSERT INTO t VALUES (%d, 'row-%d')" % (i, i))
-    pg.sql.exec(sql = "CHECKPOINT")
+        stmts.append("INSERT INTO t VALUES (%d, 'row-%d')" % (i, i))
+    stmts.append("CHECKPOINT")
+
+    for sql in stmts:
+        r = pg.sql.exec(sql = sql)
+        assert_true(r.ok, "workload statement failed (%s): %s" % (sql[:30], r.error))
+        ok += 1
+    assert_true(ok == len(stmts), "only %d of %d statements ran" % (ok, len(stmts)))
 
 
 # --- 1. The audit ------------------------------------------------------

@@ -29,7 +29,12 @@ func (p *postgresProtocol) Healthcheck(ctx context.Context, addr string, timeout
 		return err
 	}
 	// Verify it's actually Postgres by opening a connection.
-	connStr := buildConnStr(addr)
+	//
+	// No credentials: this ping is unauthenticated, so on a password-protected
+	// server it proves the port speaks Postgres and nothing more. That is the
+	// same limit the tcp() healthcheck has, and closing it properly belongs
+	// with the readiness-gate work rather than here.
+	connStr := buildConnStr(addr, "", "", "")
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return fmt.Errorf("postgres open: %w", err)
@@ -42,7 +47,15 @@ func (p *postgresProtocol) Healthcheck(ctx context.Context, addr string, timeout
 }
 
 func (p *postgresProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
-	connStr := buildConnStr(addr)
+	// user=/password=/database= are accepted per step; the runtime fills them
+	// from the service's own env when the spec does not, so the standard
+	// postgres image works without the spec restating what it already
+	// declared. connstr= remains the full escape hatch.
+	connStr := buildConnStr(addr,
+		getStringKwarg(kwargs, "user", ""),
+		getStringKwarg(kwargs, "password", ""),
+		getStringKwarg(kwargs, "database", ""),
+	)
 	if cs, ok := kwargs["connstr"].(string); ok && cs != "" {
 		connStr = cs
 	}
@@ -142,15 +155,43 @@ func (p *postgresProtocol) executeExec(ctx context.Context, db *sql.DB, sqlStr s
 	}, nil
 }
 
-// buildConnStr builds a postgres connection string from addr (host:port).
-func buildConnStr(addr string) string {
+// buildConnStr builds a postgres connection string from addr (host:port) plus
+// credentials.
+//
+// The credentials are the whole point. This function used to emit only
+// host/port/sslmode, which meant lib/pq fell back to the OS user running
+// Faultbox — `root` under sudo, which exists in no Postgres installation. The
+// symptom depended on the server's auth method and neither was legible:
+//
+//	trust auth     pq: role "root" does not exist
+//	password auth  read: connection reset by peer, after 60 seconds
+//
+// So `pg.sql.exec()` could not authenticate against any realistically
+// configured Postgres, and the failure was a timeout rather than a message
+// naming the missing credential. Present since the plugin was written; it
+// survived because no spec asserted on the result of a postgres step.
+func buildConnStr(addr, user, password, database string) string {
 	host := addr
 	port := "5432"
 	if idx := strings.LastIndex(addr, ":"); idx > 0 {
 		host = addr[:idx]
 		port = addr[idx+1:]
 	}
-	return fmt.Sprintf("host=%s port=%s sslmode=disable", host, port)
+	parts := []string{
+		"host=" + host,
+		"port=" + port,
+		"sslmode=disable",
+	}
+	if user != "" {
+		parts = append(parts, "user="+user)
+	}
+	if password != "" {
+		parts = append(parts, "password="+password)
+	}
+	if database != "" {
+		parts = append(parts, "dbname="+database)
+	}
+	return strings.Join(parts, " ")
 }
 
 // normalizeValue converts sql driver values to JSON-friendly types.

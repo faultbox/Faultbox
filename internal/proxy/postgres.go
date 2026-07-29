@@ -261,40 +261,103 @@ func (p *postgresProxy) forwardStartup(client, server net.Conn) error {
 }
 
 // forwardUntilReady copies server messages to client until ReadyForQuery ('Z').
+// forwardUntilReady relays the startup exchange until the server reports
+// ReadyForQuery ('Z').
+//
+// The exchange is BIDIRECTIONAL whenever the server asks for credentials, and
+// this loop used to pump server→client only. Trust auth worked, because the
+// server just sends AuthenticationOk and carries on. Every method that
+// requires the client to answer — SCRAM-SHA-256 (the postgres:14+ default),
+// MD5, cleartext — deadlocked: the client sent its 'p' response, the proxy
+// never forwarded it, the server waited for credentials, the proxy waited for
+// a 'Z' that could not arrive, and the client gave up at its 60-second read
+// deadline with "connection reset by peer".
+//
+// The effect was that pg.sql.exec() could not talk to any password-protected
+// Postgres — which is every realistic one — and reported a timeout rather than
+// an authentication problem. It survived because no spec asserted on the
+// result of a postgres step; they were all vacuous passes.
 func (p *postgresProxy) forwardUntilReady(server, client net.Conn) error {
 	for {
-		header := make([]byte, 5)
-		if _, err := io.ReadFull(server, header); err != nil {
+		msgType, body, err := readMessage(server)
+		if err != nil {
+			return err
+		}
+		if err := writeMessage(client, msgType, body); err != nil {
 			return err
 		}
 
-		msgType := header[0]
-		msgLen := int(binary.BigEndian.Uint32(header[1:5]))
-		if msgLen < 4 {
-			return fmt.Errorf("invalid message length: %d", msgLen)
-		}
-
-		body := make([]byte, msgLen-4)
-		if len(body) > 0 {
-			if _, err := io.ReadFull(server, body); err != nil {
-				return err
+		// An authentication request that expects an answer must have the
+		// client's reply carried back, or both sides wait on each other.
+		if msgType == 'R' && authNeedsClientReply(body) {
+			replyType, replyBody, err := readMessage(client)
+			if err != nil {
+				return fmt.Errorf("read client auth response: %w", err)
 			}
-		}
-
-		// Forward to client.
-		if _, err := client.Write(header); err != nil {
-			return err
-		}
-		if len(body) > 0 {
-			if _, err := client.Write(body); err != nil {
-				return err
+			if err := writeMessage(server, replyType, replyBody); err != nil {
+				return fmt.Errorf("forward client auth response: %w", err)
 			}
+			continue
 		}
 
 		if msgType == 'Z' { // ReadyForQuery
 			return nil
 		}
 	}
+}
+
+// authNeedsClientReply reports whether an Authentication message ('R')
+// requires the client to send something back.
+//
+// Codes per the Postgres protocol: 0 AuthenticationOk, 3 CleartextPassword,
+// 5 MD5Password, 10 SASL, 11 SASLContinue, 12 SASLFinal. The client answers 3,
+// 5, 10 and 11; 0 and 12 are terminal and are followed by more server
+// messages, so treating them as needing a reply would hang just as surely in
+// the other direction.
+func authNeedsClientReply(body []byte) bool {
+	if len(body) < 4 {
+		return false
+	}
+	switch binary.BigEndian.Uint32(body[:4]) {
+	case 3, 5, 10, 11:
+		return true
+	}
+	return false
+}
+
+// readMessage reads one length-prefixed protocol message.
+func readMessage(c net.Conn) (byte, []byte, error) {
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(c, header); err != nil {
+		return 0, nil, err
+	}
+	msgLen := int(binary.BigEndian.Uint32(header[1:5]))
+	if msgLen < 4 {
+		return 0, nil, fmt.Errorf("invalid message length: %d", msgLen)
+	}
+	body := make([]byte, msgLen-4)
+	if len(body) > 0 {
+		if _, err := io.ReadFull(c, body); err != nil {
+			return 0, nil, err
+		}
+	}
+	return header[0], body, nil
+}
+
+// writeMessage writes one length-prefixed protocol message.
+func writeMessage(c net.Conn, msgType byte, body []byte) error {
+	header := make([]byte, 5)
+	header[0] = msgType
+	binary.BigEndian.PutUint32(header[1:5], uint32(len(body)+4))
+	if _, err := c.Write(header); err != nil {
+		return err
+	}
+	if len(body) > 0 {
+		if _, err := c.Write(body); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // extractQuery extracts the SQL string from a Query ('Q') or Parse ('P') message.
