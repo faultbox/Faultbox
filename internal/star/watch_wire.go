@@ -3,8 +3,6 @@ package star
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -21,10 +19,34 @@ import (
 // watch() observing nothing.
 
 type fsObservation struct {
-	mu       sync.Mutex
-	sink     *seccheck.Sink
-	sessions map[string]*gvisor.TraceSession // service → session
-	started  bool
+	mu   sync.Mutex
+	sink *seccheck.Sink
+	// containers maps a sandbox's container ID to the service it runs, so a
+	// trace point can be attributed. The session itself is installed at boot
+	// by the runtime flag, so there is nothing per-container to start or stop.
+	containers map[string]string
+	sessions   map[string]*gvisor.TraceSession // service → session (unused; see attachTrace)
+	started    bool
+	// dropBaseline is the sink's drop count when the current watch window
+	// opened. Only drops DURING a window invalidate that window.
+	//
+	// Measured why: a bare postgres:16-alpine boot produces ~29k trace points
+	// and ~1.2k drops before any test body runs. A lifetime drop count would
+	// therefore fail every watch() on a real database for I/O the spec never
+	// looked at and could not have asserted on. The question the guard must
+	// answer is "was the observation complete while the watch was open", not
+	// "has this sink ever been overrun".
+	dropBaseline int64
+	// final is the observation summary captured at teardown.
+	//
+	// It exists because stopServices() — which closes the sink — runs BEFORE
+	// the per-test guard reads the state. Without it the guard sees started=
+	// false and connected=false on a run that observed perfectly well, and
+	// fails it claiming observation never started. A guard that fails correct
+	// runs is worse than no guard: it makes the feature unusable while looking
+	// like a safety feature. Caught on the first real end-to-end run, which
+	// resolved 128 paths and was then failed for seeing nothing.
+	final *fsSummary
 	// connected records whether any sandbox ever completed the handshake.
 	// A watch() window that ran while this is false observed nothing, and
 	// must not be reported as a pass.
@@ -36,8 +58,20 @@ type fsObservation struct {
 	unattributed int
 }
 
+// fsSummary is what the guard needs after the sink is gone.
+type fsSummary struct {
+	started      bool
+	connected    bool
+	windowDrops  int64
+	unattributed int
+	decodeErr    error
+}
+
 func newFSObservation() *fsObservation {
-	return &fsObservation{sessions: make(map[string]*gvisor.TraceSession)}
+	return &fsObservation{
+		containers: make(map[string]string),
+		sessions:   make(map[string]*gvisor.TraceSession),
+	}
 }
 
 // fileObservationEnabled reports whether the spec asked for it. Driven by
@@ -57,7 +91,11 @@ func (rt *Runtime) fileObservationEnabled() bool {
 // for the daemon default.
 func (rt *Runtime) containerRuntimeName() string {
 	if rt.fileObservationEnabled() {
-		return gvisor.RuntimeName
+		// The registered trace runtime, not bare runsc: the trace session is
+		// installed at sandbox boot via --pod-init-config, and only this
+		// runtime carries that flag. Plain runsc would start the container
+		// perfectly well and observe nothing.
+		return gvisor.TraceRuntimeName
 	}
 	return ""
 }
@@ -95,25 +133,26 @@ func (rt *Runtime) ensureFSObservation(ctx context.Context) error {
 		return avail.Err
 	}
 
-	// Keep the socket path short: a Unix socket path is capped near 104 bytes
-	// and a long temp dir silently turns into "invalid argument".
-	sockPath := filepath.Join(os.TempDir(), fmt.Sprintf("fb-seccheck-%d.sock", os.Getpid()))
-	sink, err := seccheck.Listen(seccheck.Config{
-		Path: sockPath,
-		OnFileIO: func(io seccheck.FileIO) {
+	// The endpoint is not ours to choose. Sandboxes learn where to report from
+	// the host trace config, written once by `faultbox setup-trace`; binding
+	// anywhere else would produce a sink nothing ever connects to, and every
+	// watch() assertion would pass having observed nothing.
+	sink, err := gvisor.AcquireSink(
+		"",
+		func(io seccheck.FileIO) {
 			st.mu.Lock()
 			st.connected = true
 			st.mu.Unlock()
 			rt.routeFileIO(io)
 		},
-		OnError: func(e error) {
+		func(e error) {
 			st.mu.Lock()
 			if st.decodeErr == nil {
 				st.decodeErr = e
 			}
 			st.mu.Unlock()
 		},
-	})
+	)
 	if err != nil {
 		return fmt.Errorf("start filesystem observation: %w", err)
 	}
@@ -121,51 +160,58 @@ func (rt *Runtime) ensureFSObservation(ctx context.Context) error {
 	st.started = true
 
 	rt.events.Emit("fs_observation_started", "", map[string]string{
-		"socket":       sockPath,
+		"socket":       sink.Path(),
 		"runsc":        avail.Version,
 		"runsc_binary": avail.BinaryPath,
 	})
 	return nil
 }
 
-// attachTrace starts a trace session on a launched container.
+// attachTrace records that a launched container is under observation.
+//
+// It no longer STARTS anything. v0.14.0 called `runsc trace create` here,
+// which is why watch() was withdrawn: that command instruments only tasks
+// created after the session begins, and Faultbox attaches once a service is
+// healthy — by which point every worker thread already exists. Measured, a
+// network-driven workload produced 2 trace points where the same SQL from a
+// freshly spawned process produced 1054.
+//
+// The session now comes from --pod-init-config, installed at sandbox boot by
+// the faultbox-trace runtime, so every task is instrumented from its first
+// instruction. Measured on the same workload: 236 points, and 11,295 before
+// any query at all. See docs/design/2026-07-29-pod-init-config-spike.md.
+//
+// What remains is bookkeeping: the container must be recorded so points
+// carrying its ID can be attributed to a service rather than counted as
+// unattributed.
 func (rt *Runtime) attachTrace(ctx context.Context, service, containerID string) error {
 	if !rt.fileObservationEnabled() {
 		return nil
 	}
 	st := rt.fsObs
 	st.mu.Lock()
-	sink := st.sink
-	st.mu.Unlock()
-	if sink == nil {
+	if st.sink == nil {
+		st.mu.Unlock()
 		return fmt.Errorf("filesystem observation: sink is not running")
 	}
-
-	sess, err := gvisor.StartTrace(ctx, containerID, sink.Path(), gvisor.FileIOPoints())
-	if err != nil {
-		return fmt.Errorf("attach trace to %s: %w", service, err)
-	}
-	st.mu.Lock()
-	st.sessions[service] = sess
+	st.containers[containerID] = service
 	st.mu.Unlock()
 
 	rt.events.Emit("fs_trace_attached", service, map[string]string{"container": containerID})
 	return nil
 }
 
-// detachTrace stops the trace session for one service.
-func (rt *Runtime) detachTrace(ctx context.Context, service string) {
+// detachTrace forgets a container. There is no session to stop — the sandbox
+// carried its own, and it dies with the sandbox.
+func (rt *Runtime) detachTrace(_ context.Context, service string) {
 	st := rt.fsObs
 	st.mu.Lock()
-	sess := st.sessions[service]
-	delete(st.sessions, service)
+	for id, svc := range st.containers {
+		if svc == service {
+			delete(st.containers, id)
+		}
+	}
 	st.mu.Unlock()
-	if sess == nil {
-		return
-	}
-	if err := sess.Stop(ctx); err != nil {
-		rt.log.Warn("stop trace session", "service", service, "error", err.Error())
-	}
 }
 
 // closeFSObservation tears everything down at session end.
@@ -174,7 +220,28 @@ func (rt *Runtime) closeFSObservation(ctx context.Context) {
 	st.mu.Lock()
 	sink := st.sink
 	sessions := st.sessions
+	// Snapshot before the reset, so the guard can still tell a healthy run
+	// from a broken one after the sink is gone.
+	summary := &fsSummary{
+		started:      st.started,
+		connected:    st.connected,
+		unattributed: st.unattributed,
+		decodeErr:    st.decodeErr,
+	}
+	if sink != nil {
+		summary.windowDrops = sink.Dropped() - st.dropBaseline
+	}
+	st.final = summary
 	st.sink, st.sessions, st.started = nil, make(map[string]*gvisor.TraceSession), false
+	// Clear the container map too. It was left behind, so each test added its
+	// new sandbox's ID and the map grew: after the first test len(containers)
+	// was 2, which silently disabled the single-sandbox attribution fallback
+	// and made every ID mismatch an unattributed point. Symptom was the first
+	// tests in a suite passing and the later ones failing with "matched no
+	// launched service" — state leaking between tests, presenting as a
+	// property of test order.
+	st.containers = make(map[string]string)
+	st.unattributed = 0
 	st.mu.Unlock()
 
 	for svc, sess := range sessions {
@@ -226,22 +293,41 @@ func (rt *Runtime) routeFileIO(io seccheck.FileIO) {
 	}
 	if service == "" {
 		rt.fsObs.mu.Lock()
-		rt.fsObs.unattributed++
+		// Points that arrive before ANY container is registered are boot
+		// noise, not lost observation: --pod-init-config starts tracing at the
+		// sandbox's first instruction, which is necessarily before Docker has
+		// returned a container ID for Faultbox to record. Measured on a live
+		// Postgres: 3 such points per run, every run.
+		//
+		// Counting them would fail every watch() on a container that traces
+		// from boot — which is all of them — for I/O no watch window could
+		// have covered. Once at least one container IS known, an unattributed
+		// point is a genuine mismatch and does count.
+		if len(rt.fsObs.containers) > 0 {
+			rt.fsObs.unattributed++
+		}
 		rt.fsObs.mu.Unlock()
 		return
 	}
 	rt.onFileIO(service, io)
 }
 
-// soleTracedService returns the only service with a trace session, or "".
+// soleTracedService returns the only observed service, or "".
+//
+// Reads st.containers, which is what records an observed sandbox since the
+// trace session moved to sandbox boot. It read st.sessions until M3 stopped
+// populating that map — leaving the fallback silently dead, so every point
+// whose container ID did not match exactly would have been counted as
+// unattributed and thrown away. Precisely the "looks like the SUT did no I/O"
+// failure this fallback exists to prevent.
 func (rt *Runtime) soleTracedService() string {
 	st := rt.fsObs
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if len(st.sessions) != 1 {
+	if len(st.containers) != 1 {
 		return ""
 	}
-	for name := range st.sessions {
+	for _, name := range st.containers {
 		return name
 	}
 	return ""
@@ -275,17 +361,82 @@ func (rt *Runtime) fsObservationFailure() string {
 	st := rt.fsObs
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if !st.started {
+
+	// Read the teardown snapshot when there is one: the sink is closed with
+	// the services, which happens before this runs.
+	started, connected := st.started, st.connected
+	unattributed, decodeErr := st.unattributed, st.decodeErr
+	var windowDrops int64
+	if st.sink != nil {
+		windowDrops = st.sink.Dropped() - st.dropBaseline
+	}
+	if f := st.final; f != nil {
+		started, connected = f.started, f.connected
+		unattributed, decodeErr, windowDrops = f.unattributed, f.decodeErr, f.windowDrops
+	}
+
+	if !started {
 		return "watch() ran but filesystem observation never started, so no I/O was seen"
 	}
-	if !st.connected {
-		return "watch() ran but no sandbox ever connected to the trace sink, so no I/O was seen; " +
-			"check that the services are container-mode and running under runsc"
+	if !connected {
+		return "watch() ran but no sandbox ever connected to the trace sink, so no I/O was seen. " +
+			"The services must be container-mode and launched under the " + gvisor.TraceRuntimeName +
+			" runtime, which carries the boot-time trace session; a container under plain runsc " +
+			"starts normally and reports nothing. Check: faultbox setup-trace --check"
 	}
-	if st.decodeErr != nil {
-		return fmt.Sprintf("filesystem observation hit a decode error, so the trace is incomplete: %v", st.decodeErr)
+	if decodeErr != nil {
+		return fmt.Sprintf("filesystem observation hit a decode error, so the trace is incomplete: %v", decodeErr)
+	}
+	// Dropped points make the observation a SUBSET of what happened, and the
+	// canonical watch() assertion is a negative one — "this service never
+	// wrote outside its data directory". A dropped point could be the
+	// violating one, so the audit can no longer claim "never", only "never,
+	// among those I saw". That is not the assertion the author wrote.
+	//
+	// Measured: the sink starts losing points between roughly 17k and 47k per
+	// second, and enabling read tracing took a read-heavy workload from zero
+	// drops to 1,488. Hence read being opt-in — see RFC-056 §0c.
+	if reason := droppedFailure(windowDrops); reason != "" {
+		return reason
+	}
+	// Points arrived but belonged to no service we launched. Observation is
+	// running and the trace is being discarded, which looks identical to "the
+	// SUT did no I/O".
+	if unattributed > 0 {
+		return fmt.Sprintf(
+			"filesystem observation received %d trace point(s) that matched no launched "+
+				"service, so they were discarded. The watch below saw less than the run "+
+				"produced; this usually means a container ID the Sentry reports differs from "+
+				"the one Faultbox recorded", unattributed)
 	}
 	return ""
+}
+
+// droppedFailure reports why dropped trace points invalidate a watch, or "".
+//
+// Split from the guard so it is testable on any platform: reading a real drop
+// count needs a live SOCK_SEQPACKET sink, which is Linux-only, and the M0b
+// finding this encodes is too important to be exercised on one OS.
+//
+// Drops make the observation a SUBSET of what happened, and the canonical
+// watch() assertion is negative — "this service never wrote outside its data
+// directory". A dropped point could be the violating one, so the audit can no
+// longer claim "never", only "never, among those I saw". That is not the
+// assertion the author wrote, and the difference is invisible in the result.
+//
+// Measured: the sink starts losing points between roughly 17k and 47k per
+// second, and enabling read tracing took a read-heavy workload from zero drops
+// to 1,488. That measurement is why read is opt-in — see RFC-056 §0c.
+func droppedFailure(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"filesystem observation dropped %d trace point(s), so what was observed is a "+
+			"subset of what happened and a watch() assertion cannot be trusted — a "+
+			"dropped operation could be the one it was looking for. This is a volume "+
+			"limit rather than a mistake in the spec: narrow files= or ops=, or if this "+
+			"host enables read tracing, turn it off (it roughly doubles traffic)", n)
 }
 
 // sourceUsesWatch reports whether a spec calls watch() or watch_start().

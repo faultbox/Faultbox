@@ -53,7 +53,7 @@ func main() {
 }
 
 // version is set via -ldflags at build time.
-var version = "0.15.0"
+var version = "0.16.0"
 
 func run() int {
 	args := os.Args[1:]
@@ -81,6 +81,11 @@ func run() int {
 		return diffCmd(args[1:])
 	case "init":
 		return initCmd(args[1:])
+	// Separate from `init` on purpose: this one writes /etc/docker/daemon.json
+	// and needs a daemon restart to take effect. That is not something a
+	// project-scaffolding command should do quietly. See setup_trace.go.
+	case "setup-trace":
+		return setupTraceCmd(args[1:])
 	case "self-update":
 		return selfUpdateCmd(args[1:])
 	case "mcp":

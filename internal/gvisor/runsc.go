@@ -118,24 +118,22 @@ type traceConfig struct {
 	Sinks  []traceSink  `json:"sinks"`
 }
 
-// FileIOPoints returns the trace points needed for filesystem observation.
+// FileIOPoints returns the default trace point set.
 //
-// fd_path is an *optional* field and must be requested explicitly or it
-// arrives empty — which would leave every path-filtered watch matching nothing
-// (M0.3 finding). cwd is requested for openat, whose pathname is frequently
-// relative and needs assembling.
+// Delegates to SetupOptions so there is exactly one definition of "the default
+// points" in the codebase. Two would drift, and the drift would be invisible:
+// a session installed with one set and validated against another produces a
+// watch that is accepted and receives nothing.
+//
+// Narrowed in v0.16.0. It previously returned eight points including read,
+// pread64, close and connect; measured on a read-heavy workload that produced
+// 48,576 points and 1,488 drops, where the four-point default produced 25,015
+// and none. Since dropped points fail a test — an audit that missed operations
+// cannot prove "never" — the wide default would have made watch() unusable on
+// ordinary read-heavy services. read and close are opt-in via
+// `faultbox setup-trace --with-read` / `--with-close`.
 func FileIOPoints() []TracePoint {
-	common := []string{"time", "thread_id", "container_id", "process_name"}
-	return []TracePoint{
-		{Name: "syscall/openat/exit", OptionalFields: []string{"fd_path"}, ContextFields: append([]string{"cwd"}, common...)},
-		{Name: "syscall/write/exit", OptionalFields: []string{"fd_path"}, ContextFields: common},
-		{Name: "syscall/pwrite64/exit", OptionalFields: []string{"fd_path"}, ContextFields: common},
-		{Name: "syscall/writev/exit", OptionalFields: []string{"fd_path"}, ContextFields: common},
-		{Name: "syscall/read/exit", OptionalFields: []string{"fd_path"}, ContextFields: common},
-		{Name: "syscall/pread64/exit", OptionalFields: []string{"fd_path"}, ContextFields: common},
-		{Name: "syscall/close/exit", OptionalFields: []string{"fd_path"}, ContextFields: common},
-		{Name: "syscall/connect/exit", OptionalFields: []string{"fd_path"}, ContextFields: common},
-	}
+	return SetupOptions{}.Points()
 }
 
 // StartTrace attaches a trace session to a running sandbox, streaming points

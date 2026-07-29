@@ -3174,3 +3174,61 @@ func keys(m map[string][]byte) []string {
 	}
 	return out
 }
+
+// A spec that declares env = {"POSTGRES_PASSWORD": "..."} has already said
+// what the credentials are. Making every step restate them would be ceremony;
+// omitting them entirely is what left postgres steps unable to authenticate.
+func TestApplyServiceCredentials(t *testing.T) {
+	svc := &ServiceDef{
+		Name: "pg",
+		Env: map[string]string{
+			"POSTGRES_PASSWORD": "faultbox",
+			"POSTGRES_DB":       "app",
+		},
+	}
+
+	t.Run("fills from env", func(t *testing.T) {
+		args := map[string]any{"sql": "SELECT 1"}
+		applyServiceCredentials(args, svc, "postgres")
+		if args["password"] != "faultbox" {
+			t.Errorf("password = %v, want the declared one", args["password"])
+		}
+		if args["database"] != "app" {
+			t.Errorf("database = %v, want app", args["database"])
+		}
+		// The official image defaults the user to "postgres"; the OS user —
+		// "root" under sudo — exists in no Postgres installation.
+		if args["user"] != "postgres" {
+			t.Errorf("user = %v, want the image default", args["user"])
+		}
+	})
+
+	t.Run("explicit step kwargs win", func(t *testing.T) {
+		args := map[string]any{"user": "readonly", "password": "other"}
+		applyServiceCredentials(args, svc, "postgres")
+		if args["user"] != "readonly" || args["password"] != "other" {
+			t.Errorf("explicit kwargs were overwritten: %v", args)
+		}
+	})
+
+	t.Run("connstr is left alone", func(t *testing.T) {
+		args := map[string]any{"connstr": "host=x user=y"}
+		applyServiceCredentials(args, svc, "postgres")
+		if _, ok := args["user"]; ok {
+			t.Error("connstr is a full escape hatch and must not be second-guessed")
+		}
+	})
+
+	t.Run("other protocols untouched", func(t *testing.T) {
+		args := map[string]any{}
+		applyServiceCredentials(args, svc, "http")
+		if len(args) != 0 {
+			t.Errorf("http steps take no credentials, got %v", args)
+		}
+	})
+
+	t.Run("nil service is safe", func(t *testing.T) {
+		args := map[string]any{}
+		applyServiceCredentials(args, nil, "postgres")
+	})
+}

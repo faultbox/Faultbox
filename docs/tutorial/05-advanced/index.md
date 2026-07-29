@@ -18,3 +18,4 @@ define high-level operations, and integrate with LLM agents.
 | [JWT/JWKS Mocks](21-jwt-mocks.md) | 12 min | jwt.server() stdlib, EdDSA tokens, claim minting, JWKS outage faults |
 | [End-to-End: Go Microservice](22-go-microservice-end-to-end.md) | 30 min | Full stack: real containers + typed gRPC mocks + JWT + fault_matrix in one tutorial |
 | [Reading a Report](23-reports.md) | 10 min | `faultbox report`, the HTML drill-down, swim-lane trace viewer, sharing reports |
+| [Watching the Filesystem](29-filesystem-observation.md) | 15 min | `watch()`, resolved paths, I/O-surface audits, why an incomplete trace fails the test |

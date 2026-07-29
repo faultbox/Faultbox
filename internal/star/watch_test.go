@@ -81,34 +81,34 @@ def test_w():
 	}
 }
 
-// TestWatchIsRejectedInThisRelease pins the v0.14.0 decision.
+// watch() is no longer refused as unimplemented — RFC-056 replaced the
+// mechanism. What it now refuses is a host that cannot deliver the
+// observation, which is a different claim and must read as one.
 //
-// The sink and DSL are complete, but `runsc trace create` instruments only
-// tasks created after the session starts, and Faultbox attaches one after the
-// service is healthy. Measured: 2 trace points for a network-driven workload
-// against a running Postgres backend, versus 1054 for the same work from a
-// newly-spawned process. A watch would therefore observe almost nothing and
-// its assertions would be vacuous, so it is refused rather than shipped with a
-// caveat (RFC-054 decision record M5).
-func TestWatchIsRejectedInThisRelease(t *testing.T) {
+// The distinction matters because the two failures look identical from the
+// spec's side: a watch that observes nothing because the feature is missing,
+// and one that observes nothing because this machine was never registered.
+// Only the second is the user's to fix, so only the second should be reported.
+func TestWatchRefusesAnUnregisteredHost(t *testing.T) {
 	res := runWatchTest(t, `
 def test_w():
     watch(db, files = ["/data/**"], run = lambda: None)
 `)
 	if res.Result != "fail" {
-		t.Fatal("watch() was accepted; it cannot observe reliably in this release")
+		t.Fatal("watch() was accepted on a host with no trace registration")
 	}
-	// The message must name a release that has NOT shipped. It said "v0.14.1"
-	// until v0.14.1 shipped without watch(), at which point the guidance users
-	// saw was simply false — the hazard of naming a version in a user-facing
-	// string. Assert on both the RFC and the target so the pair stays honest.
-	for _, want := range []string{"RFC-056", "v0.16.0"} {
-		if !strings.Contains(res.Reason, want) {
-			t.Errorf("reason should name %s, got: %s", want, res.Reason)
+	// Must name the remedy, since it is one-time host setup a test run cannot
+	// perform for the user.
+	if !strings.Contains(res.Reason, "setup-trace") {
+		t.Errorf("reason should name the command that fixes it, got: %s", res.Reason)
+	}
+	// Must NOT claim the feature is unavailable. That was true through
+	// v0.14.1 and is now false; a stale "not available yet" would send a user
+	// looking for a release instead of running one command.
+	for _, stale := range []string{"not available", "is not available yet", "Tracked as RFC-056"} {
+		if strings.Contains(res.Reason, stale) {
+			t.Errorf("reason still claims the feature is unimplemented (%q): %s", stale, res.Reason)
 		}
-	}
-	if !strings.Contains(res.Reason, "Packet faults") {
-		t.Errorf("reason should say packet faults still work, got: %s", res.Reason)
 	}
 }
 

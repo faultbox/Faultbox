@@ -54,6 +54,20 @@ type watchSpec struct {
 	Ops     map[string]bool
 }
 
+// opsList returns the requested ops in a stable order. Empty means "every op
+// the session sends", which is always deliverable by definition.
+func (w *watchSpec) opsList() []string {
+	if w == nil || len(w.Ops) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(w.Ops))
+	for op := range w.Ops {
+		out = append(out, op)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // matches reports whether an observed operation belongs to this watch.
 //
 // Matching keys on the resolved path that read/write/close carry. openat's
@@ -208,7 +222,7 @@ func (rt *Runtime) builtinWatch(thread *starlark.Thread, fn *starlark.Builtin, a
 	if run == nil {
 		return nil, fmt.Errorf("watch() requires run= with a callback; use watch_start()/watch_stop() for imperative control")
 	}
-	if err := rt.requireFileObservation("watch()"); err != nil {
+	if err := rt.requireFileObservation("watch()", spec.opsList()); err != nil {
 		return nil, err
 	}
 
@@ -244,7 +258,7 @@ func (rt *Runtime) builtinWatchStart(thread *starlark.Thread, fn *starlark.Built
 	if run != nil {
 		return nil, fmt.Errorf("watch_start() does not take run=; use watch() for a scoped window")
 	}
-	if err := rt.requireFileObservation("watch_start()"); err != nil {
+	if err := rt.requireFileObservation("watch_start()", spec.opsList()); err != nil {
 		return nil, err
 	}
 	rt.watches.add(spec)
@@ -262,6 +276,16 @@ func (rt *Runtime) markWatchRan() {
 	rt.mu.Lock()
 	rt.watchRan = true
 	rt.mu.Unlock()
+
+	// Baseline the drop counter as the window opens. Everything dropped before
+	// this point belongs to work the watch is not looking at — most often the
+	// service's own boot, which for a database dwarfs the workload under test.
+	st := rt.fsObs
+	st.mu.Lock()
+	if st.sink != nil {
+		st.dropBaseline = st.sink.Dropped()
+	}
+	st.mu.Unlock()
 }
 
 // builtinWatchStop implements watch_stop(service).
@@ -288,40 +312,46 @@ func (rt *Runtime) builtinWatchStop(thread *starlark.Thread, fn *starlark.Builti
 	return starlark.None, nil
 }
 
-// requireFileObservation rejects watch() in v0.14.0.
+// requireFileObservation checks that this host can actually deliver what the
+// spec asked to observe.
 //
-// The sink, decoder and DSL are complete and tested, but the mechanism that
-// installs a trace session cannot see the traffic that matters.
-// `runsc trace create` instruments only tasks created *after* the session
-// starts, and Faultbox attaches it once the service is up and healthchecked —
-// by which point every worker thread already exists. Measured in the Lima VM:
-// a network-driven workload against a running Postgres backend produced 2
-// trace points, while the same work driven by a newly-spawned process produced
-// 1054 (RFC-054 decision record M5).
+// v0.14.0 and v0.14.1 refused watch() outright here: `runsc trace create`
+// instruments only tasks created after the session starts, and Faultbox
+// attaches once a service is healthy — by which point every worker thread
+// already exists. Measured, a network-driven workload produced 2 trace points
+// against 1054 for the same SQL from a newly spawned process. A watch that
+// observes nothing still runs, and every assertion under it still passes.
 //
-// So watch() would load, run, observe almost nothing, and let an I/O-surface
-// audit pass having verified nothing — the exact failure mode this release was
-// built to eliminate. Shipping it with a caveat in the docs would be worse
-// than not shipping it.
+// RFC-056 replaced the mechanism: --pod-init-config installs the session at
+// sandbox boot, so every task is instrumented from its first instruction (236
+// points on that same workload, 11,295 before any query). The refusal is gone.
 //
-// The fix is runsc's -pod-init-config, which installs trace sessions at
-// sandbox boot so every task is instrumented. A 2026-07-29 spike confirmed it
-// works: 236 trace points on the same network-driven query that yielded 2, and
-// 11,295 before any query at all.
-//
-// What is left is not tracing. -pod-init-config is a runtime-level flag in
-// daemon.json, so the sink path becomes host-wide state that concurrent runs
-// collide on — the same class of problem as the shared faultbox0 TUN name
-// v0.14.1 fixed, one layer up. That is specified in RFC-056, target v0.16.0.
-func (rt *Runtime) requireFileObservation(what string) error {
-	return fmt.Errorf(
-		"%s is not available yet. gVisor's trace sessions only instrument tasks created "+
-			"after the session starts, and Faultbox attaches one after the service is healthy — so a "+
-			"watch would observe almost nothing and its assertions would be vacuous. "+
-			"The tracing fix is proven (runsc -pod-init-config); what remains is that the flag is "+
-			"host-wide daemon.json state. Tracked as RFC-056, target v0.16.0. "+
-			"Packet faults (packet_drop, packet_delay, ...) are unaffected and work today",
-		what)
+// What replaces it is narrower and, for the same reason, non-negotiable: the
+// host must be registered, and it must be sending the points this watch needs.
+// Both failures would otherwise present identically to a working watch that
+// happened to see no matching I/O.
+func (rt *Runtime) requireFileObservation(what string, ops []string) error {
+	rt.mu.Lock()
+	runtimeName := rt.detRuntime
+	rt.mu.Unlock()
+	if runtimeName != DeterminismRuntimeGVisor {
+		return fmt.Errorf(
+			"%s needs filesystem observation, but this spec runs on runtime=%q; "+
+				"add determinism(runtime=%q) at the top of the spec",
+			what, runtimeName, DeterminismRuntimeGVisor)
+	}
+
+	installed := installedTracePoints()
+	if len(installed) == 0 {
+		return fmt.Errorf(
+			"%s needs this host to be registered for filesystem observation, and it is not. "+
+				"gVisor installs the trace session at sandbox boot from a runtime entry in "+
+				"daemon.json, so it is one-time host setup rather than something a test run "+
+				"can arrange:\n    sudo faultbox setup-trace\n"+
+				"Check with: faultbox setup-trace --check",
+			what)
+	}
+	return checkOpsDeliverable(ops, installed)
 }
 
 // onFileIO routes one observed operation to any watch that wants it.
