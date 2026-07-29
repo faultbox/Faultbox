@@ -3,8 +3,6 @@ package star
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -21,10 +19,14 @@ import (
 // watch() observing nothing.
 
 type fsObservation struct {
-	mu       sync.Mutex
-	sink     *seccheck.Sink
-	sessions map[string]*gvisor.TraceSession // service → session
-	started  bool
+	mu   sync.Mutex
+	sink *seccheck.Sink
+	// containers maps a sandbox's container ID to the service it runs, so a
+	// trace point can be attributed. The session itself is installed at boot
+	// by the runtime flag, so there is nothing per-container to start or stop.
+	containers map[string]string
+	sessions   map[string]*gvisor.TraceSession // service → session (unused; see attachTrace)
+	started    bool
 	// connected records whether any sandbox ever completed the handshake.
 	// A watch() window that ran while this is false observed nothing, and
 	// must not be reported as a pass.
@@ -37,7 +39,10 @@ type fsObservation struct {
 }
 
 func newFSObservation() *fsObservation {
-	return &fsObservation{sessions: make(map[string]*gvisor.TraceSession)}
+	return &fsObservation{
+		containers: make(map[string]string),
+		sessions:   make(map[string]*gvisor.TraceSession),
+	}
 }
 
 // fileObservationEnabled reports whether the spec asked for it. Driven by
@@ -57,7 +62,11 @@ func (rt *Runtime) fileObservationEnabled() bool {
 // for the daemon default.
 func (rt *Runtime) containerRuntimeName() string {
 	if rt.fileObservationEnabled() {
-		return gvisor.RuntimeName
+		// The registered trace runtime, not bare runsc: the trace session is
+		// installed at sandbox boot via --pod-init-config, and only this
+		// runtime carries that flag. Plain runsc would start the container
+		// perfectly well and observe nothing.
+		return gvisor.TraceRuntimeName
 	}
 	return ""
 }
@@ -95,25 +104,26 @@ func (rt *Runtime) ensureFSObservation(ctx context.Context) error {
 		return avail.Err
 	}
 
-	// Keep the socket path short: a Unix socket path is capped near 104 bytes
-	// and a long temp dir silently turns into "invalid argument".
-	sockPath := filepath.Join(os.TempDir(), fmt.Sprintf("fb-seccheck-%d.sock", os.Getpid()))
-	sink, err := seccheck.Listen(seccheck.Config{
-		Path: sockPath,
-		OnFileIO: func(io seccheck.FileIO) {
+	// The endpoint is not ours to choose. Sandboxes learn where to report from
+	// the host trace config, written once by `faultbox setup-trace`; binding
+	// anywhere else would produce a sink nothing ever connects to, and every
+	// watch() assertion would pass having observed nothing.
+	sink, err := gvisor.AcquireSink(
+		"",
+		func(io seccheck.FileIO) {
 			st.mu.Lock()
 			st.connected = true
 			st.mu.Unlock()
 			rt.routeFileIO(io)
 		},
-		OnError: func(e error) {
+		func(e error) {
 			st.mu.Lock()
 			if st.decodeErr == nil {
 				st.decodeErr = e
 			}
 			st.mu.Unlock()
 		},
-	})
+	)
 	if err != nil {
 		return fmt.Errorf("start filesystem observation: %w", err)
 	}
@@ -121,51 +131,58 @@ func (rt *Runtime) ensureFSObservation(ctx context.Context) error {
 	st.started = true
 
 	rt.events.Emit("fs_observation_started", "", map[string]string{
-		"socket":       sockPath,
+		"socket":       sink.Path(),
 		"runsc":        avail.Version,
 		"runsc_binary": avail.BinaryPath,
 	})
 	return nil
 }
 
-// attachTrace starts a trace session on a launched container.
+// attachTrace records that a launched container is under observation.
+//
+// It no longer STARTS anything. v0.14.0 called `runsc trace create` here,
+// which is why watch() was withdrawn: that command instruments only tasks
+// created after the session begins, and Faultbox attaches once a service is
+// healthy — by which point every worker thread already exists. Measured, a
+// network-driven workload produced 2 trace points where the same SQL from a
+// freshly spawned process produced 1054.
+//
+// The session now comes from --pod-init-config, installed at sandbox boot by
+// the faultbox-trace runtime, so every task is instrumented from its first
+// instruction. Measured on the same workload: 236 points, and 11,295 before
+// any query at all. See docs/design/2026-07-29-pod-init-config-spike.md.
+//
+// What remains is bookkeeping: the container must be recorded so points
+// carrying its ID can be attributed to a service rather than counted as
+// unattributed.
 func (rt *Runtime) attachTrace(ctx context.Context, service, containerID string) error {
 	if !rt.fileObservationEnabled() {
 		return nil
 	}
 	st := rt.fsObs
 	st.mu.Lock()
-	sink := st.sink
-	st.mu.Unlock()
-	if sink == nil {
+	if st.sink == nil {
+		st.mu.Unlock()
 		return fmt.Errorf("filesystem observation: sink is not running")
 	}
-
-	sess, err := gvisor.StartTrace(ctx, containerID, sink.Path(), gvisor.FileIOPoints())
-	if err != nil {
-		return fmt.Errorf("attach trace to %s: %w", service, err)
-	}
-	st.mu.Lock()
-	st.sessions[service] = sess
+	st.containers[containerID] = service
 	st.mu.Unlock()
 
 	rt.events.Emit("fs_trace_attached", service, map[string]string{"container": containerID})
 	return nil
 }
 
-// detachTrace stops the trace session for one service.
-func (rt *Runtime) detachTrace(ctx context.Context, service string) {
+// detachTrace forgets a container. There is no session to stop — the sandbox
+// carried its own, and it dies with the sandbox.
+func (rt *Runtime) detachTrace(_ context.Context, service string) {
 	st := rt.fsObs
 	st.mu.Lock()
-	sess := st.sessions[service]
-	delete(st.sessions, service)
+	for id, svc := range st.containers {
+		if svc == service {
+			delete(st.containers, id)
+		}
+	}
 	st.mu.Unlock()
-	if sess == nil {
-		return
-	}
-	if err := sess.Stop(ctx); err != nil {
-		rt.log.Warn("stop trace session", "service", service, "error", err.Error())
-	}
 }
 
 // closeFSObservation tears everything down at session end.
