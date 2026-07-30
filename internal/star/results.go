@@ -78,8 +78,12 @@ type TestTraceOutput struct {
 	Faults                     []FaultInfo                     `json:"faults,omitempty"`
 	SyscallSummary             map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
 	Diagnostics                []Diagnostic                    `json:"diagnostics,omitempty"`
-	Assertion                  *AssertionDetail                `json:"assertion,omitempty"`
-	Events                     []Event                         `json:"events"`
+	// Assertions is how many assertions this test evaluated (RFC-052 Gap 8).
+	// Not omitempty: zero is the interesting value, and omitting it would make
+	// "checked nothing" indistinguishable from "an older bundle format".
+	Assertions int              `json:"assertions"`
+	Assertion  *AssertionDetail `json:"assertion,omitempty"`
+	Events     []Event          `json:"events"`
 }
 
 // Diagnostic is an actionable hint for LLM agents and humans.
@@ -134,6 +138,7 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 			FailureType:                classifyFailure(tr.Reason),
 			Seed:                       tr.Seed,
 			DurationMs:                 tr.DurationMs,
+			Assertions:                 tr.Assertions,
 			Events:                     tr.Events,
 			Expectation:                tr.ExpectationName,
 			ExpectationViolated:        tr.ExpectationViolated,
@@ -363,6 +368,26 @@ func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
 	hasFaults := len(tto.Faults) > 0
 	passed := tr.Result == "pass"
 	failed := tr.Result == "fail"
+
+	// TEST_NO_ASSERTIONS: the test ran to completion and checked nothing.
+	//
+	// Scoped to tests that actually completed. A test that failed, errored,
+	// timed out or halted may well have stopped before reaching its
+	// assertions, and reporting "you asserted nothing" on top of a failure
+	// would be noise attached to a message the user is already reading.
+	if passed && tr.Assertions == 0 {
+		diags = append(diags, Diagnostic{
+			Level: "warning",
+			Code:  "TEST_NO_ASSERTIONS",
+			// No test name here: the diagnostic is nested under the test in
+			// JSON, and the terminal printer prefixes it. Including it would
+			// read as a stutter in both places.
+			Message: "passed without evaluating any assertion",
+			Suggestion: "This test cannot fail. Add an assert_* call, an expect= predicate, " +
+				"or a temporal property — or if it exists to exercise a path rather than " +
+				"check one, say so in the docstring.",
+		})
+	}
 
 	// FAULT_FIRED_BUT_SUCCESS: faults hit > 0, test passed — possible missing error handling.
 	if hasFaults && passed {

@@ -610,10 +610,36 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 // NO_POSITIVE_CONTROL warning is still green; the warning says the green may not
 // mean much.
 func printSuiteDiagnostics(w io.Writer, result *star.SuiteResult) {
-	if len(result.Diagnostics) == 0 {
+	// Per-test diagnostics have existed since v0.12 but were only ever written
+	// to JSON and the bundle, so FAULT_FIRED_BUT_SUCCESS and its five siblings
+	// were invisible to anyone running `faultbox test` interactively. A
+	// diagnostic nobody sees is a diagnostic nobody acts on, so warnings are
+	// surfaced here too — grouped after the summary rather than inline, to keep
+	// the per-test result lines scannable.
+	// Diagnostics are attached during BuildTraceOutput, so derive them from
+	// there rather than duplicating buildDiagnostics' logic in the CLI.
+	out := star.BuildTraceOutput("", result)
+	var perTest []string
+	for _, t := range out.Tests {
+		for _, d := range t.Diagnostics {
+			if d.Level == "info" {
+				continue // info is drill-down detail; JSON keeps it
+			}
+			line := fmt.Sprintf("%s: [%s] %s: %s", strings.ToUpper(d.Level), d.Code, t.Name, d.Message)
+			if d.Suggestion != "" {
+				line += "\n  " + d.Suggestion
+			}
+			perTest = append(perTest, line)
+		}
+	}
+
+	if len(perTest) == 0 && len(result.Diagnostics) == 0 {
 		return
 	}
 	fmt.Fprintln(w)
+	for _, line := range perTest {
+		fmt.Fprintln(w, line)
+	}
 	for _, d := range result.Diagnostics {
 		fmt.Fprintf(w, "%s: [%s] %s\n", strings.ToUpper(d.Level), d.Code, d.Message)
 		if d.Suggestion != "" {

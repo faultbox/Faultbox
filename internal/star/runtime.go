@@ -43,6 +43,12 @@ type TestResult struct {
 	ReturnValue starlark.Value `json:"-"` // scenario return value for fault_scenario/fault_matrix
 	Matrix      *MatrixInfo    `json:"-"` // non-nil if from fault_matrix()
 
+	// Assertions is how many assertions this test evaluated (RFC-052 Gap 8).
+	// Exposed in JSON because an agent reading a green result needs to know
+	// whether anything was actually checked — a passing test with zero
+	// assertions is a different claim from a passing test with ten.
+	Assertions int `json:"assertions"`
+
 	// ExpectationName is the callable.Name() of the fs.Expect predicate
 	// used by this test, when one was provided. Empty for bare tests and
 	// for fault_scenario/fault_matrix rows without expect=/default_expect=.
@@ -1382,6 +1388,7 @@ func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf)
 	// its verdict is known. Hooked here rather than inside runTestImpl because
 	// that function has many return paths and a missed one would silently drop
 	// a positive control, making the diagnostic fire on a correct suite.
+	tr.Assertions = rt.vacuity.assertionCount(name)
 	rt.vacuity.endTest(name, tr.Result)
 
 	if leaf != nil {

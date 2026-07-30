@@ -51,12 +51,11 @@ var assertionBuiltins = map[string]bool{
 	// in this package, not spec builtins. TestAssertionBuiltinsAllExist caught
 	// them here on the first run — which is what that gate is for.
 	//
-	// RFC-041 declarative properties. Registering the constructor as an
-	// assertion is intentional: `eventually(...)` in a test body registers an
-	// expectation the runtime evaluates at termination, so the test is not
-	// vacuous even though nothing is checked at the call site.
-	"eventually": true,
-	"always":     true,
+	// Deliberately absent: eventually / always. They are assertions, but they
+	// are counted at registerExpectation() instead — the one place all three
+	// registration paths converge, including test(expect=...), which never
+	// passes through a builtin. Counting them here as well would double the
+	// number reported to agents in TestResult.Assertions.
 }
 
 // vacuityState is the per-run bookkeeping behind the Gap 8 diagnostics.

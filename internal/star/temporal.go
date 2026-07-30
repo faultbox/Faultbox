@@ -628,6 +628,15 @@ func waitBodyExit(ch <-chan bodyOutcomeT, deadline time.Duration) bodyOutcomeT {
 // registerExpectation adds exp to the per-test expectation list.
 // Reset on each RunTest invocation.
 func (rt *Runtime) registerExpectation(exp ExpectationVal) {
+	// RFC-052 Gap 8: a declared temporal property is an assertion, even though
+	// nothing is checked at the call site — the runtime evaluates it at
+	// termination. This is the single choke point for all three ways one gets
+	// registered (eventually(), always(), and test(expect=...)), which is why
+	// the counter lives here rather than in the builtin wrapper: test(expect=)
+	// never goes through a builtin at all, and counting it anywhere else would
+	// make a correct declarative test look vacuous.
+	rt.vacuity.noteAssertion(rt.currentTestName)
+
 	rt.temporalMu.Lock()
 	defer rt.temporalMu.Unlock()
 	rt.temporalExpectations = append(rt.temporalExpectations, exp)
