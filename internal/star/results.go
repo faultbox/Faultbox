@@ -78,8 +78,12 @@ type TestTraceOutput struct {
 	Faults                     []FaultInfo                     `json:"faults,omitempty"`
 	SyscallSummary             map[string]*SyscallSummaryEntry `json:"syscall_summary,omitempty"`
 	Diagnostics                []Diagnostic                    `json:"diagnostics,omitempty"`
-	Assertion                  *AssertionDetail                `json:"assertion,omitempty"`
-	Events                     []Event                         `json:"events"`
+	// Assertions is how many assertions this test evaluated (RFC-052 Gap 8).
+	// Not omitempty: zero is the interesting value, and omitting it would make
+	// "checked nothing" indistinguishable from "an older bundle format".
+	Assertions int              `json:"assertions"`
+	Assertion  *AssertionDetail `json:"assertion,omitempty"`
+	Events     []Event          `json:"events"`
 }
 
 // Diagnostic is an actionable hint for LLM agents and humans.
@@ -134,6 +138,7 @@ func BuildTraceOutput(starFile string, result *SuiteResult) TraceOutput {
 			FailureType:                classifyFailure(tr.Reason),
 			Seed:                       tr.Seed,
 			DurationMs:                 tr.DurationMs,
+			Assertions:                 tr.Assertions,
 			Events:                     tr.Events,
 			Expectation:                tr.ExpectationName,
 			ExpectationViolated:        tr.ExpectationViolated,
@@ -364,8 +369,47 @@ func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
 	passed := tr.Result == "pass"
 	failed := tr.Result == "fail"
 
-	// FAULT_FIRED_BUT_SUCCESS: faults hit > 0, test passed — possible missing error handling.
-	if hasFaults && passed {
+	// TEST_NO_ASSERTIONS: the test ran to completion and checked nothing.
+	//
+	// Scoped to tests that actually completed. A test that failed, errored,
+	// timed out or halted may well have stopped before reaching its
+	// assertions, and reporting "you asserted nothing" on top of a failure
+	// would be noise attached to a message the user is already reading.
+	if passed && tr.Assertions == 0 {
+		diags = append(diags, Diagnostic{
+			Level: "warning",
+			Code:  "TEST_NO_ASSERTIONS",
+			// No test name here: the diagnostic is nested under the test in
+			// JSON, and the terminal printer prefixes it. Including it would
+			// read as a stutter in both places.
+			Message: "passed without evaluating any assertion",
+			Suggestion: "This test cannot fail. Add an assert_* call, an expect= predicate, " +
+				"or a temporal property — or if it exists to exercise a path rather than " +
+				"check one, say so in the docstring.",
+		})
+	}
+
+	// FAULT_FIRED_BUT_SUCCESS: a fault fired and the test passed anyway.
+	//
+	// Narrowed in v0.17.0 to tests that asserted nothing. The original
+	// heuristic — fault fired + test passed — fires on the single most common
+	// correct shape in the entire tool:
+	//
+	//	def test_api_cannot_reach_db():
+	//	    def scenario():
+	//	        resp = api.post(path="/data")
+	//	        assert_eq(resp.status, 500)          # degradation, asserted
+	//	    fault(api, connect=deny("ECONNREFUSED"), run=scenario)
+	//
+	// That test is right, and the diagnostic called it suspicious. It went
+	// unnoticed from v0.12 to v0.17.0 because per-test diagnostics were never
+	// printed; making them visible immediately exposed the miscalibration.
+	//
+	// With assertions present the author checked the behaviour, whatever they
+	// checked. With none, they checked nothing — and "a fault fired and you
+	// asserted nothing" is strictly more actionable than TEST_NO_ASSERTIONS
+	// alone, which is why this stays a distinct code rather than folding in.
+	if hasFaults && passed && tr.Assertions == 0 {
 		for _, fi := range tto.Faults {
 			if fi.Action == "deny" && fi.Hits > 0 {
 				diags = append(diags, Diagnostic{

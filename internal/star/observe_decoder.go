@@ -2,8 +2,6 @@ package star
 
 import (
 	"fmt"
-	"os"
-	"sync"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
@@ -31,36 +29,6 @@ import (
 // A test harness that LoadStrings multiple specs in sequence sees
 // one warning total — which is fine because the migration message
 // is the same regardless of which spec triggered it.
-var (
-	deprecationWarningsMu sync.Mutex
-	deprecationWarnings   = map[string]bool{}
-)
-
-// warnDeprecated emits a one-time stderr line for an old builtin
-// name, naming the replacement. Returns nil so callers can chain
-// it before the actual builtin work.
-func warnDeprecated(oldName, replacement string) {
-	deprecationWarningsMu.Lock()
-	already := deprecationWarnings[oldName]
-	if !already {
-		deprecationWarnings[oldName] = true
-	}
-	deprecationWarningsMu.Unlock()
-	if already {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "warning: %s() is deprecated (RFC-044); use %s instead. Removal in v0.14.0.\n", oldName, replacement)
-}
-
-// resetDeprecationWarnings is exposed for tests so each test can
-// observe the first-warn behavior without process-level state
-// bleeding across runs.
-func resetDeprecationWarnings() {
-	deprecationWarningsMu.Lock()
-	deprecationWarnings = map[string]bool{}
-	deprecationWarningsMu.Unlock()
-}
-
 // makeObserveModule constructs the `observe` Starlark value
 // (`starlarkstruct.Struct`) exposing event-source factories as
 // attributes. Today: observe.stdout, observe.stderr. Future
@@ -80,21 +48,6 @@ func makeObserveModule() *starlarkstruct.Struct {
 			"stderr": starlark.NewBuiltin("observe.stderr", builtinStderrSource),
 		},
 	)
-}
-
-// builtinStdoutDeprecated is the legacy top-level `stdout()` —
-// behaves identically to observe.stdout but emits the deprecation
-// warning on first call.
-func builtinStdoutDeprecated(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	warnDeprecated("stdout", "observe.stdout")
-	return builtinStdoutSource(thread, fn, args, kwargs)
-}
-
-// builtinStderrDeprecated mirrors builtinStdoutDeprecated for
-// stderr.
-func builtinStderrDeprecated(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	warnDeprecated("stderr", "observe.stderr")
-	return builtinStderrSource(thread, fn, args, kwargs)
 }
 
 // builtinDecoder is RFC-044 §8.7's unified dispatcher.
@@ -139,23 +92,4 @@ func builtinDecoder(thread *starlark.Thread, fn *starlark.Builtin, args starlark
 		return &DecoderVal{Name: "regex", Params: params}, nil
 	}
 	return nil, fmt.Errorf("decoder(%q): unknown decoder; known names: \"json\", \"logfmt\", \"regex\"", name)
-}
-
-// builtinJSONDecoderDeprecated etc. — legacy decoder builtins.
-// Each emits the deprecation warning and delegates to the unified
-// decoder() dispatcher (so the migration path is also the
-// reference implementation — only one place to fix decoder bugs).
-func builtinJSONDecoderDeprecated(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	warnDeprecated("json_decoder", `decoder("json")`)
-	return builtinDecoder(thread, fn, starlark.Tuple{starlark.String("json")}, kwargs)
-}
-
-func builtinLogfmtDecoderDeprecated(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	warnDeprecated("logfmt_decoder", `decoder("logfmt")`)
-	return builtinDecoder(thread, fn, starlark.Tuple{starlark.String("logfmt")}, kwargs)
-}
-
-func builtinRegexDecoderDeprecated(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	warnDeprecated("regex_decoder", `decoder("regex", pattern=...)`)
-	return builtinDecoder(thread, fn, starlark.Tuple{starlark.String("regex")}, kwargs)
 }

@@ -62,6 +62,26 @@ time — and immediately exposed a second bug hiding behind the first:
    occurrence of the workload are different claims; see
    [Pattern 0](../../docs/guides/spec-patterns.md#pattern-0-assert-on-every-step).
 
+## `_gate-no-positive-control.star`
+
+Not part of the audit suite — a fixture for RFC-052's `NO_POSITIVE_CONTROL`
+diagnostic. It reconstructs the shape that hid two credential bugs in CI for
+three releases: a spec whose only assertion is that a step **fails**, which a
+client that cannot connect at all satisfies identically.
+
+Running it should produce a **green** suite carrying the warning. If it ever goes
+quiet, the diagnostic has regressed.
+
+```bash
+faultbox test poc/protocol-audit/_gate-no-positive-control.star
+# 1 passed, 0 failed
+# WARNING: [NO_POSITIVE_CONTROL] no test asserts that a step on 'pg.main' succeeds
+```
+
+The eight real specs here are the other half of that gate: every one of them
+pairs a step that must succeed with one that must fail, so none of them should
+ever trigger it.
+
 ## Coverage
 
 Ten of the thirteen step protocols are covered by a real-server spec:

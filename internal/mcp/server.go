@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 
+	"github.com/faultbox/Faultbox/internal/check"
 	"github.com/faultbox/Faultbox/internal/compose"
 	"github.com/faultbox/Faultbox/internal/generate"
 	"github.com/faultbox/Faultbox/internal/logging"
@@ -203,6 +204,21 @@ func (s *Server) handleToolsList(req *jsonRPCRequest) *jsonRPCResponse {
 				}`),
 			},
 			{
+				Name: "check_spec",
+				Description: "Validate a .star spec without running it: no processes launched, " +
+					"no images pulled, no Docker needed. Returns findings with machine-readable " +
+					"codes and a suggested next move, plus the discovered tests and plan size. " +
+					"Use this before run_test — it is milliseconds instead of tens of seconds.",
+				InputSchema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"file": {"type": "string", "description": "Path to the .star spec file"},
+						"max_instances": {"type": "integer", "description": "Report an error if the plan exceeds this many instances (optional)"}
+					},
+					"required": ["file"]
+				}`),
+			},
+			{
 				Name:        "list_tests",
 				Description: "Discover test functions in a .star spec file",
 				InputSchema: json.RawMessage(`{
@@ -266,6 +282,8 @@ func (s *Server) handleToolsCall(ctx context.Context, req *jsonRPCRequest) *json
 		return s.toolRunTest(ctx, req.ID, params.Arguments)
 	case "run_single_test":
 		return s.toolRunSingleTest(ctx, req.ID, params.Arguments)
+	case "check_spec":
+		return s.toolCheckSpec(req.ID, params.Arguments)
 	case "list_tests":
 		return s.toolListTests(req.ID, params.Arguments)
 	case "generate_faults":
@@ -315,6 +333,33 @@ func (s *Server) toolRunSingleTest(ctx context.Context, id interface{}, args jso
 	}
 
 	data, _ := json.MarshalIndent(result, "", "  ")
+	return s.toolResult(id, string(data))
+}
+
+// toolCheckSpec validates a spec without executing it (RFC-052 Gap 1).
+//
+// Delegates to internal/check so this and `faultbox check` cannot drift. A load
+// failure is a successful tool call reporting a finding, not a tool error: the
+// agent asked "is this spec valid?" and got a complete, structured answer, which
+// is exactly what it needs to fix the spec.
+func (s *Server) toolCheckSpec(id interface{}, args json.RawMessage) *jsonRPCResponse {
+	var p struct {
+		File         string `json:"file"`
+		MaxInstances int    `json:"max_instances"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return s.toolError(id, "invalid arguments: "+err.Error())
+	}
+	if p.File == "" {
+		return s.toolError(id, "file is required")
+	}
+
+	maxInstances := p.MaxInstances
+	if maxInstances == 0 {
+		maxInstances = -1 // unset, not "a limit of zero"
+	}
+
+	data, _ := json.MarshalIndent(check.Run(p.File, maxInstances), "", "  ")
 	return s.toolResult(id, string(data))
 }
 

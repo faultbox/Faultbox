@@ -29,22 +29,6 @@ err = observe.stderr()
 	}
 }
 
-// TestObserve_StdoutDeprecatedAliasStillWorks — legacy
-// `stdout()` keeps working and produces the same value type as
-// `observe.stdout()`. The deprecation warning is asserted
-// separately in TestObserve_DeprecationWarning.
-func TestObserve_StdoutDeprecatedAliasStillWorks(t *testing.T) {
-	resetDeprecationWarnings()
-	rt := New(testLogger())
-	src := `legacy = stdout()`
-	if err := rt.LoadString("spec.star", src); err != nil {
-		t.Fatalf("LoadString: %v", err)
-	}
-	if _, ok := rt.globals["legacy"].(*ObserveSourceVal); !ok {
-		t.Errorf("legacy stdout() returned %T, want *ObserveSourceVal", rt.globals["legacy"])
-	}
-}
-
 // TestDecoder_UnifiedDispatcher — RFC-044 §8.7: `decoder("json")`,
 // `decoder("logfmt")`, and `decoder("regex", pattern=...)` produce
 // DecoderVal values matching the legacy builtins.
@@ -101,112 +85,6 @@ func TestDecoder_Rejections(t *testing.T) {
 	}
 }
 
-// TestDecoder_LegacyAliasesStillWork — the three legacy
-// builtins (json_decoder/logfmt_decoder/regex_decoder) keep
-// working and produce identical values to the new dispatcher.
-func TestDecoder_LegacyAliasesStillWork(t *testing.T) {
-	resetDeprecationWarnings()
-	rt := New(testLogger())
-	src := `
-j = json_decoder()
-l = logfmt_decoder()
-r = regex_decoder(pattern="x")
-`
-	if err := rt.LoadString("spec.star", src); err != nil {
-		t.Fatalf("LoadString: %v", err)
-	}
-	for _, name := range []string{"j", "l", "r"} {
-		if _, ok := rt.globals[name].(*DecoderVal); !ok {
-			t.Errorf("%s returned %T, want *DecoderVal", name, rt.globals[name])
-		}
-	}
-}
-
-// TestDecoder_LegacyAliasesRejectUnknownKwargs — review N3 on PR
-// #128: this is an intentional behavior change. Pre-rc2,
-// json_decoder(foo="bar") silently accepted (and ignored) the
-// extra kwarg because the old implementation didn't iterate
-// kwargs at all. After C3, all three legacy builtins delegate
-// to the unified builtinDecoder, which rejects unknown kwargs
-// to match the new dispatcher's contract — json/logfmt take no
-// kwargs at all, and regex accepts only `pattern=`. This test
-// pins the new strictness so a future "compatibility" patch
-// can't loosen it back without an explicit decision.
-func TestDecoder_LegacyAliasesRejectUnknownKwargs(t *testing.T) {
-	cases := []struct {
-		src      string
-		wantSubs string
-	}{
-		{`d = json_decoder(foo="bar")`, "no kwargs"},
-		{`d = logfmt_decoder(pattern="x")`, "no kwargs"},
-		{`d = regex_decoder()`, "requires pattern"},
-	}
-	for _, tc := range cases {
-		rt := New(testLogger())
-		err := rt.LoadString("spec.star", tc.src)
-		if err == nil {
-			t.Errorf("expected error for %q (rc2 contract: legacy aliases route through builtinDecoder)", tc.src)
-			continue
-		}
-		if !strings.Contains(err.Error(), tc.wantSubs) {
-			t.Errorf("for %q, want error containing %q, got %v", tc.src, tc.wantSubs, err)
-		}
-	}
-}
-
-// TestObserve_DeprecationWarning — calling a deprecated builtin
-// emits a one-time stderr line naming the replacement. A second
-// call doesn't re-warn.
-func TestObserve_DeprecationWarning(t *testing.T) {
-	resetDeprecationWarnings()
-	captured := captureStderr(t, func() {
-		rt := New(testLogger())
-		src := `
-a = stdout()
-b = stdout()  # second call must not re-warn
-c = stderr()
-`
-		if err := rt.LoadString("spec.star", src); err != nil {
-			t.Fatalf("LoadString: %v", err)
-		}
-	})
-	// Expect exactly one warning for stdout and one for stderr.
-	if got := strings.Count(captured, "stdout() is deprecated"); got != 1 {
-		t.Errorf("stdout deprecation warnings = %d, want 1; stderr capture:\n%s", got, captured)
-	}
-	if got := strings.Count(captured, "stderr() is deprecated"); got != 1 {
-		t.Errorf("stderr deprecation warnings = %d, want 1; stderr capture:\n%s", got, captured)
-	}
-	if !strings.Contains(captured, "observe.stdout") {
-		t.Errorf("warning should name the replacement (observe.stdout); got:\n%s", captured)
-	}
-}
-
-// TestDecoder_DeprecationWarning — same one-time semantics for
-// the three legacy decoder builtins.
-func TestDecoder_DeprecationWarning(t *testing.T) {
-	resetDeprecationWarnings()
-	captured := captureStderr(t, func() {
-		rt := New(testLogger())
-		src := `
-a = json_decoder()
-b = logfmt_decoder()
-c = regex_decoder(pattern="x")
-`
-		if err := rt.LoadString("spec.star", src); err != nil {
-			t.Fatalf("LoadString: %v", err)
-		}
-	})
-	for _, name := range []string{"json_decoder", "logfmt_decoder", "regex_decoder"} {
-		if got := strings.Count(captured, name+"() is deprecated"); got != 1 {
-			t.Errorf("%s warnings = %d, want 1; capture:\n%s", name, got, captured)
-		}
-	}
-	if !strings.Contains(captured, `decoder("json")`) {
-		t.Errorf("warning should name replacement decoder(\"json\"); got:\n%s", captured)
-	}
-}
-
 // captureStderr redirects os.Stderr around fn and returns
 // everything written during the call. The actual logger output
 // from the runtime is unaffected because testLogger() writes via
@@ -232,4 +110,77 @@ func captureStderr(t *testing.T, fn func()) string {
 	_ = w.Close()
 	<-done
 	return buf.String()
+}
+
+// RFC-052 M5 — the removals.
+//
+// These names were deprecated in v0.13.0 with a warning naming v0.14.0 as the
+// removal version, then shipped in five further releases. Anyone who read the
+// warning carefully concluded the removal had already happened.
+//
+// They are removed in v0.17.0, but the names stay registered as failing stubs:
+// deleting them outright gives "undefined: stdout", which is true and useless.
+// A spec written against the old API — or an agent working from documentation
+// that predates the change — deserves to be told where the thing went.
+func TestRemovedBuiltinsFailLegibly(t *testing.T) {
+	cases := []struct {
+		src         string
+		name        string
+		replacement string
+	}{
+		{`x = stdout()`, "stdout", "observe.stdout"},
+		{`x = stderr()`, "stderr", "observe.stderr"},
+		{`x = json_decoder()`, "json_decoder", `decoder("json")`},
+		{`x = logfmt_decoder()`, "logfmt_decoder", `decoder("logfmt")`},
+		{`x = regex_decoder(pattern="x")`, "regex_decoder", `decoder("regex"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := New(testLogger())
+			err := rt.LoadString("spec.star", tc.src)
+			if err == nil {
+				t.Fatalf("%s() still works — it was supposed to be removed", tc.name)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.name) {
+				t.Errorf("error does not name the removed builtin: %q", msg)
+			}
+			if !strings.Contains(msg, tc.replacement) {
+				t.Errorf("error does not name the replacement %q: %q", tc.replacement, msg)
+			}
+			if !strings.Contains(msg, "removed in v0.17.0") {
+				t.Errorf("error does not say when it was removed: %q", msg)
+			}
+			// "undefined: stdout" is what deleting the name would give. If we
+			// ever get that, the stub has been dropped and the message with it.
+			if strings.Contains(msg, "undefined:") {
+				t.Errorf("removal produced a bare undefined error: %q", msg)
+			}
+		})
+	}
+}
+
+// The replacements must, of course, work.
+func TestReplacementsForRemovedBuiltinsWork(t *testing.T) {
+	rt := New(testLogger())
+	src := `
+o = observe.stdout()
+e = observe.stderr()
+j = decoder("json")
+l = decoder("logfmt")
+r = decoder("regex", pattern = "x")
+`
+	if err := rt.LoadString("spec.star", src); err != nil {
+		t.Fatalf("the documented replacements must load: %v", err)
+	}
+	for _, n := range []string{"o", "e"} {
+		if _, ok := rt.globals[n].(*ObserveSourceVal); !ok {
+			t.Errorf("%s = %T, want *ObserveSourceVal", n, rt.globals[n])
+		}
+	}
+	for _, n := range []string{"j", "l", "r"} {
+		if _, ok := rt.globals[n].(*DecoderVal); !ok {
+			t.Errorf("%s = %T, want *DecoderVal", n, rt.globals[n])
+		}
+	}
 }

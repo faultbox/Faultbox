@@ -79,7 +79,7 @@ increasing order of subtlety:
 | # | Failure mode | Measured at v0.16.0 |
 |---|---|---|
 | 1 | The test asserts nothing at all | 11 of 58 tests (18%) |
-| 2 | A step's result is discarded | 1 true instance |
+| 2 | A step's result is discarded | 1 true instance — and the check for it was later cut as too noisy |
 | 3 | **Only negative outcomes are asserted — no positive control** | the case above; hid both credential bugs |
 
 Mode 3 is the dominant one and the one no existing tool catches. It is the classic
@@ -144,11 +144,11 @@ mode 3 dominant, so the design leads with that.
 
 Three diagnostics, one per failure mode, in descending order of value:
 
-| Code | Fires when | Mode |
-|---|---|---|
-| `NO_POSITIVE_CONTROL` | An interface is stepped, but no test ever asserts that a step on it **succeeds** | 3 |
-| `TEST_NO_ASSERTIONS` | A test ran to completion and evaluated zero assertions | 1 |
-| `STEP_RESULT_DISCARDED` | A step's return value is never bound or asserted on | 2 |
+| Code | Fires when | Mode | Status |
+|---|---|---|---|
+| `NO_POSITIVE_CONTROL` | An interface is stepped, but no test ever asserts that a step on it **succeeds** | 3 | Shipped |
+| `TEST_NO_ASSERTIONS` | A test ran to completion and evaluated zero assertions | 1 | Shipped |
+| `STEP_RESULT_DISCARDED` | A step's return value is never bound or asserted on | 2 | **Cut** — 13 of 15 findings were legitimate side-effect steps |
 
 #### `NO_POSITIVE_CONTROL` — the one that matters
 
@@ -193,10 +193,15 @@ only **one** true instance in the entire repository, and a naive detector produc
 false positives out of three hits — `e.fields.get("event")` matches the same
 `ident.ident.ident(...)` shape as `db.main.exec(...)`.
 
-Kept because it is cheap and it catches a real mistake, but explicitly the least valuable
-of the three, and it must resolve the receiver to a declared service interface rather than
-pattern-matching on shape. **If that resolution proves unreliable, cut this diagnostic
-rather than ship a noisy one** — the plan gates on the false-positive rate.
+**Cut from v0.17.0.** Receiver resolution was implemented and worked — the shape-based
+false positives disappeared. But measured across 54 specs it produced 15 findings of which
+**13 were legitimate**: the step is used for its side effect and its result is genuinely
+irrelevant, as when a spec GETs `/trigger?leak=clock` to make a service perform a raw
+syscall, then asserts on the emitted `unmediated_io` events. Telling that apart from "I
+forgot to check" is an intent question, not a syntactic one.
+
+Both true positives were already caught by the other two diagnostics, so the cut costs
+almost nothing. Full analysis in the implementation plan.
 
 #### Why this is tractable
 

@@ -1287,11 +1287,16 @@ Decoders parse raw bytes (a line of output, a message payload) into
 structured event fields. The `"data"` field is auto-decoded on
 `StarlarkEvent.data` — no `json.decode()` needed.
 
-| Decoder | Constructor (RFC-044) | Legacy alias (deprecated, removed in v0.14.0) | Parses |
-|---------|----------------------|-----------------------------------------------|--------|
-| json | `decoder("json")` | `json_decoder()` | JSON objects — top-level keys become fields |
-| logfmt | `decoder("logfmt")` | `logfmt_decoder()` | `key=value key2="value 2"` pairs |
-| regex | `decoder("regex", pattern=...)` | `regex_decoder(pattern=...)` | Named capture groups from regex |
+| Decoder | Constructor | Parses |
+|---------|-------------|--------|
+| json | `decoder("json")` | JSON objects — top-level keys become fields |
+| logfmt | `decoder("logfmt")` | `key=value key2="value 2"` pairs |
+| regex | `decoder("regex", pattern=...)` | Named capture groups from regex |
+
+> **Removed in v0.17.0:** the legacy `json_decoder()`, `logfmt_decoder()` and
+> `regex_decoder()` constructors, along with top-level `stdout()` / `stderr()`.
+> Deprecated in v0.13.0 (RFC-044). Using one now fails at spec load with an
+> error naming its replacement.
 
 ```python
 # JSON: {"level":"INFO","msg":"started"} → e.data["level"] == "INFO"

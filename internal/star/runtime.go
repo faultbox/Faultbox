@@ -43,6 +43,12 @@ type TestResult struct {
 	ReturnValue starlark.Value `json:"-"` // scenario return value for fault_scenario/fault_matrix
 	Matrix      *MatrixInfo    `json:"-"` // non-nil if from fault_matrix()
 
+	// Assertions is how many assertions this test evaluated (RFC-052 Gap 8).
+	// Exposed in JSON because an agent reading a green result needs to know
+	// whether anything was actually checked — a passing test with zero
+	// assertions is a different claim from a passing test with ten.
+	Assertions int `json:"assertions"`
+
 	// ExpectationName is the callable.Name() of the fs.Expect predicate
 	// used by this test, when one was provided. Empty for bare tests and
 	// for fault_scenario/fault_matrix rows without expect=/default_expect=.
@@ -169,6 +175,12 @@ type SuiteResult struct {
 	// to gate on either or both (CLI exit code 3 reflects Inconclusive
 	// > 0 when Fail == 0; exit code 2 is reserved for Fail > 0).
 	Inconclusive int `json:"inconclusive,omitempty"`
+	// Diagnostics are run-level findings that no single test could produce.
+	// RFC-052 Gap 8's NO_POSITIVE_CONTROL lives here: whether an interface is
+	// ever proved to work is a property of the whole suite, since one
+	// fault-injection test asserting failure is perfectly correct on its own.
+	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
+
 	// Halted counts tests whose body called halt() (RFC-043 §5.3).
 	// Halted leaves are recorded with their choice path but do not
 	// contribute to PASS/FAIL/INCONCLUSIVE counts — they represent
@@ -361,6 +373,11 @@ type Runtime struct {
 	// RunTest.
 	currentTestName string
 
+	// vacuity carries the RFC-052 Gap 8 bookkeeping: assertion counts per
+	// test, and which interfaces the suite ever proved to work. Suite-scoped
+	// because NO_POSITIVE_CONTROL is a property of the whole run.
+	vacuity *vacuityState
+
 	// mockTLSImpl is lazy-initialized the first time a tls=True mock service
 	// starts. The whole runtime shares one CA so clients can trust every
 	// mock by trusting a single bundle.
@@ -502,6 +519,7 @@ func New(logger *slog.Logger) *Runtime {
 		detRuntime: DeterminismRuntimeDefault,
 		detStrict:  true,
 		detAllow:   make(map[string]bool),
+		vacuity:    newVacuityState(),
 	}
 	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
 	rt.packetRules = newPacketRuleRegistry()
@@ -581,11 +599,11 @@ func (rt *Runtime) LoadFile(path string) error {
 	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
 	// violations surface as load errors instead of mid-test panics.
 	if err := validateMonitorLambdasInSource(path, string(src)); err != nil {
-		return fmt.Errorf("load %s: %w", path, err)
+		return codedf(CodeSpecForbiddenLambda, "load %s: %w", path, err)
 	}
 	// RFC-043 §8.7 — same model for assume() predicates.
 	if err := validateAssumeLambdasInSource(path, string(src)); err != nil {
-		return fmt.Errorf("load %s: %w", path, err)
+		return codedf(CodeSpecForbiddenLambda, "load %s: %w", path, err)
 	}
 
 	thread := &starlark.Thread{Name: "load"}
@@ -593,7 +611,7 @@ func (rt *Runtime) LoadFile(path string) error {
 
 	globals, err := starlark.ExecFile(thread, path, nil, rt.builtins())
 	if err != nil {
-		return fmt.Errorf("load %s: %w", path, err)
+		return codedf(specLoadCode(err), "load %s: %w", path, err)
 	}
 
 	rt.globals = globals
@@ -606,7 +624,7 @@ func (rt *Runtime) LoadString(name, src string) error {
 	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
 	// violations surface as load errors instead of mid-test panics.
 	if err := validateMonitorLambdasInSource(name, src); err != nil {
-		return fmt.Errorf("load: %w", err)
+		return codedf(CodeSpecForbiddenLambda, "load: %w", err)
 	}
 	// RFC-054 M5: filesystem observation needs runsc, and the container
 	// runtime must be chosen before the first service launches — long before
@@ -616,14 +634,14 @@ func (rt *Runtime) LoadString(name, src string) error {
 
 	// RFC-043 §8.7 — same model for assume() predicates.
 	if err := validateAssumeLambdasInSource(name, src); err != nil {
-		return fmt.Errorf("load: %w", err)
+		return codedf(CodeSpecForbiddenLambda, "load: %w", err)
 	}
 	thread := &starlark.Thread{Name: "load"}
 	thread.Load = rt.makeLoadFunc()
 	rt.sourceText = src
 	globals, err := starlark.ExecFile(thread, name, src, rt.builtins())
 	if err != nil {
-		return fmt.Errorf("load: %w", err)
+		return codedf(specLoadCode(err), "load: %w", err)
 	}
 	rt.globals = globals
 	rt.snapshotSpecChoices()
@@ -662,7 +680,7 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 			embeddedPath := strings.TrimPrefix(module, stdlibPrefix)
 			src, err = faultbox.Recipes.ReadFile(embeddedPath)
 			if err != nil {
-				return nil, fmt.Errorf("load %q: not found in faultbox stdlib (run 'faultbox recipes list' to see available recipes): %w", module, err)
+				return nil, codedf(CodeSpecRecipeNotFound, "load %q: not found in faultbox stdlib (run 'faultbox recipes list' to see available recipes): %w", module, err)
 			}
 			modPath = module // preserve the @faultbox/... display name
 		} else {
@@ -1148,6 +1166,12 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 
 	suite.DurationMs = time.Since(start).Milliseconds()
 
+	// RFC-052 Gap 8. Emitted after every test so it can ask a question no
+	// single test can: did anything in this run prove each stepped interface
+	// actually works, or is every assertion about it equally satisfied by a
+	// client that cannot connect at all?
+	suite.Diagnostics = append(suite.Diagnostics, rt.vacuity.suiteDiagnostics()...)
+
 	// Surface a zero-match filter loudly. Matched (not len(suite.Tests))
 	// is the right signal: --fail-only leaves passing tests out of the
 	// Tests slice. The CLI turns Matched == 0 into a non-zero exit so a
@@ -1359,6 +1383,14 @@ func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf)
 		rt.currentLeafMu.Unlock()
 	}()
 	tr := rt.runTestImpl(ctx, name)
+
+	// RFC-052 Gap 8: resolve this test's candidate positive controls now that
+	// its verdict is known. Hooked here rather than inside runTestImpl because
+	// that function has many return paths and a missed one would silently drop
+	// a positive control, making the diagnostic fire on a correct suite.
+	tr.Assertions = rt.vacuity.assertionCount(name)
+	rt.vacuity.endTest(name, tr.Result)
+
 	if leaf != nil {
 		tr.LeafID = fmt.Sprintf("%d", leaf.Index)
 		// Snapshot per-leaf axis assignments so the bundle manifest
@@ -2516,7 +2548,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 	if rt.dockerClient == nil {
 		dc, err := container.NewClient(ctx, rt.log)
 		if err != nil {
-			return fmt.Errorf("docker client: %w", err)
+			return codedf(CodeDockerUnavailable, "docker client: %w", err)
 		}
 		rt.dockerClient = dc
 		rt.containerIDs = make(map[string]string)
@@ -2593,7 +2625,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		Runtime: rt.containerRuntimeName(),
 	}, rt.log)
 	if err != nil {
-		return fmt.Errorf("launch container %q: %w", svcName, err)
+		return codedf(CodeLaunchFailed, "launch container %q: %w", svcName, err)
 	}
 	rt.containerIDs[svcName] = result.ContainerID
 
@@ -2662,7 +2694,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 			hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
 			defer hcCancel()
 			if err := waitReady(hcCtx, hcTest, timeout); err != nil {
-				return fmt.Errorf("service %q not ready: %w", svcName, err)
+				return codedf(CodeHealthcheckTimeout, "service %q not ready: %w", svcName, err)
 			}
 			rt.events.Emit("service_ready", svcName, nil)
 			rt.log.Info("service ready", slog.String("service", svcName), slog.String("check", hcTest))
@@ -2779,7 +2811,7 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 		select {
 		case err := <-hcErrCh:
 			if err != nil {
-				return fmt.Errorf("service %q not ready: %w", svcName, err)
+				return codedf(CodeHealthcheckTimeout, "service %q not ready: %w", svcName, err)
 			}
 		case r := <-done:
 			done <- r // put back: stopServices selects on this channel during teardown
@@ -4630,6 +4662,13 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 		recvFields["spec"] = specCaller
 	}
 	rt.events.Emit("step_recv", "test", recvFields)
+
+	// RFC-052 Gap 8: a successful step is ground truth that the client works.
+	// Recorded per interface so the suite-level check can ask whether anything
+	// ever proved this interface functional.
+	if stepResult != nil {
+		rt.vacuity.noteStep(targetSvc, ref.Interface.Name, stepResult.Success)
+	}
 
 	// TCP send returns raw string for backward compatibility.
 	if ref.Interface.Protocol == "tcp" && stepResult.Success {

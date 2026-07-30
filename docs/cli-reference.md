@@ -430,71 +430,15 @@ faultbox diff run1.norm run2.norm
 
 ---
 
-### `faultbox generate` *(deprecated — use `faultbox plan --suggest`)*
+### `faultbox generate` *(removed in v0.17.0)*
 
-> **Deprecated as of v0.13.0 (RFC-044 §8.3).** Prints a deprecation warning on stderr; will be removed in v0.14.0. New users should reach for `faultbox plan --suggest`, which performs the same topology-driven mutation analysis through the unified plan-tree pipeline.
-
-Generate failure scenarios from registered `scenario()` functions.
-
-```
-faultbox generate [flags] <file.star>
-```
-
-| Flag | Description |
-|------|-------------|
-| `--output <file>` | Write all mutations to a single file (default: one file per scenario) |
-| `--scenario <name>` | Generate only for this scenario |
-| `--service <name>` | Generate only for this dependency |
-| `--category <cat>` | Filter: `network`, `disk`, `all` (default: `all`) |
-| `--dry-run` | List mutations without generating code |
-
-**Default output:** one file per scenario, named `<scenario>.faults.star`.
-
-**Examples:**
-
-```bash
-faultbox generate faultbox.star                            # per-scenario files
-faultbox generate faultbox.star --output all-failures.star # single file
-faultbox generate faultbox.star --scenario order_flow      # one scenario
-faultbox generate faultbox.star --service db               # one dependency
-faultbox generate faultbox.star --dry-run                  # preview
-```
-
-**How it works:**
-
-1. Loads the `.star` file and finds all `scenario()` registrations
-2. Analyzes the topology (services, dependencies, protocols)
-3. Generates `fault_assumption()` definitions — one per unique fault mode
-4. Generates a `fault_matrix()` call composing scenarios × assumptions
-5. Generated files use `load()` to import topology and scenario functions
-
-**Generated output format:**
-
-```python
-load("faultbox.star", "orders", "inventory", "order_flow")
-
-# network faults
-inventory_down = fault_assumption("inventory_down",
-    target = orders,
-    connect = deny("ECONNREFUSED"),
-)
-
-# disk faults
-disk_eio = fault_assumption("disk_eio",
-    target = inventory,
-    write = deny("EIO"),
-)
-
-fault_matrix(
-    scenarios = [order_flow],
-    faults = [inventory_down, disk_eio],
-)
-```
-
-Add `overrides=` to `fault_matrix()` for per-cell expected behavior.
-Network partitions are generated as standalone `test_*` functions.
-
----
+> **Removed.** Use [`faultbox plan --suggest`](#faultbox-plan-v0130), which performs
+> the same topology-driven mutation analysis through the unified plan-tree pipeline
+> and prints copy-pasteable stubs instead of writing files.
+>
+> Deprecated in v0.13.0 (RFC-044 §8.3). The command name is still recognised and
+> reports where the functionality went, rather than falling through to the generic
+> "unknown command" list.
 
 ### `faultbox plan` (v0.13.0)
 
@@ -532,6 +476,55 @@ User guide: [docs/exploration.md](exploration.md).
 `faultbox test` writes the same plan tree into every bundle as
 `plan.json`. `--no-plan` on `faultbox test` skips enumeration (debug
 only).
+
+---
+
+### `faultbox check` (v0.17.0)
+
+Validate a spec **without running it**. Launches no processes, pulls no images,
+and does not need Docker — so it costs milliseconds where a run costs tens of
+seconds.
+
+```
+faultbox check <spec.star> [flags]
+```
+
+**Flags**
+
+| Flag | Effect |
+|------|--------|
+| `--format=text` | Human-readable (default). |
+| `--format=json` | Structured findings; the shape an agent parses. |
+| `--max-instances N` | Report an error if the plan expands beyond N instances. |
+
+**Exit codes**
+
+| Code | Meaning |
+|------|---------|
+| 0 | No findings, or warnings only |
+| 1 | Usage error |
+| 2 | One or more `error`-level findings |
+
+Warnings do not fail the command — CI gates on whatever it chooses.
+
+```console
+$ faultbox check tests/orders.star
+ok  tests/orders.star — 4 test(s), 12 plan instance(s)
+
+$ faultbox check tests/broken.star
+ERROR: [SPEC_LOAD_FAILED] load tests/broken.star: service("db"): unknown keyword argument "img"
+  The spec parsed but failed while loading. The message above names the call that
+  failed; check its arguments against docs/spec-language.md. …
+```
+
+**What it will not tell you.** Whether the suite proves anything. The two
+diagnostics that answer that — [`NO_POSITIVE_CONTROL` and
+`TEST_NO_ASSERTIONS`](diagnostic-codes.md) — need a run, because deciding
+whether an assertion is positive or negative from source alone is unreliable.
+`check` finds specs that are *wrong*; `faultbox test` finds specs that are
+*empty*.
+
+Also available as the MCP tool `check_spec`.
 
 ---
 

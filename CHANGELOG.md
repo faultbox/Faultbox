@@ -13,6 +13,136 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.17.0] - 2026-07-30
+
+Agent-first surface, first slice — and detecting suites that cannot fail.
+
+[RFC-052](docs/rfcs/0052-agent-first-surface.md) Gaps 1, 2 and 8, plus the
+deprecation removals promised for v0.14.0 and never made.
+
+### Added — `faultbox check`: validate without running
+
+```
+faultbox check spec.star [--format json] [--max-instances N]
+```
+
+Launches no processes, pulls no images, needs no Docker — milliseconds against
+the tens of seconds a run costs. The runtime could always do this; it simply was
+not exposed, so the only way to learn a spec was malformed was to run it.
+
+Findings carry machine-readable codes and a suggested next move. Exit 0 for
+clean or warnings-only, 2 for errors. Also available as the MCP tool
+`check_spec`, which runs exactly the same code — a check that behaved
+differently through MCP would give an agent a wrong model of the tool.
+
+### Added — diagnostics for suites that cannot fail
+
+Two new diagnostics, from a specific and uncomfortable finding: a CI spec
+exercised a **broken Postgres client on every pull request for three releases
+and passed**.
+
+```python
+env = {"POSTGRES_HOST_AUTH_METHOD": "trust", ...}   # removes the credential path
+
+resp = pg.main.query(sql = "SELECT 1")
+assert_true(not resp.ok, "expected failed query under injected fault")
+```
+
+It asserts the query **fails**. A client that cannot connect at all satisfies
+that identically to the injected fault. Its own comment stated the intent — *"so
+this test doesn't depend on authentication round-tripping"*. A careful test, and
+the care is what hid the bug.
+
+- **`NO_POSITIVE_CONTROL`** — an interface is stepped, but no test ever asserts a
+  step on it *succeeds*. Suite-level, which is what makes it new: a single
+  fault-injection test asserting failure is correct; a *suite* where that is the
+  only assertion an interface receives proves nothing. No per-test lint sees it.
+- **`TEST_NO_ASSERTIONS`** — a test passed having evaluated nothing.
+
+Both are warnings. They found two vacuous specs in this repository, one of them
+in the CI golden corpus, each carrying the same false belief in a comment:
+*"the assertion is the absence of a panic"*. A failed step returns `ok = False`;
+it does not raise.
+
+A third diagnostic, `STEP_RESULT_DISCARDED`, was implemented and **cut** on its
+own evidence: across 54 specs it produced 15 findings of which 13 were
+legitimate side-effect steps. The rule that cut it was written down before the
+measurement, so the result could not be rationalised afterwards.
+
+### Added — machine-readable error taxonomy
+
+Eight codes over spec-load and infrastructure failures — `SPEC_SYNTAX`,
+`SPEC_LOAD_FAILED`, `SPEC_FORBIDDEN_LAMBDA`, `SPEC_RECIPE_NOT_FOUND`,
+`HEALTHCHECK_TIMEOUT`, `LAUNCH_FAILED`, `DOCKER_UNAVAILABLE`,
+`TRACE_HOST_NOT_REGISTERED` — each carrying the reader's next move.
+
+Implemented as typed errors, not by matching message text. The shortcut would
+reproduce the exact fragility this release removes: reword an error and the code
+changes silently. So adoption is incremental, and `Classify` reports an uncoded
+error as uncoded rather than guessing — a gap in the taxonomy is discoverable, a
+wrong code is something an agent acts on.
+
+Full reference: [docs/diagnostic-codes.md](docs/diagnostic-codes.md).
+
+### Fixed — `FAULT_FIRED_BUT_SUCCESS` fired on correct specs
+
+Its heuristic — a fault fired and the test passed — describes the single most
+common correct shape in the tool: inject a fault, assert the service degrades
+gracefully. It has been miscalibrated since v0.12 and nobody noticed, because
+per-test diagnostics were never printed. Making them visible exposed it on the
+first end-to-end run.
+
+Now requires the test to have asserted nothing. With assertions present the
+author checked the behaviour; with none they checked nothing.
+
+### Fixed — per-test diagnostics were never printed
+
+`FAULT_FIRED_BUT_SUCCESS` and its five siblings have existed since v0.12 but
+were only ever written to JSON and the bundle. Anyone running `faultbox test`
+interactively has never seen one. Warnings now print after the summary.
+
+`TestResult.assertions` is also exposed in JSON, because a green result means
+something different depending on whether anything was checked.
+
+### Removed — the deprecations promised for v0.14.0
+
+Deprecated in v0.13.0, then shipped in five further releases while warning
+`Removal in v0.14.0.` Anyone reading carefully concluded the removal had already
+happened.
+
+| Removed | Use instead |
+|---|---|
+| `faultbox generate` | `faultbox plan --suggest` |
+| `stdout()` / `stderr()` | `observe.stdout` / `observe.stderr` |
+| `json_decoder()` / `logfmt_decoder()` / `regex_decoder()` | `decoder("json"\|"logfmt"\|"regex")` |
+
+**The names still resolve**, to a stub that fails naming its replacement and the
+release that removed it. Deleting them outright would give `undefined: stdout` —
+true and useless, particularly to an agent working from documentation that
+predates the change.
+
+### Added — MCP contract tests
+
+`faultbox mcp` had **no test coverage at all**, on the one surface whose declared
+primary user is an agent. Now covered: every advertised tool dispatches, schemas
+are valid and internally consistent, result shapes hold, malformed arguments are
+rejected rather than panicking.
+
+### Documentation
+
+- [Driving Faultbox as an agent](docs/guides/driving-faultbox-as-an-agent.md) —
+  the loop, the JSON shapes, the codes, and the trap that cost three releases.
+- [Diagnostic codes](docs/diagnostic-codes.md) — every code and its remedy.
+- `docs/positioning.md` records the agent-first premise, which RFC-052 cited and
+  which was written down nowhere.
+
+### Verification
+
+`go build` + `go vet` + `go test -race ./...` green. `NO_POSITIVE_CONTROL` fires
+on a reconstructed known-bad spec and stays silent on all eight
+`poc/protocol-audit` specs; both new diagnostics show **zero false positives**
+across 11 runnable specs.
+
 ## [0.16.1] - 2026-07-30
 
 What the rest of the protocols were hiding.
