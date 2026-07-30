@@ -306,6 +306,6 @@ func (p *amqpProxy) Stop() error {
 	if p.listener != nil {
 		p.listener.Close()
 	}
-	p.wg.Wait()
+	waitConns(&p.wg, p.onEvent, p.svcName, "amqp")
 	return nil
 }

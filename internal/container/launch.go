@@ -34,6 +34,18 @@ type LaunchConfig struct {
 	// observation (RFC-054 M5). Empty keeps the daemon default (runc), so
 	// enabling gVisor never changes behaviour for specs that did not ask.
 	Runtime string
+
+	// Args overrides the image's own CMD, e.g.
+	// args = ["redis-server", "--requirepass", "secret"].
+	//
+	// Until v0.16.1 `args=` was accepted by the spec loader and then dropped
+	// for container services — it only ever reached binary mode. A spec that
+	// configured a server through its command line got a default server and no
+	// warning, which is the same "declared and silently discarded" failure as
+	// the credential bugs found alongside this.
+	//
+	// Empty keeps the image's CMD, so specs that never set it are unaffected.
+	Args []string
 }
 
 // LaunchResult contains the result of launching a container.
@@ -93,10 +105,20 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 	os.Remove(socketPath) // clean up from previous run
 
 	// Build shim config — use SocketPath for Unix socket fd passing.
+	// args= overrides the image CMD. Under the shim that means overriding what
+	// the shim execs, since the shim is the entrypoint and Cmd is its argv.
+	execCmd := origCmd
+	if len(cfg.Args) > 0 {
+		execCmd = cfg.Args
+		log.Debug("image cmd overridden by args=",
+			slog.String("name", cfg.Name),
+			slog.Any("cmd", execCmd),
+		)
+	}
 	shimCfg := ShimConfig{
 		SyscallNrs: cfg.SyscallNrs,
 		Entrypoint: origEntrypoint,
-		Cmd:        origCmd,
+		Cmd:        execCmd,
 		SocketPath: "/var/run/faultbox/fd.sock",
 	}
 
@@ -242,6 +264,7 @@ func launchSimple(ctx context.Context, client *Client, cfg LaunchConfig, log *sl
 	containerID, err := client.CreateContainer(ctx, CreateOpts{
 		Name:      containerName,
 		Image:     cfg.Image,
+		Cmd:       cfg.Args, // nil keeps the image's own CMD
 		Env:       env,
 		Binds:     binds,
 		Ports:     cfg.Ports,

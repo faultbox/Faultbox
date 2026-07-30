@@ -12,6 +12,56 @@ import (
 
 func init() {
 	Register(&cassandraProtocol{})
+
+	// gocql's package logger prints every failed control-connection dial to
+	// stderr. A Cassandra cold start takes ~60s, and ready() now retries for
+	// the whole of it, so a perfectly healthy run emitted a dozen lines of
+	// "unable to dial control conn ... connection reset by peer" before
+	// passing. That reads as a failure when it is the readiness check doing
+	// exactly its job.
+	//
+	// Same treatment the MySQL driver gets in mysql.go: drop the known
+	// retry-time noise, pass everything else through. Real failures surface
+	// through Session/Query return values, not this logger.
+	gocql.Logger = &cassandraFilterLogger{inner: gocql.Logger}
+}
+
+// cassandraNoisePatterns are emitted by gocql while a node is still starting.
+var cassandraNoisePatterns = []string{
+	"unable to dial control conn",
+	"connection reset by peer",
+	"connection refused",
+	"unable to fetch peer host info",
+	"gocql: no response received from cassandra within timeout period",
+}
+
+type cassandraFilterLogger struct{ inner gocql.StdLogger }
+
+func (l *cassandraFilterLogger) filtered(msg string) bool {
+	for _, pat := range cassandraNoisePatterns {
+		if strings.Contains(msg, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *cassandraFilterLogger) Print(v ...any) {
+	if !l.filtered(fmt.Sprint(v...)) {
+		l.inner.Print(v...)
+	}
+}
+
+func (l *cassandraFilterLogger) Printf(format string, v ...any) {
+	if !l.filtered(fmt.Sprintf(format, v...)) {
+		l.inner.Printf(format, v...)
+	}
+}
+
+func (l *cassandraFilterLogger) Println(v ...any) {
+	if !l.filtered(fmt.Sprintln(v...)) {
+		l.inner.Println(v...)
+	}
 }
 
 type cassandraProtocol struct{}
@@ -23,15 +73,19 @@ func (p *cassandraProtocol) Methods() []string {
 }
 
 func (p *cassandraProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
-	if err := TCPHealthcheck(ctx, addr, timeout); err != nil {
-		return err
-	}
-	session, err := p.newSession(addr, "ONE", 3*time.Second)
-	if err != nil {
-		return fmt.Errorf("cassandra session: %w", err)
-	}
-	session.Close()
-	return nil
+	// Cassandra binds its CQL port well before it will accept a session, and a
+	// cold single-node start routinely takes over a minute — so a single
+	// attempt at the moment the port opens could never succeed.
+	a := ParseAddr(addr)
+	return ReadyAfterTCP(ctx, "cassandra", a.HostPort, timeout,
+		func(context.Context) error {
+			session, err := p.newSession(a, "ONE", 3*time.Second)
+			if err != nil {
+				return fmt.Errorf("cassandra session: %w", err)
+			}
+			session.Close()
+			return nil
+		})
 }
 
 func (p *cassandraProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
@@ -41,7 +95,7 @@ func (p *cassandraProtocol) ExecuteStep(ctx context.Context, addr, method string
 	}
 	consistency := getStringKwarg(kwargs, "consistency", "ONE")
 
-	session, err := p.newSession(addr, consistency, 10*time.Second)
+	session, err := p.newSession(CredentialsFor(addr, kwargs), consistency, 10*time.Second)
 	if err != nil {
 		return &StepResult{Success: false, Error: fmt.Sprintf("session: %v", err)}, nil
 	}
@@ -58,8 +112,14 @@ func (p *cassandraProtocol) ExecuteStep(ctx context.Context, addr, method string
 	}
 }
 
-func (p *cassandraProtocol) newSession(addr, consistency string, timeout time.Duration) (*gocql.Session, error) {
-	host, port := splitHostPort(addr, 9042)
+// newSession dials Cassandra, carrying any credentials the address supplies.
+//
+// addr may be a bare "host:port" or "cassandra://user:pass@host:port/keyspace".
+// The default image uses AllowAllAuthenticator, so credentials are optional;
+// a cluster configured with PasswordAuthenticator needs them, and without this
+// every step failed at session setup.
+func (p *cassandraProtocol) newSession(a Addr, consistency string, timeout time.Duration) (*gocql.Session, error) {
+	host, port := splitHostPort(a.HostPort, 9042)
 	cluster := gocql.NewCluster(host)
 	cluster.Port = port
 	cluster.Consistency = parseConsistency(consistency)
@@ -67,6 +127,15 @@ func (p *cassandraProtocol) newSession(addr, consistency string, timeout time.Du
 	cluster.ConnectTimeout = timeout
 	cluster.ProtoVersion = 4
 	cluster.DisableInitialHostLookup = true
+	if a.Database != "" { // Cassandra calls it a keyspace
+		cluster.Keyspace = a.Database
+	}
+	if a.User != "" {
+		cluster.Authenticator = gocql.PasswordAuthenticator{
+			Username: a.User,
+			Password: a.Password,
+		}
+	}
 	return cluster.CreateSession()
 }
 

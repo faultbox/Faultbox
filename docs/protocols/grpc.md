@@ -6,7 +6,7 @@ Interface declaration:
 orders = service("orders",
     interface("grpc", "grpc", 50051),
     image = "myapp-orders:latest",
-    healthcheck = tcp("localhost:50051"),
+    healthcheck = ready(timeout = "30s"),
 )
 ```
 

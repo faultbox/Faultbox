@@ -311,42 +311,85 @@ func queueLen(q *deferQueue) int {
 // test, and it is exactly the sort of failure that gets waved off as flaky and
 // re-run until green. CI caught it on linux/amd64 where it reproduces; it does
 // not reproduce on darwin/arm64 at all.
+// settleBudget bounds how long we wait for the defer queue's background
+// goroutine to absorb the packets the test just delivered.
+//
+// Generous on purpose. This is a bound on a wait, not an assertion about speed:
+// when the queue is fast the wait returns immediately, so a large budget costs
+// nothing. At 2s it was tight enough to fail under CPU contention — observed
+// once while the full `go test -race ./...` ran ~20 packages concurrently, and
+// not reproducible in 28 subsequent runs, which is the signature of a load-
+// sensitive threshold rather than a logic error.
+//
+// The ordering assertions themselves are driven by the fake clock and are not
+// timing-dependent; only this settle step is.
+const settleBudget = 15 * time.Second
+
 func advanceWhenArmed(t *testing.T, c *fakeClock, q *deferQueue, want int, d time.Duration) {
 	t.Helper()
-	if !waitFor(t, 2*time.Second, func() bool {
+	if !waitFor(t, settleBudget, func() bool {
 		return queueLen(q) >= want && c.pending() > 0
 	}) {
-		t.Fatalf("defer queue never settled: %d/%d items queued, %d timers armed; "+
-			"Advance(%v) would have fired nothing", queueLen(q), want, c.pending(), d)
+		t.Fatalf("defer queue never settled within %v: %d/%d items queued, %d timers armed; "+
+			"Advance(%v) would have fired nothing. If this is reproducible it is a real "+
+			"bug; if it only appears under a loaded full-suite run, the budget is too tight",
+			settleBudget, queueLen(q), want, c.pending(), d)
 	}
 	c.Advance(d)
 }
 
-// Advance moves the clock and fires due timers in (deadline, seq) order.
+// Advance moves the clock and fires due timers in (deadline, seq) order,
+// repeating until nothing further is due at the new time.
+//
+// The repeat is what makes this reliable. The defer queue arms one timer for
+// its earliest deadline and re-arms after each release. A single pass fired the
+// armed timer, whose callback released a batch and armed the next one — but that
+// new deadline was computed from the *already advanced* clock, so it sat in the
+// future and never fired. The test then reported "delivered 12 of 20" and the
+// failure looked like a lost packet rather than a stalled clock.
+//
+// Flaky rather than deterministic because it depended on how many items the
+// queue had absorbed before the advance landed. Draining to a fixed point
+// removes the timing dependency entirely.
 func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	c.now = c.now.Add(d)
-	now := c.now
-	var due []*fakeTimer
-	var keep []*fakeTimer
-	for _, t := range c.timers {
-		if !t.stopped.Load() && !t.deadline.After(now) {
-			due = append(due, t)
-		} else if !t.stopped.Load() {
-			keep = append(keep, t)
-		}
-	}
-	c.timers = keep
 	c.mu.Unlock()
 
-	sort.SliceStable(due, func(i, j int) bool {
-		if due[i].deadline.Equal(due[j].deadline) {
-			return due[i].seq < due[j].seq
+	// Bounded so a self-rearming timer cannot spin forever; far above any
+	// legitimate release chain (the largest test queues 50 items).
+	const maxRounds = 1000
+	for round := 0; round < maxRounds; round++ {
+		c.mu.Lock()
+		now := c.now
+		var due []*fakeTimer
+		var keep []*fakeTimer
+		for _, t := range c.timers {
+			if t.stopped.Load() {
+				continue
+			}
+			if !t.deadline.After(now) {
+				due = append(due, t)
+			} else {
+				keep = append(keep, t)
+			}
 		}
-		return due[i].deadline.Before(due[j].deadline)
-	})
-	for _, t := range due {
-		t.fn()
+		c.timers = keep
+		c.mu.Unlock()
+
+		if len(due) == 0 {
+			return
+		}
+
+		sort.SliceStable(due, func(i, j int) bool {
+			if due[i].deadline.Equal(due[j].deadline) {
+				return due[i].seq < due[j].seq
+			}
+			return due[i].deadline.Before(due[j].deadline)
+		})
+		for _, t := range due {
+			t.fn()
+		}
 	}
 }
 

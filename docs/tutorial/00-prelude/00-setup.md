@@ -151,7 +151,7 @@ faultbox init --claude
 ```
 
 Creates `/fault-test`, `/fault-generate`, `/fault-diagnose` slash commands
-and auto-configures the MCP server. See [Chapter 13](../04-advanced/13-llm-mcp.md).
+and auto-configures the MCP server. See [Chapter 13](../05-advanced/13-llm-mcp.md).
 
 ## Step 7: Docker (Chapter 9 only)
 

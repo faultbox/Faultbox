@@ -211,4 +211,4 @@ constructor of the same name.
   OpenAPI-enforcing gateway.
 - Malformed spec files fail at `faultbox test` load, not mid-run.
 
-Next: [Chapter 20 — Trace-level assertions →](../06-verification/20-trace-assertions.md)
+Next: [Chapter 20 — Bundles →](20-bundles.md)

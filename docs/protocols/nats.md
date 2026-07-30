@@ -6,9 +6,14 @@ Interface declaration:
 nats = service("nats",
     interface("main", "nats", 4222),
     image = "nats:2.10",
-    healthcheck = tcp("localhost:4222"),
+    healthcheck = ready(timeout = "30s"),
 )
 ```
+
+`publish()` confirms delivery: the client-side buffer is flushed and the flush
+error checked, so a step that reports `ok = True` means the server acknowledged
+the publish. Before v0.16.1 the flush error was discarded and a publish that
+never reached the server still reported success.
 
 ## Methods
 

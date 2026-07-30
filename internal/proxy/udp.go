@@ -198,6 +198,6 @@ func (p *udpProxy) Stop() error {
 	if p.conn != nil {
 		p.conn.Close()
 	}
-	p.wg.Wait()
+	waitConns(&p.wg, p.onEvent, p.svcName, "udp")
 	return nil
 }

@@ -32,6 +32,78 @@ Each protocol page has:
 5. **Event Sources** — what `observe=` produces (if applicable)
 6. **Data Integrity Patterns** — how to verify state in `expect` lambdas
 
+## Readiness: use `ready()`, not `tcp()` (v0.16.0)
+
+```python
+healthcheck = ready(timeout = "60s")     # ask the service
+healthcheck = tcp("localhost:5432")      # ask the port
+```
+
+`tcp()` reports ready as soon as *something* is listening. For a container
+that is true the instant Docker's port proxy binds — measured at **0 ms**
+against a Postgres that needed ~10 seconds to serve its first query. Every
+step issued in that window fails against a server that is merely still
+starting.
+
+`ready()` asks the service, through its interface's protocol plugin, using the
+credentials the spec already declared. For Postgres and MySQL that is a real
+`SELECT 1`; for Redis a `PING`; for MongoDB a `Ping`; for the rest, the
+plugin's own check. It retries until the timeout, so a slow cold start is
+waited out rather than guessed at.
+
+The pages below still show `tcp()` in places where the port really is the
+whole question (raw TCP, UDP). Everywhere a protocol has its own notion of
+"serving", prefer `ready()`.
+
+## Credentials come from the service (v0.16.0, extended v0.16.1)
+
+You declare credentials once, in `env=`, using each image's own published
+convention. Steps, healthchecks and `ready()` all pick them up; an explicit
+kwarg on a step always wins.
+
+| Protocol | Read from `env=` |
+|---|---|
+| Postgres | `POSTGRES_USER` (default `postgres`), `POSTGRES_PASSWORD`, `POSTGRES_DB` |
+| MySQL | `MYSQL_USER` + `MYSQL_PASSWORD`, else `root` + `MYSQL_ROOT_PASSWORD`; `MYSQL_DATABASE` |
+| MongoDB | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD`, `MONGO_INITDB_DATABASE` |
+| Redis | `REDIS_PASSWORD`, `REDIS_USER` |
+| ClickHouse | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` |
+| Cassandra | `CASSANDRA_USER`, `CASSANDRA_PASSWORD`, `CASSANDRA_KEYSPACE` |
+
+```python
+db = service("mysql",
+    interface("main", "mysql", 3306),
+    image = "mysql:8",
+    env = {"MYSQL_ROOT_PASSWORD": "test", "MYSQL_DATABASE": "app"},
+    healthcheck = ready(timeout = "120s"),
+)
+
+db.main.exec(sql = "INSERT INTO t VALUES (1)")   # authenticates as root/test on app
+```
+
+Protocols with no credential story yet — Kafka (SASL), NATS beyond
+user/password, gRPC — accept them per step or not at all.
+
+## Assert on step results
+
+**Every step returns a result, and an unchecked result is not a test.**
+
+```python
+r = db.main.exec(sql = "INSERT INTO t VALUES (1)")
+assert_true(r.ok, "insert failed: %s" % r.error)
+```
+
+This is not style advice. A protocol step that fails returns
+`ok = False` — it does not raise, because a failing dependency is often
+exactly what a fault-injection spec is provoking. So a spec that ignores
+results passes whether or not anything worked.
+
+Two real bugs reached release behind that gap. Postgres steps could not
+authenticate against any password-protected server (fixed in v0.16.0), and
+MySQL steps could not authenticate at all, nor select a database (fixed in
+v0.16.1). Both were found the same way: by writing the first spec that
+asserted on the result of a step.
+
 ## Quick reference
 
 ### Using protocol methods

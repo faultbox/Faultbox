@@ -60,23 +60,37 @@ func (p *mysqlProtocol) Methods() []string {
 	return []string{"query", "exec"}
 }
 
+// Healthcheck reports whether MySQL is ready to serve queries.
+//
+// addr may be a bare "host:port" or a full "mysql://user:pass@host:port/db".
+// With credentials this runs a real query rather than Ping: Ping is satisfied
+// by a connection the server has accepted but not yet made usable, which is
+// exactly the state a booting MySQL passes through for several seconds.
 func (p *mysqlProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
-	if err := TCPHealthcheck(ctx, addr, timeout); err != nil {
-		return err
-	}
-	dsn := buildMySQLDSN(addr)
-	db, err := sql.Open("mysql", dsn)
+	a := ParseAddr(addr)
+	db, err := sql.Open("mysql", buildMySQLDSN(a.HostPort, a.User, a.Password, a.Database))
 	if err != nil {
 		return fmt.Errorf("mysql open: %w", err)
 	}
 	defer db.Close()
-	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	return db.PingContext(pingCtx)
+
+	return ReadyAfterTCP(ctx, "mysql", a.HostPort, timeout,
+		func(attemptCtx context.Context) error {
+			var one int
+			return db.QueryRowContext(attemptCtx, "SELECT 1").Scan(&one)
+		})
 }
 
 func (p *mysqlProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
-	dsn := buildMySQLDSN(addr)
+	// user=/password=/database= are accepted per step; the runtime fills them
+	// from the service's own env when the spec does not, so a stock mysql image
+	// works without the spec restating what it already declared. dsn= remains
+	// the full escape hatch.
+	a := ParseAddr(addr)
+	dsn := buildMySQLDSN(a.HostPort,
+		getStringKwarg(kwargs, "user", a.User),
+		getStringKwarg(kwargs, "password", a.Password),
+		getStringKwarg(kwargs, "database", a.Database))
 	if cs, ok := kwargs["dsn"].(string); ok && cs != "" {
 		dsn = cs
 	}
@@ -103,14 +117,34 @@ func (p *mysqlProtocol) ExecuteStep(ctx context.Context, addr, method string, kw
 	}
 }
 
-func buildMySQLDSN(addr string) string {
+// buildMySQLDSN renders a go-sql-driver DSN including credentials.
+//
+// This used to emit a bare "root@tcp(host:port)/" — no password, no database.
+// The runtime computed user/password/database from the service's env and then
+// dropped them on the floor here, so `db.exec()` could not authenticate to any
+// MySQL configured the way the image requires. Against a stock mysql:8 with
+// MYSQL_ROOT_PASSWORD set, every step failed with "Access denied for user
+// 'root' (using password: NO)", surfaced to the spec as the far less legible
+// "invalid connection". And with no database in the DSN, even a passwordless
+// server answered "Error 1046: No database selected" to any real statement.
+//
+// It survived because no spec asserted on the result of a MySQL step — the
+// same reason the equivalent Postgres bug survived to v0.16.0.
+func buildMySQLDSN(addr, user, password, database string) string {
 	host := addr
 	port := "3306"
 	if idx := strings.LastIndex(addr, ":"); idx > 0 {
 		host = addr[:idx]
 		port = addr[idx+1:]
 	}
-	return fmt.Sprintf("root@tcp(%s:%s)/", host, port)
+	if user == "" {
+		user = "root"
+	}
+	cred := user
+	if password != "" {
+		cred = user + ":" + password
+	}
+	return fmt.Sprintf("%s@tcp(%s:%s)/%s", cred, host, port, database)
 }
 
 // Generic SQL helpers shared between Postgres and MySQL.

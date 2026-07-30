@@ -6,7 +6,7 @@ Interface declaration:
 kafka = service("kafka",
     interface("broker", "kafka", 9092),
     image = "confluentinc/cp-kafka:7.6",
-    healthcheck = tcp("localhost:9092"),
+    healthcheck = ready(timeout = "120s"),
 )
 ```
 

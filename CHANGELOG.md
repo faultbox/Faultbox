@@ -13,6 +13,292 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.16.1] - 2026-07-30
+
+What the rest of the protocols were hiding.
+
+Eleven fixes. Ten were pre-existing and invisible to the test suite; one was a
+v0.16.0 regression of my own.
+
+v0.16.0 fixed two Postgres bugs that had survived because no spec ever asserted
+on the result of a database step. This release repeats that audit across the
+other twelve protocols — a spec per protocol, real server, every result checked
+([`poc/protocol-audit/`](poc/protocol-audit/)). It found more, including a bug
+that was hiding behind the one v0.16.1 fixes first.
+
+### Fixed — `ready()` could never succeed for eight protocols
+
+A **v0.16.0 regression.** `ready()` resolved to `<protocol>://host:port` and
+handed the whole string to the protocol plugin, but only `postgres`, `http` and
+`http2` parsed a URL. The rest dialled it verbatim — attempting to reach a host
+literally named `redis://localhost` — so the check burned its entire timeout
+and reported the service not ready.
+
+Affected `cassandra`, `clickhouse`, `grpc`, `mongodb`, `mysql`, `nats`, `redis`
+and `udp`. Measured: Redis with `ready(timeout="60s")` failed at exactly 60 s
+against a container that was serving in under a second; after the fix, 407 ms.
+
+Address parsing is now shared (`protocol.ParseAddr`) instead of reimplemented
+per plugin, which is what let the two halves disagree.
+
+### Fixed — MySQL steps could not authenticate, or select a database
+
+Pre-existing since the plugin was written, and the exact shape of the Postgres
+bug fixed in v0.16.0. `buildMySQLDSN` emitted a bare `root@tcp(host:port)/` —
+no password, no database — while the runtime computed both from the service's
+`env=` and dropped them.
+
+Against a stock `mysql:8` with `MYSQL_ROOT_PASSWORD` set, every step failed
+with *Access denied for user 'root' (using password: NO)*, surfaced to the spec
+as the far less legible `invalid connection`. Against a passwordless server,
+statements failed with *Error 1046: No database selected*.
+
+Measured: the audit spec went from a 181-second readiness timeout to a 9.8-second pass.
+
+### Fixed — the MySQL proxy hung forever on every result set
+
+**Found only because the credential fix let a step reach the command phase for
+the first time.** `forwardResponse` forwarded one packet per iteration, then
+peeked with a 100 ms deadline to decide whether more was coming. The peek
+consumed the terminator, so the next iteration issued an unconditional,
+deadline-free read for a packet the server would never send.
+
+`exec()` was unaffected — a single OK packet returns before the loop — so the
+bug was specific to `query()`. Every result set through the MySQL proxy wedged
+permanently.
+
+Worse, the hang landed in teardown: `Stop()` waited on the connection
+WaitGroup, so one stuck handler hung the **whole run** after the test body had
+already finished, which is why no per-test timeout fired and the process had to
+be killed.
+
+`forwardResponse` now parses the result set — column count, N column
+definitions, rows, terminator — handling both the classic EOF framing and
+`CLIENT_DEPRECATE_EOF` without needing the negotiated capability flags.
+
+### Fixed — a stuck proxy connection can no longer hang a run
+
+All twelve proxies called `wg.Wait()` unbounded in `Stop()`. Any handler
+blocked on a read that never returns therefore hung teardown forever. Stop now
+waits at most `ProxyStopTimeout` (5 s) and emits a `proxy_stop_timeout` event
+when it abandons a handler — bounded, and not silent. The listener is closed
+and the context cancelled by then, so an abandoned handler unblocks on its own
+deadline.
+
+The MySQL server-side read is also bounded now (30 s). A mis-parse should fail
+a test with a legible error, not wedge a goroutine.
+
+The Redis proxy also created a new `bufio.Reader` on the server connection per
+command. A buffered reader reads ahead, so recreating it discarded anything
+buffered beyond the current reply — silent data loss as soon as a client
+pipelines or Redis answers two commands in one write. It is now created once per
+connection.
+
+### Fixed — `args=` was silently ignored for container services
+
+Accepted by the spec loader, then dropped: it only ever reached binary mode. A
+spec configuring a server through its command line —
+`args = ["redis-server", "--requirepass", "secret"]` — got a default server and
+no warning. It now overrides the image's `CMD` in both the plain and shim
+launch paths.
+
+### Fixed — dict and list step arguments were mangled
+
+The runtime converted dict kwarg **values** with `starlark.AsString`, which
+returns `""` for anything that is not a string. So every integer, float, bool,
+nested dict and list inside a dict silently became an empty string:
+
+```python
+db.main.insert(collection = "t", document = {"id": 1, "payload": "row-1"})
+# stored {"id": "", "payload": "row-1"}
+```
+
+It hid because the mangling was **self-consistent**: a filter of `{"id": 1}` was
+flattened the same way, matched the mangled document, and the round trip looked
+correct. `docs/protocols/mongodb.md` documents dicts as encoded to BSON on the
+wire, and for anything but strings they were not.
+
+List kwargs fared worse — they fell through to `v.String()` and reached plugins
+as Starlark source text, so:
+
+- `mongodb.insert_many(documents=[...])` could never satisfy its own `[]any`
+  type assertion; the path had never run.
+- Redis's documented `command(cmd="EXPIRE", args=["user:1", "3600"])` form
+  silently dropped every argument.
+
+Conversion now goes through the same recursive `starlarkToGo` used for mock
+bodies. Values it cannot represent keep the previous string rendering rather
+than erroring.
+
+### Fixed — the NATS proxy corrupted every line it forwarded
+
+It read with a `bufio.Scanner` (whose `ScanLines` strips the trailing `\r`) and
+wrote with `fmt.Fprintln` (which appends only `\n`). NATS frames on **CRLF**, so
+every control line lost a byte in transit. The Go client reported the memorable
+`nats: expected 'PONG', got 'PONG'` — same text, different framing — and
+publishing failed outright with `EOF`.
+
+It also split length-prefixed `PUB`/`MSG` payloads on newlines, corrupting any
+payload containing one and letting payload bytes be mistaken for a protocol
+verb. A dropped message left its payload behind, desynchronising the connection.
+
+The relay is now byte-oriented: control lines keep their terminator, payloads
+are read by declared length and forwarded opaquely, and dropping a message
+drops its payload with it.
+
+### Fixed — `ready()` made a single attempt for MongoDB and Cassandra
+
+Both retried the TCP connect — which succeeds the instant Docker's port proxy
+binds — and then made exactly **one** protocol-level attempt, at the moment the
+server is least likely to be up. MongoDB failed after ~2 s against a
+`ready(timeout="90s")`; Cassandra, which needs a minute or more, could never
+have passed.
+
+Both now retry to the timeout through a shared `ReadyAfterTCP` helper, which
+also fixes a doubled budget: the old shape gave the TCP phase and the protocol
+phase a full `timeout` each, so `ready(timeout="90s")` could take 180 s before
+reporting failure.
+
+Cassandra's `gocql` logger is also filtered the way the MySQL driver's already
+was — a healthy 60-second cold start emitted a dozen lines of
+"unable to dial control conn" before passing, which reads as failure.
+
+### Fixed — NATS `publish` reported success without confirming delivery
+
+`nc.Publish` queues into a client-side buffer; it returning nil means "queued",
+not "delivered". The flush that makes it a round trip had its error discarded,
+so a publish that never reached the server still reported `ok = True`. The step
+now fails with `publish not confirmed by server`.
+
+`ready()` for NATS was also a bare TCP connect, which reports ready the moment
+nats-server binds — before it will serve. Roughly one run in four, the first
+publish failed with a bare `EOF`. It now completes NATS's own handshake and
+flushes, so "ready" means the server answered.
+
+### Fixed — every container leaked its anonymous volume
+
+`RemoveContainer` passed `Force: true` but not `RemoveVolumes`. Every stock
+database image declares a `VOLUME` for its data directory, so each container
+Faultbox started got a fresh anonymous volume that outlived it — one per test,
+forever.
+
+Measured on the dev VM after a session of protocol-audit runs: **290 orphaned
+volumes, 18.7 GB**, which filled a 30 GB disk. Every container after that failed
+with `no space left on device`, and because the errors named whichever spec ran
+next, the shape was a flaky test rather than a leak three specs earlier.
+
+Only anonymous volumes are affected; named volumes and the host bind mounts that
+`volumes=` produces are untouched. On an older build, recover with
+`docker volume prune -f`.
+
+### Fixed — flaky `netfault` fake clock (test-only)
+
+Two independent causes, one symptom.
+
+`fakeClock.Advance` fired only the timers armed at that instant. The defer queue
+arms one timer and re-arms after each release, so the re-armed deadline was
+computed from the already-advanced clock and never fired — the test reported
+"delivered 12 of 20", which reads as a lost packet rather than a stalled clock.
+Advance now drains to a fixed point.
+
+The settle step in `advanceWhenArmed` also allowed only 2 s for the queue's
+background goroutine to absorb the delivered packets. That is a bound on a wait,
+not an assertion about speed, and it was tight enough to fail under CPU
+contention during a full `-race ./...` run. Raised to 15 s, which costs nothing
+when the queue is fast.
+
+Honest status: after the Advance fix the failure appeared once more, under full-
+suite load, and then not in 28 further runs — the signature of a load-sensitive
+threshold rather than remaining logic error. Six consecutive full `-race` suite
+runs are clean after both changes. The ordering assertions themselves are driven
+by the fake clock and were never timing-dependent.
+
+### Added — credentials for the remaining protocols
+
+Declared once in `env=`, using each image's own published convention, and used
+by steps, healthchecks and `ready()` alike. An explicit `user=` / `password=` /
+`database=` on a step still wins.
+
+| Protocol | Read from `env=` |
+|---|---|
+| MySQL | `MYSQL_USER` + `MYSQL_PASSWORD`, else `root` + `MYSQL_ROOT_PASSWORD`; `MYSQL_DATABASE` |
+| Redis | `REDIS_PASSWORD`, `REDIS_USER` — sent as `AUTH` before each command |
+| MongoDB | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD`, `MONGO_INITDB_DATABASE` |
+| ClickHouse | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` (HTTP basic auth) |
+| Cassandra | `CASSANDRA_USER`, `CASSANDRA_PASSWORD`, `CASSANDRA_KEYSPACE` |
+| NATS | user/password from the address |
+
+Two details worth knowing:
+
+- **MongoDB authenticates against `admin`, not the database being read.**
+  Credentials live in the database that holds the user, which for the account
+  the official image creates from `MONGO_INITDB_ROOT_USERNAME` is always
+  `admin`. Override per step with `auth_source=`.
+- Credentials reach both the healthcheck and the steps. Plugins are handed an
+  address from two places and only one carries credentials — `Healthcheck` gets
+  the URL `ready()` builds, `ExecuteStep` gets a bare `host:port` plus kwargs —
+  so a plugin reading only the address would authenticate during the healthcheck
+  and anonymously during every step. `protocol.CredentialsFor` resolves both in
+  one place.
+
+### Documentation
+
+The three releases since v0.13.3 had outgrown the reference docs.
+
+- **`faultbox setup-trace` was missing from the CLI reference entirely** —
+  added, with flags and the one-time host-setup flow.
+- `docs/feature-manifest.md` had no rows for anything in v0.14.1 or v0.16.0
+  (`watch()`, `setup-trace`, `ready()`, `sleep()`, `bandwidth()`, `mtu()`,
+  packet faults). Added. One existing row claimed the Postgres proxy "bypassed
+  auth because it intercepts pre-backend" — that was wrong, and is corrected.
+- All nine protocol pages that showed a healthcheck recommended `tcp()`; they now use `ready()` and
+  document credentials. `docs/protocols/mysql.md` documented a topology its own
+  client could not connect to.
+- `docs/guides/spec-patterns.md` gains **Pattern 0: assert on every step** — the
+  habit both credential bugs needed in order to survive, including the subtler
+  form where a `watch()` audit passes on a service's boot I/O while its workload
+  fails silently.
+- `docs/troubleshooting.md`: two new entries keyed on the errors these bugs
+  actually produce, and entry 3 no longer says Faultbox has no query-based
+  healthcheck.
+- `docs/index.md` rewritten — it listed 4 of ~40 pages and described a
+  "12-chapter" tutorial that now has 30.
+- 36 broken internal links fixed (40 → 4; the remaining four are citations
+  in an April design doc to documents that were never in this repo).
+
+### Verification
+
+`go build` + `go vet` + `go test -race ./...` green; cross-compile clean on
+linux/amd64, linux/arm64 and darwin/arm64.
+
+`go test -race ./...` ran six consecutive clean full-suite iterations, to
+distinguish the fixed flakes from luck.
+
+End-to-end in Lima on kernel 6.8:
+`poc/protocol-audit/{postgres,mysql,redis,redis-auth,mongodb,clickhouse,nats,cassandra}.star`
+against real containers, plus `poc/example`, `poc/demo-container` (which
+exercises the shim path) and `poc/kafka-rfc014`. NATS ran 18 consecutive clean
+times to confirm its intermittent failure was gone.
+
+The volume-leak fix was verified by the corpus itself: eleven container-heavy
+specs ran back to back and left the VM at **0 volumes and unchanged disk use**.
+
+One `poc/demo-container` test failed once inside a batch and passed 3/3
+standalone afterwards; its reason was not captured, so it is recorded as an
+unexplained transient rather than diagnosed.
+
+Ten of the thirteen step protocols are now covered by a real-server spec.
+**http2, udp and grpc still have unit coverage only** — no server spec exists
+for them yet, and given what a real server found in the other four, that is a
+gap rather than a formality.
+
+The first pass of this audit could not reach MongoDB, Cassandra, ClickHouse or
+NATS because Docker Hub was unreachable from the dev VM. Restoring that
+connectivity is what surfaced the dict/list mangling, the NATS framing bug, the
+single-attempt readiness checks and the MongoDB `authSource` bug — every one of
+which was invisible to unit tests and would have shipped behind a "shares the
+same code path" argument.
+
 ## [0.16.0] - 2026-07-29
 
 Filesystem observation — and two bugs found by being the first thing to assert

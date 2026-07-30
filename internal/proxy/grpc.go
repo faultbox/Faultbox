@@ -321,6 +321,6 @@ func (p *grpcProxy) Stop() error {
 	if p.upstream != nil {
 		p.upstream.Close()
 	}
-	p.wg.Wait()
+	waitConns(&p.wg, p.onEvent, p.svcName, "grpc")
 	return nil
 }

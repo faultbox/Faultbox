@@ -38,13 +38,13 @@ and message queues, which is exactly what Faultbox already faults.
 
 | Need | Primitive | Read |
 |---|---|---|
-| Real cluster pods (k8s) without distributing dep images | `service(remote=...)` | [Spec language - Remote Services](/docs/reference/spec-language#remote-services) |
-| Anti-cheat / store / billing HTTPS upstream faults | `tls=tls_cert(...)` + `error()` on the interface | [TLS upstreams](/docs/guides/connectivity#tls-upstreams-rfc-038) |
-| Network partitions across game-server replicas | `partition()` | [Tutorial 16 - Partitions](/docs/tutorial/04-safety/16-partitions) |
-| Persistent-world write failures (`EIO`, `ENOSPC`, partial) | syscall `write=deny()` / `pwrite=delay()` | [Tutorial 03 - Fault injection](/docs/tutorial/02-syscall-level/03-fault-injection) |
-| Auth / JWKS mocks for offline tests | `@faultbox/mocks/jwt.star` | [Tutorial 21 - JWT mocks](/docs/tutorial/05-advanced/21-jwt-mocks) |
-| Reproduce production incidents from any machine | `.fb` bundles + `faultbox replay` | [Tutorial 20 - Bundles](/docs/tutorial/05-advanced/20-bundles) |
-| Verify retry / circuit-breaker / timeout code fires | `assert_eventually()` / `assert_never()` | [Tutorial 14 - Invariants](/docs/tutorial/04-safety/14-invariants) |
+| Real cluster pods (k8s) without distributing dep images | `service(remote=...)` | [Spec language - Remote Services](../spec-language.md#remote-services) |
+| Anti-cheat / store / billing HTTPS upstream faults | `tls=tls_cert(...)` + `error()` on the interface | [TLS upstreams](../guides/connectivity.md#tls-upstreams-rfc-038) |
+| Network partitions across game-server replicas | `partition()` | [Tutorial 16 - Partitions](../tutorial/04-safety/16-partitions.md) |
+| Persistent-world write failures (`EIO`, `ENOSPC`, partial) | syscall `write=deny()` / `pwrite=delay()` | [Tutorial 03 - Fault injection](../tutorial/02-syscall-level/03-fault-injection.md) |
+| Auth / JWKS mocks for offline tests | `@faultbox/mocks/jwt.star` | [Tutorial 21 - JWT mocks](../tutorial/05-advanced/21-jwt-mocks.md) |
+| Reproduce production incidents from any machine | `.fb` bundles + `faultbox replay` | [Tutorial 20 - Bundles](../tutorial/05-advanced/20-bundles.md) |
+| Verify retry / circuit-breaker / timeout code fires | `assert_eventually()` / `assert_never()` | [Tutorial 14 - Invariants](../tutorial/04-safety/14-invariants.md) |
 
 ## A real scenario - anti-cheat fail-open under unreachable telemetry
 
@@ -55,7 +55,7 @@ let a cheat engine play unchallenged. Both extremes are real bugs.
 
 The spec below stands up the SUT (`game-api`) against a real Postgres + Redis
 in containers, points at a TLS-required anti-cheat backend (using
-[`remote=`](/docs/reference/spec-language#remote-services) so the test runs
+[`remote=`](../spec-language.md#remote-services) so the test runs
 against a staging endpoint, not a mock), and asserts the documented
 fail-open semantic: when the backend is unreachable, the player connects
 with `fair_play_verified=false` and the audit event lands in Kafka.
@@ -181,7 +181,7 @@ artifact instead of a stack trace screenshot.
 
 ## Read next
 
-- [Tutorial - Containers and real services](/docs/tutorial/05-advanced/09-containers) - the Docker-mode mechanics behind `image=`
-- [Tutorial - Mock services](/docs/tutorial/05-advanced/17-mock-services) - for the auth-stub / leaderboard-stub patterns
-- [Tutorial - End-to-end Go microservice](/docs/tutorial/05-advanced/22-go-microservice-end-to-end) - the closest existing tutorial to a full game-backend shape
-- [Spec language reference](/docs/reference/spec-language) - every primitive in one page
+- [Tutorial - Containers and real services](../tutorial/05-advanced/09-containers.md) - the Docker-mode mechanics behind `image=`
+- [Tutorial - Mock services](../tutorial/05-advanced/17-mock-services.md) - for the auth-stub / leaderboard-stub patterns
+- [Tutorial - End-to-end Go microservice](../tutorial/05-advanced/22-go-microservice-end-to-end.md) - the closest existing tutorial to a full game-backend shape
+- [Spec language reference](../spec-language.md) - every primitive in one page

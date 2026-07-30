@@ -167,9 +167,14 @@ func newH2CClient(timeout time.Duration) *http.Client {
 }
 
 // normalizeHTTPURL ensures the address has an http:// prefix.
+// normalizeHTTPURL renders addr as an http(s) URL.
+//
+// ready() resolves to "<protocol>://host:port", so this also has to cope with
+// an "http2://" scheme — prefixing that with "http://" produced the nonsense
+// URL "http://http2://host:port" and a permanent healthcheck failure.
 func normalizeHTTPURL(addr string) string {
 	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
 		return addr
 	}
-	return "http://" + addr
+	return "http://" + ParseAddr(addr).HostPort
 }

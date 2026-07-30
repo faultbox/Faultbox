@@ -26,9 +26,10 @@ func (p *udpProtocol) Methods() []string {
 // unreachable, which the kernel surfaces as a write error. Kernel-local
 // ports (127.0.0.1) behave reliably; cross-host detection is weaker.
 func (p *udpProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
+	hostPort := ParseAddr(addr).HostPort
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("udp", addr, 2*time.Second)
+		conn, err := net.DialTimeout("udp", hostPort, 2*time.Second)
 		if err == nil {
 			conn.Close()
 			return nil
@@ -51,7 +52,7 @@ func (p *udpProtocol) ExecuteStep(ctx context.Context, addr, method string, kwar
 	}
 
 	dialer := net.Dialer{Timeout: 5 * time.Second}
-	conn, err := dialer.DialContext(ctx, "udp", addr)
+	conn, err := dialer.DialContext(ctx, "udp", ParseAddr(addr).HostPort)
 	if err != nil {
 		return &StepResult{Success: false, Error: err.Error(), DurationMs: time.Since(start).Milliseconds()}, nil
 	}

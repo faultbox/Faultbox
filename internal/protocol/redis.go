@@ -24,18 +24,26 @@ func (p *redisProtocol) Methods() []string {
 }
 
 func (p *redisProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
+	a := ParseAddr(addr)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		conn, err := net.DialTimeout("tcp", a.HostPort, 2*time.Second)
 		if err == nil {
-			// Send PING, expect +PONG.
+			// Send PING, expect +PONG. A server started with --requirepass
+			// answers -NOAUTH until authenticated, so a password-protected
+			// Redis is only ready once AUTH has succeeded.
 			conn.SetDeadline(time.Now().Add(2 * time.Second))
-			fmt.Fprint(conn, "*1\r\n$4\r\nPING\r\n")
 			reader := bufio.NewReader(conn)
-			line, _ := reader.ReadString('\n')
-			conn.Close()
-			if strings.HasPrefix(line, "+PONG") {
-				return nil
+			authErr := redisAuth(conn, reader, a.User, a.Password)
+			if authErr == nil {
+				fmt.Fprint(conn, "*1\r\n$4\r\nPING\r\n")
+				line, _ := reader.ReadString('\n')
+				conn.Close()
+				if strings.HasPrefix(line, "+PONG") {
+					return nil
+				}
+			} else {
+				conn.Close()
 			}
 		}
 		select {
@@ -44,11 +52,40 @@ func (p *redisProtocol) Healthcheck(ctx context.Context, addr string, timeout ti
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("Redis healthcheck %q timed out after %s", addr, timeout)
+	return fmt.Errorf("Redis healthcheck %q timed out after %s", a.HostPort, timeout)
+}
+
+// redisAuth sends AUTH when a password is configured. With no password it is a
+// no-op, so an unprotected server is untouched.
+//
+// Two forms: AUTH <password> for the default user, AUTH <user> <password> for
+// a Redis 6+ ACL user. Without this, every command against a server started
+// with --requirepass came back "-NOAUTH Authentication required" — and since
+// the failure lands in the step result rather than the connection, only a spec
+// that asserts on the result would ever see it.
+func redisAuth(conn net.Conn, reader *bufio.Reader, user, password string) error {
+	if password == "" {
+		return nil
+	}
+	if user != "" && user != "default" {
+		fmt.Fprintf(conn, "*3\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+			len(user), user, len(password), password)
+	} else {
+		fmt.Fprintf(conn, "*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(password), password)
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("redis AUTH: %w", err)
+	}
+	if !strings.HasPrefix(line, "+OK") {
+		return fmt.Errorf("redis AUTH rejected: %s", strings.TrimSpace(line))
+	}
+	return nil
 }
 
 func (p *redisProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	a := ParseAddr(addr)
+	conn, err := net.DialTimeout("tcp", a.HostPort, 5*time.Second)
 	if err != nil {
 		return &StepResult{Success: false, Error: err.Error()}, nil
 	}
@@ -57,6 +94,16 @@ func (p *redisProtocol) ExecuteStep(ctx context.Context, addr, method string, kw
 
 	reader := bufio.NewReader(conn)
 	start := time.Now()
+
+	user := getStringKwarg(kwargs, "user", a.User)
+	password := getStringKwarg(kwargs, "password", a.Password)
+	if err := redisAuth(conn, reader, user, password); err != nil {
+		return &StepResult{
+			Success:    false,
+			Error:      err.Error(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
 
 	var args []string
 	switch method {
@@ -86,9 +133,18 @@ func (p *redisProtocol) ExecuteStep(ctx context.Context, addr, method string, kw
 		// Raw command: command(cmd="SET", args=["key", "value"])
 		cmd := getStringKwarg(kwargs, "cmd", "")
 		args = []string{cmd}
+		// args= is documented as a list, and a list is what specs pass. The
+		// string branch is the single-argument shorthand; before the runtime
+		// converted lists properly, it was the only branch that ever fired, so
+		// the documented form silently dropped every argument.
 		if rawArgs, ok := kwargs["args"]; ok {
-			if s, ok := rawArgs.(string); ok {
-				args = append(args, s)
+			switch v := rawArgs.(type) {
+			case string:
+				args = append(args, v)
+			case []any:
+				for _, item := range v {
+					args = append(args, fmt.Sprintf("%v", item))
+				}
 			}
 		}
 	default:

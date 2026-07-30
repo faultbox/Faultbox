@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -2581,6 +2580,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		Name:       svcName,
 		Image:      imageName,
 		Env:        envVars,
+		Args:       svc.Args, // overrides the image CMD; ignored before v0.16.1
 		Ports:      ports,
 		Volumes:    svc.Volumes,
 		SyscallNrs: syscallNrs,
@@ -2848,24 +2848,20 @@ func (rt *Runtime) resolveReadyCheck(svc *ServiceDef) string {
 	password, _ := creds["password"].(string)
 	database, _ := creds["database"].(string)
 
-	switch iface.Protocol {
-	case "postgres":
-		u := &url.URL{Scheme: "postgres", Host: addr, Path: "/" + database}
-		if user != "" {
-			if password != "" {
-				u.User = url.UserPassword(user, password)
-			} else {
-				u.User = url.User(user)
-			}
-		}
-		return u.String()
-	case "http":
+	// HTTP wants a path to fetch, not a credential URL.
+	if iface.Protocol == "http" {
 		return "http://" + addr + "/"
 	}
+
 	// Every other protocol: the plugin's own healthcheck if it has one,
-	// reached through the scheme dispatcher, else plain TCP.
+	// reached through the scheme dispatcher, else plain TCP. The credentials
+	// travel in the URL because Healthcheck takes only an address — that is
+	// what lets "ready" mean "the service authenticated us and answered"
+	// rather than "the port is open".
 	if _, ok := protocol.Get(iface.Protocol); ok {
-		return iface.Protocol + "://" + addr
+		return protocol.BuildAddr(iface.Protocol, addr, protocol.Addr{
+			User: user, Password: password, Database: database,
+		})
 	}
 	return "tcp://" + addr
 }
@@ -3523,9 +3519,38 @@ func applyServiceCredentials(args map[string]any, svc *ServiceDef, protocol stri
 		set("password", "POSTGRES_PASSWORD", "")
 		set("database", "POSTGRES_DB", "")
 	case "mysql":
-		set("user", "MYSQL_USER", "root")
-		set("password", "MYSQL_PASSWORD", env["MYSQL_ROOT_PASSWORD"])
+		// MYSQL_USER/MYSQL_PASSWORD create an additional user; the root
+		// account uses MYSQL_ROOT_PASSWORD. Prefer the named user when the
+		// spec declared one, since that is the account MYSQL_DATABASE grants.
+		if env["MYSQL_USER"] != "" {
+			set("user", "MYSQL_USER", "")
+			set("password", "MYSQL_PASSWORD", "")
+		} else {
+			set("user", "", "root")
+			set("password", "MYSQL_ROOT_PASSWORD", "")
+		}
 		set("database", "MYSQL_DATABASE", "")
+	case "mongodb":
+		// The official image only enables auth when both are present.
+		if env["MONGO_INITDB_ROOT_USERNAME"] != "" {
+			set("user", "MONGO_INITDB_ROOT_USERNAME", "")
+			set("password", "MONGO_INITDB_ROOT_PASSWORD", "")
+		}
+		set("database", "MONGO_INITDB_DATABASE", "")
+	case "redis":
+		// Redis has no canonical env var — the image takes --requirepass on
+		// the command line. REDIS_PASSWORD is the convention Bitnami and most
+		// compose files use, so honour it and let the spec override per step.
+		set("password", "REDIS_PASSWORD", "")
+		set("user", "REDIS_USER", "")
+	case "clickhouse":
+		set("user", "CLICKHOUSE_USER", "")
+		set("password", "CLICKHOUSE_PASSWORD", "")
+		set("database", "CLICKHOUSE_DB", "")
+	case "cassandra":
+		set("user", "CASSANDRA_USER", "")
+		set("password", "CASSANDRA_PASSWORD", "")
+		set("database", "CASSANDRA_KEYSPACE", "")
 	}
 }
 
@@ -4742,31 +4767,37 @@ func truncate(s string, n int) string {
 }
 
 // starlarkKwargsToMap converts Starlark kwargs to a Go map for protocol plugins.
+//
+// Conversion is recursive, via the same starlarkToGo used for mock bodies. It
+// used to be a flat switch whose dict branch read every value with
+// starlark.AsString — which returns "" for anything that is not a String. So
+// every integer, float, bool, nested dict and list inside a dict kwarg silently
+// became an empty string:
+//
+//	db.main.insert(collection = "t", document = {"id": 1, "payload": "row-1"})
+//	→ stored {"id": "", "payload": "row-1"}
+//
+// Self-consistently wrong, which is why it went unnoticed: a filter of
+// {"id": 1} was mangled the same way, so it matched the mangled document and
+// the round trip looked fine. `docs/protocols/mongodb.md` documents dicts as
+// encoded to BSON on the wire, and for anything but strings they were not.
+//
+// Lists fared no better — they fell to `v.String()` and reached plugins as the
+// Starlark source text, so `insert_many(documents=[...])` could never satisfy
+// its own `[]any` type assertion.
+//
+// Values that starlarkToGo cannot represent (service refs, functions) keep the
+// previous v.String() rendering rather than becoming an error, since some
+// plugins accept those as opaque labels.
 func starlarkKwargsToMap(kwargs []starlark.Tuple) map[string]any {
 	m := make(map[string]any)
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
-		switch v := kv[1].(type) {
-		case starlark.String:
-			m[key] = string(v)
-		case starlark.Int:
-			n, _ := v.Int64()
-			m[key] = n
-		case starlark.Float:
-			m[key] = float64(v)
-		case starlark.Bool:
-			m[key] = bool(v)
-		case *starlark.Dict:
-			dm := make(map[string]any)
-			for _, item := range v.Items() {
-				k, _ := starlark.AsString(item[0])
-				val, _ := starlark.AsString(item[1])
-				dm[k] = val
-			}
-			m[key] = dm
-		default:
-			m[key] = v.String()
+		if g, err := starlarkToGo(kv[1]); err == nil {
+			m[key] = g
+			continue
 		}
+		m[key] = kv[1].String()
 	}
 	return m
 }

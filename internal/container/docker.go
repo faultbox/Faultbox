@@ -211,9 +211,26 @@ func (c *Client) StopContainer(ctx context.Context, id string, timeout int) erro
 	return c.cli.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeout})
 }
 
-// RemoveContainer removes a container (force).
+// RemoveContainer removes a container and the anonymous volumes it created.
+//
+// RemoveVolumes matters more than it looks. Every stock database image declares
+// a VOLUME for its data directory (postgres, mysql, mongo, cassandra, …), so
+// each container Faultbox starts gets a fresh anonymous volume. Removing the
+// container without it left the volume behind — one per test, forever.
+//
+// Measured on the dev VM after a session of protocol-audit runs: **290 orphaned
+// volumes, 18.7 GB**, which filled a 30 GB disk and made every subsequent
+// container fail with "no space left on device". The failures pointed at
+// whatever spec happened to run next, so the cause looked like a flaky test
+// rather than a leak.
+//
+// Only anonymous volumes are removed; named volumes and host bind mounts (what
+// `volumes=` in a spec produces) are untouched by RemoveVolumes.
 func (c *Client) RemoveContainer(ctx context.Context, id string) error {
-	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
+	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{
+		Force:         true,
+		RemoveVolumes: true,
+	})
 }
 
 // RemoveContainerByName force-removes any container with the given name.
@@ -231,7 +248,10 @@ func (c *Client) RemoveContainerByName(ctx context.Context, name string) error {
 		for _, n := range ctr.Names {
 			if n == target {
 				c.cli.ContainerStop(ctx, ctr.ID, container.StopOptions{})
-				return c.cli.ContainerRemove(ctx, ctr.ID, container.RemoveOptions{Force: true})
+				return c.cli.ContainerRemove(ctx, ctr.ID, container.RemoveOptions{
+					Force:         true,
+					RemoveVolumes: true,
+				})
 			}
 		}
 	}
@@ -254,7 +274,10 @@ func (c *Client) CleanupStale(ctx context.Context) {
 			if len(name) > 9 && name[:9] == "faultbox-" {
 				c.log.Debug("cleanup: removing stale container", slog.String("name", name))
 				c.cli.ContainerStop(ctx, ctr.ID, container.StopOptions{})
-				c.cli.ContainerRemove(ctx, ctr.ID, container.RemoveOptions{Force: true})
+				c.cli.ContainerRemove(ctx, ctr.ID, container.RemoveOptions{
+					Force:         true,
+					RemoveVolumes: true,
+				})
 				break
 			}
 		}

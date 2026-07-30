@@ -6,9 +6,14 @@ Interface declaration:
 cass = service("cassandra",
     interface("main", "cassandra", 9042),
     image = "cassandra:4.1",
-    healthcheck = tcp("localhost:9042"),
+    healthcheck = ready(timeout = "180s"),
 )
 ```
+
+Credentials come from `env=` as `CASSANDRA_USER`, `CASSANDRA_PASSWORD` and
+`CASSANDRA_KEYSPACE`. The stock image uses `AllowAllAuthenticator`, so a spec
+that declares none works as before; a cluster configured with
+`PasswordAuthenticator` needs them. Credential support added in v0.16.1.
 
 Faultbox speaks the CQL Binary Protocol v4 — the version all modern
 Cassandra drivers (Java, Python, Go, Node.js) use. The client side uses
@@ -139,7 +144,7 @@ def reset_cassandra():
 cass = service("cassandra",
     interface("main", "cassandra", 9042),
     image = "cassandra:4.1",
-    healthcheck = tcp("localhost:9042"),
+    healthcheck = ready(timeout = "180s"),
     reuse = True,
     seed = seed_cassandra,
     reset = reset_cassandra,

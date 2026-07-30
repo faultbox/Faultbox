@@ -329,10 +329,81 @@ monitor("sla_check",
 )
 ```
 
+## Pattern 0: assert on every step
+
+Before any of the patterns above, the habit they all depend on.
+
+```python
+# Vacuous — passes whether or not anything worked.
+db.main.exec(sql = "INSERT INTO orders VALUES (1)")
+
+# A test.
+r = db.main.exec(sql = "INSERT INTO orders VALUES (1)")
+assert_true(r.ok, "insert failed: %s" % r.error)
+```
+
+A protocol step that fails returns `ok = False`. It does not raise — because
+in a fault-injection tool a failing dependency is frequently the thing you are
+deliberately provoking, and raising would make the common case unwritable. The
+cost of that design is that **an ignored result is indistinguishable from a
+successful one.**
+
+This is not hypothetical. Two credential bugs shipped behind exactly this gap:
+Postgres steps could not authenticate against any password-protected server
+(fixed v0.16.0), and MySQL steps could not authenticate at all (fixed
+v0.16.1). Both had been broken since the plugin was written. Both were found
+by writing the first spec that checked `r.ok`.
+
+The same trap has a second form, worth naming because it survives even a
+careful review:
+
+```python
+def test_io_surface():
+    watch(pg, files = ["/**"], ops = ["write"], run = workload)
+    assert_true(len(events()) > 0)          # observed 125 paths — passes
+    assert_true(no_writes_outside_datadir()) # true — passes
+```
+
+This test passed while **every statement in `workload` was failing**. The
+paths it observed were real; they came from Postgres's own boot. The
+observation was complete and the assertion was sound — nothing checked that
+the workload had run at all.
+
+**Completeness of observation and occurrence of the workload are two
+different claims. A green test needs both.** So assert the workload happened,
+not only that the system behaved:
+
+```python
+def workload():
+    ok = 0
+    for sql in statements:
+        r = pg.sql.exec(sql = sql)
+        assert_true(r.ok, "statement failed (%s): %s" % (sql[:30], r.error))
+        ok += 1
+    assert_true(ok == len(statements), "only %d of %d ran" % (ok, len(statements)))
+```
+
+The same applies to `seed=` and `reset=`. They run before your assertions do,
+so a silent failure there surfaces later as a confusing missing-row failure
+rather than as "the database was never seeded". A one-line helper covers it:
+
+```python
+def must(sql):
+    r = db.main.exec(sql = sql)
+    assert_true(r.ok, "seed step failed (%s): %s" % (sql[:40], r.error))
+```
+
+And use [`ready()`](../protocols/README.md#readiness-use-ready-not-tcp-v0160)
+rather than `tcp()`. A port check reports ready the moment Docker's proxy
+binds — measured at 0 ms against a database needing ~10 seconds — which is
+what lets a broken step client look healthy for as long as nobody checks a
+result.
+
 ## Adapting patterns to your project
 
 1. **Identify which pattern is closest** to your architecture
 2. **Copy the topology** and adjust service names, images, ports
 3. **Pick 3-5 critical faults** from the pattern's list
 4. **Add 1-2 invariants** — the most important ones for your business
-5. **Run and iterate** — the first run will reveal missing error handling
+5. **Check every step result** — see Pattern 0; an unchecked step is not a test
+6. **Run and iterate** — the first run will reveal missing error handling
