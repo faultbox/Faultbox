@@ -75,6 +75,12 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | [RFC-056](0056-filesystem-observation.md) | Filesystem Observation — `watch()` on gVisor Trace Sessions | Implemented (v0.16.0) | RFC-054, RFC-040, RFC-046 |
 | [RFC-046](0046-beyond-l1-roadmap.md) | Beyond L1 — gVisor Runtime Roadmap | Path B Implemented (v0.14.0) | RFC-040 |
 
+### v0.17.0 — agent-first surface
+
+| RFC | Title | Status | Depends On |
+|-----|-------|--------|------------|
+| [RFC-052](0052-agent-first-surface.md) | Agent-First Surface — `faultbox check`, error taxonomy, vacuity detection | Accepted, in progress (v0.17.0: Gaps 1, 2, 8; Gaps 3–7 deferred) | RFC-041, RFC-042, RFC-043, RFC-044 |
+
 ## Dependency Graph
 
 ```
