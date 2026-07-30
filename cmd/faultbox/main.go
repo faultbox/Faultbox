@@ -394,7 +394,7 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	}
 
 	if err := rt.LoadFile(starFile); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		printCodedError(os.Stderr, err)
 		return 1
 	}
 
@@ -609,6 +609,23 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 // verdict and must not read as one. A green suite carrying a
 // NO_POSITIVE_CONTROL warning is still green; the warning says the green may not
 // mean much.
+// printCodedError writes an error with its machine-readable code and the
+// suggested next move, when it carries one (RFC-052 Gap 2).
+//
+// Uncoded errors print exactly as before. That is the honest fallback: the
+// taxonomy is adopted incrementally, and a missing code is a visible gap rather
+// than a guess dressed up as a classification.
+func printCodedError(w io.Writer, err error) {
+	if d := star.DiagnosticFor(err); d != nil {
+		fmt.Fprintf(w, "error: [%s] %s\n", d.Code, d.Message)
+		if d.Suggestion != "" {
+			fmt.Fprintf(w, "  %s\n", d.Suggestion)
+		}
+		return
+	}
+	fmt.Fprintf(w, "error: %v\n", err)
+}
+
 func printSuiteDiagnostics(w io.Writer, result *star.SuiteResult) {
 	// Per-test diagnostics have existed since v0.12 but were only ever written
 	// to JSON and the bundle, so FAULT_FIRED_BUT_SUCCESS and its five siblings
@@ -1454,7 +1471,7 @@ Flags:
 	logger := logging.New(logging.Config{Level: slog.LevelWarn})
 	rt := star.New(logger)
 	if err := rt.LoadFile(starFile); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		printCodedError(os.Stderr, err)
 		return 1
 	}
 

@@ -599,11 +599,11 @@ func (rt *Runtime) LoadFile(path string) error {
 	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
 	// violations surface as load errors instead of mid-test panics.
 	if err := validateMonitorLambdasInSource(path, string(src)); err != nil {
-		return fmt.Errorf("load %s: %w", path, err)
+		return codedf(CodeSpecForbiddenLambda, "load %s: %w", path, err)
 	}
 	// RFC-043 §8.7 — same model for assume() predicates.
 	if err := validateAssumeLambdasInSource(path, string(src)); err != nil {
-		return fmt.Errorf("load %s: %w", path, err)
+		return codedf(CodeSpecForbiddenLambda, "load %s: %w", path, err)
 	}
 
 	thread := &starlark.Thread{Name: "load"}
@@ -611,7 +611,7 @@ func (rt *Runtime) LoadFile(path string) error {
 
 	globals, err := starlark.ExecFile(thread, path, nil, rt.builtins())
 	if err != nil {
-		return fmt.Errorf("load %s: %w", path, err)
+		return codedf(specLoadCode(err), "load %s: %w", path, err)
 	}
 
 	rt.globals = globals
@@ -624,7 +624,7 @@ func (rt *Runtime) LoadString(name, src string) error {
 	// RFC-041 §8.7 — static check before ExecFile so monitor sandbox
 	// violations surface as load errors instead of mid-test panics.
 	if err := validateMonitorLambdasInSource(name, src); err != nil {
-		return fmt.Errorf("load: %w", err)
+		return codedf(CodeSpecForbiddenLambda, "load: %w", err)
 	}
 	// RFC-054 M5: filesystem observation needs runsc, and the container
 	// runtime must be chosen before the first service launches — long before
@@ -634,14 +634,14 @@ func (rt *Runtime) LoadString(name, src string) error {
 
 	// RFC-043 §8.7 — same model for assume() predicates.
 	if err := validateAssumeLambdasInSource(name, src); err != nil {
-		return fmt.Errorf("load: %w", err)
+		return codedf(CodeSpecForbiddenLambda, "load: %w", err)
 	}
 	thread := &starlark.Thread{Name: "load"}
 	thread.Load = rt.makeLoadFunc()
 	rt.sourceText = src
 	globals, err := starlark.ExecFile(thread, name, src, rt.builtins())
 	if err != nil {
-		return fmt.Errorf("load: %w", err)
+		return codedf(specLoadCode(err), "load: %w", err)
 	}
 	rt.globals = globals
 	rt.snapshotSpecChoices()
@@ -680,7 +680,7 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 			embeddedPath := strings.TrimPrefix(module, stdlibPrefix)
 			src, err = faultbox.Recipes.ReadFile(embeddedPath)
 			if err != nil {
-				return nil, fmt.Errorf("load %q: not found in faultbox stdlib (run 'faultbox recipes list' to see available recipes): %w", module, err)
+				return nil, codedf(CodeSpecRecipeNotFound, "load %q: not found in faultbox stdlib (run 'faultbox recipes list' to see available recipes): %w", module, err)
 			}
 			modPath = module // preserve the @faultbox/... display name
 		} else {
@@ -2548,7 +2548,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 	if rt.dockerClient == nil {
 		dc, err := container.NewClient(ctx, rt.log)
 		if err != nil {
-			return fmt.Errorf("docker client: %w", err)
+			return codedf(CodeDockerUnavailable, "docker client: %w", err)
 		}
 		rt.dockerClient = dc
 		rt.containerIDs = make(map[string]string)
@@ -2625,7 +2625,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		Runtime: rt.containerRuntimeName(),
 	}, rt.log)
 	if err != nil {
-		return fmt.Errorf("launch container %q: %w", svcName, err)
+		return codedf(CodeLaunchFailed, "launch container %q: %w", svcName, err)
 	}
 	rt.containerIDs[svcName] = result.ContainerID
 
@@ -2694,7 +2694,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 			hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
 			defer hcCancel()
 			if err := waitReady(hcCtx, hcTest, timeout); err != nil {
-				return fmt.Errorf("service %q not ready: %w", svcName, err)
+				return codedf(CodeHealthcheckTimeout, "service %q not ready: %w", svcName, err)
 			}
 			rt.events.Emit("service_ready", svcName, nil)
 			rt.log.Info("service ready", slog.String("service", svcName), slog.String("check", hcTest))
@@ -2811,7 +2811,7 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 		select {
 		case err := <-hcErrCh:
 			if err != nil {
-				return fmt.Errorf("service %q not ready: %w", svcName, err)
+				return codedf(CodeHealthcheckTimeout, "service %q not ready: %w", svcName, err)
 			}
 		case r := <-done:
 			done <- r // put back: stopServices selects on this channel during teardown
