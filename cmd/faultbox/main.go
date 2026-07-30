@@ -535,6 +535,7 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 	}
 	fmt.Fprintln(os.Stderr, summary)
 	printInconclusiveReasons(os.Stderr, result)
+	printSuiteDiagnostics(os.Stderr, result)
 
 	// Terminal replay hint per failed test (RFC-025 §Observability).
 	// Makes `replay_command` visible without digging into JSON. Skipped
@@ -600,6 +601,27 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 // Reasons are grouped, because a fan-out that fails the same way 12 times
 // should say so once with a count rather than scroll the real signal off the
 // screen.
+// printSuiteDiagnostics prints run-level findings — the ones no single test
+// could produce (RFC-052 Gap 8).
+//
+// Printed after the pass/fail line and never folded into it: these are warnings
+// about what the suite *cannot* detect, which is a different claim from a test
+// verdict and must not read as one. A green suite carrying a
+// NO_POSITIVE_CONTROL warning is still green; the warning says the green may not
+// mean much.
+func printSuiteDiagnostics(w io.Writer, result *star.SuiteResult) {
+	if len(result.Diagnostics) == 0 {
+		return
+	}
+	fmt.Fprintln(w)
+	for _, d := range result.Diagnostics {
+		fmt.Fprintf(w, "%s: [%s] %s\n", strings.ToUpper(d.Level), d.Code, d.Message)
+		if d.Suggestion != "" {
+			fmt.Fprintf(w, "  %s\n", d.Suggestion)
+		}
+	}
+}
+
 func printInconclusiveReasons(w io.Writer, result *star.SuiteResult) {
 	if result == nil || result.Inconclusive == 0 {
 		return

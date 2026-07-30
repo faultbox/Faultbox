@@ -196,7 +196,10 @@ func (rt *Runtime) builtins() starlark.StringDict {
 	for name, b := range packetFaultBuiltins() {
 		out[name] = b
 	}
-	return out
+	// RFC-052 Gap 8: count assertion invocations. Wrapped here rather than
+	// inside each builtin so a newly-added assertion cannot silently make
+	// tests using it look vacuous.
+	return rt.wrapAssertionBuiltins(out)
 }
 
 // builtinDuration parses a duration string ("200ms", "1.5s", "2m") into

@@ -117,11 +117,17 @@ def test_health_status_only():
     assert_eq(resp.status, 204)
 
 def test_kafka_broker_responds():
-    """Real kafka publish reaches the kfake-backed broker."""
-    bus.main.publish(topic = "orders", key = "o-1", value = '{"id":1}')
-    # publish() returns success when the broker accepts; assertion is the
-    # absence of a panic. Consumers in real specs would verify via
-    # consume() or assert_eventually(events()...).
+    """Real kafka publish reaches the kfake-backed broker.
+
+    Found by NO_POSITIVE_CONTROL (RFC-052) on its first run against this repo.
+    This test used to discard the publish result, on the reasoning that "the
+    assertion is the absence of a panic" — which is wrong: a publish that never
+    reaches the broker returns ok=False, it does not panic. So the test asserted
+    its own docstring and nothing else, and would have passed against a broker
+    that was completely dead.
+    """
+    r = bus.main.publish(topic = "orders", key = "o-1", value = '{"id":1}')
+    assert_true(r.ok, "publish to the kfake broker failed: %s" % r.error)
 
 def test_redis_seeded_state():
     """GET on a seeded key returns the seeded value."""

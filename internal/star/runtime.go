@@ -169,6 +169,12 @@ type SuiteResult struct {
 	// to gate on either or both (CLI exit code 3 reflects Inconclusive
 	// > 0 when Fail == 0; exit code 2 is reserved for Fail > 0).
 	Inconclusive int `json:"inconclusive,omitempty"`
+	// Diagnostics are run-level findings that no single test could produce.
+	// RFC-052 Gap 8's NO_POSITIVE_CONTROL lives here: whether an interface is
+	// ever proved to work is a property of the whole suite, since one
+	// fault-injection test asserting failure is perfectly correct on its own.
+	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
+
 	// Halted counts tests whose body called halt() (RFC-043 §5.3).
 	// Halted leaves are recorded with their choice path but do not
 	// contribute to PASS/FAIL/INCONCLUSIVE counts — they represent
@@ -361,6 +367,11 @@ type Runtime struct {
 	// RunTest.
 	currentTestName string
 
+	// vacuity carries the RFC-052 Gap 8 bookkeeping: assertion counts per
+	// test, and which interfaces the suite ever proved to work. Suite-scoped
+	// because NO_POSITIVE_CONTROL is a property of the whole run.
+	vacuity *vacuityState
+
 	// mockTLSImpl is lazy-initialized the first time a tls=True mock service
 	// starts. The whole runtime shares one CA so clients can trust every
 	// mock by trusting a single bundle.
@@ -502,6 +513,7 @@ func New(logger *slog.Logger) *Runtime {
 		detRuntime: DeterminismRuntimeDefault,
 		detStrict:  true,
 		detAllow:   make(map[string]bool),
+		vacuity:    newVacuityState(),
 	}
 	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
 	rt.packetRules = newPacketRuleRegistry()
@@ -1148,6 +1160,12 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 
 	suite.DurationMs = time.Since(start).Milliseconds()
 
+	// RFC-052 Gap 8. Emitted after every test so it can ask a question no
+	// single test can: did anything in this run prove each stepped interface
+	// actually works, or is every assertion about it equally satisfied by a
+	// client that cannot connect at all?
+	suite.Diagnostics = append(suite.Diagnostics, rt.vacuity.suiteDiagnostics()...)
+
 	// Surface a zero-match filter loudly. Matched (not len(suite.Tests))
 	// is the right signal: --fail-only leaves passing tests out of the
 	// Tests slice. The CLI turns Matched == 0 into a non-zero exit so a
@@ -1359,6 +1377,13 @@ func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf)
 		rt.currentLeafMu.Unlock()
 	}()
 	tr := rt.runTestImpl(ctx, name)
+
+	// RFC-052 Gap 8: resolve this test's candidate positive controls now that
+	// its verdict is known. Hooked here rather than inside runTestImpl because
+	// that function has many return paths and a missed one would silently drop
+	// a positive control, making the diagnostic fire on a correct suite.
+	rt.vacuity.endTest(name, tr.Result)
+
 	if leaf != nil {
 		tr.LeafID = fmt.Sprintf("%d", leaf.Index)
 		// Snapshot per-leaf axis assignments so the bundle manifest
@@ -4630,6 +4655,13 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 		recvFields["spec"] = specCaller
 	}
 	rt.events.Emit("step_recv", "test", recvFields)
+
+	// RFC-052 Gap 8: a successful step is ground truth that the client works.
+	// Recorded per interface so the suite-level check can ask whether anything
+	// ever proved this interface functional.
+	if stepResult != nil {
+		rt.vacuity.noteStep(targetSvc, ref.Interface.Name, stepResult.Success)
+	}
 
 	// TCP send returns raw string for backward compatibility.
 	if ref.Interface.Protocol == "tcp" && stepResult.Success {
