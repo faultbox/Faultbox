@@ -41,6 +41,33 @@ Production chaos validates **runbooks, blast radius, and human response** in rea
 
 If you skip step 1, you push every code-path failure all the way to step 2 — slow feedback loop, and the chaos tooling becomes the bottleneck. Faultbox shifts that work left.
 
+## Who writes the specs
+
+**The primary spec author is an LLM agent, not a human.** Recorded July 2026; this is the
+premise behind [RFC-052](rfcs/0052-agent-first-surface.md) and the reason the MCP server,
+the JSON trace output, and the diagnostic codes exist.
+
+It is a statement about *volume*, not about capability. Humans decide what is worth
+testing and read the verdicts; agents write and iterate on the specs that encode those
+decisions, at a rate no human would. Faultbox is designed for that split:
+
+| Surface | Audience |
+|---|---|
+| The Starlark DSL, the tutorial, the guides | Humans deciding what to test |
+| MCP tools, `--format json`, diagnostic codes, `.fb` bundles | Agents authoring and iterating |
+| Verdicts, reports, the swim-lane trace viewer | Humans reading the answer |
+
+Two consequences that shape the design:
+
+- **Ground truth must be machine-readable.** Prose documentation is a hallucination
+  surface. Anything an agent needs in order to write a correct spec — the API schema, the
+  error codes, the recipe corpus — has to be queryable, not just readable.
+- **The tool must detect specs that prove nothing.** An agent produces plausible code, and
+  plausible is not the same as correct. Two credential bugs survived to v0.16.0 and
+  v0.16.1 because every spec in this repository discarded its step results — a mistake an
+  agent will make at scale unless the tooling says so. Faultbox is the adversary in the
+  loop; an adversary that certifies vacuous tests is not one.
+
 ## When NOT to use Faultbox
 
 - **Pure UI tests** — Playwright / Cypress are the right tool.
