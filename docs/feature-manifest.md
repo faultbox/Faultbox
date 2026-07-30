@@ -134,9 +134,12 @@ Everything here needs `determinism(runtime = "gvisor")` and is Linux-only.
 | `faultbox test` | 1 | testops corpus is literally this | 🟢 | |
 | `faultbox diff` | 2 | Used by testops harness | 🟢 | |
 | `faultbox run` (single service) | 3 | Manual | 🔴 | |
-| `faultbox generate` (scenario generator) | 2 | Unit tests in `internal/generate` | 🟡 | No end-to-end corpus |
+| `faultbox check` (RFC-052 Gap 1) | 1 | `internal/check/check_test.go` — including a test that fails if it ever needs Docker | 🟢 | Validates without executing. The no-launch property is the whole value, so it is asserted rather than assumed |
+| Error-code taxonomy (RFC-052 Gap 2) | 2 | `internal/star/codes_test.go` — every code must carry a suggestion | 🟢 | Typed errors, not message matching. Adoption is incremental and `Classify` reports gaps honestly rather than guessing |
+| Vacuity diagnostics (RFC-052 Gap 8) | 1 | `internal/star/vacuity_test.go` + a known-bad/known-good gate over `poc/protocol-audit/` | 🟢 | `NO_POSITIVE_CONTROL`, `TEST_NO_ASSERTIONS`. Found two vacuous specs in this repo, one of them in the CI golden corpus |
+| ~~`faultbox generate`~~ | — | — | ⚪ | **Removed in v0.17.0**; `faultbox plan --suggest` replaced it. The command name still reports where it went |
 | `faultbox init` (starter .star) | 3 | Manual | 🔴 | |
-| `faultbox mcp` (LLM server) | 2 | No coverage | 🔴 | Contract tests needed — LLM is a target user |
+| `faultbox mcp` (LLM server) | 2 | `internal/mcp/server_test.go` — contract tests: every advertised tool dispatches, schemas are valid and self-consistent, result shapes, malformed arguments | 🟢 | Was 🔴 with no coverage at all until v0.17.0, on the one surface whose declared primary user is an agent |
 | `faultbox recipes list` / `show` | 3 | Manual | 🔴 | |
 | `faultbox self-update` | 3 | Manual | 🔴 | |
 
@@ -144,8 +147,8 @@ Everything here needs `determinism(runtime = "gvisor")` and is Linux-only.
 
 | Feature | Tier | Mechanism | Status | Notes |
 |---|---|---|---|---|
-| Event sources (stdout, wal_stream, topic, tail, poll) | 2 | `internal/eventsource/*_test.go` + `internal/star/observe_decoder_test.go` (RFC-044 `observe.*` namespace + deprecated aliases) | 🟢 | RFC-044 §8.6: top-level `stdout()` / `stderr()` deprecated → `observe.stdout` / `observe.stderr`; one-time stderr warning per process, removal v0.14.0. |
-| Decoders (json, logfmt, regex) | 2 | `internal/eventsource/decoder` unit tests + `internal/star/observe_decoder_test.go` (unified dispatcher + deprecated aliases) | 🟢 | RFC-044 §8.7: unified `decoder("name", ...)` dispatcher; `json_decoder()` / `logfmt_decoder()` / `regex_decoder()` deprecated, removal v0.14.0. |
+| Event sources (stdout, wal_stream, topic, tail, poll) | 2 | `internal/eventsource/*_test.go` + `internal/star/observe_decoder_test.go` (RFC-044 `observe.*` namespace + deprecated aliases) | 🟢 | RFC-044 §8.6: top-level `stdout()` / `stderr()` **removed in v0.17.0** → `observe.stdout` / `observe.stderr`; the names remain registered as stubs that name their replacement. |
+| Decoders (json, logfmt, regex) | 2 | `internal/eventsource/decoder` unit tests + `internal/star/observe_decoder_test.go` (unified dispatcher + deprecated aliases) | 🟢 | RFC-044 §8.7: unified `decoder("name", ...)` dispatcher. The three legacy constructors were **removed in v0.17.0**; the names remain registered as stubs that name their replacement. |
 | Container reuse (`reuse=True`) | 2 | No coverage | 🔴 | |
 | Lima VM dev environment | 3 | Manual (`make env-verify`) | 🟡 | |
 

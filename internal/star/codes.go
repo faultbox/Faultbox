@@ -64,8 +64,16 @@ var suggestions = map[Code]string{
 	CodeSpecForbiddenLambda: "monitor() update=/check= and assume() predicates run in a sandbox: " +
 		"they may not call fault(), await_*, assert_*, or another monitor. Signal failure " +
 		"through the return value instead.",
-	CodeSpecLoadFailed: "The spec failed to load. Check that every service(), interface() and " +
-		"fault() call uses known keyword arguments — unknown ones are rejected rather than ignored.",
+	// Deliberately general. This is the fallback for "parsed and resolved, then
+	// failed while executing", which covers unknown keyword arguments, rejected
+	// argument values, undeclared service references and removed builtins alike.
+	// An earlier version advised checking keyword arguments specifically, which
+	// was actively unhelpful when the real problem was a builtin removed three
+	// releases ago — the message said one thing and the suggestion another.
+	CodeSpecLoadFailed: "The spec parsed but failed while loading. The message above names the " +
+		"call that failed; check its arguments against docs/spec-language.md. Unknown keyword " +
+		"arguments are rejected rather than ignored, and builtins removed in a past release " +
+		"report where their replacement lives.",
 	CodeSpecRecipeNotFound: "No such recipe in the embedded stdlib. Run `faultbox recipes list` " +
 		"to see what ships, and note the @faultbox/ prefix is required for stdlib loads.",
 

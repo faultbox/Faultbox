@@ -291,3 +291,42 @@ def test_asserts():
 		t.Errorf("assertion count = %d, want 2 — the registration wrapper is not firing", got)
 	}
 }
+
+// FAULT_FIRED_BUT_SUCCESS was miscalibrated from v0.12 to v0.17.0, and nobody
+// noticed because per-test diagnostics were never printed. Its heuristic —
+// a fault fired and the test passed — describes the single most common correct
+// shape in the tool: inject a fault, assert the service degrades gracefully.
+//
+// It now requires the test to have asserted nothing. With assertions present
+// the author checked the behaviour; with none they checked nothing, and that is
+// worth saying.
+func TestFaultFiredButSuccessRequiresNoAssertions(t *testing.T) {
+	faults := []FaultInfo{{Service: "api", Syscall: "connect", Action: "deny", Hits: 1}}
+
+	// The correct shape: fault fired, test passed, author asserted. Silent.
+	asserted := buildDiagnostics(
+		&TestTraceOutput{Faults: faults},
+		&TestResult{Name: "t", Result: "pass", Assertions: 2},
+	)
+	for _, d := range asserted {
+		if d.Code == "FAULT_FIRED_BUT_SUCCESS" {
+			t.Errorf("fired on a test that asserted %d times — this is the shape "+
+				"`inject a fault, assert graceful degradation`, which is correct", 2)
+		}
+	}
+
+	// Nothing asserted: the diagnostic is the whole value.
+	bare := buildDiagnostics(
+		&TestTraceOutput{Faults: faults},
+		&TestResult{Name: "t", Result: "pass", Assertions: 0},
+	)
+	var found bool
+	for _, d := range bare {
+		if d.Code == "FAULT_FIRED_BUT_SUCCESS" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("did not fire on a fault that hit a test asserting nothing: %+v", bare)
+	}
+}

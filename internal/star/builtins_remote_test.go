@@ -181,7 +181,7 @@ service("svc",
     interface("main", "http", 8080),
     remote = "host.example",
     healthcheck = http("host.example:8080/healthz"),
-    observe = [stdout()],
+    observe = [observe.stdout()],
 )
 `)
 	mustContain(t, err, "remote", "observe=", "not supported")

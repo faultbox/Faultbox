@@ -20,6 +20,8 @@ the system actually did.
 - [Protocols](protocols/README.md) — 13 protocol plugins: methods, fault
   rules, credentials, readiness
 - [Error Codes](errno-reference.md) — errno values for syscall faults
+- [Diagnostic Codes](diagnostic-codes.md) — every machine-readable code and
+  what to do about it
 - [Starlark Dialect](starlark-dialect.md) — how this differs from Python
 - [Feature Manifest](feature-manifest.md) — what is supported, and the test
   that proves each claim
@@ -43,6 +45,8 @@ the system actually did.
 
 ## Guides
 
+- [Driving Faultbox as an Agent](guides/driving-faultbox-as-an-agent.md) — the
+  loop, the JSON shapes, the codes
 - [Methodology](guides/methodology.md) — how to choose what to test
 - [Spec Patterns](guides/spec-patterns.md) — idioms that hold up
 - [Choosing Fault Levels](guides/choosing-fault-levels.md) — syscall vs

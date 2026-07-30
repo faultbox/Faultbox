@@ -389,8 +389,27 @@ func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
 		})
 	}
 
-	// FAULT_FIRED_BUT_SUCCESS: faults hit > 0, test passed — possible missing error handling.
-	if hasFaults && passed {
+	// FAULT_FIRED_BUT_SUCCESS: a fault fired and the test passed anyway.
+	//
+	// Narrowed in v0.17.0 to tests that asserted nothing. The original
+	// heuristic — fault fired + test passed — fires on the single most common
+	// correct shape in the entire tool:
+	//
+	//	def test_api_cannot_reach_db():
+	//	    def scenario():
+	//	        resp = api.post(path="/data")
+	//	        assert_eq(resp.status, 500)          # degradation, asserted
+	//	    fault(api, connect=deny("ECONNREFUSED"), run=scenario)
+	//
+	// That test is right, and the diagnostic called it suspicious. It went
+	// unnoticed from v0.12 to v0.17.0 because per-test diagnostics were never
+	// printed; making them visible immediately exposed the miscalibration.
+	//
+	// With assertions present the author checked the behaviour, whatever they
+	// checked. With none, they checked nothing — and "a fault fired and you
+	// asserted nothing" is strictly more actionable than TEST_NO_ASSERTIONS
+	// alone, which is why this stays a distinct code rather than folding in.
+	if hasFaults && passed && tr.Assertions == 0 {
 		for _, fi := range tto.Faults {
 			if fi.Action == "deny" && fi.Hits > 0 {
 				diags = append(diags, Diagnostic{

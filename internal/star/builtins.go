@@ -87,21 +87,13 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"drop":             starlark.NewBuiltin("drop", builtinProxyDrop),
 		"duplicate":        starlark.NewBuiltin("duplicate", builtinProxyDuplicate),
 		// RFC-044 §8.6 — `observe` module is the canonical surface for
-		// event-source factories. Legacy top-level stdout/stderr remain
-		// registered as deprecated aliases that emit a one-time stderr
-		// warning before producing the same value the new form does.
-		// Removal in v0.14.0.
+		// event-source factories. The legacy top-level stdout/stderr were
+		// removed in v0.17.0; see removed.go for why the names are still
+		// registered as failing stubs.
 		"observe": makeObserveModule(),
-		"stdout":  starlark.NewBuiltin("stdout", builtinStdoutDeprecated),
-		"stderr":  starlark.NewBuiltin("stderr", builtinStderrDeprecated),
-		// RFC-044 §8.7 — `decoder("name", ...)` is the unified
-		// dispatcher; the three legacy names are deprecated aliases.
-		// All four routes converge in builtinDecoder so DecoderVal
-		// construction has a single source of truth.
-		"decoder":        starlark.NewBuiltin("decoder", builtinDecoder),
-		"json_decoder":   starlark.NewBuiltin("json_decoder", builtinJSONDecoderDeprecated),
-		"logfmt_decoder": starlark.NewBuiltin("logfmt_decoder", builtinLogfmtDecoderDeprecated),
-		"regex_decoder":  starlark.NewBuiltin("regex_decoder", builtinRegexDecoderDeprecated),
+		// RFC-044 §8.7 — `decoder("name", ...)` is the unified dispatcher.
+		// The three legacy constructors were removed in v0.17.0.
+		"decoder": starlark.NewBuiltin("decoder", builtinDecoder),
 		// struct(**kwargs) — namespace objects. Used by recipe modules so
 		// protocol-specific helpers don't collide on common names (e.g.
 		// mongodb.disk_full vs postgres.disk_full).
@@ -194,6 +186,11 @@ func (rt *Runtime) builtins() starlark.StringDict {
 	// "undefined: packet_drop", which would send the author looking
 	// for a typo instead of a missing runtime declaration.
 	for name, b := range packetFaultBuiltins() {
+		out[name] = b
+	}
+	// Removed names, registered as failing stubs so an old spec is told how to
+	// move rather than getting "undefined" (RFC-052 M5).
+	for name, b := range removedBuiltins() {
 		out[name] = b
 	}
 	// RFC-052 Gap 8: count assertion invocations. Wrapped here rather than
