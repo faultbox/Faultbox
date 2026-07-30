@@ -29,7 +29,7 @@ func (p *grpcProtocol) Methods() []string {
 }
 
 func (p *grpcProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
-	return TCPHealthcheck(ctx, addr, timeout)
+	return TCPHealthcheck(ctx, ParseAddr(addr).HostPort, timeout)
 }
 
 func (p *grpcProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {

@@ -111,6 +111,11 @@ func (p *redisProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	defer func() { tracker.EmitClose(closeReason) }()
 
 	clientReader := bufio.NewReader(clientConn)
+	// One reader for the connection's lifetime, not one per command. A
+	// bufio.Reader reads ahead, so recreating it per iteration discarded
+	// whatever it had buffered beyond the current reply — silent data loss the
+	// moment a client pipelines commands or Redis answers two in one write.
+	serverReader := bufio.NewReader(serverConn)
 	commandsServed := 0
 
 	for {
@@ -229,7 +234,6 @@ func (p *redisProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		}
 
 		// Read response from Redis and forward to client.
-		serverReader := bufio.NewReader(serverConn)
 		resp, err := readRESPRaw(serverReader)
 		if err != nil {
 			closeReason = classifyCloseReason(err, "server")
@@ -277,7 +281,7 @@ func (p *redisProxy) Stop() error {
 	if p.listener != nil {
 		p.listener.Close()
 	}
-	p.wg.Wait()
+	waitConns(&p.wg, p.onEvent, p.svcName, "redis")
 	return nil
 }
 

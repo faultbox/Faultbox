@@ -347,6 +347,6 @@ func (p *mongodbProxy) Stop() error {
 	if p.listener != nil {
 		p.listener.Close()
 	}
-	p.wg.Wait()
+	waitConns(&p.wg, p.onEvent, p.svcName, "mongodb")
 	return nil
 }

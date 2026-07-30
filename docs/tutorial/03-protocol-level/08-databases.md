@@ -6,7 +6,7 @@
 > **This chapter uses containers.** The examples below use `image=` to run
 > real Postgres, Redis, and Kafka instances in Docker containers. If you
 > haven't used containers with Faultbox before, see
-> [Chapter 9: Containers](../04-advanced/09-containers.md) for setup
+> [Chapter 9: Containers](../05-advanced/09-containers.md) for setup
 > instructions and how `image=` mode works. Docker must be available in
 > your environment (it's pre-installed in the Lima VM).
 

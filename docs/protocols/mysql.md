@@ -7,13 +7,26 @@ db = service("mysql",
     interface("main", "mysql", 3306),
     image = "mysql:8",
     env = {"MYSQL_ROOT_PASSWORD": "test", "MYSQL_DATABASE": "testdb"},
-    healthcheck = tcp("localhost:3306"),
+    healthcheck = ready(timeout = "120s"),
 )
 ```
 
+Credentials come from `env=` — `MYSQL_USER`/`MYSQL_PASSWORD` when the spec
+creates a named user, otherwise `root` with `MYSQL_ROOT_PASSWORD` —
+and `MYSQL_DATABASE` selects the default schema. Steps, the healthcheck and
+`ready()` all use them. An explicit `user=`/`password=`/`database=` on a step
+wins; `dsn=` bypasses the lot.
+
+> **Fixed in v0.16.1.** Before this, the generated DSN was a bare
+> `root@tcp(host:port)/` — no password, no database. Against a stock `mysql:8`
+> every step failed with *Access denied for user 'root' (using password: NO)*,
+> which reached the spec as the far less legible `invalid connection`; against
+> a passwordless server, statements failed with *Error 1046: No database
+> selected*. If your MySQL steps have never worked, this is why.
+
 ## Methods
 
-### `query(sql="", dsn="")`
+### `query(sql="", user="", password="", database="", dsn="")`
 
 Execute a SQL query that returns rows.
 
@@ -28,9 +41,12 @@ resp = db.main.query(sql="SELECT count(*) as n FROM orders")
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `sql` | string | required | SQL query |
-| `dsn` | string | auto | MySQL DSN (auto-generated from service address) |
+| `user` | string | from `env=` | Overrides the user for this step |
+| `password` | string | from `env=` | Overrides the password for this step |
+| `database` | string | from `env=` | Overrides the schema for this step |
+| `dsn` | string | auto | Full go-sql-driver DSN; bypasses everything above |
 
-### `exec(sql="", dsn="")`
+### `exec(sql="", user="", password="", database="", dsn="")`
 
 Execute a SQL statement that doesn't return rows.
 
@@ -44,7 +60,10 @@ resp = db.main.exec(sql="CREATE TABLE IF NOT EXISTS orders (id INT AUTO_INCREMEN
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `sql` | string | required | SQL statement |
-| `dsn` | string | auto | MySQL DSN |
+| `user` | string | from `env=` | Overrides the user for this step |
+| `password` | string | from `env=` | Overrides the password for this step |
+| `database` | string | from `env=` | Overrides the schema for this step |
+| `dsn` | string | auto | Full go-sql-driver DSN; bypasses everything above |
 
 ## Response Object
 
@@ -91,24 +110,32 @@ drop_writes = fault_assumption("drop_writes",
 
 ## Seed / Reset Patterns
 
+Seed and reset run before your assertions do, so a silent failure there
+becomes a confusing failure later — a test that reports a missing row rather
+than a database that never got seeded. Check them.
+
 ```python
+def must(sql):
+    r = db.main.exec(sql=sql)
+    assert_true(r.ok, "seed step failed (%s): %s" % (sql[:40], r.error))
+
 def seed_mysql():
-    db.main.exec(sql="CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255))")
-    db.main.exec(sql="CREATE TABLE IF NOT EXISTS orders (id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, item VARCHAR(255))")
-    db.main.exec(sql="INSERT INTO users (name) VALUES ('alice'), ('bob')")
+    must("CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255))")
+    must("CREATE TABLE IF NOT EXISTS orders (id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, item VARCHAR(255))")
+    must("INSERT INTO users (name) VALUES ('alice'), ('bob')")
 
 def reset_mysql():
-    db.main.exec(sql="SET FOREIGN_KEY_CHECKS=0")
-    db.main.exec(sql="TRUNCATE TABLE orders")
-    db.main.exec(sql="TRUNCATE TABLE users")
-    db.main.exec(sql="SET FOREIGN_KEY_CHECKS=1")
-    db.main.exec(sql="INSERT INTO users (name) VALUES ('alice'), ('bob')")
+    must("SET FOREIGN_KEY_CHECKS=0")
+    must("TRUNCATE TABLE orders")
+    must("TRUNCATE TABLE users")
+    must("SET FOREIGN_KEY_CHECKS=1")
+    must("INSERT INTO users (name) VALUES ('alice'), ('bob')")
 
 db = service("mysql",
     interface("main", "mysql", 3306),
     image = "mysql:8",
     env = {"MYSQL_ROOT_PASSWORD": "test", "MYSQL_DATABASE": "testdb"},
-    healthcheck = tcp("localhost:3306"),
+    healthcheck = ready(timeout = "120s"),
     reuse = True,
     seed = seed_mysql,
     reset = reset_mysql,

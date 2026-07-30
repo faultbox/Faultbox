@@ -535,6 +535,51 @@ only).
 
 ---
 
+### `faultbox setup-trace` (v0.16.0)
+
+One-time host registration so [`watch()`](spec-language.md#watch) can observe
+filesystem activity. Run once, as root. **A test run never does this for you** —
+it edits Docker's daemon configuration, which is not something a test should do
+behind your back.
+
+```
+sudo faultbox setup-trace [flags]
+```
+
+**What it writes**
+
+| Path | Contents |
+|------|----------|
+| `/etc/faultbox/trace.json` | The gVisor trace session — which syscall trace points are installed. |
+| `/etc/docker/daemon.json` | A `faultbox-trace` runtime entry. Other runtimes are left untouched. |
+
+**Flags**
+
+| Flag | Effect |
+|------|--------|
+| `--check` | Report what is installed and what would change. Writes nothing. Exit 1 if registration is missing or stale. |
+| `--with-read` | Also trace `read`/`pread64`. Off by default: roughly doubles traffic and risks dropped points, which fail tests. |
+| `--with-close` | Also trace `close`, for "opened and never closed". |
+| `--with-connect` | Also trace `connect`. |
+| `--sink PATH` | Socket the sandbox reports to. Default `/run/faultbox/seccheck.sock`. |
+
+The command reports every change it makes *and what it left alone*, then prints
+the Docker restart rather than performing it — that restart stops every
+container on the host, so it stays your decision:
+
+```
+sudo faultbox setup-trace
+sudo systemctl restart docker     # printed, not run
+faultbox setup-trace --check      # confirm it took
+```
+
+Requires Linux with `runsc` (gVisor) installed. `watch()` specs additionally
+declare `determinism(runtime = "gvisor")`.
+
+Guide: [tutorial ch. 29](tutorial/05-advanced/29-filesystem-observation.md).
+
+---
+
 ### `faultbox run`
 
 Launch a binary under Faultbox's control with process isolation and optional

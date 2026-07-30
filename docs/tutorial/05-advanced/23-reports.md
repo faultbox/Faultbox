@@ -56,7 +56,7 @@ one-line replay command you can paste into your terminal.
 fault assumptions are columns, cells carry a ✓ / ✗ / · state and
 are coloured for accessibility. Click any cell to drill down.
 
-![Matrix screenshot](/reports/sample.html)
+See the hosted sample linked above for what this renders as.
 
 ### 3. What to do next
 
@@ -114,7 +114,7 @@ a specific drill-down panel. Handy for PR comments:
 ```markdown
 Looks like the cache-latency regression traces to an unbounded
 retry loop: see
-[sample.html#test=test_order_flow__cache_latency](sample.html#test=test_order_flow__cache_latency).
+[the hosted sample](https://faultbox.io/reports/sample.html#test=test_order_flow__cache_latency).
 ```
 
 ## What's next

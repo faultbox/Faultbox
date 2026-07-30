@@ -21,13 +21,42 @@ func (p *natsProtocol) Methods() []string {
 	return []string{"publish", "request", "subscribe"}
 }
 
+// Healthcheck reports whether NATS is ready to accept publishes.
+//
+// This was a bare TCP connect, which reports ready the moment nats-server binds
+// its port — before it will serve. The window is short but real: roughly one run
+// in four, the first publish through the proxy failed with a bare `EOF` because
+// the server accepted the connection and immediately closed it.
+//
+// A full client connect instead completes NATS's own handshake (INFO →
+// CONNECT → PING → PONG) and a Flush proves the round trip, so "ready" means
+// the server answered.
 func (p *natsProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
-	return TCPHealthcheck(ctx, addr, timeout)
+	a := ParseAddr(addr)
+	return ReadyAfterTCP(ctx, "nats", a.HostPort, timeout, func(context.Context) error {
+		opts := []nats.Option{nats.Timeout(2 * time.Second)}
+		if a.User != "" {
+			opts = append(opts, nats.UserInfo(a.User, a.Password))
+		}
+		nc, err := nats.Connect(fmt.Sprintf("nats://%s", a.HostPort), opts...)
+		if err != nil {
+			return fmt.Errorf("nats connect: %w", err)
+		}
+		defer nc.Close()
+		if err := nc.FlushTimeout(2 * time.Second); err != nil {
+			return fmt.Errorf("nats flush: %w", err)
+		}
+		return nil
+	})
 }
 
 func (p *natsProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
-	nc, err := nats.Connect(fmt.Sprintf("nats://%s", addr),
-		nats.Timeout(5*time.Second))
+	a := CredentialsFor(addr, kwargs)
+	opts := []nats.Option{nats.Timeout(5 * time.Second)}
+	if a.User != "" {
+		opts = append(opts, nats.UserInfo(a.User, a.Password))
+	}
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s", a.HostPort), opts...)
 	if err != nil {
 		return &StepResult{Success: false, Error: err.Error()}, nil
 	}
@@ -60,7 +89,18 @@ func (p *natsProtocol) publish(nc *nats.Conn, kwargs map[string]any, start time.
 			DurationMs: time.Since(start).Milliseconds(),
 		}, nil
 	}
-	nc.Flush()
+	// NATS publishing is fire-and-forget into a client-side buffer, so Publish
+	// returning nil means "queued", not "delivered". The flush is what makes it
+	// a round trip — and its error was previously discarded, so a publish that
+	// never reached the server still reported Success: true. That is the same
+	// silently-successful step this audit exists to eliminate.
+	if err := nc.FlushTimeout(5 * time.Second); err != nil {
+		return &StepResult{
+			Success:    false,
+			Error:      fmt.Sprintf("publish not confirmed by server: %v", err),
+			DurationMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
 
 	body, _ := json.Marshal(map[string]any{"published": true, "subject": subject})
 	return &StepResult{

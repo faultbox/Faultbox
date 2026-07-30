@@ -30,8 +30,8 @@ Recipes bridge the gap: they encode the **canonical** shape of each
 failure once, in the stdlib, so your specs stay readable and your
 faults stay realistic.
 
-See [RFC-018](../rfcs/0018-recipes-library.md) for the design and
-[RFC-019](../rfcs/0019-recipe-distribution.md) for how recipes reach
+See [RFC-018](rfcs/0018-recipes-library.md) for the design and
+[RFC-019](rfcs/0019-recipe-distribution.md) for how recipes reach
 your specs.
 
 ## How to use them

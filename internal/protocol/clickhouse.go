@@ -28,13 +28,17 @@ func (p *clickhouseProtocol) Methods() []string {
 }
 
 func (p *clickhouseProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
+	a := ParseAddr(addr)
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 2 * time.Second}
-	healthURL := fmt.Sprintf("http://%s/ping", addr)
+	healthURL := fmt.Sprintf("http://%s/ping", a.HostPort)
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 		if err != nil {
 			return err
+		}
+		if a.User != "" {
+			req.SetBasicAuth(a.User, a.Password)
 		}
 		resp, err := client.Do(req)
 		if err == nil {
@@ -49,7 +53,7 @@ func (p *clickhouseProtocol) Healthcheck(ctx context.Context, addr string, timeo
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("clickhouse healthcheck %q timed out after %s", addr, timeout)
+	return fmt.Errorf("clickhouse healthcheck %q timed out after %s", a.HostPort, timeout)
 }
 
 func (p *clickhouseProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
@@ -59,24 +63,25 @@ func (p *clickhouseProtocol) ExecuteStep(ctx context.Context, addr, method strin
 	}
 
 	start := time.Now()
+	creds := CredentialsFor(addr, kwargs)
 	switch method {
 	case "query":
-		return p.executeQuery(ctx, addr, sql, start)
+		return p.executeQuery(ctx, creds, sql, start)
 	case "exec":
-		return p.executeExec(ctx, addr, sql, start)
+		return p.executeExec(ctx, creds, sql, start)
 	default:
 		return nil, fmt.Errorf("unsupported clickhouse method %q", method)
 	}
 }
 
-func (p *clickhouseProtocol) executeQuery(ctx context.Context, addr, sql string, start time.Time) (*StepResult, error) {
+func (p *clickhouseProtocol) executeQuery(ctx context.Context, a Addr, sql string, start time.Time) (*StepResult, error) {
 	// Append FORMAT JSON so ClickHouse returns structured JSON we can parse
 	// directly — unless the user already specified a format.
 	if !strings.Contains(strings.ToUpper(sql), "FORMAT ") {
 		sql = strings.TrimRight(sql, " ;") + " FORMAT JSON"
 	}
 
-	body, statusCode, err := p.postSQL(ctx, addr, sql, 30*time.Second)
+	body, statusCode, err := p.postSQL(ctx, a, sql, 30*time.Second)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		return &StepResult{Success: false, Error: err.Error(), DurationMs: elapsed}, nil
@@ -103,8 +108,8 @@ func (p *clickhouseProtocol) executeQuery(ctx context.Context, addr, sql string,
 	}, nil
 }
 
-func (p *clickhouseProtocol) executeExec(ctx context.Context, addr, sql string, start time.Time) (*StepResult, error) {
-	body, statusCode, err := p.postSQL(ctx, addr, sql, 30*time.Second)
+func (p *clickhouseProtocol) executeExec(ctx context.Context, a Addr, sql string, start time.Time) (*StepResult, error) {
+	body, statusCode, err := p.postSQL(ctx, a, sql, 30*time.Second)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		return &StepResult{Success: false, Error: err.Error(), DurationMs: elapsed}, nil
@@ -120,13 +125,26 @@ func (p *clickhouseProtocol) executeExec(ctx context.Context, addr, sql string, 
 	}, nil
 }
 
-func (p *clickhouseProtocol) postSQL(ctx context.Context, addr, sql string, timeout time.Duration) ([]byte, int, error) {
-	endpoint := fmt.Sprintf("http://%s/?%s", addr, url.Values{"default_format": []string{"JSON"}}.Encode())
+// postSQL submits a statement over ClickHouse's HTTP interface.
+//
+// addr may be a bare "host:port" or "clickhouse://user:pass@host:port/db".
+// The default image ships a passwordless `default` user, so credentials are
+// optional; a server configured with one rejects every statement with 516
+// AUTHENTICATION_FAILED without them.
+func (p *clickhouseProtocol) postSQL(ctx context.Context, a Addr, sql string, timeout time.Duration) ([]byte, int, error) {
+	q := url.Values{"default_format": []string{"JSON"}}
+	if a.Database != "" {
+		q.Set("database", a.Database)
+	}
+	endpoint := fmt.Sprintf("http://%s/?%s", a.HostPort, q.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewBufferString(sql))
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "text/plain")
+	if a.User != "" {
+		req.SetBasicAuth(a.User, a.Password)
+	}
 
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)

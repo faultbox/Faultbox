@@ -27,7 +27,7 @@ Status: feeds RFC-033
 
 ### 1. Proxy startup — `preStartProxies`
 
-[internal/star/runtime.go:978-1004](internal/star/runtime.go#L978-L1004):
+[internal/star/runtime.go:978-1004](../../internal/star/runtime.go#L978-L1004):
 
 ```go
 func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *ServiceDef) error {
@@ -57,7 +57,7 @@ Two relevant facts:
 
 ### 2. Reuse skip in `startServices`
 
-[internal/star/runtime.go:915-968](internal/star/runtime.go#L915-L968):
+[internal/star/runtime.go:915-968](../../internal/star/runtime.go#L915-L968):
 
 ```go
 for _, svcName := range order {
@@ -78,11 +78,11 @@ for _, svcName := range order {
 }
 ```
 
-When a service is reused, `preStartProxies` is skipped entirely — proxies stay alive from the previous test (kept in `stopServices` at [runtime.go:1476-1486](internal/star/runtime.go#L1476-L1486)) but no `proxy_started` event is re-emitted into the new test's trace partition.
+When a service is reused, `preStartProxies` is skipped entirely — proxies stay alive from the previous test (kept in `stopServices` at [runtime.go:1476-1486](../../internal/star/runtime.go#L1476-L1486)) but no `proxy_started` event is re-emitted into the new test's trace partition.
 
 ### 3. `stopServices` proxy teardown
 
-[internal/star/runtime.go:1471-1486](internal/star/runtime.go#L1471-L1486):
+[internal/star/runtime.go:1471-1486](../../internal/star/runtime.go#L1471-L1486):
 
 ```go
 for name, rs := range rt.sessions {
@@ -101,7 +101,7 @@ Confirms the asymmetry: non-reused services tear down proxies between tests; reu
 
 ### 4. `internal_addr` attribute
 
-[internal/star/types.go:188-194](internal/star/types.go#L188-L194):
+[internal/star/types.go:188-194](../../internal/star/types.go#L188-L194):
 
 ```go
 case "internal_addr":
@@ -115,7 +115,7 @@ For `db.mysql` (container, port 3306) this is `"db:3306"`. From a host-binary SU
 
 ### 5. Auto-substitution at `buildEnv` time
 
-[internal/star/runtime.go:1636-1656](internal/star/runtime.go#L1636-L1656):
+[internal/star/runtime.go:1636-1656](../../internal/star/runtime.go#L1636-L1656):
 
 ```go
 func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]string {
@@ -139,7 +139,7 @@ func (rt *Runtime) proxyAddrSubstitutionsFor(mode consumerMode) map[string]strin
 }
 ```
 
-The substitution table maps three literal forms (`localhost:3306`, `127.0.0.1:3306`, `db:3306`) → proxy addr. **Substitution is purely textual** — applied via `strings.ReplaceAll` at [runtime.go:1660-1668](internal/star/runtime.go#L1660-L1668). It only fires if the env value contains one of these exact substrings.
+The substitution table maps three literal forms (`localhost:3306`, `127.0.0.1:3306`, `db:3306`) → proxy addr. **Substitution is purely textual** — applied via `strings.ReplaceAll` at [runtime.go:1660-1668](../../internal/star/runtime.go#L1660-L1668). It only fires if the env value contains one of these exact substrings.
 
 ## Root cause analysis
 
@@ -147,23 +147,23 @@ The substitution table maps three literal forms (`localhost:3306`, `127.0.0.1:33
 
 Most likely **not** a proxy-lifecycle correctness bug. The proxy is almost certainly **still running** in the matrix cells. The customer is reasoning from the absence of `proxy_started` events in the per-cell trace partition.
 
-The reuse path at [runtime.go:919-930](internal/star/runtime.go#L919-L930) skips `preStartProxies` entirely, including its `proxy_started` event emission. Because `db` has `reuse=True` (typical for stateful Docker services) and the gRPC services have `reuse=False` (host binaries), the trace shows:
+The reuse path at [runtime.go:919-930](../../internal/star/runtime.go#L919-L930) skips `preStartProxies` entirely, including its `proxy_started` event emission. Because `db` has `reuse=True` (typical for stateful Docker services) and the gRPC services have `reuse=False` (host binaries), the trace shows:
 
 - `db.mysql` / `db.redis`: emitted once in cell 1 (fresh start), absent in cells 2-18 (reused)
 - gRPC: emitted in every cell (restarted each time)
 
 Customer reads "absent" as "didn't run". **The trace is misleading**, not the proxy.
 
-A second possibility is real: in `fault_scenario` body at [runtime.go:1747-1770](internal/star/runtime.go#L1747-L1770), the rule-application loop calls `EnsureProxy` again with `targetAddr := fmt.Sprintf("127.0.0.1:%d", port)`. If the proxy needs to be created here (rare — only if `preStartProxies` was skipped AND there was no prior proxy), the targetAddr formula is identical to the buggy one in `preStartProxies`. So Finding D's root cause applies here too.
+A second possibility is real: in `fault_scenario` body at [runtime.go:1747-1770](../../internal/star/runtime.go#L1747-L1770), the rule-application loop calls `EnsureProxy` again with `targetAddr := fmt.Sprintf("127.0.0.1:%d", port)`. If the proxy needs to be created here (rare — only if `preStartProxies` was skipped AND there was no prior proxy), the targetAddr formula is identical to the buggy one in `preStartProxies`. So Finding D's root cause applies here too.
 
 ### Finding D — real bug in two layers
 
-**Layer 1: targetAddr is wrong for non-host-mapped Docker upstreams.** [runtime.go:990](internal/star/runtime.go#L990) hardcodes `127.0.0.1:port`. This works for binary services, and works for Docker services when Docker auto-mapped the port to the host (HostPort is captured at container launch in [container/launch.go:194](internal/container/launch.go#L194)). But:
+**Layer 1: targetAddr is wrong for non-host-mapped Docker upstreams.** [runtime.go:990](../../internal/star/runtime.go#L990) hardcodes `127.0.0.1:port`. This works for binary services, and works for Docker services when Docker auto-mapped the port to the host (HostPort is captured at container launch in [container/launch.go:194](../../internal/container/launch.go#L194)). But:
 
 - It breaks for Docker services without explicit port publishing
 - It silently works for the customer's case (HostPort set), but the customer's *SUT-side connection* still fails for layer 2 reasons
 
-**Layer 2: customer-side env wiring breaks the auto-substitution.** The substitution at [runtime.go:1664-1665](internal/star/runtime.go#L1664-L1665) is purely textual `strings.ReplaceAll`. It fires only when the SUT env value contains a literal `db:3306` / `localhost:3306` / `127.0.0.1:3306`.
+**Layer 2: customer-side env wiring breaks the auto-substitution.** The substitution at [runtime.go:1664-1665](../../internal/star/runtime.go#L1664-L1665) is purely textual `strings.ReplaceAll`. It fires only when the SUT env value contains a literal `db:3306` / `localhost:3306` / `127.0.0.1:3306`.
 
 The customer's spec does:
 ```python
@@ -174,7 +174,7 @@ env["MYSQL_PORT"] = port                             # "3306"
 
 After the rsplit, `MYSQL_HOST` and `MYSQL_PORT` are separate env vars. Neither contains the substring `db:3306`. The substitution map has no entry that matches either. **The truck-api SUT dials `127.0.0.1:3306` — an unbound port on the host** (Docker auto-mapped 3306 → 13306, not → 3306). Connection refused, healthcheck times out.
 
-The auto-injected `FAULTBOX_DB_MYSQL_{HOST,PORT,ADDR}` vars at [runtime.go:1576-1592](internal/star/runtime.go#L1576-L1592) DO point at the proxy correctly, but the customer's spec doesn't use them — they use the documented `db.mysql.internal_addr` attribute and split it. **The documented path is the broken one.**
+The auto-injected `FAULTBOX_DB_MYSQL_{HOST,PORT,ADDR}` vars at [runtime.go:1576-1592](../../internal/star/runtime.go#L1576-L1592) DO point at the proxy correctly, but the customer's spec doesn't use them — they use the documented `db.mysql.internal_addr` attribute and split it. **The documented path is the broken one.**
 
 This is why gRPC works: customer's gRPC spec helper happens to use the auto-injected envs (or composes with proxy-aware addrs) — for host-binary upstreams, `internal_addr` returns `localhost:port` (no rewrite needed because host loopback already works for both proxy and direct paths in their setup).
 
@@ -182,7 +182,7 @@ This is why gRPC works: customer's gRPC spec helper happens to use the auto-inje
 
 ### For Finding C — make the trace honest
 
-Cheapest: in the reuse path at [runtime.go:919-931](internal/star/runtime.go#L919-L931), iterate the proxy manager's known proxies for the service and emit one `proxy_active` event per interface (with `mode: "reused"`). Renderer treats `proxy_active` and `proxy_started` as synonymous for the "wired up at cell start" panel.
+Cheapest: in the reuse path at [runtime.go:919-931](../../internal/star/runtime.go#L919-L931), iterate the proxy manager's known proxies for the service and emit one `proxy_active` event per interface (with `mode: "reused"`). Renderer treats `proxy_active` and `proxy_started` as synonymous for the "wired up at cell start" panel.
 
 This is a one-screen change, no behavior shift, makes the per-cell trace self-describing.
 
@@ -204,4 +204,4 @@ Optionally: emit a warning at runtime if a service's user-defined env contains r
 
 ### Fault-scenario rule-apply path
 
-Same fix as `preStartProxies` for the targetAddr at [runtime.go:1759](internal/star/runtime.go#L1759) — extract to a helper `proxyTargetAddr(svc, iface)` that handles container vs binary correctly.
+Same fix as `preStartProxies` for the targetAddr at [runtime.go:1759](../../internal/star/runtime.go#L1759) — extract to a helper `proxyTargetAddr(svc, iface)` that handles container vs binary correctly.

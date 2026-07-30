@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -84,54 +87,117 @@ func (p *natsProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 
 	errCh := make(chan error, 2)
 
-	// Server → client.
+	// Server → client: MSG carries a payload, everything else is a bare line.
 	go func() {
-		scanner := bufio.NewScanner(serverConn)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		linesSeen := 0
-		for scanner.Scan() {
-			line := scanner.Text()
-			tracker.AddBytesS2C(len(line) + 1) // +1 for newline
-			// Intercept MSG lines (delivery).
-			if strings.HasPrefix(line, "MSG ") {
-				subject := extractNATSSubject(line)
-				if p.shouldDrop(subject, "deliver") {
-					continue
+		errCh <- p.relayNATS(serverConn, clientConn, "MSG ", "deliver",
+			tracker.AddBytesS2C, func() {
+				linesSeen++
+				if linesSeen == 1 {
+					// First server line (typically `INFO {...}`) marks the
+					// connection-ready state.
+					tracker.EmitHandshakeComplete("info", 1)
 				}
-			}
-			fmt.Fprintln(clientConn, line)
-			linesSeen++
-			if linesSeen == 1 {
-				// First server line (typically `INFO {...}`) marks
-				// the connection-ready state.
-				tracker.EmitHandshakeComplete("info", 1)
-			}
-		}
-		errCh <- scanner.Err()
+			})
 	}()
 
-	// Client → server.
+	// Client → server: PUB carries a payload.
 	go func() {
-		scanner := bufio.NewScanner(clientConn)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			tracker.AddBytesC2S(len(line) + 1)
-			// Intercept PUB lines (publish).
-			if strings.HasPrefix(line, "PUB ") {
-				subject := extractNATSSubject(line)
-				if p.shouldDrop(subject, "publish") {
-					continue
-				}
-			}
-			fmt.Fprintln(serverConn, line)
-		}
-		errCh <- scanner.Err()
+		errCh <- p.relayNATS(clientConn, serverConn, "PUB ", "publish",
+			tracker.AddBytesC2S, func() {})
 	}()
 
 	if err := <-errCh; err != nil {
 		closeReason = classifyCloseReason(err, "client")
 	}
+}
+
+// relayNATS forwards the NATS protocol from src to dst, dropping messages whose
+// subject matches a rule.
+//
+// # Why this is byte-oriented
+//
+// This used to use a bufio.Scanner and fmt.Fprintln. Both are wrong for NATS:
+//
+//   - NATS frames on CRLF. Scanner's ScanLines strips the trailing "\r" and
+//     Fprintln writes back only "\n", so **every line the proxy touched lost a
+//     byte**. The Go client's parser reported the memorable
+//     `nats: expected 'PONG', got 'PONG'` — same text, different framing.
+//   - PUB and MSG carry a length-prefixed, possibly binary payload. Splitting
+//     that on newlines corrupts any payload containing one, and lets payload
+//     bytes be mistaken for a protocol verb.
+//
+// So control lines are forwarded with their terminator intact, and a payload is
+// read by its declared length and forwarded opaquely. Dropping a message drops
+// its payload with it, which the line-based version could not do at all.
+func (p *natsProxy) relayNATS(src, dst net.Conn, verb, direction string, count func(int), onLine func()) error {
+	reader := bufio.NewReaderSize(src, 64*1024)
+	for {
+		// ReadBytes keeps the delimiter, so "\r\n" survives intact.
+		line, err := reader.ReadBytes('\n')
+		if len(line) == 0 && err != nil {
+			return err
+		}
+		count(len(line))
+
+		var payload []byte
+		if n := natsPayloadLen(line, verb); n >= 0 {
+			// n bytes of payload plus its own CRLF terminator.
+			payload = make([]byte, n+2)
+			if _, rerr := io.ReadFull(reader, payload); rerr != nil {
+				return rerr
+			}
+			count(len(payload))
+		}
+
+		drop := false
+		if bytes.HasPrefix(line, []byte(verb)) {
+			if p.shouldDrop(extractNATSSubject(string(line)), direction) {
+				drop = true
+			}
+		}
+
+		if !drop {
+			if _, werr := dst.Write(line); werr != nil {
+				return werr
+			}
+			if len(payload) > 0 {
+				if _, werr := dst.Write(payload); werr != nil {
+					return werr
+				}
+			}
+			onLine()
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// natsPayloadLen returns the declared payload size of a PUB/MSG control line,
+// or -1 when the line carries no payload.
+//
+// Both verbs put the byte count last:
+//
+//	PUB <subject> [reply-to] <#bytes>\r\n<payload>\r\n
+//	MSG <subject> <sid> [reply-to] <#bytes>\r\n<payload>\r\n
+//
+// HPUB/HMSG (headers) declare two sizes, of which the last is the total — so
+// reading the final field is correct for those too.
+func natsPayloadLen(line []byte, verb string) int {
+	if !bytes.HasPrefix(line, []byte(verb)) {
+		return -1
+	}
+	fields := strings.Fields(strings.TrimRight(string(line), "\r\n"))
+	if len(fields) < 3 {
+		return -1
+	}
+	n, err := strconv.Atoi(fields[len(fields)-1])
+	if err != nil || n < 0 {
+		return -1
+	}
+	return n
 }
 
 func (p *natsProxy) shouldDrop(subject, direction string) bool {
@@ -197,6 +263,6 @@ func (p *natsProxy) Stop() error {
 	if p.listener != nil {
 		p.listener.Close()
 	}
-	p.wg.Wait()
+	waitConns(&p.wg, p.onEvent, p.svcName, "nats")
 	return nil
 }

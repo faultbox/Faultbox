@@ -6,9 +6,14 @@ Interface declaration:
 ch = service("clickhouse",
     interface("main", "clickhouse", 8123),
     image = "clickhouse/clickhouse-server:24",
-    healthcheck = tcp("localhost:8123"),
+    healthcheck = ready(timeout = "60s"),
 )
 ```
+
+Credentials come from `env=` as `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` and
+`CLICKHOUSE_DB`, sent as HTTP basic auth. The stock image ships a passwordless
+`default` user, so a spec that declares none works as before. Credential
+support added in v0.16.1.
 
 Faultbox uses ClickHouse's **HTTP interface** (default port 8123), not the
 native binary protocol on 9000. This is the simplification flagged in
@@ -137,7 +142,7 @@ def reset_clickhouse():
 ch = service("clickhouse",
     interface("main", "clickhouse", 8123),
     image = "clickhouse/clickhouse-server:24",
-    healthcheck = tcp("localhost:8123"),
+    healthcheck = ready(timeout = "60s"),
     reuse = True,
     seed = seed_clickhouse,
     reset = reset_clickhouse,

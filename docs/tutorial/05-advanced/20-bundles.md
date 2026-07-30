@@ -194,4 +194,4 @@ See [`docs/bundles.md`](../../bundles.md) for the full format spec.
 - Zero-traffic warnings catch the entire class of silently-
   ineffective fault rules that used to pass tests dishonestly.
 
-Next: [Chapter 21 — Replay, coming in v0.10.0 →](21-replay.md)
+Next: [Chapter 21 — JWT mocks →](21-jwt-mocks.md)

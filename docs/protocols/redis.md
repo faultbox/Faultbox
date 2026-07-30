@@ -6,9 +6,16 @@ Interface declaration:
 cache = service("redis",
     interface("main", "redis", 6379),
     image = "redis:7",
-    healthcheck = tcp("localhost:6379"),
+    healthcheck = ready(timeout = "30s"),
 )
 ```
+
+A password-protected server declares it in `env=` as `REDIS_PASSWORD` (plus
+`REDIS_USER` for a Redis 6+ ACL user); steps and the healthcheck then send
+`AUTH` before anything else. Added in v0.16.1 — before that, every command
+against a server started with `--requirepass` came back `NOAUTH`, and since
+that lands in the step *result* rather than as a connection error, only a spec
+that checks `r.ok` would have seen it.
 
 ## Methods
 
@@ -99,13 +106,35 @@ cache.main.command(cmd="HSET", args=["user:1", "name", "alice", "email", "alice@
 resp = cache.main.command(cmd="HGETALL", args=["user:1"])
 ```
 
+## Authentication
+
+Every method also accepts `password=` and `user=`, which override what the
+service declared:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `password` | string | `REDIS_PASSWORD` from `env=` | Sent as `AUTH` before the command |
+| `user` | string | `REDIS_USER` from `env=` | Redis 6+ ACL user; omit for the default user |
+
+With no password configured, no `AUTH` is sent and an unprotected server is
+untouched.
+
 ## Response Object
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `.data` | varies | Parsed RESP value — string, list, int, or None |
 | `.ok` | bool | `True` if no error |
+| `.error` | string | Error message when `.ok` is `False` — **check this** |
 | `.duration_ms` | int | Execution time |
+
+A failing command sets `.ok = False` rather than raising, so an unchecked
+result is indistinguishable from a successful one:
+
+```python
+r = cache.main.set(key="k", value="v")
+assert_true(r.ok, "SET failed: %s" % r.error)
+```
 
 ## Fault Rules
 
@@ -160,7 +189,7 @@ def seed_redis():
 cache = service("redis",
     interface("main", "redis", 6379),
     image = "redis:7",
-    healthcheck = tcp("localhost:6379"),
+    healthcheck = ready(timeout = "30s"),
     reuse = True,
     seed = seed_redis,  # FLUSHALL + seed on every reset
 )

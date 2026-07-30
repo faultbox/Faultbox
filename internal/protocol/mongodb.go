@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -24,24 +25,28 @@ func (p *mongoProtocol) Methods() []string {
 }
 
 func (p *mongoProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
-	if err := TCPHealthcheck(ctx, addr, timeout); err != nil {
-		return err
-	}
-	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	client, err := p.connect(pingCtx, addr, "")
-	if err != nil {
-		return fmt.Errorf("mongo connect: %w", err)
-	}
-	defer client.Disconnect(pingCtx)
-	return client.Ping(pingCtx, nil)
+	a := ParseAddr(addr)
+	return ReadyAfterTCP(ctx, "mongodb", a.HostPort, timeout,
+		func(attemptCtx context.Context) error {
+			client, err := p.connect(attemptCtx, a, "admin")
+			if err != nil {
+				return fmt.Errorf("mongo connect: %w", err)
+			}
+			defer client.Disconnect(attemptCtx)
+			return client.Ping(attemptCtx, nil)
+		})
 }
 
 func (p *mongoProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
 	start := time.Now()
 	db := getStringKwarg(kwargs, "database", "test")
 
-	client, err := p.connect(ctx, addr, db)
+	// The database a step operates on is not necessarily the database that
+	// holds the user. For the account the official image creates from
+	// MONGO_INITDB_ROOT_USERNAME that is always "admin"; auth_source= overrides
+	// it for a user provisioned elsewhere.
+	creds := CredentialsFor(addr, kwargs)
+	client, err := p.connect(ctx, creds, getStringKwarg(kwargs, "auth_source", "admin"))
 	if err != nil {
 		return &StepResult{
 			Success:    false,
@@ -73,8 +78,22 @@ func (p *mongoProtocol) ExecuteStep(ctx context.Context, addr, method string, kw
 	}
 }
 
-func (p *mongoProtocol) connect(ctx context.Context, addr, db string) (*mongo.Client, error) {
-	uri := fmt.Sprintf("mongodb://%s", addr)
+// connect dials MongoDB, carrying any credentials the address supplies.
+//
+// addr may be a bare "host:port" or a "mongodb://user:pass@host:port/db" URL.
+// Without the credentials, a server started with MONGO_INITDB_ROOT_USERNAME
+// refuses every command with "command requires authentication" — which the
+// step reports in its result rather than as a connection error, so only an
+// asserting spec would notice.
+func (p *mongoProtocol) connect(ctx context.Context, a Addr, authSource string) (*mongo.Client, error) {
+	uri := fmt.Sprintf("mongodb://%s", a.HostPort)
+	if a.User != "" {
+		if authSource == "" {
+			authSource = "admin"
+		}
+		uri = fmt.Sprintf("mongodb://%s:%s@%s/?authSource=%s",
+			url.QueryEscape(a.User), url.QueryEscape(a.Password), a.HostPort, url.QueryEscape(authSource))
+	}
 	opts := options.Client().ApplyURI(uri).SetConnectTimeout(5 * time.Second).SetServerSelectionTimeout(5 * time.Second)
 	return mongo.Connect(opts)
 }

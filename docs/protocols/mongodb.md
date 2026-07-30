@@ -7,13 +7,29 @@ db = service("mongo",
     interface("main", "mongodb", 27017),
     image = "mongo:7",
     env = {"MONGO_INITDB_ROOT_USERNAME": "root", "MONGO_INITDB_ROOT_PASSWORD": "test"},
-    healthcheck = tcp("localhost:27017"),
+    healthcheck = ready(timeout = "60s"),
 )
 ```
 
+Credentials come from `env=` — `MONGO_INITDB_ROOT_USERNAME` and
+`MONGO_INITDB_ROOT_PASSWORD`, authenticating against `admin` unless
+`MONGO_INITDB_DATABASE` says otherwise. The official image only enables
+authentication when both are set, so a spec that declares neither connects
+unauthenticated, as before. Credential support added in v0.16.1.
+
 Faultbox speaks the MongoDB Wire Protocol (OP_MSG, MongoDB 3.6+) — the same
 format all modern drivers use. Step arguments accept Starlark dicts directly;
-they are encoded as BSON on the wire.
+they are encoded as BSON on the wire, preserving integers, floats, booleans,
+nested dicts and lists.
+
+> **Fixed in v0.16.1.** Before this, only string values survived: the runtime
+> read dict values with a string coercion that yielded `""` for everything else,
+> so `document = {"id": 1}` stored `{"id": ""}`. It went unnoticed because the
+> mangling was self-consistent — a filter of `{"id": 1}` was flattened the same
+> way and matched the mangled document. `insert_many` was affected worse still;
+> list arguments reached the plugin as Starlark source text, so that path had
+> never run at all. If you have specs storing numeric data, re-check what is
+> actually in the collection.
 
 ## Methods
 
@@ -217,7 +233,7 @@ db = service("mongo",
     interface("main", "mongodb", 27017),
     image = "mongo:7",
     env = {"MONGO_INITDB_ROOT_USERNAME": "root", "MONGO_INITDB_ROOT_PASSWORD": "test"},
-    healthcheck = tcp("localhost:27017"),
+    healthcheck = ready(timeout = "60s"),
     reuse = True,
     seed = seed_mongo,
     reset = reset_mongo,

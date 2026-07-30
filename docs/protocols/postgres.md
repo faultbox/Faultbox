@@ -7,7 +7,7 @@ db = service("postgres",
     interface("main", "postgres", 5432),
     image = "postgres:16",
     env = {"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "testdb"},
-    healthcheck = tcp("localhost:5432"),
+    healthcheck = ready(timeout = "60s"),
 )
 ```
 
@@ -151,7 +151,7 @@ db = service("postgres",
     interface("main", "postgres", 5432),
     image = "postgres:16",
     env = {"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "testdb"},
-    healthcheck = tcp("localhost:5432"),
+    healthcheck = ready(timeout = "60s"),
     reuse = True,
     seed = seed_postgres,
     reset = reset_postgres,
@@ -197,7 +197,7 @@ db = service("postgres",
     interface("main", "postgres", 5432),
     image = "postgres:16",
     env = {"POSTGRES_PASSWORD": "test"},
-    healthcheck = tcp("localhost:5432"),
+    healthcheck = ready(timeout = "60s"),
     observe = [wal_stream(tables=["orders", "users"])],  # planned
 )
 ```

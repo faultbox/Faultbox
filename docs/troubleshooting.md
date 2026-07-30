@@ -63,17 +63,30 @@ have to handshake the protocol layer before accepting queries —
 Docker's port-forwarder accepts TCP connections **before** the app
 behind it is ready.
 
-Fix: replace `tcp(...)` with a protocol-aware check:
+Fix: use `ready()` (v0.16.0), which asks the service through its protocol
+plugin rather than asking whether a port is open:
 
 ```python
-# http() healthchecks already require a 2xx, so an app /healthz that
-# checks its own DB connection is the most reliable readiness gate:
+healthcheck = ready(timeout = "60s")
+```
+
+For Postgres and MySQL that is a real `SELECT 1` using the credentials the
+spec declared in `env=`; for Redis a `PING`; for MongoDB a `Ping`. It retries
+to the timeout, so a slow cold start is waited out rather than guessed at.
+
+Measured on a `postgres:16-alpine` container: `tcp()` reported ready in
+**0 ms**, `ready()` in ~2.4 s — which is when the database could actually
+answer.
+
+An app with its own `/healthz` that checks its DB connection is still the
+most meaningful gate when there is an app in front:
+
+```python
 healthcheck = http("http://localhost:8080/healthz")
 ```
 
-For a bare SQL service with no app in front, `tcp()` is the only built-in
-healthcheck - give the container extra settle time, or have the SUT retry
-its first query, since Faultbox has no query-based healthcheck builtin.
+Before v0.16.0 there was no query-based builtin, and the usual workaround was
+`tcp()` plus a generous `sleep()`. That is no longer necessary.
 
 This was the #5 hour-burner on the inDrive PoC.
 
@@ -314,6 +327,130 @@ so no packet was affected; the result below would be meaningless
 ```
 
 — but if you see that message, this is why.
+
+## 14. Database steps fail with `invalid connection`, `connection reset by peer`, or `role "root" does not exist`
+
+Symptom: a `query()` / `exec()` step against a real database returns
+`ok = False` with one of:
+
+| Message | Protocol | What it actually means |
+|---|---|---|
+| `invalid connection` | MySQL | Access denied — no password was sent |
+| `Error 1046: No database selected` | MySQL | The DSN named no schema |
+| `read: connection reset by peer` after ~60 s | Postgres | The auth handshake deadlocked |
+| `pq: role "root" does not exist` | Postgres | Fell back to the OS user (`root` under sudo) |
+| `NOAUTH Authentication required` | Redis | No `AUTH` sent to a `--requirepass` server |
+| `command requires authentication` | MongoDB | No credentials sent |
+
+Cause: the step client was not sending the credentials the spec declared.
+Fixed for Postgres in **v0.16.0** and for MySQL, Redis, MongoDB, ClickHouse
+and Cassandra in **v0.16.1**.
+
+Fix: upgrade. Then declare credentials once, in `env=`, using the image's own
+convention — see [protocols/README.md](protocols/README.md#credentials-come-from-the-service-v0160-extended-v0161)
+for the per-protocol table. Steps, healthchecks and `ready()` all pick them
+up; an explicit `user=` / `password=` / `database=` on a step overrides them.
+
+**Why this went unnoticed for so long, and what to change in your specs:** a
+failing step returns `ok = False` rather than raising, so a spec that never
+checks the result passes whether or not anything worked. If your database
+steps have never been asserted on, add the check before assuming they work:
+
+```python
+r = db.main.exec(sql = "INSERT INTO t VALUES (1)")
+assert_true(r.ok, "insert failed: %s" % r.error)
+```
+
+See [Pattern 0](guides/spec-patterns.md#pattern-0-assert-on-every-step).
+
+## 15. `ready()` times out against a service that is clearly running
+
+Symptom: `healthcheck = ready(timeout = "60s")` burns its whole budget and
+reports `not ready: context deadline exceeded`, while `docker exec` into the
+container shows the service answering fine.
+
+Cause, if you are on **v0.16.0**: `ready()` resolved to
+`<protocol>://host:port` and handed the whole string to the protocol plugin,
+but only Postgres, HTTP and HTTP/2 could parse a URL. Every other plugin
+dialled it verbatim — attempting to reach a host literally named
+`redis://localhost` — so the check could never succeed. Affected Cassandra,
+ClickHouse, gRPC, MongoDB, MySQL, NATS, Redis and UDP.
+
+Fix: upgrade to **v0.16.1**. As a workaround on v0.16.0, use `tcp()` and
+accept that it only proves the port is bound.
+
+## 16. In the Lima VM, DNS resolves but every connection times out (`docker pull` hangs)
+
+Symptom: inside `limactl shell faultbox-dev`, name resolution works but nothing
+connects.
+
+```
+$ getent hosts registry-1.docker.io      # resolves fine
+98.87.178.151   registry-1.docker.io
+$ curl https://github.com                # times out
+$ docker pull mongo:7
+... dial tcp 44.205.146.148:443: i/o timeout
+```
+
+Cause: the VM has **two** default routes, and the one Lima prefers is dead.
+
+```
+$ ip route show default
+default via 192.168.64.1 dev lima0 ... metric 100    ← preferred, unreachable
+default via 192.168.5.2  dev eth0  ... metric 200    ← works
+```
+
+`lima0` is the vmnet/vzNAT interface; `eth0` is Lima's user-mode NAT. Lima gives
+`lima0` the better metric because in a healthy setup it is the better path. But
+on the host, a VPN (Tailscale, corporate clients — anything owning a `utun`
+default route) commonly marks the vmnet bridge's routes **`RTF_REJECT`**:
+
+```
+$ netstat -rn -f inet | grep 192.168.64
+192.168.64         link#30            UC     bridge100  !     ← ! = reject
+```
+
+Everything outbound then blackholes. DNS still works because Lima intercepts it
+with an iptables `LIMADNS` rule and answers locally — which is exactly what makes
+this confusing: resolution succeeds, so it does not look like a network problem.
+
+Diagnose by testing each interface directly:
+
+```bash
+curl -m 8 --interface lima0 https://github.com    # hangs
+curl -m 8 --interface eth0  https://github.com    # 200
+ping -c 2 192.168.64.1                            # 100% loss
+```
+
+**Fix** — prefer `eth0`, persistently:
+
+```bash
+sudo tee /etc/netplan/99-faultbox-prefer-eth0.yaml >/dev/null <<'EOF'
+network:
+  version: 2
+  ethernets:
+    lima0:
+      dhcp4-overrides:
+        route-metric: 900
+EOF
+sudo chmod 600 /etc/netplan/99-faultbox-prefer-eth0.yaml
+sudo netplan generate && sudo netplan apply
+```
+
+A VM restart is **not** enough on its own — the interface comes back with the
+same metric and the host-side reject is unchanged.
+
+Reverting is a file deletion, so it costs nothing to undo once `lima0` is
+healthy again:
+
+```bash
+sudo rm /etc/netplan/99-faultbox-prefer-eth0.yaml && sudo netplan apply
+```
+
+Trade-off: `eth0` is userspace-NATted, so throughput is lower than a working
+vmnet path, and the VM keeps its `192.168.64.2` address for host→VM access
+(only the *default route* is deprioritised, not the subnet route). If you would
+rather fix the host, the VPN is where to look.
 
 ## See also
 

@@ -454,3 +454,52 @@ func newProxy(protocol string, onEvent OnProxyEvent, svcName string) (Proxy, err
 		return nil, fmt.Errorf("protocol %q does not support proxy-level faults", protocol)
 	}
 }
+
+// ProxyStopTimeout bounds how long Stop() waits for in-flight connection
+// handlers before abandoning them.
+const ProxyStopTimeout = 5 * time.Second
+
+// waitConns waits for a proxy's connection handlers to finish, giving up after
+// ProxyStopTimeout. It reports whether they all finished.
+//
+// Every proxy's Stop() used to call wg.Wait() unbounded. A handler blocked on a
+// read that never returns therefore hung Stop() forever, and because the
+// runtime calls Stop() during per-test teardown, one stuck connection hung the
+// whole run — after the test body had already finished, so no per-test timeout
+// could fire and the process had to be killed.
+//
+// That happened for real: the MySQL proxy's result-set forwarding issued a
+// deadline-free read for a packet the server would never send (fixed in the
+// same change as this helper). The parse bug is fixed, but a proxy speaking
+// eleven other wire protocols will have more of them, and none of those should
+// be able to wedge a run. Stop() runs while everything is being torn down
+// anyway: the listener is closed and the context cancelled, so an abandoned
+// handler unblocks on its own deadline and exits.
+// Abandoning a handler is bounded but not silent: it emits a
+// proxy_stop_timeout event so the trace records that a connection was still
+// live at teardown, rather than papering over it.
+func waitConns(wg *sync.WaitGroup, onEvent OnProxyEvent, svcName, protocol string) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(ProxyStopTimeout):
+		if onEvent != nil {
+			onEvent(ProxyEvent{
+				Type:     "proxy_stop_timeout",
+				Protocol: protocol,
+				Action:   "abandon",
+				To:       svcName,
+				Fields: map[string]string{
+					"waited": ProxyStopTimeout.String(),
+					"reason": "connection handler still running at teardown",
+				},
+			})
+		}
+		return false
+	}
+}

@@ -26,6 +26,7 @@ func (p *kafkaProtocol) Methods() []string {
 const kafkaReadyTopic = "__faultbox_ready__"
 
 func (p *kafkaProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
+	addr = ParseAddr(addr).HostPort
 	// Strong readiness check: we don't just verify metadata (which succeeds as
 	// soon as docker-proxy is up), but also verify the broker can handle a
 	// produce request by dialing the partition leader for a sentinel topic.

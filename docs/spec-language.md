@@ -240,11 +240,11 @@ api = service("api",
 | `image` | string | one of three | Docker image reference (e.g., `"postgres:16-alpine"`) |
 | `build` | string | one of three | Path to Dockerfile context directory |
 | *positional* | interface | **yes** | One or more `interface()` declarations |
-| `args` | list | no | Command-line arguments passed to the binary |
+| `args` | list | no | Binary mode: command-line arguments. Container mode: **overrides the image's `CMD`**, e.g. `args = ["redis-server", "--requirepass", "secret"]`. Before v0.16.1 this was accepted and then silently ignored for containers. |
 | `env` | dict | no | Environment variables |
 | `volumes` | dict | no | Volume mounts `{host_path: container_path}` (container mode) |
 | `depends_on` | list | no | Services that must start first |
-| `healthcheck` | healthcheck | no | Readiness check (`tcp()`, `http()`, or `kafka_ready()`) |
+| `healthcheck` | healthcheck | no | Readiness check — prefer [`ready()`](#readytimeout-v0160); also `tcp()`, `http()`, `kafka_ready()` |
 | `observe` | list | no | Event sources to attach (see [Event Sources](#event-sources)) |
 | `ports` | dict | no | Explicit host port mapping `{container_port: host_port}` (0 = Docker picks) |
 | `reuse` | bool | no | Keep container alive between tests (see [Container Lifecycle](#container-lifecycle)) |
@@ -1925,6 +1925,31 @@ readiness fall back to a TCP connect, so `ready()` is never worse than the
 Measured on the RFC-056 corpus: `tcp()` plus a hand-tuned `sleep("25s")` took
 25 s per test and was correct only by guesswork; `ready()` takes ~2.4 s and is
 correct by construction.
+
+**What each protocol actually checks:**
+
+| Protocol | Check |
+|---|---|
+| `postgres`, `mysql` | `SELECT 1` with the declared credentials, retried to the timeout |
+| `redis` | `AUTH` if a password is declared, then `PING`, expecting `+PONG` |
+| `mongodb` | driver `Ping` with the declared credentials |
+| `clickhouse` | `GET /ping`, with basic auth when declared |
+| `cassandra` | CQL session establishment |
+| `kafka` | metadata + a real partition-leader dial for a sentinel topic |
+| `http`, `http2` | `GET /` expecting 2xx/3xx |
+| everything else | TCP connect — same as `tcp()`, never worse |
+
+Credentials come from `env=`; see
+[protocols/README.md](protocols/README.md#credentials-come-from-the-service-v0160-extended-v0161)
+for the per-protocol variable names.
+
+> **Fixed in v0.16.1.** In v0.16.0 `ready()` resolved to
+> `<protocol>://host:port` and passed the whole string to the protocol plugin,
+> but only `postgres`, `http` and `http2` parsed a URL — the rest tried to dial
+> a host literally named `redis://localhost`. `ready()` could therefore never
+> succeed for `cassandra`, `clickhouse`, `grpc`, `mongodb`, `mysql`, `nats`,
+> `redis` or `udp`; it burned the full timeout and reported the service not
+> ready.
 
 ### `watch(service, files=[...], ops=[...], run=callback)` (v0.16.0)
 
