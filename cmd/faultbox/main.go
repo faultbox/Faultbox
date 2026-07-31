@@ -1897,8 +1897,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage:
   faultbox run [flags] <binary> [args...]    Run a single service
   faultbox test [flags] <file.star>          Run multi-service tests
+  faultbox check <file.star> [flags]         Validate a spec without running it
   faultbox plan <file.star> [flags]          Enumerate the plan tree (no execution)
   faultbox init [flags] <binary>             Generate starter .star file
+  faultbox setup-trace [flags]               Register the host for watch() (once, as root)
   faultbox diff <trace1> <trace2>            Compare normalized traces
   faultbox self-update                       Update to the latest version
   faultbox mcp                               Start MCP server (for LLM agents)

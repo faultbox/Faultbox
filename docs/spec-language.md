@@ -2588,6 +2588,14 @@ the filesystem relative to the spec's directory.
 Starlark has no built-in `assert` statement. Faultbox provides assertion
 builtins — value checks, temporal properties, and ordering verification.
 
+> **A test that asserts nothing cannot fail** (v0.17.0). Faultbox reports
+> `TEST_NO_ASSERTIONS` when a test passes having evaluated none, and
+> `NO_POSITIVE_CONTROL` when *no* test in the suite ever asserts that a step on
+> an interface **succeeds** — a suite where every assertion is negative is
+> satisfied by a client that cannot connect at all. Both are warnings; see
+> [diagnostic-codes.md](diagnostic-codes.md) and
+> [Pattern 0](guides/spec-patterns.md#pattern-0-assert-on-every-step).
+
 ### Value Assertions
 
 #### `assert_true(condition, message=)`
