@@ -188,10 +188,12 @@ make demo
 
 | Document | Description |
 |----------|-------------|
-| [Tutorial](docs/tutorial/) | 12-chapter hands-on guide (beginner to advanced) |
+| [Tutorial](docs/tutorial/) | 30-chapter hands-on guide (beginner to advanced) |
 | [Spec Language Reference](docs/spec-language.md) | Complete Starlark API reference |
 | [CLI Reference](docs/cli-reference.md) | All commands and flags |
 | [Error Code Reference](docs/errno-reference.md) | Errno values for fault injection |
+| [Diagnostic Codes](docs/diagnostic-codes.md) | Every machine-readable code Faultbox emits, and what to do about it (RFC-052) |
+| [Driving Faultbox as an Agent](docs/guides/driving-faultbox-as-an-agent.md) | The agent loop: `check` → run → read; JSON shapes and codes (RFC-052) |
 | [Determinism Levels](docs/determinism.md) | L0–L5 taxonomy, the L1 contract, escape hatches (RFC-040) |
 | [Temporal Properties](docs/temporal.md) | `eventually` / `always` / `monitor` / `await_*` / `test()` (RFC-041) |
 | [Plan & Coverage](docs/exploration.md) | `faultbox plan`, `plan.json`, coverage, suggestions (RFC-042) |

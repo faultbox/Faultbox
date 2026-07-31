@@ -452,6 +452,34 @@ vmnet path, and the VM keeps its `192.168.64.2` address for host→VM access
 (only the *default route* is deprioritised, not the subnet route). If you would
 rather fix the host, the VPN is where to look.
 
+## 17. "My suite is green but I don't trust it"
+
+Two v0.17.0 diagnostics answer exactly that, and both are warnings printed after
+the summary:
+
+```
+WARNING: [NO_POSITIVE_CONTROL] no test asserts that a step on 'pg.main' succeeds
+WARNING: [TEST_NO_ASSERTIONS] test_smoke: passed without evaluating any assertion
+```
+
+`NO_POSITIVE_CONTROL` is the one worth acting on. It means every assertion about
+that interface is satisfied by a client that cannot connect at all — so the suite
+would not fail if it broke. That is not hypothetical: a CI spec here exercised a
+completely broken Postgres client on every pull request for three releases and
+passed, because its only assertion was that a query *fails* under an injected
+fault.
+
+**Fix:** add one test that runs a step with no fault injected and asserts `r.ok`.
+See [`poc/protocol-audit/`](../poc/protocol-audit/) — each spec there pairs a
+statement that must succeed with one that must fail.
+
+To catch spec problems *before* running anything, use
+[`faultbox check`](cli-reference.md#faultbox-check-v0170). Note it cannot report
+these two: deciding whether an assertion is positive or negative from source
+alone is unreliable, so they need a run.
+
+Every code and its remedy: [diagnostic-codes.md](diagnostic-codes.md).
+
 ## See also
 
 - [bundles.md](bundles.md) — bundle inspection (`faultbox inspect`)
