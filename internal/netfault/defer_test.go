@@ -31,7 +31,7 @@ func TestDeferQueuePreservesInsertionOrderOnTies(t *testing.T) {
 	}
 
 	advanceWhenArmed(t, clock, q, n, 100*time.Millisecond)
-	if !waitFor(t, 2*time.Second, func() bool {
+	if !waitFor(t, deliveryBudget, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(order) == n
@@ -157,7 +157,7 @@ func TestDelayReleasesAfterDuration(t *testing.T) {
 		t.Fatalf("packet delivered immediately (%d); delay did not hold it", got)
 	}
 	advanceWhenArmed(t, clock, fe.deferQ, 1, 250*time.Millisecond)
-	if !waitFor(t, 2*time.Second, func() bool { return disp.count() == 1 }) {
+	if !waitFor(t, deliveryBudget, func() bool { return disp.count() == 1 }) {
 		t.Fatalf("packet not delivered after the delay elapsed (count=%d)", disp.count())
 	}
 }
@@ -174,7 +174,7 @@ func TestDelayPreservesOrder(t *testing.T) {
 		fe.DeliverNetworkPacket(header.IPv4ProtocolNumber, makePacket(o))
 	}
 	advanceWhenArmed(t, clock, fe.deferQ, n, 100*time.Millisecond)
-	if !waitFor(t, 2*time.Second, func() bool { return disp.count() == n }) {
+	if !waitFor(t, deliveryBudget, func() bool { return disp.count() == n }) {
 		t.Fatalf("delivered %d of %d", disp.count(), n)
 	}
 
@@ -443,7 +443,7 @@ func TestDelayOnEgressActuallyDelivers(t *testing.T) {
 		t.Fatalf("packet written immediately (%d); the delay did not hold it", got)
 	}
 	advanceWhenArmed(t, clock, fe.deferQ, 1, 250*time.Millisecond)
-	if !waitFor(t, 2*time.Second, func() bool { return lower.count() == 1 }) {
+	if !waitFor(t, deliveryBudget, func() bool { return lower.count() == 1 }) {
 		t.Fatalf("egress packet never written after the delay elapsed (count=%d) "+
 			"— delay on dir=\"s2c\" is silently dropping instead of delaying", lower.count())
 	}
