@@ -325,6 +325,20 @@ func queueLen(q *deferQueue) int {
 // timing-dependent; only this settle step is.
 const settleBudget = 15 * time.Second
 
+// deliveryBudget bounds how long a test waits for delivered packets to appear
+// at the dispatcher after the clock advances.
+//
+// Same reasoning as settleBudget, and the same value, because it is the same
+// kind of wait: a bound, not an assertion about speed. When the queue is fast
+// it returns immediately.
+//
+// It exists as a named constant because v0.16.1 raised settleBudget from 2s and
+// left this one — its twin — hardcoded at 2s in five call sites. The flake
+// recurred in CI on the very next release, reporting "delivered 0 of 20". One
+// budget was fixed and the other was not, which is exactly what a shared
+// constant prevents.
+const deliveryBudget = 15 * time.Second
+
 func advanceWhenArmed(t *testing.T, c *fakeClock, q *deferQueue, want int, d time.Duration) {
 	t.Helper()
 	if !waitFor(t, settleBudget, func() bool {

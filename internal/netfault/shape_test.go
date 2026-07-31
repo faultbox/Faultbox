@@ -219,7 +219,7 @@ func TestBandwidthAppliesWithNoRules(t *testing.T) {
 		t.Fatalf("second packet should have been paced, but %d were written", got)
 	}
 	advanceWhenArmed(t, clock, fe.deferQ, 1, time.Second)
-	if !waitFor(t, 2*time.Second, func() bool { return lower.count() == 2 }) {
+	if !waitFor(t, deliveryBudget, func() bool { return lower.count() == 2 }) {
 		t.Fatalf("paced packet never released (count=%d)", lower.count())
 	}
 }
