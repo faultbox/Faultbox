@@ -13,6 +13,71 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.18.1] - 2026-08-15
+
+Follow-ups to the v0.18.0 field report: one determinism fix in two
+halves, and the prerequisites that turned out to be undocumented.
+
+### Fixed — Kafka consumer groups no longer leak offsets between tests
+
+Kafka-consuming specs were non-deterministic at a fixed seed, and the
+seed could never have fixed it: the state is in the broker, not in
+Faultbox.
+
+Both consumer paths used the constant group ID `"faultbox"`. A consumer
+group's committed offsets live in `__consumer_offsets` and outlive the
+reader that wrote them, so the second test to consume resumed after
+whatever the first had committed — and a broker container kept across
+tests, which is normal because brokers are slow to start, carried that
+state between whole runs. What a test saw depended on what had run
+before it.
+
+The default group is now scoped to (run, test). Such a group has never
+committed anything, so kafka-go's `FirstOffset` default applies and the
+read starts at the beginning every time. A spec that is *about*
+consumer-group semantics — rebalances, redelivery, offset commits —
+passes `group=` explicitly and still gets a stable name.
+
+Landed in two commits, and the second is worth recording: the first
+claimed to have scoped both consumer paths and had scoped one.
+`applyKafkaGroupDefault` is reached only from the step path, so
+`internal/eventsource/topic.go` kept the constant group. Both are fixed.
+
+Measured against `apache/kafka:3.7.0` with a reused broker: two tests
+that each publish then consume both read offset 0.
+
+**Known limit.** Reading from offset 0 on a reused broker means a test
+sees the *first* message on the topic, which may be an earlier test's.
+This makes runs reproducible, which is what was reported; it does not
+isolate topic contents between tests. That needs per-test topics or a
+broker reset, and is a design decision rather than a bug fix.
+
+### Documentation
+
+- **`docs/gvisor-requirements.md`** — the requirements for the two
+  gVisor-backed features, in one place. They are not the same set, and
+  the previous scattering across five documents made them look like one:
+  packet faults need `CAP_NET_ADMIN` and `/dev/net/tun` but **not**
+  `runsc`; `watch()` needs `runsc` and a one-time host registration but
+  **no** elevated capability.
+- **Packet faults need root**, and that now leads the tutorial chapter
+  rather than appearing as a clause. Creating a TUN device is
+  privileged, and without one the gateway sees nothing. Includes the
+  `setcap` alternative for machines where sudo-per-run is awkward.
+- **`docs/protocols/kafka.md`** documents why a Kafka fault rule may
+  never match, and the workaround. Clients ask the broker where it is
+  and then open every later connection to *that* address, so a rule sees
+  the bootstrap exchange and nothing else. Pointing
+  `KAFKA_ADVERTISED_LISTENERS` at `kafka.main.proxy_addr` — which is
+  late-bound, so it resolves after the proxy has a port — keeps the
+  client on the mediated path. Single-broker only.
+- **[RFC-057](docs/rfcs/0057-advertised-address-rewriting.md)** scopes
+  the general fix. Protocols that advertise their own address take the
+  client off the mediated path after the handshake: Kafka's `Metadata`,
+  Redis Cluster's `CLUSTER SLOTS`, MongoDB's `hello.hosts`. Confirmed in
+  code — the Kafka proxy inspects only `Produce` and `Fetch`, so
+  `Metadata` is forwarded byte-for-byte.
+
 ### Fixed
 
 - **Kafka `consume()` is reproducible at a fixed seed.** The default
@@ -3439,7 +3504,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.0...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.1...HEAD
+[0.18.1]: https://github.com/faultbox/Faultbox/compare/release-0.18.0...release-0.18.1
 [0.18.0]: https://github.com/faultbox/Faultbox/compare/release-0.17.0...release-0.18.0
 [0.17.0]: https://github.com/faultbox/Faultbox/compare/release-0.16.1...release-0.17.0
 [0.16.1]: https://github.com/faultbox/Faultbox/compare/release-0.16.0...release-0.16.1

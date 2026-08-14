@@ -549,6 +549,9 @@ the result.
 
 ## See also
 
+- [gvisor-requirements.md](gvisor-requirements.md) — what packet faults
+  and `watch()` each need. Most "it did not attach" failures are a
+  missing prerequisite, and the two features do not need the same ones.
 - [bundles.md](bundles.md) — bundle inspection (`faultbox inspect`)
   is the single best diagnostic tool when something goes wrong.
 - [seccomp-cheatsheet.md](seccomp-cheatsheet.md) — Go-op → syscall

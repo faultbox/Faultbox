@@ -74,6 +74,7 @@ Request for Comments for Faultbox v0.3.0 — Domain-Centric Verification Platfor
 | [RFC-054](0054-gvisor-packet-and-file-mediation.md) | gVisor Adoption — Packet-Level Network Faults & File-Level I/O Observation | Implemented (v0.14.0 packet faults; v0.14.1 shapers); `watch()` split out to RFC-056 | RFC-040, RFC-046 |
 | [RFC-056](0056-filesystem-observation.md) | Filesystem Observation — `watch()` on gVisor Trace Sessions | Implemented (v0.16.0) | RFC-054, RFC-040, RFC-046 |
 | [RFC-046](0046-beyond-l1-roadmap.md) | Beyond L1 — gVisor Runtime Roadmap | Path B Implemented (v0.14.0) | RFC-040 |
+| [RFC-057](0057-advertised-address-rewriting.md) | Advertised-Address Rewriting — keeping cluster-aware clients on the mediated path | Draft | RFC-024, RFC-054 |
 
 ### v0.17.0 — agent-first surface
 
