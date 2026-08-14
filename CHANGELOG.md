@@ -10,10 +10,33 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+Next-version work is tracked in
+[GitHub Issues](https://github.com/faultbox/Faultbox/issues).
+
+## [0.18.0] - 2026-08-14
+
 Field-report fixes from the first onboarding of a large production Go
 service (inDrive courier: Uber Fx, ~30 gateways, MySQL + Redis + Kafka).
-Six issues reported against v0.17.0, plus one found while building the
+Seven issues reported against v0.17.0, plus one found while building the
 regression corpus for the first of them.
+
+**Why a minor and not a patch.** Every change here is a fix, but three of
+them change what an existing spec does:
+
+- Faults written across multiple lines, or with spaces around `=`, now
+  actually install a filter. A suite that was green because a fault was
+  silently inert can go red on upgrade — which is the point, but it is
+  not a no-op.
+- `faultbox report` writes `report_<bundle>.html` instead of
+  `report.html`. Anything scripted against the fixed name needs
+  `--output`.
+- `TIMEOUT_DURING_FAULT` no longer fires on a run with no faults; two new
+  codes cover what it used to absorb. CI that greps for the old code sees
+  a change.
+
+Mock listeners also bind `0.0.0.0` on Linux now, as proxies already did —
+an exposure change on a shared machine, overridable with
+`FAULTBOX_PROXY_BIND`.
 
 ### Fixed — a dropped notification killed the seccomp supervisor
 
@@ -155,6 +178,40 @@ the seed from the manifest. Every copy-pasted suggestion failed on an
 unknown flag before it could reach the path bug. The flag is dropped; a
 test now walks the flags in the printed hint and checks each against what
 `replay` parses.
+
+### Fixed — packet faults never reached a containerized consumer
+
+Reported as the netstack gateway attaching "on some runs and not others,
+same spec, same seed", with the run correctly refusing to report a result
+when it did not attach.
+
+The gateway address for a container consumer is allocated inside a branch
+gated on "does a **proxy** fault target this interface". Packet faults are
+invisible to that question: the gate reads `fault_assumption` proxy rules,
+and packet faults cannot be declared there at all — `partition()` and
+`packet_*` are body-time calls recorded in a separate registry. A spec
+whose only faults were packet faults therefore got no gateway address,
+the gateway never attached, and the run ended at *"packet faults were
+installed N time(s) but no netstack gateway was attached"*.
+
+The gate no longer applies when the packet gateway is enabled: a spec
+declaring `determinism(runtime = "gvisor")` has asked to be mediated at
+the packet layer.
+
+The reporter also asked for this to fail at setup rather than after the
+body runs. That is not implementable as stated — packet faults are
+body-time calls, so their arguments are validated inside the body, and
+failing at setup replaces a spec error the author can fix (`source=`
+naming the interface owner) with an environment one they cannot (no
+`CAP_NET_ADMIN`). What was missing was the *reason*: the gateway is now
+attached at setup purely to capture why it failed, and the failure
+carries it.
+
+The reporter's second half — that packet faults and a multi-test suite
+were mutually exclusive — should be resolved by the supervisor and
+network fixes above. Host ports were a workaround for the proxy freeze,
+and container names failing from test 2 was the network being destroyed
+and never recreated.
 
 ### Changed
 
@@ -3355,7 +3412,14 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.3...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.0...HEAD
+[0.18.0]: https://github.com/faultbox/Faultbox/compare/release-0.17.0...release-0.18.0
+[0.17.0]: https://github.com/faultbox/Faultbox/compare/release-0.16.1...release-0.17.0
+[0.16.1]: https://github.com/faultbox/Faultbox/compare/release-0.16.0...release-0.16.1
+[0.16.0]: https://github.com/faultbox/Faultbox/compare/release-0.15.0...release-0.16.0
+[0.15.0]: https://github.com/faultbox/Faultbox/compare/release-0.14.1...release-0.15.0
+[0.14.1]: https://github.com/faultbox/Faultbox/compare/release-0.14.0...release-0.14.1
+[0.14.0]: https://github.com/faultbox/Faultbox/compare/release-0.13.3...release-0.14.0
 [0.13.3]: https://github.com/faultbox/Faultbox/compare/release-0.13.2...release-0.13.3
 [0.13.2]: https://github.com/faultbox/Faultbox/compare/release-0.13.1...release-0.13.2
 [0.13.1]: https://github.com/faultbox/Faultbox/compare/release-0.13.0...release-0.13.1
