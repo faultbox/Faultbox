@@ -2,12 +2,54 @@ package eventsource
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
 )
+
+// groupNonce identifies this process's run. Generated once, because two
+// readers in the same run observing the same topic should share a group;
+// two separate runs must not.
+var groupNonce = newGroupNonce()
+
+func newGroupNonce() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "norand"
+	}
+	return hex.EncodeToString(b)
+}
+
+var groupSafe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+// defaultTopicGroup names the consumer group an observer uses when the
+// spec did not name one.
+//
+// Why this is not the constant it used to be: a consumer group's committed
+// offsets live in the broker's `__consumer_offsets` and outlive the reader
+// that wrote them. Under one fixed ID, a broker container kept across runs
+// hands the next run whatever the last one committed, so what an observer
+// sees depends on what ran before it — the same defect fixed for the
+// `consume()` step in a8689e1, which this path did not actually receive
+// despite that commit's message.
+//
+// Scoped per (run, topic) rather than per (run, test): an event source is
+// constructed from a flat param map with no access to the running test.
+// That is weaker than the step path, and enough to stop offsets leaking
+// between runs, which is the part that made results irreproducible.
+func defaultTopicGroup(topic string) string {
+	name := groupSafe.ReplaceAllString(topic, "-")
+	if len(name) > 80 {
+		name = name[:80]
+	}
+	return fmt.Sprintf("faultbox-%s-%s", groupNonce, name)
+}
 
 func init() {
 	RegisterSource("topic", func(params map[string]string, decoder Decoder) (EventSource, error) {
@@ -21,7 +63,7 @@ func init() {
 		}
 		group := params["group"]
 		if group == "" {
-			group = "faultbox"
+			group = defaultTopicGroup(topic)
 		}
 		return &topicSource{
 			broker:  broker,
