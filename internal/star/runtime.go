@@ -2130,11 +2130,16 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 	copy(order, rt.order)
 	rt.mu.Unlock()
 
-	// Clean up stale containers from previous tests or interrupted runs.
-	// Only clean up if we don't have reused containers already running.
-	if rt.dockerClient != nil && len(rt.sessions) == 0 {
-		rt.dockerClient.CleanupStale(ctx)
-	}
+	// The leftover sweep now runs once, at Docker client init — see
+	// startContainerService. It used to run here, before every test, and
+	// it removes the faultbox network along with the containers, so each
+	// test destroyed the network and the next recreated it.
+	//
+	// Running it here could never have been once-per-run anyway: the
+	// Docker client is created lazily during the first test's container
+	// launch, so the guard above it was false on test 1 and the sweep
+	// first fired on test 2 — destroying the network test 1 had just
+	// created.
 
 	for _, svcName := range order {
 		svc := rt.services[svcName]
@@ -2566,7 +2571,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 
 // startContainerService starts a service from a Docker container image (PoC 2 path).
 func (rt *Runtime) startContainerService(ctx context.Context, svcName string, svc *ServiceDef) error {
-	// Lazy-init Docker client and network.
+	// Lazy-init Docker client.
 	if rt.dockerClient == nil {
 		dc, err := container.NewClient(ctx, rt.log)
 		if err != nil {
@@ -2575,12 +2580,35 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		rt.dockerClient = dc
 		rt.containerIDs = make(map[string]string)
 
-		netID, err := dc.EnsureNetwork(ctx)
-		if err != nil {
-			return fmt.Errorf("docker network: %w", err)
-		}
-		rt.networkID = netID
+		// Sweep leftovers from a previous interrupted run, once, before
+		// anything of this run exists. CleanupStale removes faultbox-
+		// prefixed networks as well as containers, so it must happen
+		// before EnsureNetwork below — and never again, or it would
+		// destroy the network the running suite is using.
+		dc.CleanupStale(ctx)
 	}
+
+	// Ensure the network on every container start, not only at client
+	// init (F-3).
+	//
+	// EnsureNetwork used to run once, inside the block above. stopServices
+	// then removed the network after each test and cleared networkID — but
+	// dockerClient stayed non-nil, so nothing ever recreated it. From the
+	// second test onward every container launched with an empty network
+	// ID, landing on Docker's default bridge, which has no embedded DNS
+	// for container names. That is the reported symptom exactly: the first
+	// test resolves peers by name and every test after it hangs on
+	// lookups.
+	//
+	// EnsureNetwork is idempotent — it reuses an existing faultbox-net and
+	// creates one only when absent — so calling it per start also
+	// self-heals if the network is removed underneath us, which the stale
+	// -network sweep in container.Client does whenever nothing is attached.
+	netID, err := rt.dockerClient.EnsureNetwork(ctx)
+	if err != nil {
+		return fmt.Errorf("docker network: %w", err)
+	}
+	rt.networkID = netID
 
 	// Resolve image: either pull or build from Dockerfile.
 	imageName := svc.Image
@@ -3227,11 +3255,22 @@ func (rt *Runtime) stopServices() {
 		}
 		rt.containerIDs = keptContainers
 
-		// Remove the Docker network only if no reused containers remain.
-		if len(keptContainers) == 0 && rt.networkID != "" {
-			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
-			rt.networkID = ""
-		}
+		// The network deliberately outlives the test. It used to be
+		// removed here whenever no container survived, so an N-test suite
+		// performed N create/destroy cycles on the same-named network.
+		//
+		// That churn is what the courier report (F-3) blames for Docker's
+		// embedded DNS black-holing from the second test onward: the
+		// first test's containers resolve names normally, and from
+		// session 2 the SUT's lookups against 127.0.0.11 hang while
+		// `docker exec getent hosts` in the same container still works.
+		// Their workaround was to make the entire topology DNS-free.
+		//
+		// Nothing needed the recreation. Per-test isolation comes from
+		// container lifecycle, not network lifecycle — containers are
+		// still destroyed and recreated around every test. The network is
+		// now created once per run and removed in cleanup(), which has
+		// always handled it.
 	}
 
 	// Clean up socket directories only for non-reused services.
