@@ -5,6 +5,7 @@
 package seccomp
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -313,9 +314,16 @@ func Receive(listenerFd int) (*NotifReq, error) {
 	}
 }
 
+// ErrListenerClosed reports that the seccomp listener fd is gone — the
+// supervised process exited, or the fd was closed at teardown. Callers
+// match it with errors.Is rather than by message text, so the notification
+// loop can tell "stop supervising, there is nothing left" apart from a
+// per-notification hiccup it should survive.
+var ErrListenerClosed = errors.New("seccomp listener closed")
+
 // Poll checks if the listener fd has a pending notification.
-// Returns true if ready, false if timeout. Returns error on POLLHUP/POLLERR
-// (fd closed, process exited).
+// Returns true if ready, false if timeout. Returns an error wrapping
+// ErrListenerClosed on POLLHUP/POLLERR/POLLNVAL (fd closed, process exited).
 func Poll(listenerFd int, timeoutMs int) (bool, error) {
 	fds := []unix.PollFd{{Fd: int32(listenerFd), Events: unix.POLLIN}}
 	for {
@@ -327,7 +335,7 @@ func Poll(listenerFd int, timeoutMs int) (bool, error) {
 			return false, err
 		}
 		if n > 0 && (fds[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL)) != 0 {
-			return false, fmt.Errorf("listener fd closed (revents=0x%x)", fds[0].Revents)
+			return false, fmt.Errorf("%w (revents=0x%x)", ErrListenerClosed, fds[0].Revents)
 		}
 		return n > 0, nil
 	}

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -154,6 +155,45 @@ type Result struct {
 	Duration time.Duration
 	// Error is set if the session failed to start or was killed.
 	Error error
+	// SupervisorError is set when the seccomp notification loop stopped
+	// while the target was still running. The target keeps its filter, so
+	// every intercepted syscall from that moment blocks forever — the test
+	// is not merely slow, its result is meaningless. Callers must surface
+	// this rather than reporting a timeout.
+	SupervisorError error
+	// DroppedNotifications counts notifications the kernel discarded before
+	// the supervisor received them. Harmless individually; a large count
+	// alongside odd behaviour is worth seeing.
+	DroppedNotifications int64
+}
+
+// SupervisorFailure reports that the notification loop stopped early, and
+// carries what the session knows about why.
+func (s *Session) SupervisorFailure() error {
+	if !s.supervisorFailed.Load() {
+		return nil
+	}
+	msg := "seccomp notification loop stopped while the target was still running; " +
+		"every intercepted syscall after that point blocks indefinitely"
+	if p := s.supervisorErr.Load(); p != nil && *p != "" {
+		msg += ": " + *p
+	}
+	return errors.New(msg)
+}
+
+// noteSupervisorExit records an early notification-loop exit. Called only
+// when the target is known to still be alive.
+func (s *Session) noteSupervisorExit(cause string) {
+	s.supervisorFailed.Store(true)
+	if cause != "" {
+		s.supervisorErr.Store(&cause)
+	}
+}
+
+// DroppedNotifications returns the count of notifications discarded before
+// the supervisor could receive them.
+func (s *Session) DroppedNotifications() int64 {
+	return s.droppedNotifs.Load()
 }
 
 // Session is a single isolated execution of a target binary.
@@ -179,6 +219,22 @@ type Session struct {
 	// recovered from /proc. Surfaced in DynamicRuleReport so a zero-match
 	// path-filtered rule can say *why* it never matched.
 	unresolvedPaths atomic.Int64
+
+	// droppedNotifs counts notifications the kernel had already discarded by
+	// the time we called RECV (ENOENT — the target thread died or was
+	// interrupted first). Each one is harmless on its own: the syscall the
+	// notification described is gone, so there is nothing left to answer.
+	// The count is reported at teardown so a run can say how often it
+	// happened rather than leaving it to be inferred.
+	droppedNotifs atomic.Int64
+
+	// supervisorFailed records that the notification loop stopped while the
+	// child was still running. A filtered process with no supervisor blocks
+	// on every intercepted syscall forever, so this is never survivable and
+	// must never be silent — Result.SupervisorError carries it to the
+	// runtime, which fails the test with it.
+	supervisorFailed atomic.Bool
+	supervisorErr    atomic.Pointer[string]
 
 	// Dynamic fault rules — can be modified while session is running.
 	dynamicRulesMu sync.RWMutex

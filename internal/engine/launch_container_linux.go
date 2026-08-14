@@ -64,7 +64,26 @@ func (s *Session) launchExternal(ctx context.Context) (*Result, error) {
 	notifDone := make(chan error, 1)
 	go func() {
 		err := s.notificationLoop(ctx, listenerFd, ruleMap, stopNotif)
-		if err != nil {
+
+		// Unlike binary mode, the select below treats a finished loop as a
+		// session-exit signal — so an early exit here does not hang, it
+		// quietly tears the session down and reports a clean result. That
+		// is worse, not better: the run looks like it ended normally. Flag
+		// it while the container is still up, so the verdict says what
+		// happened.
+		if !stopRequested(stopNotif) && processAlive(childPid) {
+			cause := "listener closed or loop returned"
+			if err != nil {
+				cause = err.Error()
+			}
+			s.noteSupervisorExit(cause)
+			s.log.Error("seccomp supervisor stopped while the container is still running",
+				slog.String("cause", cause),
+				slog.Int("pid", childPid),
+				slog.Int64("dropped_notifications", s.droppedNotifs.Load()),
+				slog.String("impact", "intercepted syscalls will now block indefinitely"),
+			)
+		} else if err != nil {
 			s.log.Warn("notification loop ended", slog.String("error", err.Error()))
 		}
 		notifDone <- err
@@ -129,9 +148,16 @@ func (s *Session) launchExternal(ctx context.Context) (*Result, error) {
 	s.log.Info("external session completed",
 		slog.Int("exit_code", exitCode),
 		slog.Duration("duration", duration),
+		slog.Int64("dropped_notifications", s.droppedNotifs.Load()),
 	)
 
-	return &Result{SessionID: s.ID, ExitCode: exitCode, Duration: duration}, nil
+	return &Result{
+		SessionID:            s.ID,
+		ExitCode:             exitCode,
+		Duration:             duration,
+		SupervisorError:      s.SupervisorFailure(),
+		DroppedNotifications: s.droppedNotifs.Load(),
+	}, nil
 }
 
 // processExists checks if a process with the given PID exists.

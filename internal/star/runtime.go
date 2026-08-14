@@ -1790,10 +1790,32 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	expectViolated := rt.expectationViolated
 	requireFaults := rt.requireFaultsFire
 
+	// Capture supervisor health before teardown, while the sessions are
+	// still live and "stopped" is unambiguous.
+	supervisorErr := rt.supervisorFailure()
+
 	// Stop services.
 	rt.stopServices()
 
 	events := rt.events.Events()
+
+	// A seccomp supervisor that stopped while its service was still
+	// running invalidates everything downstream: from that moment the
+	// service blocks on every intercepted syscall, so a pass means "it
+	// never got far enough to fail" and a failure names the wrong cause.
+	// This outranks every other verdict — including an assertion that
+	// happened to fire first — because the run itself is not evidence.
+	if supervisorErr != nil {
+		rt.events.Emit("supervisor_exited", "", map[string]string{
+			"error": supervisorErr.Error(),
+		})
+		return TestResult{
+			Name: name, Result: "error",
+			Reason:     supervisorErr.Error(),
+			DurationMs: time.Since(start).Milliseconds(),
+			Events:     rt.events.Events(),
+		}
+	}
 
 	// Body errors caused by the per-test cancellation we triggered
 	// (await_* returning context.DeadlineExceeded under the cancelled
@@ -3120,6 +3142,24 @@ func (rt *Runtime) findShimPath() string {
 // stopServices stops all running services and cleans up containers.
 // Services with Reuse=true are kept alive — only their dynamic fault rules
 // are cleared. They are torn down later by stopReusedServices().
+// supervisorFailure returns an error if any running session's seccomp
+// notification loop stopped while its service was still alive. Such a
+// service is filtered with nobody answering it, so every intercepted
+// syscall blocks forever — the service does not crash, it goes silent,
+// and without this check the symptom surfaces much later as unexplained
+// i/o timeouts on every socket it owns.
+func (rt *Runtime) supervisorFailure() error {
+	for name, rs := range rt.sessions {
+		if rs == nil || rs.session == nil {
+			continue
+		}
+		if err := rs.session.SupervisorFailure(); err != nil {
+			return fmt.Errorf("service %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func (rt *Runtime) stopServices() {
 	// Determine which services are reused.
 	reused := make(map[string]bool)
