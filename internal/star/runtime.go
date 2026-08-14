@@ -4073,7 +4073,9 @@ var faultableSyscalls = []string{
 // Only these syscalls are installed in the seccomp filter, avoiding the overhead
 // of intercepting irrelevant syscalls (e.g., openat during library loading).
 func (rt *Runtime) requiredSyscalls() []string {
-	src := rt.sourceText
+	// Whitespace-folded so `write = deny(...)` matches the same as
+	// `write=deny(...)`; see specStatements.
+	src := strings.Join(specStatements(rt.sourceText), "\n")
 	found := make(map[string]bool)
 
 	// Scan for fault keywords: "write=deny", "write=delay", "connect=deny", etc.
@@ -4081,9 +4083,7 @@ func (rt *Runtime) requiredSyscalls() []string {
 		// Match "syscall=deny(" or "syscall=delay(" or "syscall=allow("
 		if strings.Contains(src, sc+"=deny(") ||
 			strings.Contains(src, sc+"=delay(") ||
-			strings.Contains(src, sc+"=allow(") ||
-			strings.Contains(src, sc+"=deny (") ||
-			strings.Contains(src, sc+"=delay (") {
+			strings.Contains(src, sc+"=allow(") {
 			found[sc] = true
 		}
 		// Match trace() syscall list: "write" or 'write' inside trace()/trace_start().
@@ -4166,8 +4166,11 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 
 	found := make(map[string]bool)
 
-	// Scan line-by-line for fault/trace calls targeting this service.
-	lines := strings.Split(src, "\n")
+	// Scan statement-by-statement for fault/trace calls targeting this
+	// service. See specStatements: the source is folded into
+	// paren-balanced statements with whitespace stripped, so the natural
+	// spellings all match the same way.
+	lines := specStatements(src)
 	for _, varName := range varNames {
 		faultPrefix := "fault(" + varName + ","
 		faultStartPrefix := "fault_start(" + varName + ","

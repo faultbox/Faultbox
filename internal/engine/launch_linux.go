@@ -173,33 +173,7 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	if listenerFd >= 0 {
 		go func() {
 			err := s.notificationLoop(ctx, listenerFd, ruleMap, stopNotif)
-
-			// The loop ending while the target is still running is never
-			// survivable: the filter stays installed, so every intercepted
-			// syscall from here on blocks with nobody to answer it. The
-			// process does not crash — it goes quiet, and the symptom
-			// surfaces much later as unexplained i/o timeouts on every
-			// socket. Detect it here and say so, rather than leaving the
-			// run to hang and be misread as a slow SUT.
-			if !stopRequested(stopNotif) && processAlive(childPid) {
-				cause := "listener closed or loop returned"
-				if err != nil {
-					cause = err.Error()
-				}
-				s.noteSupervisorExit(cause)
-				s.log.Error("seccomp supervisor stopped while the target is still running",
-					slog.String("cause", cause),
-					slog.Int("pid", childPid),
-					slog.Int("listener_fd", listenerFd),
-					slog.Int64("dropped_notifications", s.droppedNotifs.Load()),
-					slog.String("impact", "intercepted syscalls will now block indefinitely"),
-				)
-			} else if err != nil && !isClosedFdErr(err) {
-				s.log.Error("notification loop exited unexpectedly",
-					slog.String("error", err.Error()),
-					slog.Int("listener_fd", listenerFd),
-				)
-			}
+			s.checkSupervisorExit(ctx, stopNotif, childPid, listenerFd, err)
 			notifDone <- err
 		}()
 	} else {
@@ -720,6 +694,69 @@ func stopRequested(stop <-chan struct{}) bool {
 	default:
 		return false
 	}
+}
+
+// supervisorExitGrace is how long to wait for a target to finish exiting
+// before concluding that an ended notification loop stranded it.
+//
+// The loop and the target die in either order. Teardown cancels the
+// session context, which both ends the loop and signals the target — so
+// the loop routinely returns while the target is still a live process for
+// a few more milliseconds. Flagging that would report a supervisor
+// failure on every clean run.
+const supervisorExitGrace = 3 * time.Second
+
+// checkSupervisorExit decides whether an ended notification loop stranded
+// its target, and records it if so.
+//
+// The failure being caught is specific: the loop stopped, nobody asked it
+// to, and the target is still running with its seccomp filter installed.
+// From that point the target blocks on every intercepted syscall with
+// nothing to answer it. It does not crash — it goes quiet — so without
+// this the run reads as an unresponsive SUT.
+func (s *Session) checkSupervisorExit(
+	ctx context.Context,
+	stop <-chan struct{},
+	childPid, listenerFd int,
+	loopErr error,
+) {
+	// Teardown asked for this. Expected.
+	if ctx.Err() != nil || stopRequested(stop) {
+		if loopErr != nil && !isClosedFdErr(loopErr) && ctx.Err() == nil {
+			s.log.Error("notification loop exited unexpectedly",
+				slog.String("error", loopErr.Error()),
+				slog.Int("listener_fd", listenerFd),
+			)
+		}
+		return
+	}
+
+	// Nobody asked. Give the target a moment to finish exiting — if it is
+	// on its way out, the loop ending first is normal.
+	deadline := time.Now().Add(supervisorExitGrace)
+	for time.Now().Before(deadline) {
+		if !processAlive(childPid) {
+			return // target exited; the loop ending with it is expected
+		}
+		if ctx.Err() != nil || stopRequested(stop) {
+			return // teardown started while we waited
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Still running, still unattended.
+	cause := "loop returned without an error"
+	if loopErr != nil {
+		cause = loopErr.Error()
+	}
+	s.noteSupervisorExit(cause)
+	s.log.Error("seccomp supervisor stopped while the target is still running",
+		slog.String("cause", cause),
+		slog.Int("pid", childPid),
+		slog.Int("listener_fd", listenerFd),
+		slog.Int64("dropped_notifications", s.droppedNotifs.Load()),
+		slog.String("impact", "intercepted syscalls will now block indefinitely"),
+	)
 }
 
 // processAlive reports whether pid still exists and has not been reaped.

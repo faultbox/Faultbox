@@ -68,24 +68,8 @@ func (s *Session) launchExternal(ctx context.Context) (*Result, error) {
 		// Unlike binary mode, the select below treats a finished loop as a
 		// session-exit signal — so an early exit here does not hang, it
 		// quietly tears the session down and reports a clean result. That
-		// is worse, not better: the run looks like it ended normally. Flag
-		// it while the container is still up, so the verdict says what
-		// happened.
-		if !stopRequested(stopNotif) && processAlive(childPid) {
-			cause := "listener closed or loop returned"
-			if err != nil {
-				cause = err.Error()
-			}
-			s.noteSupervisorExit(cause)
-			s.log.Error("seccomp supervisor stopped while the container is still running",
-				slog.String("cause", cause),
-				slog.Int("pid", childPid),
-				slog.Int64("dropped_notifications", s.droppedNotifs.Load()),
-				slog.String("impact", "intercepted syscalls will now block indefinitely"),
-			)
-		} else if err != nil {
-			s.log.Warn("notification loop ended", slog.String("error", err.Error()))
-		}
+		// is worse, not better: the run looks like it ended normally.
+		s.checkSupervisorExit(ctx, stopNotif, childPid, listenerFd, err)
 		notifDone <- err
 	}()
 
