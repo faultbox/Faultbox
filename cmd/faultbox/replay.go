@@ -117,7 +117,7 @@ func replayCmd(args []string) int {
 		// User asked for extract-only; don't re-run.
 		fmt.Fprintln(os.Stderr, "Spec tree extracted; not re-running (--extract-only).")
 		fmt.Fprintf(os.Stderr, "To run manually: cd %s && faultbox test %s --seed %d\n",
-			dst, man.SpecRoot, man.Seed)
+			dst, extractedRootName(man.SpecRoot), man.Seed)
 		return 0
 	}
 	defer cleanup()
@@ -127,7 +127,7 @@ func replayCmd(args []string) int {
 	// reproduce. Bundle output is opt-out by default — the user is
 	// reproducing an existing run, they don't need a duplicate
 	// bundle of the replay (use --bundle if they do).
-	rootInExtract := filepath.Join(dst, man.SpecRoot)
+	rootInExtract := filepath.Join(dst, extractedRootName(man.SpecRoot))
 	testArgs := []string{
 		rootInExtract,
 		"--seed", fmt.Sprintf("%d", man.Seed),
@@ -169,6 +169,24 @@ func enforceReplayVersionPolicy(w *os.File, r *bundle.Reader) int {
 // env, replay.sh, services/) but those don't need to materialise on
 // disk for the re-run — Faultbox reads the spec, it doesn't need
 // the previous run's trace.
+// extractedRootName maps a manifest's spec_root onto the filename it has
+// inside the extracted spec tree.
+//
+// The two are not the same, and conflating them broke replay for any
+// spec that did not sit at the repo root (F-6). spec_root records the
+// path as typed on the command line — `faultbox/spec.star`. The bundle
+// stores every spec relative to the *root spec's own directory*, so the
+// root itself is always stored as its bare basename (`spec/spec.star`),
+// and the extractor writes it to `<dst>/spec.star`. Joining dst with
+// spec_root therefore looked for `<dst>/faultbox/spec.star` and failed
+// with ENOENT.
+//
+// A spec at the repo root makes the two spellings identical, which is
+// why every spec in this repo replayed fine and the bug went unseen.
+func extractedRootName(specRoot string) string {
+	return filepath.Base(filepath.FromSlash(specRoot))
+}
+
 func extractSpecOnly(r *bundle.Reader, dst string) (int, error) {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return 0, err

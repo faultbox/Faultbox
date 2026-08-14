@@ -2399,8 +2399,12 @@ func printReplayHints(w io.Writer, result *star.SuiteResult) {
 			fmt.Fprintln(w) // spacer before the hints block
 			hinted = true
 		}
-		fmt.Fprintf(w, "Replay: faultbox replay <bundle.fb> --test %s --seed %d\n",
-			tr.Name, tr.Seed)
+		// No --seed here: `replay` takes the seed from the bundle
+		// manifest, which is the whole point of replaying a bundle, and
+		// it rejects the flag. The hint used to include it, so every
+		// copy-pasted suggestion failed on an unknown flag before it
+		// could do anything (F-6).
+		fmt.Fprintf(w, "Replay: faultbox replay <bundle.fb> --test %s\n", tr.Name)
 	}
 }
 
