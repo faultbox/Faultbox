@@ -73,8 +73,9 @@ func TestReportCmdSummaryFlag(t *testing.T) {
 }
 
 // TestReportCmdDefaultOutputNextToBundle verifies that running without
-// --output writes `report.html` in the bundle's directory (the muscle-
-// memory path users rely on when iterating).
+// --output writes into the bundle's own directory. The helper's bundle
+// is named `run.fb`, which carries no timestamp to qualify the name
+// with, so it takes the bare `report.html` fallback.
 func TestReportCmdDefaultOutputNextToBundle(t *testing.T) {
 	bundlePath := writeTestBundle(t, "0.11.0")
 	rc := reportCmd([]string{bundlePath})
@@ -84,6 +85,71 @@ func TestReportCmdDefaultOutputNextToBundle(t *testing.T) {
 	expected := filepath.Join(filepath.Dir(bundlePath), "report.html")
 	if _, err := os.Stat(expected); err != nil {
 		t.Errorf("expected report at %s: %v", expected, err)
+	}
+}
+
+// TestDefaultReportPath pins the derived output name. Two bundles from
+// two runs must not collide on one filename — that was the whole reason
+// the fixed `report.html` default was replaced, so the distinctness
+// case is asserted explicitly rather than implied by the table.
+func TestDefaultReportPath(t *testing.T) {
+	tests := []struct {
+		name   string
+		bundle string
+		want   string
+	}{
+		{
+			name:   "standard run- prefix is stripped",
+			bundle: "/tmp/run-2026-07-30T10-50-37-1.fb",
+			want:   "/tmp/report_2026-07-30T10-50-37-1.html",
+		},
+		{
+			name:   "run_ underscore variant is stripped too",
+			bundle: "/tmp/run_2026-07-30T10-50-37-1.fb",
+			want:   "/tmp/report_2026-07-30T10-50-37-1.html",
+		},
+		{
+			name:   "a bundle with no run prefix keeps its whole stem",
+			bundle: "/tmp/nightly.fb",
+			want:   "/tmp/report_nightly.html",
+		},
+		{
+			name:   "bare run.fb has nothing to qualify with",
+			bundle: "/tmp/run.fb",
+			want:   "/tmp/report.html",
+		},
+		{
+			name:   "run- with an empty stem falls back rather than report_",
+			bundle: "/tmp/run-.fb",
+			want:   "/tmp/report.html",
+		},
+		{
+			name:   "output lands beside the bundle, not in the cwd",
+			bundle: "/var/runs/nested/run-abc-7.fb",
+			want:   "/var/runs/nested/report_abc-7.html",
+		},
+		{
+			name:   "a bare filename resolves against the current directory",
+			bundle: "run-abc-7.fb",
+			want:   "report_abc-7.html",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := defaultReportPath(tt.bundle)
+			if got != filepath.FromSlash(tt.want) {
+				t.Errorf("defaultReportPath(%q) = %q, want %q",
+					tt.bundle, got, filepath.FromSlash(tt.want))
+			}
+		})
+	}
+
+	// The point of the change: distinct runs get distinct reports.
+	a := defaultReportPath("/tmp/run-2026-07-30T10-50-37-1.fb")
+	b := defaultReportPath("/tmp/run-2026-07-30T11-02-14-1.fb")
+	if a == b {
+		t.Errorf("two bundles collided on one report path: %s", a)
 	}
 }
 

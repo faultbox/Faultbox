@@ -462,6 +462,13 @@ func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
 	}
 
 	// TIMEOUT: test timed out.
+	//
+	// The fault gate matters. This used to fire unconditionally, so a run
+	// with *zero* faults — an image that would not pull, a service that
+	// never became ready — was reported as "test timed out while faults
+	// were active", naming a cause that did not exist. A classifier that
+	// confidently misattributes is worse than none: it teaches people to
+	// distrust every other diagnostic (F-5).
 	if failed && tto.FailureType == "timeout" {
 		// Find which service had faults active.
 		faultedSvc := ""
@@ -471,19 +478,39 @@ func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
 				break
 			}
 		}
-		suggestion := "Check for infinite retry loops, missing timeouts on network calls, or deadlocks."
-		if faultedSvc != "" {
-			suggestion = fmt.Sprintf(
-				"Service may be stuck retrying requests to '%s' without a timeout. "+
-					"Add a context deadline or circuit breaker.", faultedSvc)
+
+		switch {
+		case faultedSvc != "":
+			diags = append(diags, Diagnostic{
+				Level:   "error",
+				Code:    "TIMEOUT_DURING_FAULT",
+				Message: "test timed out while faults were active",
+				Suggestion: fmt.Sprintf(
+					"Service may be stuck retrying requests to '%s' without a timeout. "+
+						"Add a context deadline or circuit breaker.", faultedSvc),
+				Service: faultedSvc,
+			})
+		case len(tto.Faults) > 0:
+			// Faults were declared but none fired, so the timeout cannot
+			// be attributed to them. Say both halves.
+			diags = append(diags, Diagnostic{
+				Level:   "error",
+				Code:    "TIMEOUT_NO_FAULT_FIRED",
+				Message: "test timed out; faults were declared but none fired",
+				Suggestion: "The timeout is not explained by an injected fault. Check service " +
+					"startup and healthchecks first, then whether the fault targets the " +
+					"syscall or operation the service actually uses.",
+			})
+		default:
+			diags = append(diags, Diagnostic{
+				Level:   "error",
+				Code:    "TIMEOUT_NO_FAULTS",
+				Message: "test timed out; this run injected no faults",
+				Suggestion: "Nothing was being injected, so this is a plain timeout. Check that " +
+					"every service started and passed its healthcheck — a missing image or a " +
+					"failing readiness check reaches the deadline the same way.",
+			})
 		}
-		diags = append(diags, Diagnostic{
-			Level:      "error",
-			Code:       "TIMEOUT_DURING_FAULT",
-			Message:    "test timed out while faults were active",
-			Suggestion: suggestion,
-			Service:    faultedSvc,
-		})
 	}
 
 	// ASSERTION_MISMATCH: assertion failed with specific values.

@@ -13,6 +13,216 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+## [0.18.0] - 2026-08-14
+
+Field-report fixes from the first onboarding of a large production Go
+service (inDrive courier: Uber Fx, ~30 gateways, MySQL + Redis + Kafka).
+Seven issues reported against v0.17.0, plus one found while building the
+regression corpus for the first of them.
+
+**Why a minor and not a patch.** Every change here is a fix, but three of
+them change what an existing spec does:
+
+- Faults written across multiple lines, or with spaces around `=`, now
+  actually install a filter. A suite that was green because a fault was
+  silently inert can go red on upgrade — which is the point, but it is
+  not a no-op.
+- `faultbox report` writes `report_<bundle>.html` instead of
+  `report.html`. Anything scripted against the fixed name needs
+  `--output`.
+- `TIMEOUT_DURING_FAULT` no longer fires on a run with no faults; two new
+  codes cover what it used to absorb. CI that greps for the old code sees
+  a change.
+
+Mock listeners also bind `0.0.0.0` on Linux now, as proxies already did —
+an exposure change on a shared machine, overridable with
+`FAULTBOX_PROXY_BIND`.
+
+### Fixed — a dropped notification killed the seccomp supervisor
+
+Reported as two separate issues — a host-binary SUT losing every
+outbound socket, and the proxy data plane freezing at the test-phase
+boundary. They were one defect, and the proxy was incidental.
+
+`SECCOMP_IOCTL_NOTIF_RECV` returns ENOENT when the notification has
+already been discarded: the notifying thread died or took a signal
+before the supervisor reached it. It says nothing about the listener fd.
+`isClosedFdErr` matched it anyway by substring-searching the errno text,
+so the notification loop returned `nil` on the first one and stopped
+supervising permanently. The caller suppressed its log line precisely
+because a nil error reads as a clean shutdown, so **nothing was
+printed**. The child kept its seccomp filter with nobody to answer it,
+and every intercepted syscall from that point blocked forever.
+
+That accounts for the whole reported shape: reads *and* new dials both
+failing, never recovering, the container staying healthy while only the
+SUT was affected, and a busy connection pool always losing while a quiet
+client survived — ENOENT probability scales with concurrent notification
+volume, and Go's `SIGURG` preemption interrupts syscalls constantly.
+
+ENOENT is now a per-notification transient: counted, skipped, and the
+loop keeps going. Only EBADF, EPIPE and a new `ErrListenerClosed`
+sentinel end it, matched with `errors.Is` so classification cannot drift
+with a wrapper's wording.
+
+The `fs.ErrNotExist` branch was **deleted rather than modernized**:
+`syscall.Errno.Is` maps ENOENT onto `fs.ErrNotExist`, so switching
+`os.IsNotExist` to the modern spelling would have silently restored the
+bug. Both the code and a test record this.
+
+Silence was the expensive part, so a premature exit is now loud. If the
+loop ends while its target is still running, the session records a
+supervisor failure and the runtime fails the test with it — outranking
+every other verdict, because a filtered process with no supervisor
+produces no evidence. Dropped notifications are counted and reported at
+teardown.
+
+### Fixed — `fault()` written the normal way installed no filter
+
+Found while building the regression corpus above, and the same class of
+defect as the v0.13.3 silent no-ops.
+
+Filter installation is decided by searching spec source for literal
+substrings — `fault(db,` and `write=deny(`. Two idiomatic spellings
+never matched, and both produced a fault that silently did nothing:
+
+```python
+fault(db, write = delay("1ms"), run = s)   # spaces around `=`
+
+fault(                                     # split across lines
+    db,
+    write = deny("EIO"),
+    run = scenario,
+)
+```
+
+Measured: `write = delay(...)` gave `rule_count 0, seccomp false`;
+`write=delay(...)` gave `rule_count 3, seccomp true`. The multi-line form
+is what any spec looks like once a fault has more than two arguments.
+
+Source is now folded into paren-balanced statements with whitespace
+stripped before matching. It remains a heuristic — a fault built through
+a variable or a helper function is still invisible to it, and
+`FAULT_NOT_FIRED` stays the backstop.
+
+### Fixed — `mock_service()` was unusable from a containerized SUT
+
+Two independent gaps, either of which alone broke it. Mock listeners
+hardcoded `127.0.0.1`, which no container can reach through the docker0
+bridge — proxies solved this in RFC-035 and mocks were never brought
+along. And the env builder classified a mock as "not a container", so it
+fell through to `localhost`, handing the SUT
+`FAULTBOX_<MOCK>_MAIN_ADDR=localhost:<port>` — which inside its own
+namespace resolves to the SUT itself.
+
+Mocks now bind via the shared platform-aware helper (`FAULTBOX_PROXY_BIND`
+governs both) and resolve to `host.docker.internal` for container
+consumers. They are also exempt from the RFC-035 fault gate on address
+substitution: that gate exists because an unfaulted real service is still
+reachable over Docker's DNS, which is not true of a mock.
+
+### Fixed — containers left the Faultbox network after the first test
+
+Reported as Docker's embedded DNS black-holing from the second test
+onward. The mechanism was simpler and entirely ours: from test 2, the
+containers were not on the network at all.
+
+`EnsureNetwork` ran only at Docker-client init. `stopServices` removed
+the network after each test and cleared the ID, but the client stayed
+non-nil, so nothing recreated it — every later container launched with
+an empty network ID onto the default bridge, which has no embedded DNS
+for container names. Meanwhile `CleanupStale`, which removes
+faultbox-prefixed networks, ran before *every* test; it could never have
+been once-per-run where it sat, because the client is created lazily
+during the first test, so it first fired on test 2 and destroyed the
+network test 1 had created.
+
+The sweep now runs once at client init, before anything of the run
+exists. `EnsureNetwork` runs per container start (idempotent, and
+self-heals if the network is removed underneath). `stopServices` leaves
+it alone. Measured on `poc/demo-container`: 4 network creations before,
+1 after.
+
+### Fixed — timeouts blamed on faults that were not there
+
+A spec with **zero faults** timed out on an image that would not pull,
+and the diagnostics engine reported `[TIMEOUT_DURING_FAULT] test timed
+out while faults were active`, suggesting retry loops and deadlocks in a
+service that had never started. The classifier had no check that a fault
+existed.
+
+Three outcomes now, by what actually happened: `TIMEOUT_DURING_FAULT`
+(unchanged, when a fault fired), `TIMEOUT_NO_FAULT_FIRED` (declared but
+never hit), and `TIMEOUT_NO_FAULTS` (none at all, pointing at startup and
+healthchecks).
+
+An absent `:local`-tagged image now fails immediately with "build it
+first" instead of spending the pull timeout to arrive at `denied:
+requested access to the resource is denied`. The heuristic is
+deliberately narrow — a missing registry host is not enough on its own,
+since `mysql:8` and `postgres:16` have none either. Every other denial-
+or manifest-shaped registry error carries the same hint appended.
+
+### Fixed — `replay` on a spec in a subdirectory, and the hint it prints
+
+Two bugs that compounded. `spec_root` records the path as typed on the
+command line (`faultbox/spec.star`), but the bundle stores specs relative
+to the root spec's own directory, so the root is archived under its bare
+basename — joining the extraction dir with `spec_root` looked for a
+directory the archive does not contain. A spec at the repo root makes the
+two identical, which is why every spec in this repo always replayed.
+
+And the `Replay:` hint printed after every failure carried `--seed N`,
+which `replay` does not accept and cannot sensibly accept, since it takes
+the seed from the manifest. Every copy-pasted suggestion failed on an
+unknown flag before it could reach the path bug. The flag is dropped; a
+test now walks the flags in the printed hint and checks each against what
+`replay` parses.
+
+### Fixed — packet faults never reached a containerized consumer
+
+Reported as the netstack gateway attaching "on some runs and not others,
+same spec, same seed", with the run correctly refusing to report a result
+when it did not attach.
+
+The gateway address for a container consumer is allocated inside a branch
+gated on "does a **proxy** fault target this interface". Packet faults are
+invisible to that question: the gate reads `fault_assumption` proxy rules,
+and packet faults cannot be declared there at all — `partition()` and
+`packet_*` are body-time calls recorded in a separate registry. A spec
+whose only faults were packet faults therefore got no gateway address,
+the gateway never attached, and the run ended at *"packet faults were
+installed N time(s) but no netstack gateway was attached"*.
+
+The gate no longer applies when the packet gateway is enabled: a spec
+declaring `determinism(runtime = "gvisor")` has asked to be mediated at
+the packet layer.
+
+The reporter also asked for this to fail at setup rather than after the
+body runs. That is not implementable as stated — packet faults are
+body-time calls, so their arguments are validated inside the body, and
+failing at setup replaces a spec error the author can fix (`source=`
+naming the interface owner) with an environment one they cannot (no
+`CAP_NET_ADMIN`). What was missing was the *reason*: the gateway is now
+attached at setup purely to capture why it failed, and the failure
+carries it.
+
+The reporter's second half — that packet faults and a multi-test suite
+were mutually exclusive — should be resolved by the supervisor and
+network fixes above. Host ports were a workaround for the proxy freeze,
+and container names failing from test 2 was the network being destroyed
+and never recreated.
+
+### Changed
+
+- `faultbox report <bundle.fb>` derives its output name from the bundle
+  (`run-<ts>-<seed>.fb` → `report_<ts>-<seed>.html`) instead of always
+  writing `report.html`, so reporting a second bundle no longer silently
+  overwrites the first. `--output` still pins a fixed name.
+
+Next-version work is tracked in
+[GitHub Issues](https://github.com/faultbox/Faultbox/issues).
+
 ## [0.17.0] - 2026-07-30
 
 Agent-first surface, first slice — and detecting suites that cannot fail.
@@ -3202,7 +3412,14 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.13.3...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.0...HEAD
+[0.18.0]: https://github.com/faultbox/Faultbox/compare/release-0.17.0...release-0.18.0
+[0.17.0]: https://github.com/faultbox/Faultbox/compare/release-0.16.1...release-0.17.0
+[0.16.1]: https://github.com/faultbox/Faultbox/compare/release-0.16.0...release-0.16.1
+[0.16.0]: https://github.com/faultbox/Faultbox/compare/release-0.15.0...release-0.16.0
+[0.15.0]: https://github.com/faultbox/Faultbox/compare/release-0.14.1...release-0.15.0
+[0.14.1]: https://github.com/faultbox/Faultbox/compare/release-0.14.0...release-0.14.1
+[0.14.0]: https://github.com/faultbox/Faultbox/compare/release-0.13.3...release-0.14.0
 [0.13.3]: https://github.com/faultbox/Faultbox/compare/release-0.13.2...release-0.13.3
 [0.13.2]: https://github.com/faultbox/Faultbox/compare/release-0.13.1...release-0.13.2
 [0.13.1]: https://github.com/faultbox/Faultbox/compare/release-0.13.0...release-0.13.1

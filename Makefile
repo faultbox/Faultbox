@@ -69,6 +69,14 @@ testops-prep:
 	CGO_ENABLED=0 go build -o /tmp/mock-api       ./poc/mock-api/
 	CGO_ENABLED=0 go build -o /tmp/inventory-svc  ./poc/demo/inventory-svc/
 	CGO_ENABLED=0 go build -o /tmp/order-svc      ./poc/demo/order-svc/
+	@# F-1 regression: a SUT with a connection pool, i.e. enough
+	@# concurrent intercepted syscalls to strand the supervisor if a
+	@# dropped notification is ever mistaken for a closed listener again.
+	CGO_ENABLED=0 go build -o /tmp/pool-sut       ./poc/pool-sut/
+	@# Real h2c / gRPC / UDP server for the protocol audit's last three
+	@# protocols, which had no server to talk to and so carried unit
+	@# coverage only.
+	CGO_ENABLED=0 go build -o /tmp/protocol-servers ./poc/protocol-audit/servers/
 	@# RFC-040 leak harness drives the determinism_* corpus cases.
 	@# Linux-only — uses raw clock_gettime / getrandom syscalls via
 	@# golang.org/x/sys/unix, which doesn't compile on darwin.

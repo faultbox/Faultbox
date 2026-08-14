@@ -5,6 +5,7 @@ package engine
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -172,12 +173,7 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	if listenerFd >= 0 {
 		go func() {
 			err := s.notificationLoop(ctx, listenerFd, ruleMap, stopNotif)
-			if err != nil && !isClosedFdErr(err) {
-				s.log.Error("notification loop exited unexpectedly",
-					slog.String("error", err.Error()),
-					slog.Int("listener_fd", listenerFd),
-				)
-			}
+			s.checkSupervisorExit(ctx, stopNotif, childPid, listenerFd, err)
 			notifDone <- err
 		}()
 	} else {
@@ -252,9 +248,16 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	s.log.Info("session completed",
 		slog.Int("exit_code", exitCode),
 		slog.Duration("duration", duration),
+		slog.Int64("dropped_notifications", s.droppedNotifs.Load()),
 	)
 
-	return &Result{SessionID: s.ID, ExitCode: exitCode, Duration: duration}, nil
+	return &Result{
+		SessionID:            s.ID,
+		ExitCode:             exitCode,
+		Duration:             duration,
+		SupervisorError:      s.SupervisorFailure(),
+		DroppedNotifications: s.droppedNotifs.Load(),
+	}, nil
 }
 
 func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap map[int32][]*FaultRule, stop <-chan struct{}) error {
@@ -284,6 +287,13 @@ func (s *Session) notificationLoop(ctx context.Context, listenerFd int, ruleMap 
 
 		req, err := seccomp.Receive(listenerFd)
 		if err != nil {
+			// The notification was discarded before we reached it. The
+			// syscall it described is already gone, so there is nothing
+			// to answer — count it and keep supervising the rest.
+			if isDroppedNotifErr(err) {
+				s.droppedNotifs.Add(1)
+				continue
+			}
 			if isClosedFdErr(err) {
 				return nil
 			}
@@ -404,14 +414,14 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 				releaseDecision := "allow (released)"
 				if d.Allow {
 					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
-						if !isClosedFdErr(err) {
+						if !isBenignRespondErr(err) {
 							s.log.Error("failed to allow held syscall", slog.String("error", err.Error()))
 						}
 					}
 				} else {
 					releaseDecision = fmt.Sprintf("deny(%d) (released)", d.Errno)
 					if err := seccomp.Deny(listenerFd, req.ID, d.Errno); err != nil {
-						if !isClosedFdErr(err) {
+						if !isBenignRespondErr(err) {
 							s.log.Error("failed to deny held syscall", slog.String("error", err.Error()))
 						}
 					}
@@ -492,7 +502,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 					}
 					emit(decision, path, rule.Delay, rule.Label, rule.Op)
 					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
-						if !isClosedFdErr(err) {
+						if !isBenignRespondErr(err) {
 							s.log.Error("failed to allow syscall after delay", slog.String("error", err.Error()))
 						}
 					}
@@ -503,7 +513,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
 					emit(decision, path, 0, rule.Label, rule.Op)
 					if err := seccomp.Deny(listenerFd, req.ID, int32(rule.Errno)); err != nil {
-						if !isClosedFdErr(err) {
+						if !isBenignRespondErr(err) {
 							s.log.Error("failed to deny syscall", slog.String("error", err.Error()))
 						}
 					}
@@ -514,7 +524,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 					s.logSyscall(slog.LevelInfo, syscallName, req.PID, decision, path)
 					emit(decision, path, 0)
 					if err := seccomp.Allow(listenerFd, req.ID); err != nil {
-						if !isClosedFdErr(err) {
+						if !isBenignRespondErr(err) {
 							s.log.Error("failed to allow traced syscall", slog.String("error", err.Error()))
 						}
 					}
@@ -528,7 +538,7 @@ func (s *Session) handleNotification(ctx context.Context, listenerFd int, req *s
 	s.logSyscall(slog.LevelDebug, syscallName, req.PID, decision, path)
 	emit(decision, path, 0)
 	if err := seccomp.Allow(listenerFd, req.ID); err != nil {
-		if !isClosedFdErr(err) {
+		if !isBenignRespondErr(err) {
 			s.log.Error("failed to allow syscall", slog.String("error", err.Error()))
 		}
 	}
@@ -635,15 +645,136 @@ func (s *Session) writeZeroTimespec(pid uint32, addr uint64) {
 	seccomp.WriteToProcess(pid, addr, buf)
 }
 
+// isClosedFdErr reports whether err means the seccomp listener fd is gone,
+// which is the one condition that legitimately ends the notification loop.
+//
+// This deliberately does NOT match ENOENT. `SECCOMP_IOCTL_NOTIF_RECV`
+// returns ENOENT when the *notification* has been discarded — the target
+// thread died or took a signal before we got to it — which says nothing
+// about the fd. Treating the two alike used to end the loop on the first
+// dropped notification, leaving the child filtered with no supervisor:
+// every intercepted syscall then blocked forever, with no log line,
+// because the caller suppressed the message for a "clean" exit. A Go SUT
+// under `SIGURG` preemption with a busy connection pool hits that within
+// seconds. See isDroppedNotifErr.
+//
+// Matching is by errno identity, not by message text, so the
+// classification cannot drift if a wrapper's wording changes.
+// Do NOT add an fs.ErrNotExist / os.IsNotExist branch here. It looks
+// harmless and reintroduces the bug: syscall.Errno.Is maps ENOENT onto
+// fs.ErrNotExist, so `errors.Is(err, fs.ErrNotExist)` matches a wrapped
+// ENOENT from RECV and ends the loop again. The old code had exactly
+// that branch. Only genuine fd-is-gone conditions belong below.
 func isClosedFdErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	if os.IsNotExist(err) {
+	return errors.Is(err, seccomp.ErrListenerClosed) ||
+		errors.Is(err, syscall.EBADF) ||
+		errors.Is(err, unix.EPIPE)
+}
+
+// isDroppedNotifErr reports whether err means this single notification is
+// no longer available. The kernel returns ENOENT from RECV when the
+// notifying task was killed or interrupted before the supervisor received
+// it — routine under normal scheduling, and not a reason to stop
+// supervising the ones that follow. SEND returns the same errno when the
+// target goes away between RECV and the response.
+func isDroppedNotifErr(err error) bool {
+	return err != nil && errors.Is(err, syscall.ENOENT)
+}
+
+// stopRequested reports whether teardown has asked the notification loop
+// to stop. A loop that ends after this is expected; one that ends before
+// it is a supervisor failure.
+func stopRequested(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
 		return true
+	default:
+		return false
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "bad file descriptor") ||
-		strings.Contains(errStr, syscall.EBADF.Error()) ||
-		strings.Contains(errStr, syscall.ENOENT.Error())
+}
+
+// supervisorExitGrace is how long to wait for a target to finish exiting
+// before concluding that an ended notification loop stranded it.
+//
+// The loop and the target die in either order. Teardown cancels the
+// session context, which both ends the loop and signals the target — so
+// the loop routinely returns while the target is still a live process for
+// a few more milliseconds. Flagging that would report a supervisor
+// failure on every clean run.
+const supervisorExitGrace = 3 * time.Second
+
+// checkSupervisorExit decides whether an ended notification loop stranded
+// its target, and records it if so.
+//
+// The failure being caught is specific: the loop stopped, nobody asked it
+// to, and the target is still running with its seccomp filter installed.
+// From that point the target blocks on every intercepted syscall with
+// nothing to answer it. It does not crash — it goes quiet — so without
+// this the run reads as an unresponsive SUT.
+func (s *Session) checkSupervisorExit(
+	ctx context.Context,
+	stop <-chan struct{},
+	childPid, listenerFd int,
+	loopErr error,
+) {
+	// Teardown asked for this. Expected.
+	if ctx.Err() != nil || stopRequested(stop) {
+		if loopErr != nil && !isClosedFdErr(loopErr) && ctx.Err() == nil {
+			s.log.Error("notification loop exited unexpectedly",
+				slog.String("error", loopErr.Error()),
+				slog.Int("listener_fd", listenerFd),
+			)
+		}
+		return
+	}
+
+	// Nobody asked. Give the target a moment to finish exiting — if it is
+	// on its way out, the loop ending first is normal.
+	deadline := time.Now().Add(supervisorExitGrace)
+	for time.Now().Before(deadline) {
+		if !processAlive(childPid) {
+			return // target exited; the loop ending with it is expected
+		}
+		if ctx.Err() != nil || stopRequested(stop) {
+			return // teardown started while we waited
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Still running, still unattended.
+	cause := "loop returned without an error"
+	if loopErr != nil {
+		cause = loopErr.Error()
+	}
+	s.noteSupervisorExit(cause)
+	s.log.Error("seccomp supervisor stopped while the target is still running",
+		slog.String("cause", cause),
+		slog.Int("pid", childPid),
+		slog.Int("listener_fd", listenerFd),
+		slog.Int64("dropped_notifications", s.droppedNotifs.Load()),
+		slog.String("impact", "intercepted syscalls will now block indefinitely"),
+	)
+}
+
+// processAlive reports whether pid still exists and has not been reaped.
+// A zombie counts as dead: its syscalls are done, so an ended
+// notification loop can no longer strand it.
+func processAlive(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return false
+	}
+	return !strings.Contains(string(data), "State:\tZ")
+}
+
+// isBenignRespondErr reports whether a failed Allow/Deny/Respond is
+// expected rather than a defect: either the listener is gone, or the
+// notification we were answering has been discarded. Both mean the
+// syscall is no longer waiting on us, so there is nothing to log and
+// nothing to fix.
+func isBenignRespondErr(err error) bool {
+	return isClosedFdErr(err) || isDroppedNotifErr(err)
 }

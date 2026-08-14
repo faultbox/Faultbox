@@ -480,6 +480,73 @@ alone is unreliable, so they need a run.
 
 Every code and its remedy: [diagnostic-codes.md](diagnostic-codes.md).
 
+## 18. Every socket in the SUT times out at once, and never recovers
+
+```
+read tcp 127.0.0.1:54012->127.0.0.1:41863: i/o timeout
+dial tcp 127.0.0.1:41863: i/o timeout
+```
+
+Established connections *and* new dials both fail, from one moment onward, with
+no recovery. The dependency is healthy, and steps from the spec to the same
+service still succeed - only the SUT is affected. Services with a connection
+pool are hit hardest; a quiet single-connection client may keep working.
+
+This was a Faultbox bug, fixed in v0.18.0. The seccomp supervisor stopped
+answering while the service kept its filter, so every intercepted syscall
+blocked forever. It was silent - no log line, no failed test, just a service
+that went quiet.
+
+**If you see it on v0.18.0 or later**, the run now says so:
+
+```
+ERROR seccomp supervisor stopped while the target is still running
+  impact=intercepted syscalls will now block indefinitely
+```
+
+and the test fails with that reason rather than timing out. Attach the bundle to
+an issue - the supervisor is not supposed to stop.
+
+**On v0.17.0 and earlier** there is no workaround beyond upgrading. The
+`dropped_notifications` counter that would have shown it did not exist yet.
+
+## 19. A fault is declared but nothing is intercepted
+
+```
+WARNING: [FAULT_NOT_FIRED] write fault on 'api' was installed but never fired
+```
+
+with `rule_count=0` and `seccomp=false` in the session log, meaning no filter was
+installed at all.
+
+Before v0.18.0, Faultbox decided which services needed a filter by searching spec
+source for the exact text `fault(<var>,` and `write=deny(`. Spaces around the `=`
+or a call split across lines matched neither, so the fault silently did nothing:
+
+```python
+fault(db, write = delay("1ms"), run = s)   # spaces - was not seen
+fault(                                     # multi-line - was not seen
+    db,
+    write = deny("EIO"),
+    run = scenario,
+)
+```
+
+Both work from v0.18.0. The scan is still static, so two shapes remain invisible
+to it on any version:
+
+```python
+rules = {"write": deny("EIO")}     # built in a variable
+fault(db, **rules, run = scenario)
+
+def hit_the_db(scenario):          # wrapped in a helper
+    fault(db, write = deny("EIO"), run = scenario)
+```
+
+**Fix:** spell the fault inline at the call site. If you need the indirection,
+check the session log for `seccomp=true` on the target service before trusting
+the result.
+
 ## See also
 
 - [bundles.md](bundles.md) — bundle inspection (`faultbox inspect`)

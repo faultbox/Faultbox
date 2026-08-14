@@ -1490,6 +1490,19 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 		}
 	}
 
+	// Attach the packet gateway now, if the spec needs one, so the reason
+	// it could not attach is captured while it is still available.
+	//
+	// This deliberately does NOT fail the test here. Packet faults are
+	// body-time calls, so their arguments are validated inside the body —
+	// failing at setup would pre-empt that and replace a spec error the
+	// author can fix ("source= cannot name the interface owner") with an
+	// environment error they cannot ("no CAP_NET_ADMIN"). Three existing
+	// validation tests prove that ordering matters. The hard failure
+	// stays where it can see what the body actually installed; what
+	// changes is that it can now say why (F-7).
+	rt.notePacketGatewayPreflight()
+
 	// RFC-041 §5.4 — register spec-wide monitors for the duration of
 	// this test. Each gets its own freshly-initialized per-test state
 	// (RegisterMonitor handles the StateInit copy). IDs are tracked so
@@ -1790,10 +1803,32 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	expectViolated := rt.expectationViolated
 	requireFaults := rt.requireFaultsFire
 
+	// Capture supervisor health before teardown, while the sessions are
+	// still live and "stopped" is unambiguous.
+	supervisorErr := rt.supervisorFailure()
+
 	// Stop services.
 	rt.stopServices()
 
 	events := rt.events.Events()
+
+	// A seccomp supervisor that stopped while its service was still
+	// running invalidates everything downstream: from that moment the
+	// service blocks on every intercepted syscall, so a pass means "it
+	// never got far enough to fail" and a failure names the wrong cause.
+	// This outranks every other verdict — including an assertion that
+	// happened to fire first — because the run itself is not evidence.
+	if supervisorErr != nil {
+		rt.events.Emit("supervisor_exited", "", map[string]string{
+			"error": supervisorErr.Error(),
+		})
+		return TestResult{
+			Name: name, Result: "error",
+			Reason:     supervisorErr.Error(),
+			DurationMs: time.Since(start).Milliseconds(),
+			Events:     rt.events.Events(),
+		}
+	}
 
 	// Body errors caused by the per-test cancellation we triggered
 	// (await_* returning context.DeadlineExceeded under the cancelled
@@ -1911,11 +1946,15 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	}
 
 	if n := rt.packetRules.unwiredInstalls(); n > 0 {
+		reason := fmt.Sprintf("packet faults were installed %d time(s) but no netstack gateway was attached, "+
+			"so no packet was affected; the result below would be meaningless", n)
+		if why := rt.packetGatewayAttachReason(); why != "" {
+			reason += " — " + why
+		}
 		return TestResult{
 			Name:   name,
 			Result: "fail",
-			Reason: fmt.Sprintf("packet faults were installed %d time(s) but no netstack gateway was attached, "+
-				"so no packet was affected; the result below would be meaningless", n),
+			Reason: reason,
 			DurationMs:      time.Since(start).Milliseconds(),
 			Events:          events,
 			Matrix:          matrixInfo,
@@ -2108,11 +2147,16 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 	copy(order, rt.order)
 	rt.mu.Unlock()
 
-	// Clean up stale containers from previous tests or interrupted runs.
-	// Only clean up if we don't have reused containers already running.
-	if rt.dockerClient != nil && len(rt.sessions) == 0 {
-		rt.dockerClient.CleanupStale(ctx)
-	}
+	// The leftover sweep now runs once, at Docker client init — see
+	// startContainerService. It used to run here, before every test, and
+	// it removes the faultbox network along with the containers, so each
+	// test destroyed the network and the next recreated it.
+	//
+	// Running it here could never have been once-per-run anyway: the
+	// Docker client is created lazily during the first test's container
+	// launch, so the guard above it was false on test 1 and the sweep
+	// first fired on test 2 — destroying the network test 1 had just
+	// created.
 
 	for _, svcName := range order {
 		svc := rt.services[svcName]
@@ -2544,7 +2588,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 
 // startContainerService starts a service from a Docker container image (PoC 2 path).
 func (rt *Runtime) startContainerService(ctx context.Context, svcName string, svc *ServiceDef) error {
-	// Lazy-init Docker client and network.
+	// Lazy-init Docker client.
 	if rt.dockerClient == nil {
 		dc, err := container.NewClient(ctx, rt.log)
 		if err != nil {
@@ -2553,12 +2597,35 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		rt.dockerClient = dc
 		rt.containerIDs = make(map[string]string)
 
-		netID, err := dc.EnsureNetwork(ctx)
-		if err != nil {
-			return fmt.Errorf("docker network: %w", err)
-		}
-		rt.networkID = netID
+		// Sweep leftovers from a previous interrupted run, once, before
+		// anything of this run exists. CleanupStale removes faultbox-
+		// prefixed networks as well as containers, so it must happen
+		// before EnsureNetwork below — and never again, or it would
+		// destroy the network the running suite is using.
+		dc.CleanupStale(ctx)
 	}
+
+	// Ensure the network on every container start, not only at client
+	// init (F-3).
+	//
+	// EnsureNetwork used to run once, inside the block above. stopServices
+	// then removed the network after each test and cleared networkID — but
+	// dockerClient stayed non-nil, so nothing ever recreated it. From the
+	// second test onward every container launched with an empty network
+	// ID, landing on Docker's default bridge, which has no embedded DNS
+	// for container names. That is the reported symptom exactly: the first
+	// test resolves peers by name and every test after it hangs on
+	// lookups.
+	//
+	// EnsureNetwork is idempotent — it reuses an existing faultbox-net and
+	// creates one only when absent — so calling it per start also
+	// self-heals if the network is removed underneath us, which the stale
+	// -network sweep in container.Client does whenever nothing is attached.
+	netID, err := rt.dockerClient.EnsureNetwork(ctx)
+	if err != nil {
+		return fmt.Errorf("docker network: %w", err)
+	}
+	rt.networkID = netID
 
 	// Resolve image: either pull or build from Dockerfile.
 	imageName := svc.Image
@@ -3039,9 +3106,18 @@ func (rt *Runtime) buildContainerEnv(svc *ServiceDef) []string {
 				}
 			}
 			if host == "" {
-				if other.IsContainer() {
+				switch {
+				case other.IsContainer():
 					host = otherName
-				} else {
+				case other.IsMock():
+					// A mock is an in-process listener on the host, with
+					// no container and no DNS name. "localhost" from
+					// inside the consumer's container resolves to the
+					// consumer itself, so the SUT dialled itself and the
+					// mock was unreachable — mock_service() did not work
+					// for containerized SUTs at all.
+					host = "host.docker.internal"
+				default:
 					host = "localhost"
 				}
 			}
@@ -3120,6 +3196,24 @@ func (rt *Runtime) findShimPath() string {
 // stopServices stops all running services and cleans up containers.
 // Services with Reuse=true are kept alive — only their dynamic fault rules
 // are cleared. They are torn down later by stopReusedServices().
+// supervisorFailure returns an error if any running session's seccomp
+// notification loop stopped while its service was still alive. Such a
+// service is filtered with nobody answering it, so every intercepted
+// syscall blocks forever — the service does not crash, it goes silent,
+// and without this check the symptom surfaces much later as unexplained
+// i/o timeouts on every socket it owns.
+func (rt *Runtime) supervisorFailure() error {
+	for name, rs := range rt.sessions {
+		if rs == nil || rs.session == nil {
+			continue
+		}
+		if err := rs.session.SupervisorFailure(); err != nil {
+			return fmt.Errorf("service %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func (rt *Runtime) stopServices() {
 	// Determine which services are reused.
 	reused := make(map[string]bool)
@@ -3178,11 +3272,22 @@ func (rt *Runtime) stopServices() {
 		}
 		rt.containerIDs = keptContainers
 
-		// Remove the Docker network only if no reused containers remain.
-		if len(keptContainers) == 0 && rt.networkID != "" {
-			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
-			rt.networkID = ""
-		}
+		// The network deliberately outlives the test. It used to be
+		// removed here whenever no container survived, so an N-test suite
+		// performed N create/destroy cycles on the same-named network.
+		//
+		// That churn is what the courier report (F-3) blames for Docker's
+		// embedded DNS black-holing from the second test onward: the
+		// first test's containers resolve names normally, and from
+		// session 2 the SUT's lookups against 127.0.0.11 hang while
+		// `docker exec getent hosts` in the same container still works.
+		// Their workaround was to make the entire topology DNS-free.
+		//
+		// Nothing needed the recreation. Per-test isolation comes from
+		// container lifecycle, not network lifecycle — containers are
+		// still destroyed and recreated around every test. The network is
+		// now created once per run and removed in cleanup(), which has
+		// always handled it.
 	}
 
 	// Clean up socket directories only for non-reused services.
@@ -3446,7 +3551,45 @@ func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer st
 			continue
 		}
 		for ifName, iface := range s.Interfaces {
-			if mode == containerConsumer && !faulted[name][ifName] {
+			// Mock services must always be rewritten for a container
+			// consumer, and are exempt from the fault gate below.
+			//
+			// That gate exists because an unfaulted *real* service is
+			// still reachable from a container via Docker's DNS, so
+			// rewriting it would be pointless churn. A mock has no
+			// container and no DNS entry — it is an in-process listener
+			// on the host. Without this branch a containerized SUT was
+			// handed `localhost:<port>`, which resolves to the SUT's own
+			// container, so mock_service() could not be used from a
+			// container at all.
+			if s.IsMock() {
+				if mode == containerConsumer {
+					target := fmt.Sprintf("host.docker.internal:%d", iface.Port)
+					out[fmt.Sprintf("localhost:%d", iface.Port)] = target
+					out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = target
+					out[fmt.Sprintf("%s:%d", name, iface.Port)] = target
+				}
+				continue
+			}
+			// The gate below asks "does a proxy fault target this
+			// interface" — but it also skips the packet-gateway branch,
+			// and packet faults are invisible to it. `faultedInterfaces`
+			// reads `fault_assumption` proxy rules, and packet faults
+			// cannot be declared there at all: `partition()` and
+			// `packet_*` are body-time calls recorded in a separate
+			// registry.
+			//
+			// So a spec whose only faults are packet faults got no
+			// gateway address for a containerized consumer, the gateway
+			// never attached, and the run ended at
+			// "packet faults were installed N time(s) but no netstack
+			// gateway was attached" (F-7).
+			//
+			// When the packet gateway is enabled the spec has explicitly
+			// asked to be mediated at the packet layer, so the gate does
+			// not apply. gatewayAddrFor still returns "" if the gateway
+			// cannot attach, which falls through to the behaviour below.
+			if mode == containerConsumer && !faulted[name][ifName] && !rt.packetGatewayEnabled() {
 				continue
 			}
 			proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName)
@@ -4033,7 +4176,9 @@ var faultableSyscalls = []string{
 // Only these syscalls are installed in the seccomp filter, avoiding the overhead
 // of intercepting irrelevant syscalls (e.g., openat during library loading).
 func (rt *Runtime) requiredSyscalls() []string {
-	src := rt.sourceText
+	// Whitespace-folded so `write = deny(...)` matches the same as
+	// `write=deny(...)`; see specStatements.
+	src := strings.Join(specStatements(rt.sourceText), "\n")
 	found := make(map[string]bool)
 
 	// Scan for fault keywords: "write=deny", "write=delay", "connect=deny", etc.
@@ -4041,9 +4186,7 @@ func (rt *Runtime) requiredSyscalls() []string {
 		// Match "syscall=deny(" or "syscall=delay(" or "syscall=allow("
 		if strings.Contains(src, sc+"=deny(") ||
 			strings.Contains(src, sc+"=delay(") ||
-			strings.Contains(src, sc+"=allow(") ||
-			strings.Contains(src, sc+"=deny (") ||
-			strings.Contains(src, sc+"=delay (") {
+			strings.Contains(src, sc+"=allow(") {
 			found[sc] = true
 		}
 		// Match trace() syscall list: "write" or 'write' inside trace()/trace_start().
@@ -4126,8 +4269,11 @@ func (rt *Runtime) requiredSyscallsForService(svcName string) []string {
 
 	found := make(map[string]bool)
 
-	// Scan line-by-line for fault/trace calls targeting this service.
-	lines := strings.Split(src, "\n")
+	// Scan statement-by-statement for fault/trace calls targeting this
+	// service. See specStatements: the source is folded into
+	// paren-balanced statements with whitespace stripped, so the natural
+	// spellings all match the same way.
+	lines := specStatements(src)
 	for _, varName := range varNames {
 		faultPrefix := "fault(" + varName + ","
 		faultStartPrefix := "fault_start(" + varName + ","
@@ -4404,6 +4550,44 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 			}
 			rules = append(rules, rule)
 		}
+	}
+
+	// Refuse a fault the kernel was never told to intercept.
+	//
+	// The seccomp filter is built once at launch from a static scan of the
+	// spec. If that scan missed the fault — a call built through a
+	// variable, or reached via a helper — the rule below is accepted, the
+	// kernel never notifies on that syscall, and the fault is silently
+	// inert. The test then passes for the wrong reason, which is the one
+	// outcome a fault-injection tool must never produce.
+	//
+	// The scan is a heuristic and always will be; this is what makes the
+	// heuristic safe. A fault either fires or the run fails saying why.
+	if missing := uncoveredSyscalls(rs.session, rules); len(missing) > 0 {
+		covered := "nothing"
+		if got := rs.session.FilteredSyscalls(); len(got) > 0 {
+			covered = strings.Join(got, ", ")
+		}
+		// Report the keyword the user wrote, not the expansion. A fault
+		// declared as `write=` becomes write/writev/pwrite64 internally,
+		// and telling someone to write `pwrite64 = deny(...)` sends them
+		// to fix the wrong thing.
+		keyword := missing[0]
+		for kw := range faults {
+			for _, sc := range expandSyscallFamily(kw) {
+				if sc == missing[0] {
+					keyword = kw
+				}
+			}
+		}
+		return codedf(CodeFaultNotFilterable,
+			"service %q is not intercepting %s, so this fault could not fire "+
+				"(intercepting: %s). Faultbox decides what to intercept by scanning the "+
+				"spec for fault() calls before the run starts, and it could not see this "+
+				"one — the syscall and the target have to be visible in the call itself. "+
+				"Write `fault(%s, %s = deny(...), ...)` rather than passing the rules in "+
+				"from a variable",
+			svcName, strings.Join(missing, ", "), covered, svcName, keyword)
 	}
 
 	rs.session.SetDynamicFaultRules(rules)

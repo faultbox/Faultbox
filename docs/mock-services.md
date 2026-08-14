@@ -536,8 +536,23 @@ api = service("api",
 )
 ```
 
-The real `api` container reaches `auth` and `cache` by hostname inside
-the Faultbox docker network — same as it would reach any other service.
+The `auth:8090` and `cache:6379` spellings above are what you write; they
+are not what the container dials. A mock is an in-process listener on the
+host — it has no container and no entry in Docker's DNS — so Faultbox
+rewrites those addresses in the SUT's environment to reach the host
+instead (`host.docker.internal:<port>` for a container consumer,
+loopback for a host binary). Write the address as if the mock were a
+peer; the substitution makes it true.
+
+> **v0.18.0.** Before that release neither half of this worked: mock
+> listeners bound host loopback, which nothing on the docker0 bridge can
+> reach, and the injected address was a bare `localhost:<port>` that
+> resolved to the SUT's own container. `mock_service()` was unusable
+> from a containerized SUT. Host-binary SUTs were unaffected.
+>
+> The bind interface follows
+> [`FAULTBOX_PROXY_BIND`](cli-reference.md#variables), which governs
+> proxy and mock listeners alike.
 
 ## Faulting a mock
 

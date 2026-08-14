@@ -10,18 +10,31 @@ no server — one file, forever.
 ## The command
 
 ```sh
-faultbox report <bundle.fb>                  # writes report.html next to the bundle
+faultbox report <bundle.fb>                  # writes report_<bundle>.html alongside
 faultbox report <bundle.fb> --output r.html  # custom path
 faultbox report <bundle.fb> -o -             # write to stdout
 ```
+
+The default output name is derived from the bundle: the extension and
+the leading `run-` are dropped, and `report_` is prefixed.
+
+| Bundle | Report |
+|---|---|
+| `run-2026-04-22T15-03-11-42.fb` | `report_2026-04-22T15-03-11-42.html` |
+| `nightly.fb` | `report_nightly.html` |
+
+The report keeps the timestamp and seed so two runs never overwrite
+each other - which matters most when the two runs are what you want to
+compare. Pass `--output` when you do want a fixed name, such as a CI
+artifact path.
 
 Every `faultbox test` run emits a bundle by default (RFC-025). So in
 practice you go:
 
 ```sh
 faultbox test faultbox.star                  # writes run-<ts>-<seed>.fb
-faultbox report run-2026-04-22-42.fb         # writes report.html
-open report.html                             # macOS / any browser
+faultbox report run-2026-04-22-42.fb         # writes report_2026-04-22-42.html
+open report_2026-04-22-42.html               # macOS / any browser
 ```
 
 Opening the file works offline. If you drop it in a Slack channel
