@@ -3,7 +3,7 @@
 - **Status:** Draft
 - **Target:** v0.19.0 (candidate)
 - **Created:** 2026-08-14
-- **Origin:** Field report, courier evaluation — the last capability gap after v0.18.0
+- **Origin:** Field report, first large-service evaluation — the last capability gap after v0.18.0
 - **Depends on:** RFC-024 (proxy datapath), RFC-054 (packet gateway)
 - **Relates to:** RFC-035 (container-consumer reachability), RFC-039 (TLS for deferred plugins)
 
@@ -62,7 +62,7 @@ The same shape, different call:
 
 The packet gateway does not save us. It mediates traffic crossing the
 Faultbox container network, and a client that has been handed a host-port
-address leaves that network. This is what the courier evaluation ran
+address leaves that network. This is what the field evaluation ran
 into: the proxy workaround forced them onto host ports, and host ports
 put them outside the gateway. Both layers blind at once.
 
