@@ -264,6 +264,10 @@ type Runtime struct {
 	// Container support.
 	dockerClient *container.Client // lazy-initialized Docker client
 	networkID    string            // Faultbox Docker network ID
+	// runNonce identifies this process's run. Used to scope Kafka
+	// consumer groups so committed offsets cannot leak between runs
+	// against a reused broker — see defaultKafkaGroup.
+	runNonce string
 	containerIDs map[string]string // service name → container ID (for cleanup)
 	baseDir      string            // directory of the loaded .star file (for build= paths)
 	sourceText   string            // raw .star source for syscall scanning
@@ -504,6 +508,7 @@ type runningSession struct {
 func New(logger *slog.Logger) *Runtime {
 	rt := &Runtime{
 		log:               logging.WithComponent(logger, "starlark"),
+		runNonce:          newRunNonce(),
 		events:            NewEventLog(),
 		eng:               engine.New(logger),
 		services:          make(map[string]*ServiceDef),
@@ -4802,6 +4807,10 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	if !ok {
 		return nil, fmt.Errorf("unsupported protocol %q (no plugin registered)", ref.Interface.Protocol)
 	}
+
+	// Scope the Kafka consumer group to this run and test. Done after the
+	// step_send event above so the per-run nonce stays out of the trace.
+	rt.applyKafkaGroupDefault(ref.Interface.Protocol, method, stepArgs)
 
 	stepResult, err := p.ExecuteStep(context.Background(), addr, method, stepArgs)
 	if err != nil {

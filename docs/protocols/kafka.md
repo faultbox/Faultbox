@@ -34,7 +34,7 @@ resp = kafka.broker.publish(topic="events", data="test")
 # resp.data = {"published": true, "topic": "events"}
 ```
 
-### `consume(topic="", group="faultbox")`
+### `consume(topic="", group=)`
 
 Consume one message from a topic.
 
@@ -52,7 +52,28 @@ resp = kafka.broker.consume(topic="order-events")
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `topic` | string | required | Topic to consume from |
-| `group` | string | `"faultbox"` | Consumer group ID |
+| `group` | string | scoped to (run, test) | Consumer group ID |
+
+> **The default group is per-run and per-test**, named
+> `faultbox-<run>-<test>`. Pass `group=` only when the spec is *about*
+> consumer-group semantics — rebalances, redelivery, offset commits — where
+> a stable name is the point.
+>
+> A consumer group's committed offsets live in the broker's
+> `__consumer_offsets` and outlive the reader that wrote them. Through
+> v0.18.0 the default was the constant `"faultbox"`, so the second test to
+> consume resumed after whatever the first had committed, and a broker
+> container kept across tests (`reuse=True`) carried that state between
+> whole runs. What a test saw depended on what had run before it, **at any
+> seed** — the seed could not fix it, because the state is in the broker,
+> not in Faultbox. A group that has never committed anything falls back to
+> kafka-go's `FirstOffset`, so the read starts at the beginning of the
+> topic every time.
+>
+> This makes a run **reproducible**; it does not isolate topic contents.
+> On a reused broker a test still reads the *first* message on the topic,
+> which may be an earlier test's. For isolation, use a per-test topic —
+> see Option 1 below.
 
 **Response fields:**
 
