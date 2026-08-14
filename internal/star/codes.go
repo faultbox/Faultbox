@@ -50,6 +50,7 @@ const (
 	CodeLaunchFailed           Code = "LAUNCH_FAILED"
 	CodeDockerUnavailable      Code = "DOCKER_UNAVAILABLE"
 	CodeTraceHostNotRegistered Code = "TRACE_HOST_NOT_REGISTERED"
+	CodeFaultNotFilterable     Code = "FAULT_NOT_FILTERABLE"
 )
 
 // suggestions maps every code to the agent's next move.
@@ -84,6 +85,11 @@ var suggestions = map[Code]string{
 	CodeLaunchFailed: "The service could not be started. For binary mode, check the path exists " +
 		"and is executable. For container mode, check the image reference and that the image " +
 		"can be pulled.",
+	CodeFaultNotFilterable: "The fault targets a syscall this service is not intercepting, so it " +
+		"could not have fired. Faultbox chooses what to intercept by scanning the spec " +
+		"before the run; write the fault inline in the fault() call rather than building " +
+		"it in a variable or a helper function, so the scan can see it.",
+
 	CodeDockerUnavailable: "Docker is not reachable. Start the daemon, or on macOS start the " +
 		"Lima VM with `make env-start` — container-mode services and every protocol proxy " +
 		"depend on it.",

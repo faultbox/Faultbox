@@ -4552,6 +4552,44 @@ func (rt *Runtime) applyFaults(svcName string, faults map[string]*FaultDef) erro
 		}
 	}
 
+	// Refuse a fault the kernel was never told to intercept.
+	//
+	// The seccomp filter is built once at launch from a static scan of the
+	// spec. If that scan missed the fault — a call built through a
+	// variable, or reached via a helper — the rule below is accepted, the
+	// kernel never notifies on that syscall, and the fault is silently
+	// inert. The test then passes for the wrong reason, which is the one
+	// outcome a fault-injection tool must never produce.
+	//
+	// The scan is a heuristic and always will be; this is what makes the
+	// heuristic safe. A fault either fires or the run fails saying why.
+	if missing := uncoveredSyscalls(rs.session, rules); len(missing) > 0 {
+		covered := "nothing"
+		if got := rs.session.FilteredSyscalls(); len(got) > 0 {
+			covered = strings.Join(got, ", ")
+		}
+		// Report the keyword the user wrote, not the expansion. A fault
+		// declared as `write=` becomes write/writev/pwrite64 internally,
+		// and telling someone to write `pwrite64 = deny(...)` sends them
+		// to fix the wrong thing.
+		keyword := missing[0]
+		for kw := range faults {
+			for _, sc := range expandSyscallFamily(kw) {
+				if sc == missing[0] {
+					keyword = kw
+				}
+			}
+		}
+		return codedf(CodeFaultNotFilterable,
+			"service %q is not intercepting %s, so this fault could not fire "+
+				"(intercepting: %s). Faultbox decides what to intercept by scanning the "+
+				"spec for fault() calls before the run starts, and it could not see this "+
+				"one — the syscall and the target have to be visible in the call itself. "+
+				"Write `fault(%s, %s = deny(...), ...)` rather than passing the rules in "+
+				"from a variable",
+			svcName, strings.Join(missing, ", "), covered, svcName, keyword)
+	}
+
 	rs.session.SetDynamicFaultRules(rules)
 
 	// Build fault summary for event log (helps diagnose "fault didn't fire").

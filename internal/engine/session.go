@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	mathrand "math/rand/v2"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -165,6 +166,48 @@ type Result struct {
 	// the supervisor received them. Harmless individually; a large count
 	// alongside odd behaviour is worth seeing.
 	DroppedNotifications int64
+}
+
+// FiltersSyscall reports whether this session's seccomp filter intercepts
+// name. A rule added for a syscall the filter does not cover is accepted
+// by the runtime and then never fires: the kernel simply never notifies,
+// so the fault is silently inert.
+//
+// The filter is built once at launch from cfg.FaultRules, which is
+// derived from a static scan of the spec. Any gap in that scan therefore
+// shows up here, and callers use this to refuse the fault rather than
+// install something that cannot work.
+func (s *Session) FiltersSyscall(name string) bool {
+	for _, r := range s.cfg.FaultRules {
+		if r.Syscall == name {
+			return true
+		}
+		// launch() adds openat whenever open is requested, because Go
+		// programs call openat; mirror that here so the check agrees
+		// with what the kernel was actually given.
+		if r.Syscall == "open" && name == "openat" {
+			return true
+		}
+	}
+	return false
+}
+
+// FilteredSyscalls returns the syscalls this session intercepts, sorted.
+// Used to explain a coverage gap rather than only report one.
+func (s *Session) FilteredSyscalls() []string {
+	seen := make(map[string]bool, len(s.cfg.FaultRules))
+	for _, r := range s.cfg.FaultRules {
+		seen[r.Syscall] = true
+		if r.Syscall == "open" {
+			seen["openat"] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // SupervisorFailure reports that the notification loop stopped early, and

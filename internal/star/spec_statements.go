@@ -1,6 +1,40 @@
 package star
 
-import "strings"
+import (
+	"sort"
+	"strings"
+
+	"github.com/faultbox/Faultbox/internal/engine"
+)
+
+// uncoveredSyscalls returns the syscalls in rules that sess does not
+// intercept, sorted and deduplicated.
+//
+// A rule for an unintercepted syscall is accepted by the runtime and then
+// never fires — the kernel simply never notifies. That is the silent
+// no-op the source scan can still produce, and the reason callers refuse
+// the fault instead of installing it.
+func uncoveredSyscalls(sess *engine.Session, rules []engine.FaultRule) []string {
+	if sess == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for _, r := range rules {
+		if r.Syscall == "" || sess.FiltersSyscall(r.Syscall) {
+			continue
+		}
+		seen[r.Syscall] = true
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // specStatements folds spec source into a form the syscall scanner can
 // match against reliably: one entry per logical statement, with all
