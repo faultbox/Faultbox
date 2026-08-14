@@ -43,7 +43,7 @@
 # ..., "aborted": ...}` (any positive ratios; will be normalised).
 # Override the overall failure rate with `probability = 0.X`.
 #
-# Customer ask from the inDrive Freight v0.11.1 report (#11): the
+# Customer ask from an early field evaluation's v0.11.1 report (#11): the
 # common case of "model retryable failure mix" used to need three
 # hand-composed grpc.* lines plus manual probability arithmetic.
 def _retryable(method = "*", probability = 0.3, weights = None):

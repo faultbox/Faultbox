@@ -57,9 +57,9 @@ func TestContractInfo_String(t *testing.T) {
 	}{
 		{ContractInfo{Kind: ContractOpenAPI, Path: "orders.yaml", Version: "1.4.0"}, "openapi:orders.yaml@1.4.0"},
 		{ContractInfo{Kind: ContractOpenAPI, Path: "orders.yaml"}, "openapi:orders.yaml"},
-		{ContractInfo{Kind: ContractGRPC, Path: "courier.pb", Version: "courier.v1.CourierService"},
-			"grpc:courier.pb#courier.v1.CourierService"},
-		{ContractInfo{Kind: ContractGRPC, Path: "courier.pb"}, "grpc:courier.pb"},
+		{ContractInfo{Kind: ContractGRPC, Path: "orders.pb", Version: "orders.v1.OrderService"},
+			"grpc:orders.pb#orders.v1.OrderService"},
+		{ContractInfo{Kind: ContractGRPC, Path: "orders.pb"}, "grpc:orders.pb"},
 	}
 	for _, c := range cases {
 		if got := c.info.String(); got != c.want {

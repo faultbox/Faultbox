@@ -72,7 +72,7 @@ func TestGRPCProxyPassthroughDoesNotCorruptMessages(t *testing.T) {
 	upstreamAddr, stopUpstream := echoUpstream(t)
 	defer stopUpstream()
 
-	p := newGRPCProxy(nil, "geoconfig")
+	p := newGRPCProxy(nil, "config-service")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	proxyAddr, err := p.Start(ctx, upstreamAddr)
@@ -99,7 +99,7 @@ func TestGRPCProxyPassthroughDoesNotCorruptMessages(t *testing.T) {
 	var reply []byte
 	md := metadata.Pairs("x-fb-test", "1")
 	ctx2 := metadata.NewOutgoingContext(ctx, md)
-	if err := conn.Invoke(ctx2, "/freight.Geo/Lookup", &payload, &reply); err != nil {
+	if err := conn.Invoke(ctx2, "/example.Config/Lookup", &payload, &reply); err != nil {
 		t.Fatalf("invoke through proxy: %v", err)
 	}
 

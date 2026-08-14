@@ -2128,7 +2128,7 @@
     if (t === "syscall") return "syscall";
     if (isCallEvent(t)) {
       // v0.12.6: failed steps render in the fault palette so the eye
-      // finds the DB invalid-connection and the truck-api 500 among
+      // finds the DB invalid-connection and the order-service 500 among
       // a sea of yellow SELECT 1 markers. Without this every step
       // looks identical and the user has to click each one.
       var f = ev.fields || {};
@@ -2620,8 +2620,8 @@
       var t = events[i].type || "other";
       typesPresent[t] = true;
       // Service axis matches lane routing (laneFor) so the user
-      // filtering by "truck-api" finds step events to truck-api,
-      // not just truck-api's own lifecycle.
+      // filtering by "order-service" finds step events to order-service,
+      // not just order-service's own lifecycle.
       var s = laneFor(events[i]);
       servicesPresent[s] = true;
     }
@@ -2901,7 +2901,7 @@
     var caret = el("span", { class: "trace-log-caret", text: "▸" });
     // v0.12.7: service display + filter axis follow lane routing —
     // step_send/step_recv land on their target service so filtering
-    // by "truck-api" matches the call to it, not just its lifecycle.
+    // by "order-service" matches the call to it, not just its lifecycle.
     var rowService = laneFor(ev);
     var tr = el("tr", {
       "data-seq": String(ev.seq || 0),
@@ -2912,7 +2912,7 @@
     // v0.12.6: type + service cells are clickable. Click → set the
     // filter for that axis to *only this value*. Chip toolbar above
     // updates to reflect the selection. Lets a user say "show only
-    // step_recv events on truck-api" by clicking two cells, no
+    // step_recv events on order-service" by clicking two cells, no
     // chip-hunting required.
     var typeCell = el("td", { class: "type" }, [
       el("span", {
@@ -3186,7 +3186,7 @@
   //   - Target must itself be a cause candidate: ordinary success
   //     steps and syscalls have no meaningful causal upstream.
   //
-  // Result: hover the truck-api 500 → arrow points at the
+  // Result: hover the order-service 500 → arrow points at the
   // proxy_fault_applied(mysql_slow) on db, period.
   //
   // v0.12.8 keys on laneFor() not raw service so step events folded

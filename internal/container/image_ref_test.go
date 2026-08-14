@@ -15,7 +15,7 @@ func TestIsLocalOnlyRef(t *testing.T) {
 		ref  string
 		want bool
 	}{
-		{"courier-faultbox-mysql:local", true},
+		{"orders-faultbox-mysql:local", true},
 		{"myapp:local", true},
 		{"registry.example.com/team/app:local", true},
 
@@ -44,12 +44,12 @@ func TestIsLocalOnlyRef(t *testing.T) {
 // looking for credentials they do not need.
 func TestDescribePullFailureExplainsDenied(t *testing.T) {
 	orig := errors.New("denied: requested access to the resource is denied")
-	got := describePullFailure("courier-mysql:v2", orig)
+	got := describePullFailure("orders-mysql:v2", orig)
 
 	if !errors.Is(got, orig) {
 		t.Error("describePullFailure dropped the underlying error")
 	}
-	for _, want := range []string{"built locally", "docker build", "courier-mysql:v2"} {
+	for _, want := range []string{"built locally", "docker build", "orders-mysql:v2"} {
 		if !strings.Contains(got.Error(), want) {
 			t.Errorf("message %q does not mention %q", got.Error(), want)
 		}

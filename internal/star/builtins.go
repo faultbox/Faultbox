@@ -2832,7 +2832,7 @@ func builtinStdoutSource(thread *starlark.Thread, fn *starlark.Builtin, args sta
 }
 
 // builtinStderrSource is the stderr-stream twin of builtinStdoutSource.
-// Customer ask (inDrive Freight, 2026-04-30): zap/logrus default to
+// Customer ask (customer report, 2026-04-30): zap/logrus default to
 // stderr, so observing stdout alone misses every default-configured Go
 // service. Same kwargs surface as stdout(decoder=...).
 func builtinStderrSource(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {

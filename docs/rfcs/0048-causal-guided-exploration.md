@@ -38,7 +38,7 @@ This has a precise consequence for each direction, and a single governing princi
 
 Three forces make this the right next epic:
 
-1. **It closes the two gaps the field evaluation surfaced.** The truck-api eval confirmed both a request-handling race that requires a specific interleaving (DPOR's target) and a fault-matrix that explodes with a coverage metric that means almost nothing (LDFI's target). This epic is the direct, principled answer to both.
+1. **It closes the two gaps the field evaluation surfaced.** The order-service eval confirmed both a request-handling race that requires a specific interleaving (DPOR's target) and a fault-matrix that explodes with a coverage metric that means almost nothing (LDFI's target). This epic is the direct, principled answer to both.
 2. **The substrate already exists; the algorithms don't.** DPOR's hardest input — the independence relation — is the `happens_before` / `concurrent_with` order FB emits (RFC-041). LDFI's input — the causal derivation of a success — is the same DAG plus RFC-034 traffic observability. The actuator DPOR needs to *drive* a schedule is the RFC-014 hold/release scheduler. We are implementing algorithms over data we already produce, not building new runtime.
 3. **The guarantee is the moat.** "No fault combination of size ≤ k breaks this, and every mediated interleaving was explored" is a different *category* of claim than "we ran 137 cells." It is the defensible differentiation versus blind chaos engineering — and, scoped honestly, it is one Faultbox can actually stand behind.
 

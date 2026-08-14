@@ -20,7 +20,7 @@ of preference.
 | One or two specific services, light setup | **kubectl port-forward** |
 | Already have a corporate VPN to the cluster | **VPN** |
 
-All four end up the same to Faultbox: `remote = "geo.staging.svc.cluster.local"`
+All four end up the same to Faultbox: `remote = "config-service.staging.svc.cluster.local"`
 resolves and dials successfully. Differences are in setup overhead and
 what else they affect on your machine.
 
@@ -36,17 +36,17 @@ Telepresence pod in the cluster.
 ```sh
 $ telepresence connect
 $ kubectl config use-context dev-cluster
-$ telepresence intercept geo-config --port 0  # not needed; we just want connect
+$ telepresence intercept config-service --port 0  # not needed; we just want connect
 
 # Verify connectivity
-$ curl http://geo-config.staging.svc.cluster.local:8080/healthz
+$ curl http://config-service.staging.svc.cluster.local:8080/healthz
 ok
 ```
 
 Then run Faultbox normally:
 
 ```sh
-$ faultbox test truck-api.star
+$ faultbox test order-service.star
 ```
 
 The pre-started proxies dial via the host's resolver, which Telepresence
@@ -91,16 +91,16 @@ For specs that depend on a small number of cluster services, raw
 port-forwards are the lightest setup:
 
 ```sh
-$ kubectl port-forward -n staging svc/geo-config 8080:8080 &
+$ kubectl port-forward -n staging svc/config-service 8080:8080 &
 $ kubectl port-forward -n staging svc/auth-server 50051:50051 &
 $ kubectl port-forward -n staging svc/feature-flags 8082:8080 &
-$ faultbox test truck-api.star
+$ faultbox test order-service.star
 ```
 
 In your spec, point `remote=` at the local forwarded address:
 
 ```python
-geo = service("geo-config",
+config = service("config-service",
     interface("public", "http", 8080),
     remote      = "127.0.0.1",
     healthcheck = http("127.0.0.1:8080/healthz"),
@@ -113,7 +113,7 @@ hostnames preserved on the host:
 
 ```sh
 $ sudo kubefwd svc -n staging
-# Now geo-config.staging:8080 resolves on your host
+# Now config-service.staging:8080 resolves on your host
 ```
 
 **Why we recommend this for ad-hoc work:** zero cluster install, easy
@@ -137,7 +137,7 @@ If a remote service is unreachable on session start, the failure
 message looks like:
 
 ```
-remote service "geo-config" not reachable at http://geo-config.staging.svc.cluster.local:8080/healthz: dial tcp: lookup geo-config.staging.svc.cluster.local: no such host
+remote service "config-service" not reachable at http://config-service.staging.svc.cluster.local:8080/healthz: dial tcp: lookup config-service.staging.svc.cluster.local: no such host
 
 Faultbox does not manage cluster connectivity. Verify one of:
   - `telepresence connect` is running and the namespace is in scope
@@ -145,7 +145,7 @@ Faultbox does not manage cluster connectivity. Verify one of:
   - You are running faultbox from inside the target cluster
   - The host is reachable from your network (VPN, direct route)
 
-The remote= value was "geo-config.staging.svc.cluster.local".
+The remote= value was "config-service.staging.svc.cluster.local".
 ```
 
 The hint is intentional — if you're seeing it, the issue is *always*
@@ -162,12 +162,12 @@ HTTPS REST, gRPC-over-TLS. `remote=` composes with `interface(..., tls=tls_cert(
 so the proxy terminates TLS at the listener and dials the upstream over TLS:
 
 ```python
-geo = service("geo-config",
+config = service("config-service",
     interface("public", "http", 8080,
         tls = tls_cert(insecure = True),  # accept self-signed cluster certs
     ),
-    remote      = "geo-config.staging.svc.cluster.local",
-    healthcheck = tcp("geo-config.staging.svc.cluster.local:8080"),
+    remote      = "config-service.staging.svc.cluster.local",
+    healthcheck = tcp("config-service.staging.svc.cluster.local:8080"),
 )
 ```
 

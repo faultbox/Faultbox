@@ -29,8 +29,8 @@ import (
 // Error shape is deliberately user-facing — spec authors will see this
 // directly when a route's response dict doesn't match its message type:
 //
-//	grpc mock response for "/inDriver.geo_config.GeoConfigService/GetCity":
-//	  encode as inDriver.geo_config.City: proto: (line 1:12): unknown field "cityid"
+//	grpc mock response for "/example.config.ConfigService/GetSetting":
+//	  encode as example.config.Setting: proto: (line 1:12): unknown field "cityid"
 //
 // which tells the author exactly which route + message + field is wrong.
 func JSONToTypedMessage(files *protoregistry.Files, desc protoreflect.MessageDescriptor, jsonBytes []byte) ([]byte, error) {

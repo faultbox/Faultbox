@@ -10,7 +10,7 @@ import (
 
 // Three Starlark builtins exposing the internal/jwt package so the
 // @faultbox/mocks/jwt.star stdlib can wrap them into a one-liner
-// `jwt.server(...)` constructor. Customer ask B3 from the inDrive
+// `jwt.server(...)` constructor. Customer ask B3 from the the customer
 // feedback analysis (v0.9.9 release).
 //
 //   jwt_keypair(kid="…")        → opaque keypair value

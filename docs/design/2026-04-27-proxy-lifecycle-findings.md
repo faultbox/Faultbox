@@ -13,13 +13,13 @@ Status: feeds RFC-033
 > | `test_get_client_config` (no fault) | started 127.0.0.1:36643 → 13306 | started 127.0.0.1:33637 → 16379 | 9 started |
 > | `test_matrix_*_mysql_deadlock` (fault active) | never started | never started | 9 started |
 >
-> **Finding D (P1)**: `db.mysql.internal_addr` for Docker-backed services doesn't resolve to the proxy's host-loopback listener. Manual env-rewrite via `internal_addr.rsplit(":")` produces an unroutable address; truck-api healthcheck times out at 60s. For gRPC it works because gRPC upstreams are also host binaries.
+> **Finding D (P1)**: `db.mysql.internal_addr` for Docker-backed services doesn't resolve to the proxy's host-loopback listener. Manual env-rewrite via `internal_addr.rsplit(":")` produces an unroutable address; order-service healthcheck times out at 60s. For gRPC it works because gRPC upstreams are also host binaries.
 
 ## Setup that produced the report
 
 - `db` — Docker service (mysql:8), two interfaces: `db.mysql` (port 3306) + `db.redis` (port 6379), `reuse=True`
 - 9 gRPC services — host binaries, default `reuse=False`
-- `truck-api` — host-binary SUT
+- `order-service` — host-binary SUT
 - `fault_matrix(scenarios=[...], faults=[mysql.deadlock(), redis.timeout(), ...])` driving 18 cells
 - One baseline cell `test_get_client_config` with no fault
 
@@ -172,7 +172,7 @@ env["MYSQL_HOST"] = "127.0.0.1"
 env["MYSQL_PORT"] = port                             # "3306"
 ```
 
-After the rsplit, `MYSQL_HOST` and `MYSQL_PORT` are separate env vars. Neither contains the substring `db:3306`. The substitution map has no entry that matches either. **The truck-api SUT dials `127.0.0.1:3306` — an unbound port on the host** (Docker auto-mapped 3306 → 13306, not → 3306). Connection refused, healthcheck times out.
+After the rsplit, `MYSQL_HOST` and `MYSQL_PORT` are separate env vars. Neither contains the substring `db:3306`. The substitution map has no entry that matches either. **The order-service SUT dials `127.0.0.1:3306` — an unbound port on the host** (Docker auto-mapped 3306 → 13306, not → 3306). Connection refused, healthcheck times out.
 
 The auto-injected `FAULTBOX_DB_MYSQL_{HOST,PORT,ADDR}` vars at [runtime.go:1576-1592](../../internal/star/runtime.go#L1576-L1592) DO point at the proxy correctly, but the customer's spec doesn't use them — they use the documented `db.mysql.internal_addr` attribute and split it. **The documented path is the broken one.**
 

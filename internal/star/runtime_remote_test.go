@@ -44,7 +44,7 @@ func TestRemote_StartRemoteService_RegistersSession(t *testing.T) {
 
 	rt := New(testLogger())
 	src := fmt.Sprintf(`
-geo = service("geo",
+config = service("config",
     interface("main", "http", %d),
     remote = "%s",
     healthcheck = http("%s:%d/healthz"),
@@ -62,11 +62,11 @@ geo = service("geo",
 	t.Cleanup(func() { rt.proxyMgr.StopAll() })
 
 	// Remote service should be registered as a running session.
-	if _, ok := rt.sessions["geo"]; !ok {
-		t.Fatalf("rt.sessions[%q] not registered", "geo")
+	if _, ok := rt.sessions["config"]; !ok {
+		t.Fatalf("rt.sessions[%q] not registered", "config")
 	}
 	// Session should be a no-op (no engine.Session attached).
-	if rt.sessions["geo"].session != nil {
+	if rt.sessions["config"].session != nil {
 		t.Errorf("remote session should have nil session (no seccomp); got non-nil")
 	}
 }
@@ -75,7 +75,7 @@ func TestRemote_HealthcheckGatesStartup_UnreachableErrorWithHint(t *testing.T) {
 	rt := New(testLogger())
 	// Point at a port nothing's listening on; expect dial failure.
 	src := `
-geo = service("geo",
+config = service("config",
     interface("main", "http", 1),
     remote = "127.0.0.1",
     healthcheck = http("127.0.0.1:1/healthz", timeout = "200ms"),
@@ -113,7 +113,7 @@ func TestRemote_ServiceStartedEvent_KindRemote(t *testing.T) {
 
 	rt := New(testLogger())
 	src := fmt.Sprintf(`
-geo = service("geo",
+config = service("config",
     interface("public", "http", %d),
     remote = "%s",
     healthcheck = http("%s:%d/healthz"),
@@ -137,7 +137,7 @@ geo = service("geo",
 	all := rt.events.Events()
 	for i := startIdx; i < len(all); i++ {
 		e := all[i]
-		if e.Type == "service_started" && e.Service == "geo" {
+		if e.Type == "service_started" && e.Service == "config" {
 			found = true
 			if e.Fields["kind"] != "remote" {
 				t.Errorf("service_started.kind = %q, want %q", e.Fields["kind"], "remote")
@@ -152,7 +152,7 @@ geo = service("geo",
 		}
 	}
 	if !found {
-		t.Fatalf("service_started event for %q not emitted", "geo")
+		t.Fatalf("service_started event for %q not emitted", "config")
 	}
 }
 
@@ -166,18 +166,18 @@ func TestRemote_ProxyTargetAddrUsesRemoteUpstream(t *testing.T) {
 		{
 			name: "plain string remote, port from interface",
 			spec: `
-service("geo",
+service("config",
     interface("main", "http", 8080),
-    remote = "geo.staging",
-    healthcheck = http("geo.staging:8080/healthz"),
+    remote = "config.staging",
+    healthcheck = http("config.staging:8080/healthz"),
 )`,
 			ifaceName:    "main",
-			wantUpstream: "geo.staging:8080",
+			wantUpstream: "config.staging:8080",
 		},
 		{
 			name: "remotes() per-interface override with explicit port",
 			spec: `
-service("geo",
+service("config",
     interface("public",   "http", 8080),
     interface("internal", "http", 9090),
     remote = remotes({
@@ -192,7 +192,7 @@ service("geo",
 		{
 			name: "remotes() per-interface override, host only",
 			spec: `
-service("geo",
+service("config",
     interface("public", "http", 8080),
     remote = remotes({"public": "h1"}),
     healthcheck = http("h1:8080/healthz"),
@@ -208,7 +208,7 @@ service("geo",
 			if err := rt.LoadString("test.star", tc.spec); err != nil {
 				t.Fatalf("LoadString: %v", err)
 			}
-			svc := rt.services["geo"]
+			svc := rt.services["config"]
 			iface := svc.Interfaces[tc.ifaceName]
 			got := proxyTargetAddr(svc, iface)
 			if got != tc.wantUpstream {
@@ -226,7 +226,7 @@ func TestRemote_BuildEnvSubstitutesRemoteHost(t *testing.T) {
 
 	rt := New(testLogger())
 	src := fmt.Sprintf(`
-geo = service("geo",
+config = service("config",
     interface("public", "http", %d),
     remote = "%s",
     healthcheck = http("%s:%d/healthz"),
@@ -235,9 +235,9 @@ geo = service("geo",
 api = service("api", "/tmp/mock",
     interface("main", "http", 8000),
     env = {
-        "GEO_DIRECT_URL": "http://%s:%d/v1/regions",
+        "CONFIG_DIRECT_URL": "http://%s:%d/v1/regions",
     },
-    depends_on = [geo],
+    depends_on = [config],
 )
 `, port, host, host, port, host, port)
 	if err := rt.LoadString("test.star", src); err != nil {
@@ -252,17 +252,17 @@ api = service("api", "/tmp/mock",
 	t.Cleanup(func() { rt.proxyMgr.StopAll() })
 
 	// Verify the proxy is up and pointing at the fake remote.
-	proxyAddr := rt.proxyMgr.GetProxyAddr("geo", "public")
+	proxyAddr := rt.proxyMgr.GetProxyAddr("config", "public")
 	if proxyAddr == "" {
-		t.Fatalf("expected proxy_addr for geo.public, got empty (proxy not started?)")
+		t.Fatalf("expected proxy_addr for config.public, got empty (proxy not started?)")
 	}
 
-	// buildEnv on the api service should rewrite the GEO_DIRECT_URL value
+	// buildEnv on the api service should rewrite the CONFIG_DIRECT_URL value
 	// so the literal remote host:port is replaced with the proxy listener.
 	apiSvc := rt.services["api"]
 	envs := rt.buildEnv(apiSvc)
 	var got string
-	prefix := "GEO_DIRECT_URL="
+	prefix := "CONFIG_DIRECT_URL="
 	for _, e := range envs {
 		if strings.HasPrefix(e, prefix) {
 			got = strings.TrimPrefix(e, prefix)
@@ -270,16 +270,16 @@ api = service("api", "/tmp/mock",
 		}
 	}
 	if got == "" {
-		t.Fatalf("GEO_DIRECT_URL not present in built env: %v", envs)
+		t.Fatalf("CONFIG_DIRECT_URL not present in built env: %v", envs)
 	}
 	wantContains := proxyAddr
 	if !strings.Contains(got, wantContains) {
-		t.Errorf("GEO_DIRECT_URL = %q; expected substring %q (proxy addr) — substitution did not fire",
+		t.Errorf("CONFIG_DIRECT_URL = %q; expected substring %q (proxy addr) — substitution did not fire",
 			got, wantContains)
 	}
 	originalRemote := fmt.Sprintf("%s:%d", host, port)
 	if strings.Contains(got, originalRemote) {
-		t.Errorf("GEO_DIRECT_URL still contains literal remote %q after substitution: %q",
+		t.Errorf("CONFIG_DIRECT_URL still contains literal remote %q after substitution: %q",
 			originalRemote, got)
 	}
 }
@@ -300,7 +300,7 @@ func TestRemote_PreStartProxyDialsRemote_FullLoop(t *testing.T) {
 
 	rt := New(testLogger())
 	src := fmt.Sprintf(`
-geo = service("geo",
+config = service("config",
     interface("public", "http", %d),
     remote = "%s",
     healthcheck = http("%s:%d/healthz"),
@@ -317,9 +317,9 @@ geo = service("geo",
 	}
 	t.Cleanup(func() { rt.proxyMgr.StopAll() })
 
-	proxyAddr := rt.proxyMgr.GetProxyAddr("geo", "public")
+	proxyAddr := rt.proxyMgr.GetProxyAddr("config", "public")
 	if proxyAddr == "" {
-		t.Fatalf("proxy not started for geo.public")
+		t.Fatalf("proxy not started for config.public")
 	}
 
 	// Pass-through: should hit the fake and return its body.
@@ -373,7 +373,7 @@ func TestRemote_FaultRewriteOverridesRemoteResponse(t *testing.T) {
 
 	rt := New(testLogger())
 	src := fmt.Sprintf(`
-geo = service("geo",
+config = service("config",
     interface("public", "http", %d),
     remote = "%s",
     healthcheck = http("%s:%d/healthz"),
@@ -390,13 +390,13 @@ geo = service("geo",
 	}
 	t.Cleanup(func() { rt.proxyMgr.StopAll() })
 
-	proxyAddr := rt.proxyMgr.GetProxyAddr("geo", "public")
+	proxyAddr := rt.proxyMgr.GetProxyAddr("config", "public")
 	if proxyAddr == "" {
-		t.Fatalf("no proxy addr for geo.public")
+		t.Fatalf("no proxy addr for config.public")
 	}
 
 	// Install the equivalent of `error(path="/v1/regions/**", status=503)`.
-	if err := rt.proxyMgr.AddRule("geo", "public", proxy.Rule{
+	if err := rt.proxyMgr.AddRule("config", "public", proxy.Rule{
 		Action: proxy.ActionRespond,
 		Status: 503,
 		Body:   `{"from":"fault-injected"}`,
@@ -439,7 +439,7 @@ func TestRemote_VsLocal_ProxyParity(t *testing.T) {
 	// Run A: remote=
 	rtRemote := New(testLogger())
 	srcA := fmt.Sprintf(`
-geo = service("geo",
+config = service("config",
     interface("public", "http", %d),
     remote = "%s",
     healthcheck = http("%s:%d/healthz"),
@@ -454,7 +454,7 @@ geo = service("geo",
 		t.Fatalf("startServices A: %v", err)
 	}
 	t.Cleanup(func() { rtRemote.proxyMgr.StopAll() })
-	addrA := rtRemote.proxyMgr.GetProxyAddr("geo", "public")
+	addrA := rtRemote.proxyMgr.GetProxyAddr("config", "public")
 	respA, err := http.Get("http://" + addrA + "/p")
 	if err != nil {
 		t.Fatalf("GET A: %v", err)
@@ -467,11 +467,11 @@ geo = service("geo",
 	// in a unit test without a fork+exec target; the proxy machinery is
 	// the same.)
 	rtLocal := New(testLogger())
-	if _, err := rtLocal.proxyMgr.EnsureProxy(context.Background(), "geo", "public", "http", fmt.Sprintf("%s:%d", host, port)); err != nil {
+	if _, err := rtLocal.proxyMgr.EnsureProxy(context.Background(), "config", "public", "http", fmt.Sprintf("%s:%d", host, port)); err != nil {
 		t.Fatalf("EnsureProxy B: %v", err)
 	}
 	t.Cleanup(func() { rtLocal.proxyMgr.StopAll() })
-	addrB := rtLocal.proxyMgr.GetProxyAddr("geo", "public")
+	addrB := rtLocal.proxyMgr.GetProxyAddr("config", "public")
 	respB, err := http.Get("http://" + addrB + "/p")
 	if err != nil {
 		t.Fatalf("GET B: %v", err)
@@ -512,7 +512,7 @@ func TestRemote_TLSUpstream_EndToEnd(t *testing.T) {
 
 	rt := New(testLogger())
 	src := fmt.Sprintf(`
-geo = service("geo",
+config = service("config",
     interface("public", "http", %d, tls = tls_cert(insecure = True)),
     remote      = "%s",
     # Use tcp() — http() healthcheck against a self-signed httptest.NewTLSServer
@@ -532,9 +532,9 @@ geo = service("geo",
 	}
 	t.Cleanup(func() { rt.proxyMgr.StopAll() })
 
-	proxyAddr := rt.proxyMgr.GetProxyAddr("geo", "public")
+	proxyAddr := rt.proxyMgr.GetProxyAddr("config", "public")
 	if proxyAddr == "" {
-		t.Fatalf("no proxy addr for geo.public")
+		t.Fatalf("no proxy addr for config.public")
 	}
 
 	// SUT speaks HTTPS to the proxy. The proxy's auto-generated cert
@@ -572,7 +572,7 @@ func TestRemote_MidRunDeath(t *testing.T) {
 
 	rt := New(testLogger())
 	src := fmt.Sprintf(`
-geo = service("geo",
+config = service("config",
     interface("public", "http", %d),
     remote = "%s",
     healthcheck = http("%s:%d/healthz"),
@@ -591,7 +591,7 @@ geo = service("geo",
 	}
 	t.Cleanup(func() { rt.proxyMgr.StopAll() })
 
-	addr := rt.proxyMgr.GetProxyAddr("geo", "public")
+	addr := rt.proxyMgr.GetProxyAddr("config", "public")
 
 	// Initial successful request.
 	respOK, err := http.Get("http://" + addr + "/p")

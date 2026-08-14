@@ -28,13 +28,13 @@ func startOrdersServer(t *testing.T) string {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/500"):
 			w.WriteHeader(503)
-			_, _ = w.Write([]byte(`{"error":"courier down"}`))
+			_, _ = w.Write([]byte(`{"error":"orders down"}`))
 		case strings.HasSuffix(r.URL.Path, "/degraded"):
-			// 200, but courier_eta is null — the schema declares it
+			// 200, but eta is null — the schema declares it
 			// required and non-nullable.
-			_, _ = w.Write([]byte(`{"id": 7, "courier_eta": null}`))
+			_, _ = w.Write([]byte(`{"id": 7, "eta": null}`))
 		default:
-			_, _ = w.Write([]byte(`{"id": 42, "courier_eta": "12m"}`))
+			_, _ = w.Write([]byte(`{"id": 42, "eta": "12m"}`))
 		}
 	})
 	mux.HandleFunc("/orders", func(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +239,7 @@ func TestClientCall_ContractViolationIsRecordedNotRaised(t *testing.T) {
 		t.Fatalf("expected a 200 with a bad payload, got status %d ok=%v", resp.Status, resp.Ok)
 	}
 	if resp.ContractOk {
-		t.Error("contract_ok = true; the null courier_eta violates the declared schema")
+		t.Error("contract_ok = true; the null eta violates the declared schema")
 	}
 	if resp.ContractError == "" {
 		t.Error("contract_error is empty on a violation")
@@ -286,7 +286,7 @@ func TestClientCall_UndeclaredStatusIsAViolation(t *testing.T) {
 	// Non-2xx bodies are recorded on the return event, same rule as
 	// step_recv, so a failure reads off the trace.
 	returns := eventsOfType(rt, "client_return")
-	if body := returns[len(returns)-1].Fields["body"]; !strings.Contains(body, "courier down") {
+	if body := returns[len(returns)-1].Fields["body"]; !strings.Contains(body, "orders down") {
 		t.Errorf("client_return body = %q, want the error payload", body)
 	}
 }
@@ -576,33 +576,33 @@ func TestClientGRPC_EndToEnd(t *testing.T) {
 
 	rt := New(testLogger())
 	src := `
-geo = mock_service("geo",
+config = mock_service("config",
     interface("main", "grpc", ` + strconv.Itoa(port) + `),
     descriptors = "` + pbPath + `",
     routes = {
-        "/test.geo.GeoService/GetCity": grpc_typed_response(
-            body = {"id": 42, "name": "Almaty", "country": "KZ", "currency": "KZT"},
+        "/test.config.ConfigService/GetSetting": grpc_typed_response(
+            body = {"id": 42, "name": "primary", "scope": "default", "currency": "USD"},
         ),
     },
 )
 
-geo_client = client("geo-client", target = geo.main, descriptors = "` + pbPath + `")
+config_client = client("config-client", target = config.main, descriptors = "` + pbPath + `")
 `
 	if err := rt.LoadString("grpc_client.star", src); err != nil {
 		t.Fatalf("LoadString: %v", err)
 	}
 
-	c, ok := rt.Client("geo-client")
+	c, ok := rt.Client("config-client")
 	if !ok {
-		t.Fatal("geo-client not registered")
+		t.Fatal("config-client not registered")
 	}
 
 	// The single service in the set is selected without grpc_service=, and
-	// GetCity normalizes to get_city.
-	if names := c.Table.Names(); len(names) != 1 || names[0] != "get_city" {
-		t.Fatalf("operations = %v, want [get_city]", names)
+	// GetSetting normalizes to get_setting.
+	if names := c.Table.Names(); len(names) != 1 || names[0] != "get_setting" {
+		t.Fatalf("operations = %v, want [get_setting]", names)
 	}
-	if got := c.Table.Contract.Version; got != "test.geo.GeoService" {
+	if got := c.Table.Contract.Version; got != "test.config.ConfigService" {
 		t.Errorf("contract version = %q, want the service FQN", got)
 	}
 
@@ -614,7 +614,7 @@ geo_client = client("geo-client", target = geo.main, descriptors = "` + pbPath +
 	}
 	defer rt.stopServices()
 
-	resp := callOp(t, rt, "geo-client", "get_city", map[string]any{"id": int64(42)})
+	resp := callOp(t, rt, "config-client", "get_setting", map[string]any{"id": int64(42)})
 	if !resp.Ok {
 		t.Fatalf("call failed: %s", resp.Error)
 	}
@@ -624,13 +624,13 @@ geo_client = client("geo-client", target = geo.main, descriptors = "` + pbPath +
 	if err := json.Unmarshal([]byte(resp.Body), &decoded); err != nil {
 		t.Fatalf("response body is not JSON: %v (%s)", err, resp.Body)
 	}
-	if decoded["name"] != "Almaty" {
-		t.Errorf("response name = %v, want Almaty (body %s)", decoded["name"], resp.Body)
+	if decoded["name"] != "primary" {
+		t.Errorf("response name = %v, want primary (body %s)", decoded["name"], resp.Body)
 	}
-	if decoded["currency"] != "KZT" {
-		t.Errorf("response currency = %v, want KZT", decoded["currency"])
+	if decoded["currency"] != "USD" {
+		t.Errorf("response currency = %v, want USD", decoded["currency"])
 	}
-	if resp.Client != "geo-client" || resp.Operation != "get_city" {
+	if resp.Client != "config-client" || resp.Operation != "get_setting" {
 		t.Errorf("provenance = client %q operation %q", resp.Client, resp.Operation)
 	}
 
@@ -640,14 +640,14 @@ geo_client = client("geo-client", target = geo.main, descriptors = "` + pbPath +
 	if len(calls) != 1 || len(returns) != 1 {
 		t.Fatalf("got %d client_call / %d client_return, want 1 each", len(calls), len(returns))
 	}
-	if calls[0].Service != "geo-client" {
-		t.Errorf("client_call service = %q, want geo-client", calls[0].Service)
+	if calls[0].Service != "config-client" {
+		t.Errorf("client_call service = %q, want config-client", calls[0].Service)
 	}
-	if got := calls[0].Fields["method_path"]; got != "/test.geo.GeoService/GetCity" {
+	if got := calls[0].Fields["method_path"]; got != "/test.config.ConfigService/GetSetting" {
 		t.Errorf("client_call method_path = %q", got)
 	}
-	if got := calls[0].EventType; got != "client_call.geo" {
-		t.Errorf("client_call event_type = %q, want client_call.geo", got)
+	if got := calls[0].EventType; got != "client_call.config" {
+		t.Errorf("client_call event_type = %q, want client_call.config", got)
 	}
 	if got := returns[0].Fields["grpc_code"]; got != "OK" {
 		t.Errorf("client_return grpc_code = %q, want OK", got)
@@ -666,12 +666,12 @@ func TestClientGRPC_UnroutedMethodSurfacesStatus(t *testing.T) {
 
 	rt := New(testLogger())
 	src := `
-geo = mock_service("geo",
+config = mock_service("config",
     interface("main", "grpc", ` + strconv.Itoa(port) + `),
     descriptors = "` + pbPath + `",
     routes = {},
 )
-geo_client = client("geo-client", target = geo.main, descriptors = "` + pbPath + `")
+config_client = client("config-client", target = config.main, descriptors = "` + pbPath + `")
 `
 	if err := rt.LoadString("grpc_client.star", src); err != nil {
 		t.Fatalf("LoadString: %v", err)
@@ -684,7 +684,7 @@ geo_client = client("geo-client", target = geo.main, descriptors = "` + pbPath +
 	}
 	defer rt.stopServices()
 
-	resp := callOp(t, rt, "geo-client", "get_city", map[string]any{"id": int64(1)})
+	resp := callOp(t, rt, "config-client", "get_setting", map[string]any{"id": int64(1)})
 	if resp.Ok {
 		t.Fatal("expected the unrouted method to fail")
 	}

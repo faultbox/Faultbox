@@ -18,29 +18,29 @@ a **first-class actor in the trace**: its own swim lane, its own vector
 clock, its own event types, and its own anchors for temporal properties.
 
 ```python
-courier = service("courier", image = "courier:latest",
-    interface("main", "grpc", 9090, spec = "./proto/courier.pb"))
+orders = service("order-service", image = "orders:latest",
+    interface("main", "grpc", 9090, spec = "./proto/orders.pb"))
 
 # One line replaces hand-written wire calls.
-gcourier = client("gRPC-Courier", target = courier.main)
+gorders = client("gRPC-Orders", target = orders.main)
 
-def test_courier_degrades(t):
-    with fault(courier.main, grpc_unavailable()):
-        r = gcourier.get_order(order_id = 42)      # generated from the contract
+def test_orders_degrade(t):
+    with fault(orders.main, grpc_unavailable()):
+        r = gorders.get_order(order_id = 42)      # generated from the contract
         assert_true(not r.ok)
 ```
 
 Trace, with no extra instrumentation:
 
 ```
-#12  gRPC-Courier  client_call.courier    get_order(order_id=42)          {gRPC-Courier: 3, test: 5}
-#13  courier       syscall.read           allow
-#14  courier       proxy_fault_applied    grpc UNAVAILABLE
-#15  gRPC-Courier  client_return.courier  get_order → UNAVAILABLE (14ms)  {gRPC-Courier: 4, courier: 22}
+#12  gRPC-Orders  client_call.orders    get_order(order_id=42)          {gRPC-Orders: 3, test: 5}
+#13  orders       syscall.read           allow
+#14  orders       proxy_fault_applied    grpc UNAVAILABLE
+#15  gRPC-Orders  client_return.orders  get_order → UNAVAILABLE (14ms)  {gRPC-Orders: 4, orders: 22}
 ```
 
-Today the same test is `courier.main.call(method="/courier.v1.CourierService/GetOrder", body='{"order_id":42}')`
-and appears in the trace as an anonymous `step_send.courier` from the
+Today the same test is `orders.main.call(method="/orders.v1.OrderService/GetOrder", body='{"order_id":42}')`
+and appears in the trace as an anonymous `step_send.orders` from the
 generic `test` lane.
 
 ## Motivation
@@ -55,7 +55,7 @@ On the **caller** side, spec authors hand-assemble every request:
 
 ```python
 resp = api.public.post(path = "/v1/orders", body = '{"item_id": "sku-1", "qty": 2}')
-resp = courier.main.call(method = "/courier.v1.CourierService/GetOrder", body = '{"order_id": 42}')
+resp = orders.main.call(method = "/orders.v1.OrderService/GetOrder", body = '{"order_id": 42}')
 ```
 
 That means the spec author must know, and keep in sync by hand: the exact
@@ -82,12 +82,12 @@ with `service = "test"` (`internal/star/runtime.go:4167`). Consequences:
 - **No causal identity.** The vector clock has a single `test` participant,
   so ShiViz shows one driver process regardless of how many logical callers
   the scenario models.
-- **Anchors are positional, not semantic.** `match.event(type="step_send", target="courier")`
-  matches *any* call to courier. There is no stable name for "the moment
-  gRPC-Courier asked for order 42".
+- **Anchors are positional, not semantic.** `match.event(type="step_send", target="orders")`
+  matches *any* call to orders. There is no stable name for "the moment
+  gRPC-Orders asked for order 42".
 
 The user-visible symptom: reading a failing trace requires re-reading the
-spec to work out which of the six `step_send.courier` events was the one
+spec to work out which of the six `step_send.orders` events was the one
 that mattered.
 
 ### Contract-aware assertions are impossible today
@@ -175,7 +175,7 @@ resolved from the contract. Attribute access on an unknown name is a
 load-time-quality error with a suggestion:
 
 ```
-client "gRPC-Courier" has no operation "get_orders"
+client "gRPC-Orders" has no operation "get_orders"
   (did you mean "get_order"? — 14 operations available, see `faultbox inspect --clients`)
 ```
 
@@ -200,7 +200,7 @@ disambiguate — a spec that can't name its own operations unambiguously
 should say which one it means:
 
 ```python
-gcourier = client("gRPC-Courier", target = courier.main,
+gorders = client("gRPC-Orders", target = orders.main,
     rename = {"getOrderV2": "get_order_v2"})
 ```
 
@@ -293,8 +293,8 @@ of the contract* the run was checked against.
 grows one hop at each end:
 
 ```
-test ──merge──► gRPC-Courier ──merge──► courier      (on call)
-test ◄──merge── gRPC-Courier ◄──merge── courier      (on return)
+test ──merge──► gRPC-Orders ──merge──► orders      (on call)
+test ◄──merge── gRPC-Orders ◄──merge── orders      (on return)
 ```
 
 The `test → client` merge on the way out is load-bearing: without it the
@@ -316,24 +316,24 @@ Client events are ordinary events, so `match.event(type=, service=, **fields)`
 (`internal/star/match.go:143`) matches them **with no matcher changes**:
 
 ```python
-courier_asked = match.event(type = "client_call",
-                            client = "gRPC-Courier", operation = "get_order")
-courier_failed = match.event(type = "client_return",
-                             client = "gRPC-Courier", operation = "get_order",
+orders_asked = match.event(type = "client_call",
+                            client = "gRPC-Orders", operation = "get_order")
+orders_failed = match.event(type = "client_return",
+                             client = "gRPC-Orders", operation = "get_order",
                              success = "false")
 
-test("courier_recovers",
+test("orders_recover",
     body = drive,
     expect = [
         # RFC-041: nothing else observes a failure after the client's first success
-        always(no_dropped_orders, between = (courier_asked, courier_failed)),
-        eventually(lambda tr: tr.count(courier_asked) >= 3, anchor = courier_asked),
+        always(no_dropped_orders, between = (orders_asked, orders_failed)),
+        eventually(lambda tr: tr.count(orders_asked) >= 3, anchor = orders_asked),
     ],
 )
 ```
 
-That is the property the motivation asks for: *"gRPC-Courier called
-get_order, and Courier returned a failure"* is now a named, matchable,
+That is the property the motivation asks for: *"gRPC-Orders called
+get_order, and Orders returned a failure"* is now a named, matchable,
 anchorable fact rather than a positional guess.
 
 Two ergonomic additions, both thin sugar over the above (see OQ-3):
@@ -354,7 +354,7 @@ Two ergonomic additions, both thin sugar over the above (see OQ-3):
 | **Mock services (RFC-017/021/023)** | Symmetric. The same OpenAPI document can drive a mock (callee) and a client (caller); a `client` → `mock_service` pair is a fully contract-checked loop useful for testing Faultbox itself. |
 | **Determinism (RFC-040)** | L1-neutral. No new nondeterminism: parameters are explicit, no synthesis, no random data in v1. Contract loading happens at spec load. |
 | **`faultbox inspect`** | New `--clients` section listing each client, its contract, and its generated operation table — the discoverability answer for "what can I call?". |
-| **RFC-050 `load()`** | Future: `load(client = gcourier, op = "get_order", rate = "50/s")`. Identity model designed here so `load()` doesn't have to invent one. |
+| **RFC-050 `load()`** | Future: `load(client = gorders, op = "get_order", rate = "50/s")`. Identity model designed here so `load()` doesn't have to invent one. |
 
 ### 5.8 — Filling the `interface(spec=)` hook
 
@@ -365,10 +365,10 @@ selecting the loader by file extension (`.yaml`/`.yml`/`.json` → OpenAPI,
 `.pb`/`.desc` → descriptor set) with the protocol as a cross-check.
 
 ```python
-courier = service("courier", image = "courier:latest",
-    interface("main", "grpc", 9090, spec = "./proto/courier.pb"))
+orders = service("order-service", image = "orders:latest",
+    interface("main", "grpc", 9090, spec = "./proto/orders.pb"))
 
-gcourier = client("gRPC-Courier", target = courier.main)   # contract inherited
+gorders = client("gRPC-Orders", target = orders.main)   # contract inherited
 ```
 
 If this RFC is rejected, `interface(spec=)` should be **removed** — a
@@ -379,8 +379,8 @@ parsed-but-ignored kwarg is worse than no kwarg.
 ```python
 load("@faultbox/recipes/grpc.star", "grpc_faults")
 
-courier = service("courier", image = "courier:1.4",
-    interface("main", "grpc", 9090, spec = "./proto/courier.pb"))
+orders = service("order-service", image = "order-service:1.4",
+    interface("main", "grpc", 9090, spec = "./proto/orders.pb"))
 
 orders = service("orders", image = "orders:2.1",
     interface("public", "http", 8080, spec = "./openapi/orders.yaml"))
@@ -391,17 +391,17 @@ mobile  = client("mobile-app", target = orders.public,
 partner = client("partner-api", target = orders.public,
                  headers = {"X-Client": "partner"}, validate = "strict")
 
-gcourier = client("gRPC-Courier", target = courier.main)
+gorders = client("gRPC-Orders", target = orders.main)
 
 def drive(t):
     o = mobile.create_order(body = {"item_id": "sku-1", "qty": 2})
     assert_true(o.ok)
 
-    with fault(courier.main, grpc_faults.unavailable()):
-        r = gcourier.get_order(order_id = o.data["id"])
+    with fault(orders.main, grpc_faults.unavailable()):
+        r = gorders.get_order(order_id = o.data["id"])
         assert_true(not r.ok)
 
-        # Under a failing courier the order API must still honour its contract.
+        # Under a failing orders the order API must still honour its contract.
         status = mobile.get_order(order_id = o.data["id"])
         assert_true(status.contract_ok,
                     "degraded response violated contract: " + status.contract_error)
@@ -414,13 +414,13 @@ seq  actor          event                          detail
  8   mobile-app     client_call.orders             create_order body={item_id:sku-1,qty:2}
  9   orders         syscall.write                  allow  /var/lib/orders/wal
 11   mobile-app     client_return.orders           create_order → 201 (23ms) contract_ok=true
-14   test           fault_applied                  courier.main grpc UNAVAILABLE
-15   gRPC-Courier   client_call.courier            get_order(order_id=1001)
-16   courier        proxy_fault_applied            grpc UNAVAILABLE
-17   gRPC-Courier   client_return.courier          get_order → UNAVAILABLE (11ms)
+14   test           fault_applied                  orders.main grpc UNAVAILABLE
+15   gRPC-Orders   client_call.orders            get_order(order_id=1001)
+16   orders        proxy_fault_applied            grpc UNAVAILABLE
+17   gRPC-Orders   client_return.orders          get_order → UNAVAILABLE (11ms)
 18   mobile-app     client_call.orders             get_order(order_id=1001)
 21   mobile-app     client_return.orders           get_order → 200 (140ms)
-22   mobile-app     contract_violation.orders      get_order: /courier_eta: got null, want string
+22   mobile-app     contract_violation.orders      get_order: /eta: got null, want string
 ```
 
 Event #22 is the finding, and it required no assertion to author — only
@@ -584,8 +584,8 @@ consequences for implementation:
 status quo the motivation describes, and it leaves `interface(spec=)` dead.
 
 **A2 — Promote generated methods onto `InterfaceRef` instead of a new
-entity.** `interface("main", "grpc", 9090, spec="./courier.pb")` would make
-`courier.main.get_order(...)` work with zero new builtins — genuinely
+entity.** `interface("main", "grpc", 9090, spec="./orders.pb")` would make
+`orders.main.get_order(...)` work with zero new builtins — genuinely
 attractive on namespace grounds. Rejected because it cannot express *caller
 identity*: there is one interface but N logical callers, and the whole
 trace-clarity half of this RFC depends on distinguishing them. It also

@@ -6,7 +6,7 @@ to get fault-injection working. This page is that recipe — concrete
 GitHub Actions and BuildKite templates plus the privilege requirements
 each one satisfies.
 
-> **Customer ask A7 + D3** from the inDrive feedback analysis. Not
+> **Customer ask A7 + D3** from an early field evaluation. Not
 > being able to run Faultbox in CI was a hard payment blocker
 > (FB §6.1 #2). This page closes that gap; v0.9.10+ may add a
 > first-class action wrapper but the manual recipe always works.

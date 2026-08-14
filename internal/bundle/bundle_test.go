@@ -350,7 +350,7 @@ func TestBuildRecordsRemotesInEnvJSON(t *testing.T) {
 		Tests:           []TestRow{{Name: "t", Outcome: "passed", DurationMs: 1}},
 		Trace:           []byte(`{}`),
 		Remotes: []RemoteRecord{
-			{Service: "geo", Interface: "public", Host: "geo.staging:8080", Protocol: "http", ResolvedAt: "2026-05-01T10:00:00Z"},
+			{Service: "config", Interface: "public", Host: "config.staging:8080", Protocol: "http", ResolvedAt: "2026-05-01T10:00:00Z"},
 			{Service: "auth", Interface: "rpc", Host: "auth.staging:50051", Protocol: "grpc", ResolvedAt: "2026-05-01T10:00:00Z"},
 		},
 	}
@@ -370,7 +370,7 @@ func TestBuildRecordsRemotesInEnvJSON(t *testing.T) {
 	if len(env.Remotes) != 2 {
 		t.Fatalf("env.Remotes = %d entries, want 2 (%+v)", len(env.Remotes), env.Remotes)
 	}
-	if env.Remotes[0].Service != "geo" || env.Remotes[0].Host != "geo.staging:8080" {
+	if env.Remotes[0].Service != "config" || env.Remotes[0].Host != "config.staging:8080" {
 		t.Errorf("first remote unexpected: %+v", env.Remotes[0])
 	}
 	if env.Remotes[1].Service != "auth" || env.Remotes[1].Protocol != "grpc" {

@@ -47,8 +47,8 @@ services:
 
 Real-world example (not implemented in PoC, shows the model):
 ```yaml
-  courier:
-    binary: ./courier
+  orders:
+    binary: ./orders
     interfaces:
       public:
         protocol: http
@@ -59,7 +59,7 @@ Real-world example (not implemented in PoC, shows the model):
       events:
         protocol: kafka
         port: 9092
-        topics: [courier.updated, courier.assigned]
+        topics: [orders.updated, orders.assigned]
 ```
 
 Services with a single interface allow shorthand in steps:
@@ -181,7 +181,7 @@ Both parse to the same `FaultRule`. The YAML parser detects which form is used
 Not implemented in PoC, but the model supports it:
 ```yaml
 faults:
-  courier:
+  orders:
     internal:
       - { syscall: write, action: delay, delay: 2s, probability: 100% }
 ```

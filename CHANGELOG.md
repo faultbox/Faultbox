@@ -16,7 +16,7 @@ Next-version work is tracked in
 ## [0.18.0] - 2026-08-14
 
 Field-report fixes from the first onboarding of a large production Go
-service (inDrive courier: Uber Fx, ~30 gateways, MySQL + Redis + Kafka).
+service (the customer orders: Uber Fx, ~30 gateways, MySQL + Redis + Kafka).
 Seven issues reported against v0.17.0, plus one found while building the
 regression corpus for the first of them.
 
@@ -768,7 +768,7 @@ assert on.
     participant, so three named callers against one API render as three lanes
     instead of one anonymous `test` driver. The events work as
     [temporal anchors](docs/temporal.md) with no new matcher syntax:
-    `match.event(type="client_return", client="gRPC-Courier", success="false")`.
+    `match.event(type="client_return", client="gRPC-Orders", success="false")`.
   - **Contract conformance is assertable.** `validate="response"` checks each
     response against the schema declared for its status code and records the
     verdict on `resp.contract_ok` / `resp.contract_error`, emitting a
@@ -1125,7 +1125,7 @@ bug classes.
 ## [0.13.1] - 2026-06-18
 
 Fixes from the first field evaluation of v0.13.0 against a real
-service (truck-api). The evaluation surfaced five rough edges; four
+service (order-service). The evaluation surfaced five rough edges; four
 are fixed here (the fifth, the `monitor()` signature change, is an
 accepted breaking change and keeps its hard error).
 
@@ -1449,7 +1449,7 @@ replay` warning, leaving the offline-replay design open.
 
 - **`service(remote=...)`** kwarg as a fourth source alongside
   `binary` / `image` / `build`. Plain-string form
-  (`remote = "geo.staging.svc.cluster.local"`) applies the host to
+  (`remote = "config-service.staging.svc.cluster.local"`) applies the host to
   every interface; per-interface override via the typed
   `remotes({"public": "h1", "internal": "h2:9090"})` value.
 - **`remotes(dict)`** Starlark builtin returning the typed
@@ -1511,7 +1511,7 @@ without extra cert plumbing. Six protocols terminate TLS today
   `fault_scenario` body).
 - **`proxyAddrSubstitutionsFor`** adds substitutions for the
   remote upstream addr so user env values like
-  `{"GEO_URL": "http://geo.staging:8080/"}` get rewritten to the
+  `{"CONFIG_URL": "http://config.staging:8080/"}` get rewritten to the
   proxy listener. Without this the SUT would dial the remote pod
   directly and protocol faults would never fire.
 - **Spec-load validation** rejects every kwarg that requires
@@ -1547,27 +1547,27 @@ A spec like:
 ```python
 load("@faultbox/discovery/k8s.star", "k8s")
 
-geo = service("geo-config",
+config = service("config-service",
     interface("public", "http", 8080),
-    remote      = k8s.service("geo-config", namespace = "staging"),
-    healthcheck = http(k8s.endpoint("geo-config", 8080, namespace = "staging") + "/healthz"),
+    remote      = k8s.service("config-service", namespace = "staging"),
+    healthcheck = http(k8s.endpoint("config-service", 8080, namespace = "staging") + "/healthz"),
 )
 
-api = service("truck-api",
+api = service("order-service",
     interface("main", "http", 8000),
-    image       = "truck-api:dev",
-    depends_on  = [geo],
-    env         = {"GEO_URL": "http://%s/" % geo.public.addr},
+    image       = "order-service:dev",
+    depends_on  = [config],
+    env         = {"CONFIG_URL": "http://%s/" % config.public.addr},
 )
 
-fault_assumption("geo_unavailable",
-    target = geo.public,
+fault_assumption("config_unavailable",
+    target = config.public,
     rules  = [error(path = "/v1/regions/**", status = 503)],
 )
 ```
 
 with one `telepresence connect` on the host fires real 503s into
-the SUT's calls to a real `geo-config` pod, no image distribution,
+the SUT's calls to a real `config-service` pod, no image distribution,
 no mock authoring.
 
 Version 0.12.28 → 0.12.29.
@@ -1729,8 +1729,8 @@ Version 0.12.25 → 0.12.26.
 ## [0.12.25] - 2026-05-02
 
 RFC-038 Phase 3 (2 of 4) — gRPC plugin TLS migration. Closes the
-remaining half of the customer's gap #1 (gRPC-TLS) — `truck-api →
-geo-config` over mTLS now flows through the proxy with rules still
+remaining half of the customer's gap #1 (gRPC-TLS) — `order-service →
+config-service` over mTLS now flows through the proxy with rules still
 firing.
 
 ### Changed
@@ -1756,7 +1756,7 @@ owns its own TLS handshake via `grpc.Creds` and gets confused when
 handed an already-encrypted conn. Routing through `grpc.Creds` is the
 framework-idiomatic seam and avoids a double-handshake bug.
 
-The customer-facing surface is identical: `interface("geo", "grpc",
+The customer-facing surface is identical: `interface("config", "grpc",
 443, tls=tls_cert(...))` works the same way — only the internal
 plumbing differs.
 
@@ -1816,7 +1816,7 @@ wires the gRPC plugin specifically).
 - Auto self-signed cert path includes the upstream host portion
   in its SAN list so customers pointing at
   `interface("main", "http", 8080)` against
-  `target=truck-api.svc.cluster.local:443` get a proxy cert that
+  `target=order-service.svc.cluster.local:443` get a proxy cert that
   covers the hostname without spelling out a SAN list.
 
 ### Tests
@@ -2060,7 +2060,7 @@ lifecycle, byte flow, and stall conditions at the proxy layer:
   ≥ stall threshold (default 5s warn, 30s extend; one stall event
   per direction per tier per connection)
 
-Customer-driven (inDrive Freight, 2026-04-28). The v0.12.15.x
+Customer-driven (customer report, 2026-04-28). The v0.12.15.x
 arc spent multi-day debug cycles on every proxy-forwarding bug
 because the report timeline showed `proxy_started → 60s of
 silence → exit_code=2` with no hint that the proxy was the
@@ -2183,7 +2183,7 @@ via Docker's multiplexed log stream and demuxed inside Faultbox.
 
 `stderr()` event source. Counterpart to the existing `stdout()` source
 — captures the service's stderr stream and emits each line as a
-first-class trace event. Customer-driven (inDrive Freight,
+first-class trace event. Customer-driven (the customer,
 2026-04-30): every default-configured Go service using zap, slog, or
 logrus writes to fd 2; pre-v0.12.18 the only way to observe those
 logs through Faultbox was to inject an env-gate (e.g.
@@ -2400,7 +2400,7 @@ without changing the bundle format or any spec-language surface.
 
 ## [0.12.15.2] - 2026-04-30
 
-Hotfix on top of v0.12.15.1. Customer (inDrive Freight) verified the
+Hotfix on top of v0.12.15.1. Customer (the customer) verified the
 v0.12.15.1 Redis RESP3 fix landed clean — cold-start path went green
 end-to-end for the first time (smoke `test_health_check` PASS in
 16.3 s, both MySQL and Redis handshakes traverse the proxy). The
@@ -2460,10 +2460,10 @@ right durable fix for the per-protocol parsing class.
 
 ## [0.12.15.1] - 2026-04-29
 
-Hotfix on top of v0.12.15. Customer (inDrive Freight) verified the
+Hotfix on top of v0.12.15. Customer (the customer) verified the
 MySQL `caching_sha2_password` fast-auth-success fix landed clean
 (Finding H closed, smoke test progressed past the MySQL stage). The
-failure point moved one step forward to Redis: `truck-api` now hangs
+failure point moved one step forward to Redis: `order-service` now hangs
 6 s on its first `Ping()` because **go-redis v9 unconditionally sends
 `HELLO 3` from `initConn`**, which forces the server into RESP3 and
 returns a map (`%N`) reply that v0.12.15's redis proxy didn't know
@@ -2522,7 +2522,7 @@ plain pump rather than a per-protocol parser.
 
 ## [0.12.15] - 2026-04-29
 
-Hotfix on top of v0.12.14. Customer (inDrive Freight) verified that
+Hotfix on top of v0.12.14. Customer (the customer) verified that
 v0.12.14 didn't unblock Finding H — both `caching_sha2_password` and
 `mysql_native_password --default-auth` still hung. Independent
 `mysql -P $PROXY_PORT` probe through the proxy reproduced it without
@@ -2550,10 +2550,10 @@ touching the SUT, ruling out spec or driver concerns.
   AuthMoreData states (`0x04` perform_full_authentication, public-key
   payloads) and AuthSwitchRequest still expect a client reply.
 
-  How Freight hit it: their `seed_db` Starlark hook polls MySQL via
+  How the customer hit it: their `seed_db` Starlark hook polls MySQL via
   `db.mysql.exec(sql="SELECT 1", dsn=DB_DSN_POLL)` — `dsn=` overrides
   the proxy address, so seed connects directly to MySQL and populates
-  the server's auth cache. By the time `truck-api` connected through
+  the server's auth cache. By the time `order-service` connected through
   the proxy, every connection took the fast-auth-success path that
   v0.12.14 deadlocked on. The same happened to a manual
   `mysql -P $PROXY_PORT` probe (any cached user → fast-auth path).
@@ -2571,7 +2571,7 @@ Filed as a follow-up — not in v0.12.15 scope.
 
 ## [0.12.14] - 2026-04-29
 
-Hotfix on top of v0.12.13. Customer (inDrive Freight) confirmed the
+Hotfix on top of v0.12.13. Customer (the customer) confirmed the
 v0.12.13 reuse-path fix landed cleanly, then surfaced **Finding H**:
 the MySQL proxy deadlocks on `caching_sha2_password` full-auth (the
 default for MySQL 8). Server greeting reaches the client; client's
@@ -2648,7 +2648,7 @@ Proxy-address surface for host-binary SUT + Docker upstream
 ([RFC-033](https://github.com/faultbox/Faultbox/issues/87)). Two layered
 fixes, one P0 trace correctness issue and one P1 connectivity bug, both
 surfaced by a customer running the recipe-based `mysql.deadlock()` /
-`redis.timeout()` matrix against `truck-api` (host binary) connecting to a
+`redis.timeout()` matrix against `order-service` (host binary) connecting to a
 Docker `db` (mysql:8) — 18/18 cells failed for these reasons, not for any
 fault-injection-relevant reason.
 
@@ -2785,8 +2785,8 @@ Three small UX polishes from a customer second-read of v0.12.8:
 - **Step summaries pair arrows with `call` / `reply` words.** A
   bare `→` / `←` was ambiguous to first-time readers — was the
   arrow the request direction or the response direction? Headlines
-  now read `→ call · truck-api.get /orders` and
-  `← reply · truck-api.get /orders [500]`. Arrows still scan
+  now read `→ call · order-service.get /orders` and
+  `← reply · order-service.get /orders [500]`. Arrows still scan
   faster once learned; the word is the disambiguator.
 
 ## [0.12.8] - 2026-04-26
@@ -2848,8 +2848,8 @@ Two fixes from a customer second-read of v0.12.6:
   *matching* events render. Caption updates to "Showing X of Y
   matching events (out of Z total)" when filters are active.
 - **Service column display + filter axis follow lane routing.** The
-  service cell now shows `laneFor(ev)`, so filtering by `truck-api`
-  matches both truck-api's own lifecycle and the step events
+  service cell now shows `laneFor(ev)`, so filtering by `order-service`
+  matches both order-service's own lifecycle and the step events
   pointed at it.
 
 ## [0.12.6] - 2026-04-25
@@ -2863,7 +2863,7 @@ Three UX fixes from a customer read of the v0.12.5 report:
   `status_code ≥ 500` paints with the fault palette (red);
   `status_code` 4xx paints amber. Without this every step rendered
   in the same yellow/warn colour and the eye couldn't find the DB
-  invalid-connection or the truck-api 500 among a sea of `SELECT 1`
+  invalid-connection or the order-service 500 among a sea of `SELECT 1`
   markers.
 - **Slot picker prefers severity over first-anchor.** `severityScore`
   ranks events: violation 100 → fault 90 → errored step 80 →
@@ -2879,7 +2879,7 @@ Three UX fixes from a customer read of the v0.12.5 report:
 - **Two-axis event-log filter (Service + Type).** Replaces the
   v0.11 single-select-by-type chip bar. Both axes multi-select.
   Clicking a Type / Service cell in the table sets that axis to
-  the cell's value (`step_recv` only on `truck-api`: two clicks).
+  the cell's value (`step_recv` only on `order-service`: two clicks).
   Active chips highlight; click again to deselect.
 
 ## [0.12.5] - 2026-04-25
@@ -3134,7 +3134,7 @@ regenerated v0.12 report. Three pain points addressed in one patch:
 ## [0.12.0] - 2026-04-25
 
 The "23 MB report" release. The headline customer pain from the
-inDrive Freight v0.11.1 report — that the HTML artifact was too
+the customer v0.11.1 report — that the HTML artifact was too
 big to attach and laggy to render — is closed by a three-layer
 report-architecture redesign (RFC-031). On a 120k-event simulated
 run, the v0.11 baseline of ~10 MB shrinks to ~137 KB by default,
@@ -3177,7 +3177,7 @@ drift output, the `grpc.retryable()` composite recipe, the
   executable and records `sha256:<hex>` in `lock.binaries`
   alongside `lock.images`. CI gates close the supply-chain
   drift gap for teams that ship volume-mounted binaries (the
-  inDrive Freight model). Schema unchanged — `Binaries` field
+  the customer model). Schema unchanged — `Binaries` field
   was reserved in v0.10.
 - **`grpc.retryable()` composite recipe** ([#79](https://github.com/faultbox/Faultbox/issues/79)) —
   one-line "flapping upstream" mix replacing three hand-composed
@@ -3209,7 +3209,7 @@ drift output, the `grpc.retryable()` composite recipe, the
   ```
   drift detected (3 entries):
     image   mysql:8           locked sha256:abc…   current sha256:def…
-    binary  /tmp/truck-api    locked sha256:111…   current sha256:222…
+    binary  /tmp/order-service    locked sha256:111…   current sha256:222…
     binary  /tmp/upstream     locked sha256:333…   current <not found on disk>
   ```
 - **Default `faultbox report` is now downsampled.** Existing CI
@@ -3227,7 +3227,7 @@ drift output, the `grpc.retryable()` composite recipe, the
   real signal. A filtering logger now drops known retry-noise
   substrings (unexpected EOF, invalid connection, bad connection,
   broken pipe, connection refused) while passing genuine errors
-  through. Customer ask from inDrive Freight v0.11.1 feedback #12.
+  through. Customer ask from the customer v0.11.1 feedback #12.
 
 ### Added
 
@@ -3239,7 +3239,7 @@ drift output, the `grpc.retryable()` composite recipe, the
 
 ## [0.11.2] - 2026-04-24
 
-Hotfix for two P0 regressions reported by inDrive Freight against v0.11.1. Both
+Hotfix for two P0 regressions reported by the customer against v0.11.1. Both
 now have direct regression test coverage — zero before this release.
 
 ### Fixed
@@ -3368,7 +3368,7 @@ replay → report trio (v0.9.7 → v0.10.0 → v0.11.0) is two-thirds shipped.
 
 ## [0.9.8] - 2026-04-23
 
-Six small primitives addressing customer asks from the inDrive feedback
+Six small primitives addressing customer asks from the the customer feedback
 analysis — Group B + C3.
 
 ### Added

@@ -12,27 +12,27 @@
 #
 #     load("@faultbox/mocks/grpc.star", "grpc")
 #
-#     geo_config = grpc.server(
-#         name        = "geo-config",
+#     config_service = grpc.server(
+#         name        = "config-service",
 #         interface   = interface("main", "grpc", 9001),
 #         descriptors = "./proto/all_upstreams.pb",
 #         services    = {
-#             "/inDriver.geo_config.GeoConfigService/GetCity": {
+#             "/example.config.ConfigService/GetSetting": {
 #                 "response": {
 #                     "id":       42,
-#                     "name":     "Almaty",
-#                     "country":  "KZ",
-#                     "currency": "KZT",
+#                     "name":     "primary",
+#                     "scope":  "default",
+#                     "currency": "USD",
 #                 },
 #             },
-#             "/inDriver.geo_config.GeoConfigService/AdminUpdate": {
+#             "/example.config.ConfigService/AdminUpdate": {
 #                 "error": {"code": "PERMISSION_DENIED", "message": "admin only"},
 #             },
 #             # Dynamic handler — receives the typed request as a dict.
-#             "/inDriver.geo_config.GeoConfigService/GetCityByCoords":
+#             "/example.config.ConfigService/GetSettingByKey":
 #                 grpc.dynamic(lambda req: grpc.response({"id": 1, "name": "north"})),
 #             # Raw wire bytes for exotic cases (oneofs, extensions).
-#             "/inDriver.geo_config.GeoConfigService/Exotic":
+#             "/example.config.ConfigService/Exotic":
 #                 grpc.raw_response(b"\\x08\\x2a"),
 #         },
 #     )
@@ -40,7 +40,7 @@
 # Generate `all_upstreams.pb` with:
 #
 #     protoc --include_imports --descriptor_set_out=all_upstreams.pb \
-#            proto/inDriver/**/*.proto
+#            proto/example/**/*.proto
 #
 # Faultbox does NOT ship or wrap protoc — customers own their proto
 # build pipeline (resolved question 3 in RFC-023).

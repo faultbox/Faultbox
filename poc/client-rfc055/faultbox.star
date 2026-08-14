@@ -13,7 +13,7 @@ CONTRACT = "./orders.openapi.yaml"
 
 # The callee. Routes come from the contract's declared examples; the
 # `/orders/{orderId}` override returns a *degraded* payload — a 200 whose
-# courier_eta is null, which the contract declares non-nullable.
+# eta is null, which the contract declares non-nullable.
 orders = mock_service("orders",
     interface("public", "http", 18110),
     openapi = CONTRACT,
@@ -21,7 +21,7 @@ orders = mock_service("orders",
     overrides = {
         "GET /orders/{orderId}": json_response(
             status = 200,
-            body = {"id": 1001, "status": "confirmed", "courier_eta": None},
+            body = {"id": 1001, "status": "confirmed", "eta": None},
         ),
     },
 )
@@ -60,7 +60,7 @@ def test_contract_violation_is_visible():
     # The service answered 200 but broke its own contract.
     assert_true(
         not resp.contract_ok,
-        "expected a contract violation for the null courier_eta, got: " + resp.contract_error,
+        "expected a contract violation for the null eta, got: " + resp.contract_error,
     )
     assert_true(resp.client == "mobile-app")
     assert_true(resp.operation == "get_order")

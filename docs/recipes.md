@@ -113,7 +113,7 @@ db = service("db",
     reuse = True,
 )
 
-api = service("truck-api", "/usr/local/bin/truck-api",
+api = service("order-service", "/usr/local/bin/order-service",
     interface("public", "http", 9000),
     env = {
         "MYSQL_HOST": db.main.proxy_host,                       # → "127.0.0.1"

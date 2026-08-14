@@ -68,7 +68,7 @@ func grpcClientCfgFor(t *testing.T, serverCfg *tls.Config) *tls.Config {
 // TestGRPCProxy_TLSEndToEnd — the headline RFC-038 case for gRPC:
 // caller speaks gRPC-over-TLS to the proxy, proxy speaks gRPC-over-TLS
 // to the upstream, plaintext rule-matching keeps working in the
-// middle. This is what unblocks inDrive's mTLS upstreams.
+// middle. This is what unblocks the customer's mTLS upstreams.
 func TestGRPCProxy_TLSEndToEnd(t *testing.T) {
 	upstreamAddr, upstreamCfg, stopUpstream := echoUpstreamTLS(t)
 	defer stopUpstream()
@@ -76,7 +76,7 @@ func TestGRPCProxy_TLSEndToEnd(t *testing.T) {
 	clientCfg := grpcClientCfgFor(t, upstreamCfg)
 	serverCfg, _ := GenerateSelfSignedCert(nil)
 
-	p := newGRPCProxy(nil, "geoconfig")
+	p := newGRPCProxy(nil, "config-service")
 	p.SetTLS(serverCfg, clientCfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -101,7 +101,7 @@ func TestGRPCProxy_TLSEndToEnd(t *testing.T) {
 	var reply []byte
 	md := metadata.Pairs("x-fb-test", "1")
 	ctx2 := metadata.NewOutgoingContext(ctx, md)
-	if err := conn.Invoke(ctx2, "/freight.Geo/Lookup", &payload, &reply); err != nil {
+	if err := conn.Invoke(ctx2, "/example.Config/Lookup", &payload, &reply); err != nil {
 		t.Fatalf("invoke through TLS proxy: %v", err)
 	}
 	if len(reply) != len(payload) {
@@ -124,7 +124,7 @@ func TestGRPCProxy_TLSRuleInjection(t *testing.T) {
 	clientCfg := grpcClientCfgFor(t, upstreamCfg)
 	serverCfg, _ := GenerateSelfSignedCert(nil)
 
-	p := newGRPCProxy(nil, "geoconfig")
+	p := newGRPCProxy(nil, "config-service")
 	p.SetTLS(serverCfg, clientCfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -132,10 +132,10 @@ func TestGRPCProxy_TLSRuleInjection(t *testing.T) {
 	defer p.Stop()
 
 	p.AddRule(Rule{
-		Method: "/freight.Geo/Blocked",
+		Method: "/example.Config/Blocked",
 		Action: ActionError,
 		Status: int(codes.Unavailable),
-		Error:  "geoconfig is down",
+		Error:  "config-service is down",
 	})
 
 	conn, err := grpc.NewClient(proxyAddr,
@@ -149,7 +149,7 @@ func TestGRPCProxy_TLSRuleInjection(t *testing.T) {
 
 	payload := []byte{}
 	var reply []byte
-	err = conn.Invoke(ctx, "/freight.Geo/Blocked", &payload, &reply)
+	err = conn.Invoke(ctx, "/example.Config/Blocked", &payload, &reply)
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -160,8 +160,8 @@ func TestGRPCProxy_TLSRuleInjection(t *testing.T) {
 	if st.Code() != codes.Unavailable {
 		t.Errorf("code = %v, want Unavailable", st.Code())
 	}
-	if !strings.Contains(st.Message(), "geoconfig is down") {
-		t.Errorf("message = %q, want substring 'geoconfig is down'", st.Message())
+	if !strings.Contains(st.Message(), "config-service is down") {
+		t.Errorf("message = %q, want substring 'config-service is down'", st.Message())
 	}
 }
 
@@ -172,7 +172,7 @@ func TestGRPCProxy_PlaintextStillWorks(t *testing.T) {
 	upstreamAddr, stopUpstream := echoUpstream(t)
 	defer stopUpstream()
 
-	p := newGRPCProxy(nil, "geoconfig")
+	p := newGRPCProxy(nil, "config-service")
 	// No SetTLS call — plain h2c path.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -193,7 +193,7 @@ func TestGRPCProxy_PlaintextStillWorks(t *testing.T) {
 
 	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}
 	var reply []byte
-	if err := conn.Invoke(ctx, "/freight.Geo/Plain", &payload, &reply); err != nil {
+	if err := conn.Invoke(ctx, "/example.Config/Plain", &payload, &reply); err != nil {
 		t.Fatalf("plain invoke: %v", err)
 	}
 	if string(reply) != string(payload) {

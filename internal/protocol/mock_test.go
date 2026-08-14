@@ -849,10 +849,10 @@ func TestGRPCMockUnaryCall(t *testing.T) {
 // which the Struct-based path can't satisfy because the wire bytes
 // would carry a google.protobuf.Struct instead.
 func TestGRPCMockTypedResponse(t *testing.T) {
-	// Synthetic descriptor set matching buildCityDescriptorSet in
-	// grpc_typed_encoder_test.go: service test.geo.GeoService with a
-	// GetCity method returning test.geo.City{id, name, country, currency}.
-	fdsPath := writeFds(t, buildCityDescriptorSet())
+	// Synthetic descriptor set matching buildSettingDescriptorSet in
+	// grpc_typed_encoder_test.go: service test.config.ConfigService with a
+	// GetSetting method returning test.config.Setting{id, name, scope, currency}.
+	fdsPath := writeFds(t, buildSettingDescriptorSet())
 	files, err := LoadDescriptorSet(fdsPath)
 	if err != nil {
 		t.Fatalf("LoadDescriptorSet: %v", err)
@@ -867,9 +867,9 @@ func TestGRPCMockTypedResponse(t *testing.T) {
 			{
 				// In typed mode the Body is raw JSON — the handler encodes
 				// it against the method's output descriptor at request time.
-				Pattern: "/test.geo.GeoService/GetCity",
+				Pattern: "/test.config.ConfigService/GetSetting",
 				Response: &MockResponse{
-					Body: []byte(`{"id":42,"name":"Almaty","country":"KZ","currency":"KZT"}`),
+					Body: []byte(`{"id":42,"name":"primary","scope":"default","currency":"USD"}`),
 				},
 			},
 		},
@@ -891,27 +891,27 @@ func TestGRPCMockTypedResponse(t *testing.T) {
 	defer conn.Close()
 
 	// Simulate the customer's compiled-stub client side by decoding the
-	// response via dynamicpb against the expected City descriptor — this
+	// response via dynamicpb against the expected Setting descriptor — this
 	// is the exact decode path a generated *.pb.go client uses under the
 	// hood. If we were still emitting Struct, this Unmarshal would
 	// produce zero values.
-	cityDesc, _ := files.FindDescriptorByName("test.geo.City")
-	cityMd := cityDesc.(protoreflect.MessageDescriptor)
-	got := dynamicpb.NewMessage(cityMd)
+	cityDesc, _ := files.FindDescriptorByName("test.config.Setting")
+	settingMd := cityDesc.(protoreflect.MessageDescriptor)
+	got := dynamicpb.NewMessage(settingMd)
 
-	err = conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity", &emptyMsg{}, &rawRecvMsg{msg: got})
+	err = conn.Invoke(context.Background(), "/test.config.ConfigService/GetSetting", &emptyMsg{}, &rawRecvMsg{msg: got})
 	if err != nil {
-		t.Fatalf("Invoke GetCity: %v", err)
+		t.Fatalf("Invoke GetSetting: %v", err)
 	}
 
-	if v := got.Get(cityMd.Fields().ByName("id")).Int(); v != 42 {
-		t.Errorf("City.id = %d, want 42", v)
+	if v := got.Get(settingMd.Fields().ByName("id")).Int(); v != 42 {
+		t.Errorf("Setting.id = %d, want 42", v)
 	}
-	if v := got.Get(cityMd.Fields().ByName("name")).String(); v != "Almaty" {
-		t.Errorf("City.name = %q, want Almaty", v)
+	if v := got.Get(settingMd.Fields().ByName("name")).String(); v != "primary" {
+		t.Errorf("Setting.name = %q, want primary", v)
 	}
-	if v := got.Get(cityMd.Fields().ByName("country")).String(); v != "KZ" {
-		t.Errorf("City.country = %q, want KZ", v)
+	if v := got.Get(settingMd.Fields().ByName("scope")).String(); v != "default" {
+		t.Errorf("Setting.scope = %q, want default", v)
 	}
 
 	cancel()
@@ -928,15 +928,15 @@ func TestGRPCMockTypedResponse(t *testing.T) {
 // Power-user escape for oneof tricks / extensions / fields the typed
 // encoder can't express.
 func TestGRPCMockTypedResponse_RawEscapeHatch(t *testing.T) {
-	fdsPath := writeFds(t, buildCityDescriptorSet())
+	fdsPath := writeFds(t, buildSettingDescriptorSet())
 	files, _ := LoadDescriptorSet(fdsPath)
 
-	// Pre-encode a valid City message as raw wire bytes, then ship it
+	// Pre-encode a valid Setting message as raw wire bytes, then ship it
 	// through the raw path. If the handler ignored ContentType and
 	// tried to JSON-parse these wire bytes, it would fail.
-	cityDesc, _ := files.FindDescriptorByName("test.geo.City")
-	cityMd := cityDesc.(protoreflect.MessageDescriptor)
-	rawWire, err := JSONToTypedMessage(files, cityMd, []byte(`{"id":7,"name":"raw"}`))
+	cityDesc, _ := files.FindDescriptorByName("test.config.Setting")
+	settingMd := cityDesc.(protoreflect.MessageDescriptor)
+	rawWire, err := JSONToTypedMessage(files, settingMd, []byte(`{"id":7,"name":"raw"}`))
 	if err != nil {
 		t.Fatalf("pre-encode: %v", err)
 	}
@@ -946,7 +946,7 @@ func TestGRPCMockTypedResponse_RawEscapeHatch(t *testing.T) {
 	spec := MockSpec{
 		Descriptors: files,
 		Routes: []MockRoute{{
-			Pattern: "/test.geo.GeoService/GetCity",
+			Pattern: "/test.config.ConfigService/GetSetting",
 			Response: &MockResponse{
 				Body:        rawWire,
 				ContentType: GRPCRawBodyContentType,
@@ -965,12 +965,12 @@ func TestGRPCMockTypedResponse_RawEscapeHatch(t *testing.T) {
 	conn, _ := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	defer conn.Close()
 
-	got := dynamicpb.NewMessage(cityMd)
-	if err := conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity", &emptyMsg{}, &rawRecvMsg{msg: got}); err != nil {
+	got := dynamicpb.NewMessage(settingMd)
+	if err := conn.Invoke(context.Background(), "/test.config.ConfigService/GetSetting", &emptyMsg{}, &rawRecvMsg{msg: got}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	if v := got.Get(cityMd.Fields().ByName("id")).Int(); v != 7 {
-		t.Errorf("City.id = %d, want 7 (raw path)", v)
+	if v := got.Get(settingMd.Fields().ByName("id")).Int(); v != 7 {
+		t.Errorf("Setting.id = %d, want 7 (raw path)", v)
 	}
 
 	cancel()
@@ -988,7 +988,7 @@ func TestGRPCMockTypedResponse_RawEscapeHatch(t *testing.T) {
 // it with the generated ServerReflection client proves the same wire
 // exchange grpcurl would.
 func TestGRPCMockReflection(t *testing.T) {
-	fdsPath := writeFds(t, buildCityDescriptorSet())
+	fdsPath := writeFds(t, buildSettingDescriptorSet())
 	files, err := LoadDescriptorSet(fdsPath)
 	if err != nil {
 		t.Fatalf("LoadDescriptorSet: %v", err)
@@ -1000,7 +1000,7 @@ func TestGRPCMockReflection(t *testing.T) {
 	spec := MockSpec{
 		Descriptors: files,
 		Routes: []MockRoute{{
-			Pattern: "/test.geo.GeoService/GetCity",
+			Pattern: "/test.config.ConfigService/GetSetting",
 			Response: &MockResponse{
 				Body: []byte(`{"id":1,"name":"x"}`),
 			},
@@ -1050,12 +1050,12 @@ func TestGRPCMockReflection(t *testing.T) {
 	var names []string
 	for _, svc := range listResp.Service {
 		names = append(names, svc.Name)
-		if svc.Name == "test.geo.GeoService" {
+		if svc.Name == "test.config.ConfigService" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("test.geo.GeoService not in reflection list, got: %v", names)
+		t.Errorf("test.config.ConfigService not in reflection list, got: %v", names)
 	}
 
 	_ = stream.CloseSend()
@@ -1069,7 +1069,7 @@ func TestGRPCMockReflection(t *testing.T) {
 	}
 	if err := stream2.Send(&v1reflectionpb.ServerReflectionRequest{
 		MessageRequest: &v1reflectionpb.ServerReflectionRequest_FileContainingSymbol{
-			FileContainingSymbol: "test.geo.GeoService",
+			FileContainingSymbol: "test.config.ConfigService",
 		},
 	}); err != nil {
 		t.Fatalf("send FileContainingSymbol: %v", err)
@@ -1083,7 +1083,7 @@ func TestGRPCMockReflection(t *testing.T) {
 		t.Fatalf("expected FileDescriptorResponse, got %T", resp2.MessageResponse)
 	}
 	if len(fdResp.FileDescriptorProto) == 0 {
-		t.Errorf("no file descriptors returned for test.geo.GeoService")
+		t.Errorf("no file descriptors returned for test.config.ConfigService")
 	}
 
 	_ = stream2.CloseSend()
@@ -1163,7 +1163,7 @@ func TestGRPCMockReflection_DisabledForUntypedMocks(t *testing.T) {
 // the stdlib grpc.Server. If a customer hits either case, RFC-023
 // Phase 5 spins up the connect-go handler alongside grpc-go's.
 func TestGRPCMockConnectInterop(t *testing.T) {
-	fdsPath := writeFds(t, buildCityDescriptorSet())
+	fdsPath := writeFds(t, buildSettingDescriptorSet())
 	files, err := LoadDescriptorSet(fdsPath)
 	if err != nil {
 		t.Fatalf("LoadDescriptorSet: %v", err)
@@ -1175,9 +1175,9 @@ func TestGRPCMockConnectInterop(t *testing.T) {
 	spec := MockSpec{
 		Descriptors: files,
 		Routes: []MockRoute{{
-			Pattern: "/test.geo.GeoService/GetCity",
+			Pattern: "/test.config.ConfigService/GetSetting",
 			Response: &MockResponse{
-				Body: []byte(`{"id":99,"name":"connect-was-here","country":"CN","currency":"CNY"}`),
+				Body: []byte(`{"id":99,"name":"connect-was-here","scope":"CN","currency":"CNY"}`),
 			},
 		}},
 	}
@@ -1194,7 +1194,7 @@ func TestGRPCMockConnectInterop(t *testing.T) {
 	// can be zero-constructed (it does `new(Res)`). dynamicpb.Message
 	// zero-value has no descriptor → proto.Unmarshal panics. For this
 	// wire-level interop check, use emptypb.Empty on both sides:
-	// proto3 discards unknown fields on unmarshal, so the test.geo.City
+	// proto3 discards unknown fields on unmarshal, so the test.config.Setting
 	// wire bytes the server returns decode into Empty without error.
 	// That's enough to verify "connect-go in gRPC mode successfully
 	// completes an RPC against our mock" — which is OQ5's actual
@@ -1211,7 +1211,7 @@ func TestGRPCMockConnectInterop(t *testing.T) {
 
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
 		h2cClient,
-		"http://"+addr+"/test.geo.GeoService/GetCity",
+		"http://"+addr+"/test.config.ConfigService/GetSetting",
 		connect.WithGRPC(),
 	)
 
@@ -1223,7 +1223,7 @@ func TestGRPCMockConnectInterop(t *testing.T) {
 	if resp.Msg == nil {
 		t.Fatal("connect-go returned nil message")
 	}
-	// The wire bytes the server emits encode a test.geo.City. proto3
+	// The wire bytes the server emits encode a test.config.Setting. proto3
 	// unknown-field semantics let us decode those into Empty cleanly —
 	// the verification is "no error, got a proto message back."
 

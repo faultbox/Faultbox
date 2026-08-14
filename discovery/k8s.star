@@ -8,10 +8,10 @@
 # Usage:
 #     load("@faultbox/discovery/k8s.star", "k8s")
 #
-#     geo = service("geo-config",
+#     config = service("config-service",
 #         interface("public", "http", 8080),
-#         remote      = k8s.service("geo-config", namespace = "staging"),
-#         healthcheck = http(k8s.endpoint("geo-config", 8080, namespace = "staging") + "/healthz"),
+#         remote      = k8s.service("config-service", namespace = "staging"),
+#         healthcheck = http(k8s.endpoint("config-service", 8080, namespace = "staging") + "/healthz"),
 #     )
 #
 # Cluster connectivity is the user's responsibility — `telepresence connect`,

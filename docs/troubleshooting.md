@@ -88,9 +88,9 @@ healthcheck = http("http://localhost:8080/healthz")
 Before v0.16.0 there was no query-based builtin, and the usual workaround was
 `tcp()` plus a generous `sleep()`. That is no longer necessary.
 
-This was the #5 hour-burner on the inDrive PoC.
+This was the #5 hour-burner in an early field evaluation.
 
-## 4. "Container starts but truck-api can't reach it"
+## 4. "Container starts but order-service can't reach it"
 
 Symptom: `service` container is running (you can see it in
 `docker ps`), but the SUT container's request to it times out.
@@ -111,7 +111,7 @@ Symptom: SUT rejects every token your `jwt.server()` mints.
 Most-likely causes:
 
 - **Wrong claim name** — your middleware expects `uid` but you sent
-  `user_id` (this was 8h on the inDrive PoC). Check what the SUT
+  `user_id` (this was 8h in an early field evaluation). Check what the SUT
   actually validates.
 - **Audience mismatch** — middleware demands `aud="api.example.com"`
   but you didn't set it. Add `aud` to the claims dict.
@@ -229,7 +229,7 @@ driver can reach.
 
 ## 11. "Host-binary SUT can't connect to a Docker DB upstream"
 
-Symptom: `truck-api` (a host binary) times out at the healthcheck stage
+Symptom: `order-service` (a host binary) times out at the healthcheck stage
 while trying to connect to a Docker `db` service. Trace shows the proxy
 started cleanly. Spec wires SUT env from `db.main.internal_addr.rsplit(":")`.
 
@@ -245,7 +245,7 @@ are late-bound — they return placeholders at spec-load and resolve to the
 real proxy listener at test-execution:
 
 ```python
-api = service("truck-api", "/usr/local/bin/truck-api",
+api = service("order-service", "/usr/local/bin/order-service",
     interface("public", "http", 9000),
     env = {
         "MYSQL_HOST": db.main.proxy_host,
@@ -265,7 +265,7 @@ for more context. Fixed in v0.12.12 (RFC-033).
 ## 12. "Service exited before becoming ready" / missing-binary launch
 
 Symptom (binary mode): the test fails fast with
-`service "truck-api" exited before becoming ready: exec /tmp/truck-api: no such file or directory`.
+`service "order-service" exited before becoming ready: exec /tmp/order-service: no such file or directory`.
 
 Cause: the target binary path in your spec doesn't exist, isn't
 executable, or wasn't built for the VM's architecture. Before v0.13.0
@@ -278,7 +278,7 @@ immediately and names the path that couldn't be exec'd.
 Fix:
 
 1. Confirm the path in your `service(...)` declaration exists in the VM
-   and is executable: `make env-exec CMD='ls -l /tmp/truck-api'`.
+   and is executable: `make env-exec CMD='ls -l /tmp/order-service'`.
 2. Rebuild for the VM arch if it's a cross-compile
    (`GOOS=linux GOARCH=arm64`). A host-built (darwin) binary copied into
    the VM produces an exec format error here.

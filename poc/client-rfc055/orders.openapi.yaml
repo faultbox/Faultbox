@@ -42,11 +42,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [id, status, courier_eta]
+                required: [id, status, eta]
                 properties:
                   id: {type: integer}
                   status: {type: string}
-                  courier_eta:
+                  eta:
                     type: string
-                    description: ETA from the courier service. Non-nullable — the
+                    description: ETA from the orders service. Non-nullable — the
                       degraded path that returns null here is the bug this spec catches.

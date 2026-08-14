@@ -199,7 +199,7 @@ func TestMySQLProxy_Handshake_NativePassword(t *testing.T) {
 		_, _ = serverFromProxy.Write(makeMySQLPacket(2, []byte{mysqlPktOK, 0x00, 0x00, 0x02, 0x00}))
 	}()
 
-	// Client-side script (truck-api in the real world).
+	// Client-side script (order-service in the real world).
 	// Read greeting, send auth response, read OK.
 	_, greeting := readMySQLPacket(t, clientToProxy)
 	if string(greeting) != "greeting" {
@@ -265,7 +265,7 @@ func TestMySQLProxy_Handshake_CachingSha2FullAuth(t *testing.T) {
 		_, _ = serverFromProxy.Write(makeMySQLPacket(6, []byte{mysqlPktOK, 0x00, 0x00, 0x02, 0x00}))
 	}()
 
-	// Client-side script — drives the full-auth dance from the truck-api side.
+	// Client-side script — drives the full-auth dance from the order-service side.
 	_, greeting := readMySQLPacket(t, clientToProxy)
 	if string(greeting) != "greeting-sha2" {
 		t.Errorf("greeting = %q", greeting)
@@ -308,9 +308,9 @@ func TestMySQLProxy_Handshake_CachingSha2FullAuth(t *testing.T) {
 // Pre-v0.12.15 the loop in forwardHandshake assumed strict alternation:
 // after any non-OK/ERR server packet it tried to read from the client.
 // Client had nothing to send → deadlock until the connect-timeout fired.
-// Customer Finding H follow-up, inDrive Freight 2026-04-29 — manifested
+// Customer Finding H follow-up, the customer 2026-04-29 — manifested
 // when seed_db's direct MySQL connections populated the auth cache
-// before truck-api ever connected through the proxy.
+// before order-service ever connected through the proxy.
 func TestMySQLProxy_Handshake_CachingSha2FastAuthSuccess(t *testing.T) {
 	p := newMySQLProxy(nil, "test-svc")
 	clientToProxy, proxyFromClient := net.Pipe()

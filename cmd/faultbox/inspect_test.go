@@ -139,7 +139,7 @@ func TestZeroTrafficSummaryListsEveryEvent(t *testing.T) {
 			{Name: "test_a", Result: "pass", Events: []star.Event{
 				{
 					EventType: "fault_zero_traffic",
-					Service:   "geo",
+					Service:   "config",
 					Fields:    map[string]string{"syscall": "connect", "action": "deny"},
 				},
 			}},
@@ -158,7 +158,7 @@ func TestZeroTrafficSummaryListsEveryEvent(t *testing.T) {
 
 	wants := []string{
 		"Zero-traffic faults (2)",
-		"test_a — geo.connect (deny)",
+		"test_a — config.connect (deny)",
 		"test_b — users.sendto (deny, op=net_write)",
 		"scenario may not be exercising",
 	}

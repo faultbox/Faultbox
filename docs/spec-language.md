@@ -284,7 +284,7 @@ interface("events", "kafka", 9092, spec="./events.avsc")
 
 # TLS upstream — proxy terminates and re-establishes TLS at both legs:
 interface("api", "https", 443, tls=tls_cert())
-interface("geo", "grpc", 443, tls=tls_cert(ca="certs/upstream-ca.pem"))
+interface("config", "grpc", 443, tls=tls_cert(ca="certs/upstream-ca.pem"))
 ```
 
 | Parameter | Type | Required | Description |
@@ -304,7 +304,7 @@ and response format. See [Protocols](#protocols) for the full list.
 A service can expose multiple interfaces:
 
 ```python
-courier = service("courier", "./courier-svc",
+orders = service("order-service", "./order-service",
     interface("public", "http", 8080),
     interface("internal", "grpc", 9090),
     interface("events", "kafka", 9092),
@@ -313,7 +313,7 @@ courier = service("courier", "./courier-svc",
 )
 ```
 
-Access interfaces by name: `courier.public`, `courier.internal`, `courier.events`.
+Access interfaces by name: `orders.public`, `orders.internal`, `orders.events`.
 
 ### Remote Services
 
@@ -329,18 +329,18 @@ exactly as if it were a local container.
 ```python
 load("@faultbox/discovery/k8s.star", "k8s")
 
-geo = service("geo-config",
+config = service("config-service",
     interface("public",   "http", 8080),
     interface("internal", "grpc", 9090),
-    remote      = k8s.service("geo-config", namespace = "staging"),
-    healthcheck = http(k8s.endpoint("geo-config", 8080, namespace = "staging") + "/healthz"),
+    remote      = k8s.service("config-service", namespace = "staging"),
+    healthcheck = http(k8s.endpoint("config-service", 8080, namespace = "staging") + "/healthz"),
 )
 ```
 
 Behaviour:
 
 - The `remote=` value is a plain hostname (e.g.
-  `"geo.staging.svc.cluster.local"` or `"127.0.0.1"`) or a
+  `"config-service.staging.svc.cluster.local"` or `"127.0.0.1"`) or a
   `host:port` string when you need to override the interface port.
   All interfaces share the host by default.
 - For services whose interfaces live on different hosts, use
@@ -381,14 +381,14 @@ Typed per-interface upstream-host map for `service(remote=...)`. Use
 when interfaces of one logical service live on different hosts:
 
 ```python
-geo = service("geo",
+config = service("config-service",
     interface("public",   "http", 8080),
     interface("internal", "grpc", 9090),
     remote = remotes({
-        "public":   "geo.staging.svc.cluster.local",
-        "internal": "geo-grpc.staging.svc.cluster.local:9999",
+        "public":   "config-service.staging.svc.cluster.local",
+        "internal": "config-grpc.staging.svc.cluster.local:9999",
     }),
-    healthcheck = http("geo.staging.svc.cluster.local:8080/healthz"),
+    healthcheck = http("config-service.staging.svc.cluster.local:8080/healthz"),
 )
 ```
 
@@ -518,7 +518,7 @@ Docker upstream** — the upstream's auto-mapped host port and the proxy's auto-
 listener port are both unknown at spec-load time, so a literal value would never work.
 
 ```python
-truck = service("truck-api", "/usr/local/bin/truck-api",
+api = service("order-service", "/usr/local/bin/order-service",
     interface("main", "http", 9000),
     env = {
         "MYSQL_HOST": db.mysql.proxy_host,                      # → "127.0.0.1"
@@ -806,9 +806,9 @@ api = service("api", remote="api-prod.example.com",
 The proxy auto-generates its server cert; the upstream is verified
 against the system CA pool.
 
-**mTLS upstream (the inDrive Freight pattern):**
+**mTLS upstream (a common enterprise pattern):**
 ```python
-geo = service("geo", remote="geo-config.svc.cluster.local",
+config = service("config-service", remote="config-service.svc.cluster.local",
     interface("api", "grpc", 443,
         tls = tls_cert(
             client_cert = "certs/proxy-client.crt",
@@ -1108,16 +1108,16 @@ own actor in the trace.
 
 ```python
 orders  = service("orders", interface("public", "http", 8080), image = "orders:2.1")
-courier = service("courier", interface("main", "grpc", 9090, spec = "./courier.pb"),
-                  image = "courier:1.4")
+orders = service("order-service", interface("main", "grpc", 9090, spec = "./orders.pb"),
+                  image = "order-service:1.4")
 
 mobile   = client("mobile-app",   target = orders.public, openapi = "./orders.yaml",
                   headers = {"X-Client": "ios/4.2"}, validate = "response")
-gcourier = client("gRPC-Courier", target = courier.main)   # contract from interface(spec=)
+gorders = client("gRPC-Orders", target = orders.main)   # contract from interface(spec=)
 
 def test_order_flow():
     o = mobile.create_order(body = {"item_id": "sku-1", "qty": 2})
-    r = gcourier.get_order(order_id = o.data["id"])
+    r = gorders.get_order(order_id = o.data["id"])
 ```
 
 | Param | Notes |
@@ -1164,7 +1164,7 @@ with a nearest-match suggestion; missing required parameters are an error.
 ```python
 r = mobile.get_order(order_id = 42, include = "items")   # path + query
 r = mobile.create_order(body = {"item_id": "sku-1"})     # requestBody
-r = gcourier.get_order(order_id = 42)                    # proto request fields
+r = gorders.get_order(order_id = 42)                    # proto request fields
 
 # Escape hatch — call by contract-native name, params in an explicit dict.
 r = mobile.call("getOrder", params = {"order_id": 42})
@@ -1204,9 +1204,9 @@ as three lanes, not one anonymous `test` driver.
 seq  actor          event                      detail
  8   mobile-app     client_call.orders         create_order body={item_id:sku-1,qty:2}
 11   mobile-app     client_return.orders       create_order → 201 (23ms) contract_ok=true
-15   gRPC-Courier   client_call.courier        get_order(order_id=1001)
-17   gRPC-Courier   client_return.courier      get_order → UNAVAILABLE (11ms)
-22   mobile-app     contract_violation.orders  get_order: /courier_eta: got null, want string
+15   gRPC-Orders   client_call.orders        get_order(order_id=1001)
+17   gRPC-Orders   client_return.orders      get_order → UNAVAILABLE (11ms)
+22   mobile-app     contract_violation.orders  get_order: /eta: got null, want string
 ```
 
 Because they're ordinary events, they work as
@@ -1214,12 +1214,12 @@ Because they're ordinary events, they work as
 and as [`events()`](#event-query) queries:
 
 ```python
-courier_failed = match.event(type = "client_return",
-                             client = "gRPC-Courier", operation = "get_order",
+orders_failed = match.event(type = "client_return",
+                             client = "gRPC-Orders", operation = "get_order",
                              success = "false")
 
-test("courier_recovers", body = drive, expect = [
-    always(no_dropped_orders, between = ("body_start", courier_failed)),
+test("orders_recover", body = drive, expect = [
+    always(no_dropped_orders, between = ("body_start", orders_failed)),
 ])
 
 bad = events(where = lambda e: e.type == "contract_violation" and e.client == "mobile-app")
@@ -1341,9 +1341,9 @@ reached without redeploying a debug build.
 ```python
 # zap, logrus, slog (default) all write to stderr - capture via
 # observe.stderr.
-api = service("truck-api",
+api = service("order-service",
     interface("http", "http", 8080),
-    binary="/usr/local/bin/truck-api",
+    binary="/usr/local/bin/order-service",
     env={
         "DATABASE_HOST": db.mysql.proxy_host,
         "DATABASE_PORT": db.mysql.proxy_port,

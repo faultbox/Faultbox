@@ -344,7 +344,7 @@ func (s *Session) Run(ctx context.Context) (*Result, error) {
 //
 // Nil-safe on purpose: mock services and container services started
 // with seccomp=False register no underlying *Session. Callers used to
-// race ahead and dereference a nil receiver here (Freight #75.2 in
+// race ahead and dereference a nil receiver here (the customer #75.2 in
 // v0.11.1 — a fault_matrix row targeting a mock panicked the whole
 // suite). Guard at the method level so any future caller that forgets
 // the mock check degrades gracefully rather than crashing.

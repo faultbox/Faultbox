@@ -49,8 +49,8 @@ lands.
 
 ### The customer problem
 
-inDrive-shape teams keep running into the same wall. Their SUT
-(`truck-api`) has dependencies — `geo-config`, `pricing`, `auth-server`,
+the customer-shape teams keep running into the same wall. Their SUT
+(`order-service`) has dependencies — `config-service`, `pricing`, `auth-server`,
 `feature-flags`, `dispatch`, `payments`, ... — that are real services
 maintained by other teams, deployed continuously to a shared k8s dev
 namespace, and **not distributed as Docker images**. Reasons vary: builds
@@ -65,7 +65,7 @@ Today the developer's only options are:
    Authoring cost grows linearly with the dep graph; many dependencies
    have 50+ endpoints.
 2. **Skip the test.** The thing the customer most wanted to test —
-   "what happens to truck-api when the *real* `geo-config` returns 503" —
+   "what happens to order-service when the *real* `config-service` returns 503" —
    is the thing they can't express.
 3. **Lobby the platform team.** Out of scope for an engineering tool.
 
@@ -74,7 +74,7 @@ Today the developer's only options are:
 Mocks are great for *contract-stable* dependencies (JWKS endpoints,
 feature flags, payment fixtures). They are wrong for *evolving* services
 where the whole point is to test against the real protocol surface. The
-customer's fault matrix is the cross-product of `truck-api` × `each real
+customer's fault matrix is the cross-product of `order-service` × `each real
 peer in some failure mode`; we want them to express that at the
 **source** layer (the real peer responds with 503), not the
 **replication** layer (a stub I wrote yesterday returns 503).
@@ -97,24 +97,24 @@ that protects users from configurations that can't possibly work.
 ### DSL — one new kwarg
 
 ```python
-geo = service("geo-config",
+config = service("config-service",
     interface("public",   "http", 8080),
     interface("internal", "grpc", 9090),
-    remote      = "geo-config.staging.svc.cluster.local",
-    healthcheck = http("geo-config.staging.svc.cluster.local:8080/healthz"),
+    remote      = "config-service.staging.svc.cluster.local",
+    healthcheck = http("config-service.staging.svc.cluster.local:8080/healthz"),
 )
 
-api = service("truck-api",
+api = service("order-service",
     interface("main", "http", 8000),
-    image       = "truck-api:dev",
-    depends_on  = [geo],
-    env         = {"GEO_CONFIG_URL": "http://%s/" % geo.public.addr},
+    image       = "order-service:dev",
+    depends_on  = [config],
+    env         = {"CONFIG_URL": "http://%s/" % config.public.addr},
 )
 ```
 
 Behaviour at session start:
 
-1. `service("geo-config", remote=...)` registers a `ServiceDef` with no
+1. `service("config-service", remote=...)` registers a `ServiceDef` with no
    launch source — same data shape as `mock_service()`.
 2. The proxy manager pre-starts a listener on `127.0.0.1:NNN` per
    interface (RFC-024 path). The upstream addr is
@@ -135,7 +135,7 @@ Behaviour at session start:
 | `interface(...)` | Required | One or more; same as today |
 | `healthcheck=` | Required | We can't `wait_for_listening_socket()` on a remote pod we don't own; the spec must declare what "ready" means |
 | `depends_on=` | Allowed | Topological sort sees `remote` services as roots that just need to be reachable |
-| `env=` | Allowed | The values are `geo.public.addr` style — they resolve to the proxy address, same as today |
+| `env=` | Allowed | The values are `config.public.addr` style — they resolve to the proxy address, same as today |
 | `seccomp=` | Rejected | Already implied — there's no process to filter |
 | `seed=` / `reset=` / `reuse=` | Rejected | We don't own the lifecycle |
 | `volumes=` / `ports=` / `args=` / `binary=` / `image=` / `build=` | Rejected | All meaningless without a launch path |
@@ -148,8 +148,8 @@ e.g., separate sidecar exposing metrics):
 
 ```python
 remote = remotes({
-    "public":   "geo-config.staging.svc.cluster.local",            # uses iface.port
-    "internal": "geo-config-grpc.staging.svc.cluster.local:9090",  # explicit
+    "public":   "config-service.staging.svc.cluster.local",            # uses iface.port
+    "internal": "config-service-grpc.staging.svc.cluster.local:9090",  # explicit
 })
 ```
 
@@ -169,8 +169,8 @@ When a `fault()` rule targets a remote-service interface:
   at spec load** with:
 
   ```
-  fault.geo-config.public.write: service "geo-config" is remote
-    (remote="geo-config.staging.svc.cluster.local"); syscall-level faults
+  fault.config-service.public.write: service "config-service" is remote
+    (remote="config-service.staging.svc.cluster.local"); syscall-level faults
     are not available on remote services. Use a protocol fault
     (response=, error=, slow=) at the interface layer, or replace
     `remote=` with `mock_service()` if you need full control.
@@ -223,7 +223,7 @@ order of preference:
 Healthcheck failure on session start emits a hint:
 
 ```
-healthcheck failed: dial tcp geo-config.staging.svc.cluster.local:8080:
+healthcheck failed: dial tcp config-service.staging.svc.cluster.local:8080:
   no such host
 
 Faultbox does not manage cluster connectivity. Verify one of:
@@ -245,10 +245,10 @@ distribution pattern) wrapping the standard k8s DNS shape:
 ```python
 load("@faultbox/discovery/k8s.star", "k8s")
 
-geo = service("geo-config",
+config = service("config-service",
     interface("public", "http", 8080),
-    remote      = k8s.service("geo-config", namespace = "staging"),
-    healthcheck = http(k8s.service("geo-config", namespace = "staging") + ":8080/healthz"),
+    remote      = k8s.service("config-service", namespace = "staging"),
+    healthcheck = http(k8s.service("config-service", namespace = "staging") + ":8080/healthz"),
 )
 ```
 
@@ -278,8 +278,8 @@ and assertions don't care that the upstream is a remote pod.
   `domain()` primitive is the natural place for this swap — a domain
   exposes a contract; whether it's served by a mock, a real container,
   or a remote pod is implementation.
-- **`fault_assumption()` rules** with `target = geo.public` work
-  unchanged — the assumption doesn't know or care that `geo` is remote.
+- **`fault_assumption()` rules** with `target = config.public` work
+  unchanged — the assumption doesn't know or care that `config` is remote.
   Matrix runs are unchanged.
 - **`expect_*()` and `events().where(...)`** see the same proxy events.
 
@@ -291,18 +291,18 @@ TLS using the resolved client config, and the SUT speaks TLS to the
 proxy listener using the resolved server config. Auto-generated
 self-signed certs cover `127.0.0.1` and `localhost` by default, so
 the SUT-side TLS handshake works out of the box even when env
-substitution rewrites the user's `https://geo.staging:8080/...` to
+substitution rewrites the user's `https://config.staging:8080/...` to
 the proxy's loopback address.
 
 ```python
 load("@faultbox/discovery/k8s.star", "k8s")
 
-geo = service("geo-config",
+config = service("config-service",
     interface("public", "http", 8080,
         tls = tls_cert(insecure = True),  # accept self-signed cluster certs
     ),
-    remote      = k8s.service("geo-config", namespace = "staging"),
-    healthcheck = tcp(k8s.endpoint("geo-config", 8080, namespace = "staging")),
+    remote      = k8s.service("config-service", namespace = "staging"),
+    healthcheck = tcp(k8s.endpoint("config-service", 8080, namespace = "staging")),
 )
 ```
 
@@ -379,7 +379,7 @@ open.
 3. **Build `mirrord`-style network-namespace injection.** Rejected:
    requires kernel work on the customer's hosts, conflicts with our
    seccomp story, and doesn't help the central problem (the customer
-   still can't fault `geo-config`'s responses).
+   still can't fault `config-service`'s responses).
 4. **Build a Faultbox-native cluster runner.** Rejected for v1; this is
    the "hosted runner" deferred to 1.x. Worth revisiting once the
    `remote=` workflow is exercised by real users — the natural way a
@@ -515,7 +515,7 @@ correctness, replay determinism) — those tests land with that RFC.
 ## Open questions
 
 1. **Healthcheck mandatoriness.** Is requiring `healthcheck=` on remote services a usability tax, or the right pressure on users to declare ready-criteria? Lean toward required — silent failures against an unreachable remote are worse than a noisy spec error.
-2. **`remotes({...})` syntax vs flat `remote=` host:port string.** For services where every interface lives on the same host, `remote = "geo.staging:0"` (port 0 = use interface ports) is shorter than `remotes({...})`. Worth a sugar pass before locking the typed form.
+2. **`remotes({...})` syntax vs flat `remote=` host:port string.** For services where every interface lives on the same host, `remote = "config.staging:0"` (port 0 = use interface ports) is shorter than `remotes({...})`. Worth a sugar pass before locking the typed form.
 3. **Connection-failure during a run** (vs at startup): the remote pod stays healthchecked at start but goes away mid-test. Do we (a) treat as an unhandled error, (b) emit a synthetic protocol error and let oracles handle it, or (c) abort the run? Lean (b) — matches what would happen with a real container that dies mid-test.
 4. **Determinism story** — entirely RFC-037's problem; flagging here so reviewers know to tag that RFC for the substantive determinism discussion rather than this one.
 
@@ -523,13 +523,13 @@ correctness, replay determinism) — those tests land with that RFC.
 
 - A customer can convert a `mock_service()` to `service(remote=...)` and
   back by changing one keyword — no other spec edits.
-- `fault(geo.public, response(status=503), run=scenario)` fires against
+- `fault(config.public, response(status=503), run=scenario)` fires against
   a real remote pod with the same UX as against a local container.
 - Spec-load errors for unsupported configurations (syscall faults,
   `seed=`, `reset=`) name the offending kwarg and suggest the right
   alternative — measurable: zero "I tried X, it silently did nothing"
   customer reports in the first month.
-- The end-to-end customer story — *truck-api locally, geo-config /
+- The end-to-end customer story — *order-service locally, config-service /
   pricing / auth-server in dev cluster, fault matrix runs in CI* —
   works in ≤30 lines of spec and one `telepresence connect` command in
   the docs. (The "every failure is reproducible from the bundle alone"
@@ -541,10 +541,10 @@ correctness, replay determinism) — those tests land with that RFC.
 load("@faultbox/discovery/k8s.star", "k8s")
 
 # Three remote dependencies in the dev cluster.
-geo = service("geo-config",
+config = service("config-service",
     interface("public", "http", 8080),
-    remote      = k8s.service("geo-config", namespace = "dev"),
-    healthcheck = http(k8s.service("geo-config", namespace = "dev") + ":8080/healthz"),
+    remote      = k8s.service("config-service", namespace = "dev"),
+    healthcheck = http(k8s.service("config-service", namespace = "dev") + ":8080/healthz"),
 )
 
 auth = service("auth-server",
@@ -560,20 +560,20 @@ flags = service("feature-flags",
 )
 
 # SUT runs locally as a container.
-api = service("truck-api",
+api = service("order-service",
     interface("main", "http", 8000),
-    image       = "truck-api:dev",
-    depends_on  = [geo, auth, flags],
+    image       = "order-service:dev",
+    depends_on  = [config, auth, flags],
     env         = {
-        "GEO_CONFIG_URL":   "http://%s/" % geo.public.addr,
+        "CONFIG_URL":   "http://%s/" % config.public.addr,
         "AUTH_SERVER_ADDR": auth.public.addr,
         "FEATURE_FLAGS_URL":"http://%s/" % flags.public.addr,
     },
 )
 
 # Fault assumptions cross the cluster boundary unchanged.
-geo_unavailable = fault_assumption("geo_unavailable",
-    target = geo.public,
+config_unavailable = fault_assumption("config_unavailable",
+    target = config.public,
     rules  = [error(path = "/v1/regions/**", status = 503)],
 )
 
@@ -583,9 +583,9 @@ auth_slow = fault_assumption("auth_slow",
 )
 
 # Syscall-level faults on remotes would error at spec load:
-#   fault_assumption("net_blip", target = geo.public,
+#   fault_assumption("net_blip", target = config.public,
 #                    rules = [op("write", deny("EIO"))])
-#   -> spec-load error: "service 'geo-config' is remote ..."
+#   -> spec-load error: "service 'config-service' is remote ..."
 
 def request_pricing():
     resp = api.main.get(path = "/quote?from=A&to=B")
@@ -593,7 +593,7 @@ def request_pricing():
 
 fault_matrix(
     scenarios = [scenario("quote", run = request_pricing)],
-    faults    = [geo_unavailable, auth_slow],
+    faults    = [config_unavailable, auth_slow],
     expect    = expect_error_within("5s"),
 )
 ```
@@ -602,13 +602,13 @@ Run flow:
 
 ```sh
 $ telepresence connect
-$ faultbox test truck-api.star
-... runs against real geo/auth/flags ...
+$ faultbox test order-service.star
+... runs against real config/auth/flags ...
 => run-2026-05-01T10-14-22-1.fb
 
 # Replay against the same cluster (deterministic offline replay → RFC-037):
 $ faultbox replay run-2026-05-01T10-14-22-1.fb
-WARNING: this run used 3 remote services (geo-config, auth-server,
+WARNING: this run used 3 remote services (config-service, auth-server,
   feature-flags); replay will re-dial them. Offline replay is tracked
   in RFC-037.
 ```
