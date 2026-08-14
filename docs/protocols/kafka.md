@@ -87,6 +87,35 @@ resp = kafka.broker.consume(topic="order-events")
 
 ## Fault Rules
 
+> **Before you write one: point the broker at the proxy.**
+>
+> Kafka clients ask the broker where it is. The `Metadata` response carries
+> `advertised.listeners`, and the client opens every later connection to
+> **that** address — not to the one it bootstrapped against. So a fault rule
+> sees the bootstrap exchange and nothing else: no produce, no fetch, no
+> match, and a `FAULT_NOT_FIRED` warning that looks like a bad matcher.
+>
+> Make the broker advertise the proxy instead of itself. `proxy_addr` is
+> late-bound, so this resolves after the proxy has a port:
+>
+> ```python
+> kafka = service("kafka",
+>     interface("main", "kafka", 9092),
+>     image = "apache/kafka:3.7.0",
+>     env = {
+>         "KAFKA_ADVERTISED_LISTENERS": "PLAINTEXT://" + kafka.main.proxy_addr,
+>         # …the rest of the KRaft configuration
+>     },
+> )
+> ```
+>
+> This is single-broker only. A multi-broker cluster advertises one address
+> per node and needs one proxy listener per node, which Faultbox does not do
+> yet — see [RFC-057](../rfcs/0057-advertised-address-rewriting.md). The same
+> limitation applies to Redis Cluster and MongoDB replica sets, which
+> advertise addresses from runtime state rather than configuration and so
+> have no equivalent workaround.
+
 ### `drop(topic=)`
 
 Drop messages matching the topic — the producer thinks it published but

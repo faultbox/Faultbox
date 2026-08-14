@@ -2172,9 +2172,11 @@ It is not a warning: a fault that installs but never fires produces a *passing*
 test, and the author concludes the service tolerates packet loss when no packet
 was ever touched.
 
-**Requirements:** Linux with `CAP_NET_ADMIN` and `/dev/net/tun`. On macOS, run
+**Requirements:** Linux with `CAP_NET_ADMIN` and `/dev/net/tun` — in practice
+`sudo faultbox test`, since creating a TUN device is privileged. On macOS, run
 inside the Lima VM (`make env-start`). The preflight check names whichever
-prerequisite is missing.
+prerequisite is missing. Full checklist, including how this differs from what
+`watch()` needs: [gvisor-requirements.md](gvisor-requirements.md).
 
 ### Fault builtins
 

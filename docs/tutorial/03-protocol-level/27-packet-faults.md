@@ -36,7 +36,35 @@ path. Opt in at the top of the spec:
 determinism(runtime = "gvisor")
 ```
 
-They need Linux with `CAP_NET_ADMIN`. On macOS, run inside the Lima VM:
+### They need root
+
+This is the part that surprises people, so it is worth stating plainly rather
+than leaving to a preflight error: **every spec that uses packet faults has to
+run as root.**
+
+```bash
+sudo faultbox test faultbox.star
+```
+
+Packet faults work by putting a TUN device on the data path, and creating one
+is a privileged operation — `CAP_NET_ADMIN`. There is no unprivileged mode: the
+capability is what the kernel requires, and without a TUN device the gateway
+cannot see a packet. A spec that declares packet faults and runs unprivileged
+fails with the reason rather than quietly injecting nothing.
+
+If `sudo` on every run is awkward — a shared CI runner, a locked-down sudoers —
+grant the capability to the binary once instead:
+
+```bash
+sudo setcap cap_net_admin+ep $(which faultbox)
+```
+
+That is a decision about the machine, not about one run: it applies to every
+later invocation of that binary.
+
+In a container, the equivalent is `docker run --cap-add=NET_ADMIN`.
+
+On macOS there is no TUN device to create, so run inside the Lima VM:
 
 ```bash
 make env-start
@@ -45,7 +73,23 @@ sudo faultbox test faultbox.star
 ```
 
 If a prerequisite is missing, the preflight check names it — you will not get a
-mysterious connection timeout thirty seconds into a test.
+mysterious connection timeout thirty seconds into a test. The full checklist,
+including what `watch()` needs (which is different, and does *not* include
+`CAP_NET_ADMIN`), is in
+[gvisor-requirements.md](../../gvisor-requirements.md).
+
+### What they cannot see
+
+The gateway mediates traffic crossing the Faultbox container network. Two things
+take traffic off that path, and both are easy to arrive at by accident:
+
+- Reaching a dependency over a **pinned host port** or
+  `host.docker.internal` — those packets never cross the mediated link.
+  Address dependencies by their container-network name.
+- A protocol that **advertises its own address**: Kafka's `Metadata`
+  response, Redis Cluster's `CLUSTER SLOTS`, MongoDB's `hello.hosts`. The
+  bootstrap connection is mediated; every connection the client opens to
+  the advertised address afterwards is not.
 
 ## Your first blackhole
 
