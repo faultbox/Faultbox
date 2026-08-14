@@ -1490,6 +1490,19 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 		}
 	}
 
+	// Attach the packet gateway now, if the spec needs one, so the reason
+	// it could not attach is captured while it is still available.
+	//
+	// This deliberately does NOT fail the test here. Packet faults are
+	// body-time calls, so their arguments are validated inside the body —
+	// failing at setup would pre-empt that and replace a spec error the
+	// author can fix ("source= cannot name the interface owner") with an
+	// environment error they cannot ("no CAP_NET_ADMIN"). Three existing
+	// validation tests prove that ordering matters. The hard failure
+	// stays where it can see what the body actually installed; what
+	// changes is that it can now say why (F-7).
+	rt.notePacketGatewayPreflight()
+
 	// RFC-041 §5.4 — register spec-wide monitors for the duration of
 	// this test. Each gets its own freshly-initialized per-test state
 	// (RegisterMonitor handles the StateInit copy). IDs are tracked so
@@ -1933,11 +1946,15 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	}
 
 	if n := rt.packetRules.unwiredInstalls(); n > 0 {
+		reason := fmt.Sprintf("packet faults were installed %d time(s) but no netstack gateway was attached, "+
+			"so no packet was affected; the result below would be meaningless", n)
+		if why := rt.packetGatewayAttachReason(); why != "" {
+			reason += " — " + why
+		}
 		return TestResult{
 			Name:   name,
 			Result: "fail",
-			Reason: fmt.Sprintf("packet faults were installed %d time(s) but no netstack gateway was attached, "+
-				"so no packet was affected; the result below would be meaningless", n),
+			Reason: reason,
 			DurationMs:      time.Since(start).Milliseconds(),
 			Events:          events,
 			Matrix:          matrixInfo,
@@ -3554,7 +3571,25 @@ func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer st
 				}
 				continue
 			}
-			if mode == containerConsumer && !faulted[name][ifName] {
+			// The gate below asks "does a proxy fault target this
+			// interface" — but it also skips the packet-gateway branch,
+			// and packet faults are invisible to it. `faultedInterfaces`
+			// reads `fault_assumption` proxy rules, and packet faults
+			// cannot be declared there at all: `partition()` and
+			// `packet_*` are body-time calls recorded in a separate
+			// registry.
+			//
+			// So a spec whose only faults are packet faults got no
+			// gateway address for a containerized consumer, the gateway
+			// never attached, and the run ended at
+			// "packet faults were installed N time(s) but no netstack
+			// gateway was attached" (F-7).
+			//
+			// When the packet gateway is enabled the spec has explicitly
+			// asked to be mediated at the packet layer, so the gate does
+			// not apply. gatewayAddrFor still returns "" if the gateway
+			// cannot attach, which falls through to the behaviour below.
+			if mode == containerConsumer && !faulted[name][ifName] && !rt.packetGatewayEnabled() {
 				continue
 			}
 			proxyAddr := rt.proxyMgr.GetProxyAddr(name, ifName)

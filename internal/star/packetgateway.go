@@ -35,6 +35,11 @@ type packetRuleRegistry struct {
 	// matches nothing, so the fault silently never fires and the test passes.
 	whereErr      error
 	whereErrCount int
+
+	// attachErr is why the netstack gateway could not attach, recorded at
+	// setup so the "no gateway was attached" failure can say what the
+	// cause was instead of only that it happened.
+	attachErr error
 }
 
 // recordWhereError captures a failing where= predicate. Called from the
