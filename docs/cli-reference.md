@@ -342,7 +342,7 @@ output is one file — CSS, JS, and bundle data all inlined — that
 opens in any browser with no network access. RFC-029.
 
 ```
-faultbox report <bundle.fb>                     # writes report.html next to the bundle
+faultbox report <bundle.fb>                     # writes report_<bundle>.html alongside
 faultbox report <bundle.fb> --output <path>     # custom output path
 faultbox report <bundle.fb> --summary           # drop trace; smallest output (CI-friendly)
 faultbox report <bundle.fb> -o -                # write to stdout
@@ -393,10 +393,10 @@ faultbox test faultbox.star
 # → Bundle: run-2026-04-22T15-03-11-42.fb
 
 faultbox report run-2026-04-22T15-03-11-42.fb
-# → wrote report.html
+# → wrote report_2026-04-22T15-03-11-42.html
 
-open report.html                                 # macOS
-xdg-open report.html                             # linux
+open report_2026-04-22T15-03-11-42.html          # macOS
+xdg-open report_2026-04-22T15-03-11-42.html      # linux
 ```
 
 **Sharing:** the file works offline. Email it, drop it in Slack,

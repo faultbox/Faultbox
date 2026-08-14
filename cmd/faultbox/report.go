@@ -12,7 +12,7 @@ import (
 
 // reportCmd handles `faultbox report <bundle.fb>`:
 //
-//	faultbox report run.fb                 # writes report.html next to the bundle
+//	faultbox report run-<ts>-<seed>.fb     # writes report_<ts>-<seed>.html alongside
 //	faultbox report run.fb --output r.html # explicit output path
 //	faultbox report run.fb -o -            # write to stdout
 //
@@ -96,24 +96,51 @@ func reportCmd(args []string) int {
 	return 0
 }
 
-// defaultReportPath picks `report.html` alongside the bundle. Fixed
-// name (not `<bundle>.report.html`) because the common flow is "open
-// the report for the most recent run" — one canonical filename keeps
-// muscle memory predictable. Users who want a kept archive pass
-// `--output`.
+// defaultReportPath derives `report_<stem>.html` alongside the bundle,
+// where <stem> is the bundle filename with its extension and any
+// `run-` / `run_` prefix removed:
+//
+//	run-2026-07-30T10-50-37-1.fb  ->  report_2026-07-30T10-50-37-1.html
+//	nightly.fb                    ->  report_nightly.html
+//
+// Faultbox names every bundle `run-<ts>-<seed>.fb` (bundle.writer), so
+// stripping that prefix keeps the useful part — the timestamp and seed
+// — without the redundant "run" once "report" is already in the name.
+//
+// This used to be the fixed name `report.html`, on the reasoning that
+// one canonical filename is predictable. It is, but it also means
+// reporting a second bundle silently overwrites the first, which is
+// the wrong default when the two runs are what you want to compare.
+// Users who want a fixed name pass `--output`.
 func defaultReportPath(bundlePath string) string {
 	dir := filepath.Dir(bundlePath)
 	if dir == "" {
 		dir = "."
 	}
-	return filepath.Join(dir, "report.html")
+
+	base := filepath.Base(bundlePath)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	for _, prefix := range []string{"run-", "run_"} {
+		if strings.HasPrefix(stem, prefix) {
+			stem = strings.TrimPrefix(stem, prefix)
+			break
+		}
+	}
+
+	// A bundle called exactly `run-.fb` (or `.fb`, or `run.fb`) leaves
+	// nothing to qualify the name with — fall back to the bare form
+	// rather than emitting `report_.html`.
+	if stem == "" || stem == "run" {
+		return filepath.Join(dir, "report.html")
+	}
+	return filepath.Join(dir, "report_"+stem+".html")
 }
 
 func printReportUsage() {
 	const usage = `faultbox report — build a self-contained HTML report from a .fb bundle
 
 USAGE
-  faultbox report <bundle.fb>                     # writes report.html next to the bundle
+  faultbox report <bundle.fb>                     # writes report_<bundle>.html alongside
   faultbox report <bundle.fb> --output <path>     # custom output path
   faultbox report <bundle.fb> --summary           # drop trace; smallest output (CI-friendly)
   faultbox report <bundle.fb> --full-events       # opt out of event downsampling
