@@ -13,6 +13,22 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+### Fixed
+
+- **Kafka `consume()` is reproducible at a fixed seed.** The default
+  consumer group was the constant `"faultbox"`. A group's committed
+  offsets live in the broker's `__consumer_offsets` and outlive the reader
+  that wrote them, so the second test to consume resumed after whatever
+  the first had committed — and a broker container kept across tests
+  carried that state between whole runs. What a test saw depended on what
+  had run before it, at any seed; the seed could never have fixed it,
+  because the state is in the broker, not in Faultbox. The default is now
+  scoped to (run, test), which has committed nothing, so the read starts
+  at the beginning of the topic every time. A spec that is *about*
+  consumer-group semantics passes `group=` and still gets a stable name.
+  This makes the result reproducible; it does not isolate topic contents
+  between tests, which needs a per-test topic.
+
 ## [0.18.0] - 2026-08-14
 
 Field-report fixes from the first onboarding of a large production Go
