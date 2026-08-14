@@ -3061,9 +3061,18 @@ func (rt *Runtime) buildContainerEnv(svc *ServiceDef) []string {
 				}
 			}
 			if host == "" {
-				if other.IsContainer() {
+				switch {
+				case other.IsContainer():
 					host = otherName
-				} else {
+				case other.IsMock():
+					// A mock is an in-process listener on the host, with
+					// no container and no DNS name. "localhost" from
+					// inside the consumer's container resolves to the
+					// consumer itself, so the SUT dialled itself and the
+					// mock was unreachable — mock_service() did not work
+					// for containerized SUTs at all.
+					host = "host.docker.internal"
+				default:
 					host = "localhost"
 				}
 			}
@@ -3486,6 +3495,26 @@ func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer st
 			continue
 		}
 		for ifName, iface := range s.Interfaces {
+			// Mock services must always be rewritten for a container
+			// consumer, and are exempt from the fault gate below.
+			//
+			// That gate exists because an unfaulted *real* service is
+			// still reachable from a container via Docker's DNS, so
+			// rewriting it would be pointless churn. A mock has no
+			// container and no DNS entry — it is an in-process listener
+			// on the host. Without this branch a containerized SUT was
+			// handed `localhost:<port>`, which resolves to the SUT's own
+			// container, so mock_service() could not be used from a
+			// container at all.
+			if s.IsMock() {
+				if mode == containerConsumer {
+					target := fmt.Sprintf("host.docker.internal:%d", iface.Port)
+					out[fmt.Sprintf("localhost:%d", iface.Port)] = target
+					out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = target
+					out[fmt.Sprintf("%s:%d", name, iface.Port)] = target
+				}
+				continue
+			}
 			if mode == containerConsumer && !faulted[name][ifName] {
 				continue
 			}

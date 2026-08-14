@@ -28,12 +28,24 @@ import (
 	"time"
 )
 
-// FaultboxProxyBindEnv overrides the bind interface that Listen and
-// related helpers use. Useful on bare-metal CI runners where the
-// default Linux "0.0.0.0" exposes proxies to the LAN — set to
-// "127.0.0.1" to keep them strictly host-local at the cost of
+// FaultboxProxyBindEnv overrides the bind interface used by proxy
+// listeners and by mock_service listeners (which share the same
+// reachability problem and the same answer). Useful on bare-metal CI
+// runners where the default Linux "0.0.0.0" exposes them to the LAN —
+// set to "127.0.0.1" to keep them strictly host-local at the cost of
 // container reachability.
 const FaultboxProxyBindEnv = "FAULTBOX_PROXY_BIND"
+
+// BindHost is listenHost exported for callers that bind a fixed port
+// rather than going through Listen — mock services, whose port comes
+// from the spec's interface() declaration.
+//
+// Mocks used to hardcode 127.0.0.1, which made them unreachable from a
+// containerized SUT on Linux: host.docker.internal resolves to the
+// docker0 bridge gateway, and nothing on the bridge can reach host
+// loopback. Proxies solved this in RFC-035 and mocks were not brought
+// along, so `mock_service()` simply did not work for container SUTs.
+func BindHost() string { return listenHost() }
 
 // listenHost returns the bind interface for new proxy listeners.
 //

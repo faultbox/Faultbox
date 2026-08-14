@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/protocol"
+	"github.com/faultbox/Faultbox/internal/proxy"
 )
 
 // startMockService stands up in-process handlers for every interface on a
@@ -64,19 +66,27 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 			spec.TLSCert = cert
 		}
 
+		// Bind where consumers can actually reach us. On Linux that is
+		// 0.0.0.0, because a containerized SUT reaches the host through
+		// the docker0 bridge gateway and loopback is not reachable from
+		// there — the same reason proxies bind this way (RFC-035).
+		// Overridable with FAULTBOX_PROXY_BIND.
+		bindAddr := net.JoinHostPort(proxy.BindHost(), strconv.Itoa(iface.Port))
+		// Readiness and logging always speak loopback: the mock is
+		// dialable from the host regardless of which interface it bound.
 		addr := fmt.Sprintf("127.0.0.1:%d", iface.Port)
 		emit := rt.mockEmitter(svcName, ifaceName)
 
 		wg.Add(1)
-		go func(name, addr string) {
+		go func(name, bindAddr string) {
 			defer wg.Done()
-			if err := mh.ServeMock(svcCtx, addr, spec, emit); err != nil {
+			if err := mh.ServeMock(svcCtx, bindAddr, spec, emit); err != nil {
 				rt.log.Error("mock handler failed",
 					slog.String("service", svcName),
 					slog.String("interface", name),
 					slog.String("error", err.Error()))
 			}
-		}(ifaceName, addr)
+		}(ifaceName, bindAddr)
 
 		if err := waitMockReady(ctx, iface.Protocol, addr, 3*time.Second); err != nil {
 			svcCancel()
@@ -87,7 +97,8 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 		rt.log.Info("mock service listening",
 			slog.String("service", svcName),
 			slog.String("interface", ifaceName),
-			slog.String("addr", addr))
+			slog.String("addr", addr),
+			slog.String("bind", bindAddr))
 	}
 
 	go func() {
