@@ -530,7 +530,7 @@ Also available as the MCP tool `check_spec`.
 
 ### `faultbox setup-trace` (v0.16.0)
 
-One-time host registration so [`watch()`](spec-language.md#watch) can observe
+One-time host registration so [`watch()`](spec-language.md#watchservice-files-ops-runcallback-v0160) can observe
 filesystem activity. Run once, as root. **A test run never does this for you** —
 it edits Docker's daemon configuration, which is not something a test should do
 behind your back.

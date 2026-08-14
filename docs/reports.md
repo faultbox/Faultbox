@@ -176,6 +176,6 @@ focus trapping and ESC-to-close.
 
 ## Next
 
-- [CLI reference: `faultbox report`](cli-reference.md#faultbox-report)
+- [CLI reference: `faultbox report`](cli-reference.md#faultbox-report-v0110-v012-size-redesign)
 - [Bundles (`faultbox.fb`)](bundles.md)
 - [Tutorial chapter 23 — Reading reports](tutorial/05-advanced/23-reports.md)
