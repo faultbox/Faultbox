@@ -55,15 +55,64 @@ func (c *Client) PullImage(ctx context.Context, ref string) error {
 		return nil
 	}
 
+	// A `:local`-tagged image that is absent from the daemon will never
+	// pull — the tag is a convention meaning "built here". Attempting
+	// anyway spends the whole pull timeout and ends in "denied: requested
+	// access to the resource is denied", which reads as an auth problem
+	// rather than "you forgot to build it" (F-5).
+	//
+	// Deliberately narrow. A missing registry host is *not* enough on its
+	// own: `mysql:8` and `postgres:16` have none either and pull fine, so
+	// treating that as local-only would refuse images that work.
+	if isLocalOnlyRef(ref) {
+		return fmt.Errorf("image %q is not present locally, and a :local tag is never "+
+			"pullable from a registry — build it first (e.g. `docker build -t %s .`), "+
+			"or reference an image that exists in a registry", ref, ref)
+	}
+
 	c.log.Info("pulling image", slog.String("image", ref))
 	out, err := c.cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
-		return fmt.Errorf("pull %s: %w", ref, err)
+		return fmt.Errorf("pull %s: %w", ref, describePullFailure(ref, err))
 	}
 	defer out.Close()
 	// Consume the pull output (required to complete the pull).
 	io.Copy(io.Discard, out)
 	return nil
+}
+
+// isLocalOnlyRef reports whether ref uses the `:local` tag convention,
+// which by definition names an image built on this host rather than one
+// any registry could serve.
+func isLocalOnlyRef(ref string) bool {
+	idx := strings.LastIndex(ref, ":")
+	if idx < 0 {
+		return false
+	}
+	// A colon before the last '/' is a registry port, not a tag
+	// (`localhost:5000/img`), so there is no tag at all.
+	if slash := strings.LastIndex(ref, "/"); slash > idx {
+		return false
+	}
+	return ref[idx+1:] == "local"
+}
+
+// describePullFailure adds the missing half of a registry error. Docker
+// reports a pull for an image that was never pushed as an authorization
+// failure — "denied: requested access to the resource is denied" — which
+// sends people to look for credentials they do not need. The far more
+// common cause is an image that was meant to be built locally.
+func describePullFailure(ref string, err error) error {
+	msg := err.Error()
+	denied := strings.Contains(msg, "denied") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "manifest unknown")
+	if !denied {
+		return err
+	}
+	return fmt.Errorf("%w — if %q is built locally rather than pulled, "+
+		"build it before running (e.g. `docker build -t %s .`); "+
+		"the registry reports this as an access denial either way", err, ref, ref)
 }
 
 // ImageEntrypoint inspects an image and returns its entrypoint and cmd.
