@@ -28,6 +28,17 @@ Next-version work is tracked in
   consumer-group semantics passes `group=` and still gets a stable name.
   This makes the result reproducible; it does not isolate topic contents
   between tests, which needs a per-test topic.
+- **The `topic` event source no longer shares one consumer group either.**
+  The fix above was described as covering both consumer paths; it reached
+  only the `consume()` step, and the observer kept the constant. Nothing
+  is broken today — no builtin emits a `topic` source, so the path is
+  unreachable — but wiring it up would have reintroduced the defect. Its
+  default is scoped per (run, topic); an event source is built from a flat
+  param map with no access to the running test, so it cannot match the
+  step path's (run, test) exactly.
+- Four cross-references in the v0.14.0 RFC-054 plan pointed at
+  "Decision record" sections that RFC-054 never contained. They now name
+  the sections that carry the findings.
 
 ## [0.18.0] - 2026-08-14
 
