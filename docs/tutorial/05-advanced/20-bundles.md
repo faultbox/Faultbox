@@ -171,7 +171,7 @@ A bundle does **not** capture (today):
   `faultbox.lock` concept).
 - ✗ `@faultbox/*` stdlib bytes — they're in the binary. A replay
   uses the consumer's stdlib, not the producer's.
-- ✗ Your app binary (`/tmp/truck-api` or wherever). Include
+- ✗ Your app binary (`/tmp/order-service` or wherever). Include
   `service(build=...)` in the spec and Faultbox will rebuild from
   source; for pre-built binaries, pin them separately.
 

@@ -12,16 +12,16 @@ In-tree document: [`docs/rfcs/0038-tls-aware-proxy.md`](https://github.com/fault
 
 Companion to RFC-036 (#91, `remote=`) — `remote=` lets the SUT dial real upstreams in a customer's dev cluster, but those upstreams almost always speak TLS in production-shaped environments. Without TLS support the proxy is bypassed for the protocols that matter most.
 
-Customer-driven (inDrive Freight, 2026-04-30 customer-gap list, item #3): *"TLS-aware proxy. Some prod upstreams dial mTLS. Today's proxies are plain TCP; we'd need `interface(..., protocol='grpc-tls', cert=…)` or fail-open passthrough for ALPN. The TLS gap is what blocks expanding from truck-api to the rest of the Freight stack."*
+Customer-driven (the customer, 2026-04-30 customer-gap list, item #3): *"TLS-aware proxy. Some prod upstreams dial mTLS. Today's proxies are plain TCP; we'd need `interface(..., protocol='grpc-tls', cert=…)` or fail-open passthrough for ALPN. The TLS gap is what blocks expanding from order-service to the rest of the the customer stack."*
 
 ## Motivation
 
 ### What problem does this solve?
 
-Real-world distributed systems use TLS pervasively. The Freight stack — and any production-shaped environment — looks like:
+Real-world distributed systems use TLS pervasively. The the customer stack — and any production-shaped environment — looks like:
 
 ```
-truck-api  ──HTTPS──▶  geo-config (gRPC over TLS, mutual auth)
+order-service  ──HTTPS──▶  config-service (gRPC over TLS, mutual auth)
            ──HTTPS──▶  pricing    (HTTPS REST, server cert only)
            ──TLS────▶  postgres   (TLS-required, server cert)
            ──TLS────▶  redis      (TLS via stunnel sidecar)
@@ -31,14 +31,14 @@ With v0.12.x's plain-TCP proxies, every one of those connections bypasses Faultb
 
 Concretely, the customer's three current limitations:
 
-1. **Cannot fault gRPC-TLS calls.** `truck-api → geo-config` over mTLS. The customer wants to inject `grpc.error(method='/geo.Service/GetCity', code=UNAVAILABLE)` but the proxy can't parse the gRPC frame because TLS encrypts it.
-2. **Cannot fault HTTPS responses.** `truck-api → pricing` over HTTPS. `http.error(path='/v1/quote', status=503)` is unreachable.
+1. **Cannot fault gRPC-TLS calls.** `order-service → config-service` over mTLS. The customer wants to inject `grpc.error(method='/config.Service/GetSetting', code=UNAVAILABLE)` but the proxy can't parse the gRPC frame because TLS encrypts it.
+2. **Cannot fault HTTPS responses.** `order-service → pricing` over HTTPS. `http.error(path='/v1/quote', status=503)` is unreachable.
 3. **Cannot fault TLS-Postgres/Redis.** Customer's prod databases enforce TLS. Proxy parses the first byte, sees the SSL request marker (`\x00\x00\x00\x08\x04\xd2\x16\x2f` for Postgres) and either denies TLS (forcing client to fall back to plaintext, which the customer's drivers don't do) or passes it through opaque (no fault matching).
 
 ### Why is this important now?
 
 - **Blocks RFC-036 adoption at scale.** `remote=` ships the primitive for pointing at a customer's dev cluster; the moment that cluster is anything more sophisticated than localhost-Docker, TLS is the default. Without TLS support the customer can use `remote=` only against the few unencrypted services in their stack.
-- **Blocks Freight-shape customers.** Per the 2026-04-30 customer-gap list, this is the single largest blocker between truck-api (the PoC) and the rest of the Freight stack.
+- **Blocks the customer-shape customers.** Per the 2026-04-30 customer-gap list, this is the single largest blocker between order-service (the PoC) and the rest of the the customer stack.
 - **Compounds with other observability gaps.** RFC-034 (proxy traffic observability) just shipped; on a TLS upstream those events fire but the proxy can only see encrypted bytes — `bytes_c2s` / `bytes_s2c` are still useful for stall detection, but `proxy_handshake_complete` distinguishes only TCP-handshake-complete, not TLS-handshake-complete. That distinction is load-bearing for diagnosing TLS failures.
 
 ### What happens if we don't do this?
@@ -129,7 +129,7 @@ The proxy never decrypts. It accepts the client's TLS bytes and forwards them ve
 
 **Cons:**
 - **No fault injection inside TLS streams.** Only connection-level faults work: `drop`, `delay`, byte-level corruption (if we cared to add it). All protocol-level rules — `error(query=...)`, `http.error(path=...)`, `grpc.error(method=...)` — are inert because the proxy can't see what's inside.
-- Severely limits Faultbox's value proposition for TLS upstreams. Customer has explicitly said *"the TLS gap blocks expanding from truck-api to the rest of the Freight stack"* — Option C doesn't unblock them; it just lets them point a tunnel at the upstream.
+- Severely limits Faultbox's value proposition for TLS upstreams. Customer has explicitly said *"the TLS gap blocks expanding from order-service to the rest of the the customer stack"* — Option C doesn't unblock them; it just lets them point a tunnel at the upstream.
 - Doesn't compose with RFC-034 well — `proxy_handshake_complete` would never fire (no protocol parsing happened), `bytes_c2s` / `bytes_s2c` count encrypted bytes (less useful for stall diagnosis).
 
 **Estimated effort:** ~1 day. **This is the "do nothing meaningful" option.** Useful only as a fallback for protocols we explicitly don't want to terminate.
@@ -223,7 +223,7 @@ Option C ships only as the TCP-plugin variant — for protocols Faultbox doesn't
 - `docs/reports.md` — update Proxy Traffic section to mention TLS handshake events.
 
 **Phase 6 — Customer rollout**
-- inDrive Freight: switch one of their internal mTLS upstreams (likely `geo-config`) from a workaround to `remote=` + `tls=`. Verify a `grpc.error()` rule fires.
+- the customer: switch one of their internal mTLS upstreams (likely `config-service`) from a workaround to `remote=` + `tls=`. Verify a `grpc.error()` rule fires.
 
 ## Dependencies
 

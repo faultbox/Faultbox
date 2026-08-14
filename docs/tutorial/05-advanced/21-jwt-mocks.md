@@ -99,7 +99,7 @@ Notes on claims:
   authors stay in control of token expiry semantics.
 - **Common claim names:** `sub` (subject), `iat`/`exp` (Unix
   timestamps), `aud` (audience), `iss` (issuer URL). Check what your
-  app's middleware actually validates - the inDrive PoC lost hours
+  app's middleware actually validates - an early field evaluation lost hours
   to a `user_id` vs `uid` claim-name mismatch (FB §2.1 #2).
 
 ## 4 · Test rejection paths

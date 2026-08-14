@@ -11,7 +11,7 @@
 //
 // Pre-RFC-034, a customer chasing a proxy-forwarding bug saw
 // `proxy_started → 60 seconds of silence → exit_code=2`. Diagnosis
-// required SUT-side instrumentation (truck-api / Freight, 2026-04-28).
+// required SUT-side instrumentation (order-service / customer report, 2026-04-28).
 // With these events, the bundle is self-diagnosing for the
 // proxy-forwarding class.
 

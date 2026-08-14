@@ -210,9 +210,9 @@ proto build pipeline:
 protoc \
     --include_imports \
     --descriptor_set_out=./proto/all_upstreams.pb \
-    proto/inDriver/geo_config/*.proto \
-    proto/inDriver/geo_facade/*.proto \
-    proto/inDriver/user/*.proto
+    proto/example/config/*.proto \
+    proto/example/config_facade/*.proto \
+    proto/example/user/*.proto
 ```
 
 `--include_imports` is important when your protos depend on each other.
@@ -221,7 +221,7 @@ The standard `google.protobuf.*` well-known types (`Timestamp`,
 pre-registered by Faultbox automatically, so you don't need to include
 them in the `.pb`.
 
-Monorepo pattern: customers like inDriver maintain proto in a
+Monorepo pattern: customers commonly maintain proto in a
 dedicated repo that publishes both `.proto` source and pre-built
 `.pb` artifacts. Point `descriptors=` at the published artifact —
 no protoc invocation in your faultbox spec or CI.
@@ -231,28 +231,28 @@ no protoc invocation in your faultbox spec or CI.
 ```python
 load("@faultbox/mocks/grpc.star", "grpc")
 
-geo_config = grpc.server(
-    name        = "geo-config",
+config_service = grpc.server(
+    name        = "config-service",
     interface   = interface("main", "grpc", 9001),
     descriptors = "./proto/all_upstreams.pb",
     services    = {
-        "/inDriver.geo_config.GeoConfigService/GetCity": {
+        "/example.config.ConfigService/GetSetting": {
             "response": {
                 "id":       42,
-                "name":     "Almaty",
-                "country":  "KZ",
-                "currency": "KZT",
+                "name":     "primary",
+                "scope":  "default",
+                "currency": "USD",
             },
         },
-        "/inDriver.geo_config.GeoConfigService/ListCountries": {
+        "/example.config.ConfigService/ListSettings": {
             "response": {
-                "countries": [
-                    {"code": "KZ", "name": "Kazakhstan"},
-                    {"code": "RU", "name": "Russia"},
+                "scopes": [
+                    {"code": "default", "name": "Default"},
+                    {"code": "other", "name": "Other"},
                 ],
             },
         },
-        "/inDriver.geo_config.GeoConfigService/AdminUpdate": {
+        "/example.config.ConfigService/AdminUpdate": {
             "error": {"code": "PERMISSION_DENIED", "message": "admin only"},
         },
     },
@@ -277,48 +277,48 @@ upstream:
 ```python
 load("@faultbox/recipes/grpc.star", "grpc_faults")
 
-geo_unstable = fault_assumption("geo_unstable",
-    target = geo_config.main,
+config_unstable = fault_assumption("config_unstable",
+    target = config_service.main,
     rules  = [grpc_faults.unavailable()],
 )
 
 deadline_exceeded = fault_scenario("deadline_exceeded",
     scenario = create_order,
-    faults   = [geo_unstable],
+    faults   = [config_unstable],
     expect   = lambda r: assert_eq(r.status, 504),
 )
 ```
 
-### Multi-service mocks (truck-api Phase 1 shape)
+### Multi-service mocks (order-service Phase 1 shape)
 
 When one mock process backs multiple gRPC services on different ports
-— the truck-api pattern — declare one `grpc.server()` per service
+— the order-service pattern — declare one `grpc.server()` per service
 sharing the same descriptor set:
 
 ```python
 descriptors = "./proto/all_upstreams.pb"
 
-geo_config = grpc.server(
-    name        = "geo-config",
+config_service = grpc.server(
+    name        = "config-service",
     interface   = interface("main", "grpc", 9001),
     descriptors = descriptors,
-    services    = { "/inDriver.geo_config.GeoConfigService/GetCity": {...}, ... },
+    services    = { "/example.config.ConfigService/GetSetting": {...}, ... },
 )
 user_service = grpc.server(
     name        = "user-service",
     interface   = interface("main", "grpc", 9003),
     descriptors = descriptors,
-    services    = { "/inDriver.user.UserService/GetUser": {...}, ... },
+    services    = { "/example.user.UserService/GetUser": {...}, ... },
 )
 
 api = service("api",
     interface("public", "http", 8080),
-    binary = "./bin/truck-api",
+    binary = "./bin/order-service",
     env = {
-        "GRPC_GEO_CONFIG_ADDRESS":   geo_config.main.internal_addr,
+        "GRPC_CONFIG_ADDRESS":   config_service.main.internal_addr,
         "GRPC_USER_SERVICE_ADDRESS": user_service.main.internal_addr,
     },
-    depends_on = [geo_config, user_service],
+    depends_on = [config_service, user_service],
 )
 ```
 
@@ -334,21 +334,21 @@ box — no client-side `.proto` file needed:
 ```bash
 $ grpcurl -plaintext localhost:9001 list
 grpc.reflection.v1.ServerReflection
-inDriver.geo_config.GeoConfigService
+example.config.ConfigService
 
-$ grpcurl -plaintext localhost:9001 describe inDriver.geo_config.GeoConfigService
-inDriver.geo_config.GeoConfigService is a service:
-service GeoConfigService {
-  rpc GetCity(GetCityRequest) returns (City);
+$ grpcurl -plaintext localhost:9001 describe example.config.ConfigService
+example.config.ConfigService is a service:
+service ConfigService {
+  rpc GetSetting(GetSettingRequest) returns (Setting);
   ...
 }
 
-$ grpcurl -plaintext -d '{"id":1}' localhost:9001 inDriver.geo_config.GeoConfigService/GetCity
+$ grpcurl -plaintext -d '{"id":1}' localhost:9001 example.config.ConfigService/GetSetting
 {
   "id": "42",
-  "name": "Almaty",
-  "country": "KZ",
-  "currency": "KZT"
+  "name": "default",
+  "scope": "default",
+  "currency": "USD"
 }
 ```
 
@@ -382,7 +382,7 @@ v0.8.6 still works:
 
 ```python
 upstreams = service("upstreams",
-    interface("geo_config",   "grpc", 9001),
+    interface("config_service",   "grpc", 9001),
     interface("user_service", "grpc", 9003),
     binary = "./bin/upstream-mocks",
     healthcheck = tcp("localhost:9001"),

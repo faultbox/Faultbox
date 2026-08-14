@@ -62,7 +62,7 @@ func TestGenerateSelfSignedCert_LoopbackDefaults(t *testing.T) {
 // literal) get added to the SAN. Test that a customer adding their
 // upstream's hostname to the spec carries through.
 func TestGenerateSelfSignedCert_CustomHosts(t *testing.T) {
-	cfg, err := GenerateSelfSignedCert([]string{"truck-api.local", "10.1.2.3"})
+	cfg, err := GenerateSelfSignedCert([]string{"order-service.local", "10.1.2.3"})
 	if err != nil {
 		t.Fatalf("GenerateSelfSignedCert: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestGenerateSelfSignedCert_CustomHosts(t *testing.T) {
 
 	hasDNS := false
 	for _, n := range leaf.DNSNames {
-		if n == "truck-api.local" {
+		if n == "order-service.local" {
 			hasDNS = true
 			break
 		}

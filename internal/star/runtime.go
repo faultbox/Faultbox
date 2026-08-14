@@ -1215,8 +1215,8 @@ func (rt *Runtime) cleanup() {
 // runTestSafely wraps RunTest in a defer/recover so a Go runtime
 // panic inside a test (or anything it transitively calls) becomes a
 // "errored" TestResult instead of taking the whole suite — and the
-// .fb bundle — down with it. Issue #76 was filed when an inDrive
-// Freight panic during applyFaults lost the bundle entirely;
+// .fb bundle — down with it. Issue #76 was filed when a customer
+// the customer panic during applyFaults lost the bundle entirely;
 // partial bundle with N-1 tests is more useful than none.
 func (rt *Runtime) runTestSafely(ctx context.Context, name string) (tr TestResult) {
 	defer func() {
@@ -2464,7 +2464,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 	// writes directly to it; tee from the read-end to both the
 	// decoder and the configured console output.
 	//
-	// Customer ask (Freight, 2026-04-30): stderr was added as a
+	// Customer ask (the customer, 2026-04-30): stderr was added as a
 	// counterpart to stdout because zap/logrus default to fd 2,
 	// and the v0.12.15.x arc had to ship an FB_LOG_TO_STDOUT
 	// env-gate workaround to capture them. The two branches are
@@ -3281,7 +3281,7 @@ func (rt *Runtime) stopServices() {
 		// removed here whenever no container survived, so an N-test suite
 		// performed N create/destroy cycles on the same-named network.
 		//
-		// That churn is what the courier report (F-3) blames for Docker's
+		// That churn is what the orders report (F-3) blames for Docker's
 		// embedded DNS black-holing from the second test onward: the
 		// first test's containers resolve names normally, and from
 		// session 2 the SUT's lookups against 127.0.0.11 hang while
@@ -3624,7 +3624,7 @@ func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer st
 			out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = target
 			out[fmt.Sprintf("%s:%d", name, iface.Port)] = target
 			// RFC-036: also rewrite the remote upstream addr so user env
-			// values like {"GEO_URL": "http://geo.staging.svc.cluster.local:8080/"}
+			// values like {"CONFIG_URL": "http://config-service.staging.svc.cluster.local:8080/"}
 			// flow through the proxy. Without this substitution the SUT
 			// would dial the remote pod directly and protocol faults would
 			// never fire.
@@ -4429,7 +4429,7 @@ func (rt *Runtime) requiredFaultRules() []engine.FaultRule {
 //
 // Mocks + no-seccomp containers register a runningSession with
 // session==nil — syscall-level faults have nothing to attach to. The
-// v0.11.1 panic (inDrive Freight bug #2) dereferenced that nil here;
+// v0.11.1 panic (customer bug #2) dereferenced that nil here;
 // now we log a one-time warning per invocation and skip the session
 // mutation, so proxy-level faults on the same target still apply and
 // the enclosing fault_matrix row continues without aborting the

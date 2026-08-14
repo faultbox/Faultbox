@@ -42,7 +42,7 @@ type ContractInfo struct {
 }
 
 // String renders the contract identity for trace fields, e.g.
-// "openapi:orders.yaml@1.4.0" or "grpc:courier.pb#courier.v1.CourierService".
+// "openapi:orders.yaml@1.4.0" or "grpc:orders.pb#orders.v1.OrderService".
 func (c ContractInfo) String() string {
 	switch c.Kind {
 	case ContractGRPC:
@@ -144,7 +144,7 @@ func (o *Operation) SignatureHint() string {
 }
 
 // Wire renders the operation's wire target for diagnostics and trace
-// summaries: "GET /orders/{orderId}" or "/courier.v1.CourierService/GetOrder".
+// summaries: "GET /orders/{orderId}" or "/orders.v1.OrderService/GetOrder".
 func (o *Operation) Wire() string {
 	if o.FullMethod != "" {
 		return o.FullMethod

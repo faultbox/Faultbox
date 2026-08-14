@@ -79,7 +79,7 @@ auth = mock_service("auth",
 }
 
 // TestApplyFaultsOnMockServiceDoesNotPanic reproduces the v0.11.1
-// customer-reported nil-pointer panic (inDrive Freight report, bug
+// customer-reported nil-pointer panic (the customer report, bug
 // #2): fault_matrix/fault_scenario apply paths called
 // rs.session.SetDynamicFaultRules() against a mock service whose
 // runningSession is registered with session=nil (mock_runtime.go
@@ -540,7 +540,7 @@ cache = redis.server(
 // style client decodes responses as the customer's real message type
 // (not google.protobuf.Struct). Regression guard for RFC-023 Phase 2.
 func TestMockServiceGRPCStdlib(t *testing.T) {
-	// Materialize a synthetic FileDescriptorSet matching the City / GeoService
+	// Materialize a synthetic FileDescriptorSet matching the Setting / ConfigService
 	// shape used in grpc_typed_encoder_test.go. The spec will load this .pb
 	// via descriptors= and encode responses against it.
 	pbPath := writeTestDescriptorSet(t)
@@ -550,13 +550,13 @@ func TestMockServiceGRPCStdlib(t *testing.T) {
 	src := fmt.Sprintf(`
 load("@faultbox/mocks/grpc.star", "grpc")
 
-geo = grpc.server(
-    name        = "geo",
+config = grpc.server(
+    name        = "config",
     interface   = interface("main", "grpc", %d),
     descriptors = %q,
     services    = {
-        "/test.geo.GeoService/GetCity": {
-            "response": {"id": 42, "name": "Almaty", "country": "KZ", "currency": "KZT"},
+        "/test.config.ConfigService/GetSetting": {
+            "response": {"id": 42, "name": "primary", "scope": "default", "currency": "USD"},
         },
     },
 )
@@ -582,25 +582,25 @@ geo = grpc.server(
 	}
 	defer conn.Close()
 
-	// Load the same .pb on the client side to get the City descriptor.
+	// Load the same .pb on the client side to get the Setting descriptor.
 	files, err := protocol.LoadDescriptorSet(pbPath)
 	if err != nil {
 		t.Fatalf("LoadDescriptorSet on client side: %v", err)
 	}
-	cityDesc, _ := files.FindDescriptorByName("test.geo.City")
-	cityMd := cityDesc.(protoreflect.MessageDescriptor)
-	got := dynamicpb.NewMessage(cityMd)
+	cityDesc, _ := files.FindDescriptorByName("test.config.Setting")
+	settingMd := cityDesc.(protoreflect.MessageDescriptor)
+	got := dynamicpb.NewMessage(settingMd)
 
-	if err := conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity",
+	if err := conn.Invoke(context.Background(), "/test.config.ConfigService/GetSetting",
 		&grpcEmptyMsg{}, &grpcTypedRecv{msg: got}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 
-	if v := got.Get(cityMd.Fields().ByName("id")).Int(); v != 42 {
-		t.Errorf("City.id = %d, want 42", v)
+	if v := got.Get(settingMd.Fields().ByName("id")).Int(); v != 42 {
+		t.Errorf("Setting.id = %d, want 42", v)
 	}
-	if v := got.Get(cityMd.Fields().ByName("name")).String(); v != "Almaty" {
-		t.Errorf("City.name = %q, want Almaty", v)
+	if v := got.Get(settingMd.Fields().ByName("name")).String(); v != "primary" {
+		t.Errorf("Setting.name = %q, want primary", v)
 	}
 }
 
@@ -615,12 +615,12 @@ func TestMockServiceGRPCStdlib_ErrorRoute(t *testing.T) {
 	src := fmt.Sprintf(`
 load("@faultbox/mocks/grpc.star", "grpc")
 
-geo = grpc.server(
-    name        = "geo",
+config = grpc.server(
+    name        = "config",
     interface   = interface("main", "grpc", %d),
     descriptors = %q,
     services    = {
-        "/test.geo.GeoService/GetCity": {
+        "/test.config.ConfigService/GetSetting": {
             "error": {"code": "PERMISSION_DENIED", "message": "admin only"},
         },
     },
@@ -642,7 +642,7 @@ geo = grpc.server(
 	defer conn.Close()
 
 	var resp anyRecv
-	err := conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity",
+	err := conn.Invoke(context.Background(), "/test.config.ConfigService/GetSetting",
 		&grpcEmptyMsg{}, &resp)
 	st, ok := grpcstatus.FromError(err)
 	if !ok {
@@ -682,11 +682,11 @@ func TestMockServiceGRPCStdlibShorthands(t *testing.T) {
 			src := fmt.Sprintf(`
 load("@faultbox/mocks/grpc.star", "grpc")
 
-geo = grpc.server(
-    name        = "geo",
+config = grpc.server(
+    name        = "config",
     interface   = interface("main", "grpc", %d),
     descriptors = %q,
-    services    = {"/test.geo.GeoService/GetCity": %s},
+    services    = {"/test.config.ConfigService/GetSetting": %s},
 )
 `, port, pbPath, c.starFn)
 			if err := rt.LoadString("grpc_shorthand.star", src); err != nil {
@@ -704,7 +704,7 @@ geo = grpc.server(
 			defer conn.Close()
 
 			var resp anyRecv
-			err := conn.Invoke(context.Background(), "/test.geo.GeoService/GetCity",
+			err := conn.Invoke(context.Background(), "/test.config.ConfigService/GetSetting",
 				&grpcEmptyMsg{}, &resp)
 			st, ok := grpcstatus.FromError(err)
 			if !ok {
@@ -718,14 +718,14 @@ geo = grpc.server(
 }
 
 // writeTestDescriptorSet materializes a synthetic FileDescriptorSet
-// (test.geo.City / GeoService.GetCity) to a temp .pb file and returns
-// the path. Same shape as buildCityDescriptorSet() in the protocol
+// (test.config.Setting / ConfigService.GetSetting) to a temp .pb file and returns
+// the path. Same shape as buildSettingDescriptorSet() in the protocol
 // package; duplicated here to keep the star package test-only dependency
 // surface small.
 func writeTestDescriptorSet(t *testing.T) string {
 	t.Helper()
 	syntax := "proto3"
-	pkg := "test.geo"
+	pkg := "test.config"
 	mkField := func(name string, num int32, typ descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {
 		label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
 		return &descriptorpb.FieldDescriptorProto{
@@ -734,24 +734,24 @@ func writeTestDescriptorSet(t *testing.T) string {
 		}
 	}
 	fdp := &descriptorpb.FileDescriptorProto{
-		Name: proto.String("test/geo.proto"), Package: &pkg, Syntax: &syntax,
+		Name: proto.String("test/config.proto"), Package: &pkg, Syntax: &syntax,
 		MessageType: []*descriptorpb.DescriptorProto{
-			{Name: proto.String("City"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("Setting"), Field: []*descriptorpb.FieldDescriptorProto{
 				mkField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64),
 				mkField("name", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
-				mkField("country", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				mkField("scope", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				mkField("currency", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 			}},
-			{Name: proto.String("GetCityRequest"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("GetSettingRequest"), Field: []*descriptorpb.FieldDescriptorProto{
 				mkField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64),
 			}},
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{{
-			Name: proto.String("GeoService"),
+			Name: proto.String("ConfigService"),
 			Method: []*descriptorpb.MethodDescriptorProto{{
-				Name:       proto.String("GetCity"),
-				InputType:  proto.String(".test.geo.GetCityRequest"),
-				OutputType: proto.String(".test.geo.City"),
+				Name:       proto.String("GetSetting"),
+				InputType:  proto.String(".test.config.GetSettingRequest"),
+				OutputType: proto.String(".test.config.Setting"),
 			}},
 		}},
 	}

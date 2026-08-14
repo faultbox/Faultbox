@@ -207,7 +207,7 @@ func TestFormatRendersBinariesAndImagesTogether(t *testing.T) {
 // TestFormatRendersActionableTable pins the v0.12 #82 output: a
 // "drift detected (N entries):" header followed by one line per
 // drifted entry naming the locked vs current digest. This is the
-// CI-actionable view inDrive Freight asked for; the prior format
+// CI-actionable view the customer asked for; the prior format
 // summarised changes by category which forced an extra round-trip
 // to figure out *which* image moved.
 func TestFormatRendersActionableTable(t *testing.T) {

@@ -334,7 +334,7 @@ func testCmd(args []string) int {
 	}
 
 	// Default to ./faultbox.star when no spec is supplied — matches the
-	// go test / pytest / cargo test ergonomics the inDrive Freight team
+	// go test / pytest / cargo test ergonomics the reporting team
 	// flagged in the v0.11.1 feedback. Still requires the file to
 	// actually exist, so a typo at the wrong CWD still fails loudly
 	// rather than surprising the user.

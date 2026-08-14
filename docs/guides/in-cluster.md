@@ -29,7 +29,7 @@ namespace and does three things:
    connection resets, SQL errors — and asserts on how the SUT behaves.
 
 The SUT talks to `127.0.0.1:<proxy port>` instead of
-`geo-config.my-ns.svc.cluster.local:8080`. Faultbox rewrites the
+`config-service.my-ns.svc.cluster.local:8080`. Faultbox rewrites the
 dependency address in the SUT's environment
 ([runtime.go:3385](../../internal/star/runtime.go#L3385)). Everything
 else about the dependency call is normal client traffic.
@@ -102,7 +102,7 @@ spec:
   containers:
     - name: faultbox
       image: <your-registry>/faultbox-runner:<pinned-tag>
-      command: ["faultbox", "test", "/spec/truck-api.star", "--seed", "1"]
+      command: ["faultbox", "test", "/spec/order-service.star", "--seed", "1"]
       securityContext:
         runAsNonRoot: true
         allowPrivilegeEscalation: false
@@ -311,7 +311,7 @@ kubectl run faultbox-preflight -n my-ns --rm -it --restart=Never \
     echo "seccomp:  $(grep -c CONFIG_SECCOMP_FILTER=y /boot/config-$(uname -r) 2>/dev/null || echo "check node")"
     echo "tun:      $(test -e /dev/net/tun && echo present || echo absent)"
     echo "docker:   $(docker info >/dev/null 2>&1 && echo reachable || echo absent)"
-    getent hosts geo-config.my-ns.svc.cluster.local || echo "DNS: dependency not resolvable"
+    getent hosts config-service.my-ns.svc.cluster.local || echo "DNS: dependency not resolvable"
   '
 ```
 

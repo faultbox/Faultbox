@@ -5,7 +5,7 @@
 
 ## Goals & Purpose
 
-Your service talks to a handful of gRPC dependencies — geo-config,
+Your service talks to a handful of gRPC dependencies — config-service,
 user-service, balance-api — all via compiled `*.pb.go` stubs. You want
 to run it under Faultbox without those real services running.
 
@@ -13,7 +13,7 @@ Chapter 17's generic `mock_service()` gets you 90% of the way, but the
 last 10% bites: the native mock encodes responses as
 `google.protobuf.Struct` because it has no schema for your services.
 Typed Go clients reject `Struct` payloads at decode time —
-`pkg.NewClient(conn).GetCity(ctx, req)` either fails or silently
+`pkg.NewClient(conn).GetSetting(ctx, req)` either fails or silently
 returns zero values.
 
 **Typed gRPC mocks** (shipped in v0.9.0) close that gap. You hand
@@ -52,8 +52,8 @@ Generate the `.pb` file once:
 protoc \
     --include_imports \
     --descriptor_set_out=./proto/upstreams.pb \
-    proto/yourcorp/geo_config/*.proto \
-    proto/yourcorp/user/*.proto
+    proto/example/config/*.proto \
+    proto/example/user/*.proto
 ```
 
 - `--descriptor_set_out=<path>` — output the compiled descriptors as
@@ -68,24 +68,24 @@ pre-registered by Faultbox — you don't need to include them in your
 
 ## A first typed mock
 
-Suppose your SUT calls `/yourcorp.geo.GeoService/GetCity` and expects
-a typed `yourcorp.geo.City` back.
+Suppose your SUT calls `/example.config.GeoService/GetSetting` and expects
+a typed `example.config.Setting` back.
 
 ```python
 # faultbox.star
 load("@faultbox/mocks/grpc.star", "grpc")
 
-geo = grpc.server(
-    name        = "geo",
+config = grpc.server(
+    name        = "config",
     interface   = interface("main", "grpc", 9001),
     descriptors = "./proto/upstreams.pb",
     services    = {
-        "/yourcorp.geo.GeoService/GetCity": {
+        "/example.config.GeoService/GetSetting": {
             "response": {
                 "id":       42,
-                "name":     "Almaty",
-                "country":  "KZ",
-                "currency": "KZT",
+                "name":     "primary",
+                "scope":  "default",
+                "currency": "USD",
             },
         },
     },
@@ -95,16 +95,16 @@ api = service("api",
     interface("public", "http", 8080),
     binary = "./bin/api",
     env = {
-        "GEO_GRPC_ADDR": geo.main.internal_addr,
+        "CONFIG_GRPC_ADDR": config.main.internal_addr,
     },
-    depends_on = [geo],
+    depends_on = [config],
     healthcheck = http("localhost:8080/health"),
 )
 
 def test_city_lookup():
-    r = api.public.get(path = "/cities/42")
+    r = api.public.get(path = "/settings/42")
     assert_eq(r.status, 200)
-    assert_eq(r.data["name"], "Almaty")
+    assert_eq(r.data["name"], "primary")
 ```
 
 Run it:
@@ -113,9 +113,9 @@ Run it:
 $ faultbox test ./faultbox.star --test city_lookup
 ```
 
-Under the hood: when the api calls `GetCity`, Faultbox looks up the
-method's output type in your `.pb` (`yourcorp.geo.City`), encodes
-the Starlark dict as a typed `City` on the wire, and the api's
+Under the hood: when the api calls `GetSetting`, Faultbox looks up the
+method's output type in your `.pb` (`example.config.Setting`), encodes
+the Starlark dict as a typed `Setting` on the wire, and the api's
 compiled `*.pb.go` stub decodes it normally. Zero difference from a
 real upstream on the decode side.
 
@@ -131,8 +131,8 @@ time. Unknown fields surface as errors (`unknown field "cityid"
 hits the route.
 
 ```python
-"/yourcorp.geo.GeoService/GetCity": {
-    "response": {"id": 42, "name": "Almaty"},
+"/example.config.GeoService/GetSetting": {
+    "response": {"id": 42, "name": "default"},
 },
 ```
 
@@ -143,7 +143,7 @@ The mock returns a gRPC error with the specified status code.
 `"PERMISSION_DENIED"`, etc.) or an integer (1–16).
 
 ```python
-"/yourcorp.geo.GeoService/AdminUpdate": {
+"/example.config.GeoService/AdminUpdate": {
     "error": {"code": "PERMISSION_DENIED", "message": "admin only"},
 },
 ```
@@ -163,7 +163,7 @@ def handle_by_coords(req):
         "name": "dynamic",
     })
 
-"/yourcorp.geo.GeoService/GetCityByCoords": grpc.dynamic(handle_by_coords),
+"/example.config.GeoService/GetSettingByKey": grpc.dynamic(handle_by_coords),
 ```
 
 ### `grpc.raw_response(bytes)` — pre-encoded wire bytes escape hatch
@@ -172,39 +172,39 @@ For cases the typed encoder can't express — oneof tricks, deprecated
 fields, extensions — pass the exact wire bytes:
 
 ```python
-"/yourcorp.geo.GeoService/Exotic": grpc.raw_response("\x08\x2a"),
+"/example.config.GeoService/Exotic": grpc.raw_response("\x08\x2a"),
 ```
 
 ## Multi-service mock processes
 
 When several gRPC services share a single mock process on different
-ports — the truck-api pattern — declare one `grpc.server()` per service,
+ports — the order-service pattern — declare one `grpc.server()` per service,
 all sharing the same `.pb` file:
 
 ```python
 descriptors = "./proto/upstreams.pb"
 
-geo = grpc.server(
-    name        = "geo",
+config = grpc.server(
+    name        = "config",
     interface   = interface("main", "grpc", 9001),
     descriptors = descriptors,
-    services    = { "/yourcorp.geo.GeoService/GetCity": {...} },
+    services    = { "/example.config.GeoService/GetSetting": {...} },
 )
 user = grpc.server(
     name        = "user",
     interface   = interface("main", "grpc", 9003),
     descriptors = descriptors,
-    services    = { "/yourcorp.user.UserService/GetUser": {...} },
+    services    = { "/example.user.UserService/GetUser": {...} },
 )
 
 api = service("api",
     interface("public", "http", 8080),
     binary = "./bin/api",
     env = {
-        "GEO_GRPC_ADDR":  geo.main.internal_addr,
+        "CONFIG_GRPC_ADDR":  config.main.internal_addr,
         "USER_GRPC_ADDR": user.main.internal_addr,
     },
-    depends_on = [geo, user],
+    depends_on = [config, user],
 )
 ```
 
@@ -221,14 +221,14 @@ fault layer sits in front of the typed encoder:
 # `grpc_faults` so it doesn't collide with the mocks `grpc` import.
 load("@faultbox/recipes/grpc.star", grpc_faults = "grpc")
 
-geo_down = fault_assumption("geo_down",
-    target = geo.main,
-    rules  = [grpc_faults.unavailable(method = "/yourcorp.geo.GeoService/GetCity")],
+config_down = fault_assumption("config_down",
+    target = config.main,
+    rules  = [grpc_faults.unavailable(method = "/example.config.GeoService/GetSetting")],
 )
 
-fault_scenario("retries_on_geo_down",
+fault_scenario("retries_on_config_down",
     scenario = create_order,
-    faults   = [geo_down],
+    faults   = [config_down],
     expect   = lambda r: assert_eq(r.status, 200),  # retry succeeds
 )
 ```
@@ -244,20 +244,20 @@ service. Point `grpcurl` at the mock and it discovers everything:
 ```bash
 $ grpcurl -plaintext localhost:9001 list
 grpc.reflection.v1.ServerReflection
-yourcorp.geo.GeoService
+example.config.GeoService
 
-$ grpcurl -plaintext localhost:9001 describe yourcorp.geo.GeoService
-yourcorp.geo.GeoService is a service:
+$ grpcurl -plaintext localhost:9001 describe example.config.GeoService
+example.config.GeoService is a service:
 service GeoService {
-  rpc GetCity(GetCityRequest) returns (City);
+  rpc GetSetting(GetSettingRequest) returns (Setting);
 }
 
-$ grpcurl -plaintext -d '{"id":1}' localhost:9001 yourcorp.geo.GeoService/GetCity
+$ grpcurl -plaintext -d '{"id":1}' localhost:9001 example.config.GeoService/GetSetting
 {
   "id": "42",
-  "name": "Almaty",
-  "country": "KZ",
-  "currency": "KZT"
+  "name": "default",
+  "scope": "default",
+  "currency": "USD"
 }
 ```
 

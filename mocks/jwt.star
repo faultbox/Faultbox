@@ -3,7 +3,7 @@
 # Auto-generated EdDSA JWT issuer with a JWKS endpoint. Saves customers
 # from re-implementing the same Go-side jwtgen tool every time they
 # stand up a Faultbox spec for an HTTP-auth service. Customer ask B3
-# from the inDrive feedback analysis (v0.9.9).
+# from an early field evaluation (v0.9.9).
 #
 # Usage:
 #

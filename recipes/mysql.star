@@ -19,7 +19,7 @@
 # container DNS name (db:3306) which the host process can't resolve, and
 # manual rsplit() decomposition breaks the late-bound substitution.
 #
-#     api = service("truck-api", "/usr/local/bin/truck-api", ...,
+#     api = service("order-service", "/usr/local/bin/order-service", ...,
 #         env = {
 #             "MYSQL_HOST": db.main.proxy_host,
 #             "MYSQL_PORT": db.main.proxy_port,

@@ -15,7 +15,7 @@ Today a request in a spec looks like this:
 
 ```python
 resp = api.public.post(path = "/v1/orders", body = '{"item_id": "sku-1", "qty": 2}')
-resp = courier.main.call(method = "/courier.v1.CourierService/GetOrder",
+resp = orders.main.call(method = "/orders.v1.OrderService/GetOrder",
                          body = '{"order_id": 42}')
 ```
 
@@ -101,11 +101,11 @@ If you already tell the interface where its contract lives, the client
 inherits it:
 
 ```python
-courier = service("courier",
-    interface("main", "grpc", 9090, spec = "./proto/courier.pb"),
-    image = "courier:1.4")
+orders = service("order-service",
+    interface("main", "grpc", 9090, spec = "./proto/orders.pb"),
+    image = "order-service:1.4")
 
-gcourier = client("gRPC-Courier", target = courier.main)   # no contract kwarg
+gorders = client("gRPC-Orders", target = orders.main)   # no contract kwarg
 ```
 
 The loader is picked by extension: `.yaml` / `.yml` / `.json` → OpenAPI,
@@ -116,14 +116,14 @@ The loader is picked by extension: `.yaml` / `.yml` / `.json` → OpenAPI,
 Same builtin, different contract. Request-message fields become kwargs:
 
 ```python
-gcourier = client("gRPC-Courier",
-    target      = courier.main,
-    descriptors = "./proto/courier.pb",
+gorders = client("gRPC-Orders",
+    target      = orders.main,
+    descriptors = "./proto/orders.pb",
 )
 
-def test_courier_lookup():
-    r = gcourier.get_order(order_id = 42)
-    print(r.data["courier_eta"])
+def test_order_lookup():
+    r = gorders.get_order(order_id = 42)
+    print(r.data["eta"])
 ```
 
 Fields encode against the *real* message type via the descriptor set — the
@@ -131,17 +131,17 @@ same machinery Chapter 18's typed mocks use, pointed the other way. A
 misspelled field is caught before anything reaches the wire:
 
 ```
-get_order(include_items=…, order_id=…): encode as courier.v1.GetOrderRequest:
+get_order(include_items=…, order_id=…): encode as orders.v1.GetOrderRequest:
   unknown field "order_ids" (did you mean "order_id"?)
 ```
 
 If the descriptor set declares more than one service, say which:
 
 ```python
-gcourier = client("gRPC-Courier",
-    target       = courier.main,
+gorders = client("gRPC-Orders",
+    target       = orders.main,
     descriptors  = "./proto/all_upstreams.pb",
-    grpc_service = "courier.v1.CourierService",
+    grpc_service = "orders.v1.OrderService",
 )
 ```
 
@@ -176,8 +176,8 @@ participant in ShiViz:
 seq  actor          event                     detail
  8   mobile-app     client_call.orders        create_order body={item_id:sku-1,qty:2}
 11   mobile-app     client_return.orders      create_order → 201 (23ms)
-15   gRPC-Courier   client_call.courier       get_order(order_id=1001)
-17   gRPC-Courier   client_return.courier     get_order → UNAVAILABLE (11ms)
+15   gRPC-Orders   client_call.orders       get_order(order_id=1001)
+17   gRPC-Orders   client_return.orders     get_order → UNAVAILABLE (11ms)
 19   partner-api    client_call.orders        get_order(order_id=1001)
 21   partner-api    client_return.orders      get_order → 200 (140ms)
 ```
@@ -193,8 +193,8 @@ partner_failures = events(where = lambda e:
 
 This is the capability that doesn't exist without a client.
 
-Your service is supposed to degrade gracefully when the courier upstream
-dies. It returns 200 — but with `courier_eta` set to `null`, which its own
+Your service is supposed to degrade gracefully when the orders upstream
+dies. It returns 200 — but with `eta` set to `null`, which its own
 OpenAPI document declares non-nullable. Every consumer's deserializer
 throws. No assertion you'd think to write catches this, because you'd have
 to guess the field.
@@ -209,7 +209,7 @@ mobile = client("mobile-app",
 )
 
 def test_degraded_response_still_honours_the_contract():
-    with fault(courier.main, grpc_faults.unavailable()):
+    with fault(orders.main, grpc_faults.unavailable()):
         resp = mobile.get_order(order_id = 1001)
 
         assert_eq(resp.status, 200)          # it "worked"
@@ -220,7 +220,7 @@ def test_degraded_response_still_honours_the_contract():
 Run it and the trace carries the finding as its own event:
 
 ```
-#22  mobile-app  contract_violation.orders  get_order: Error at "/courier_eta": Value is not nullable
+#22  mobile-app  contract_violation.orders  get_order: Error at "/eta": Value is not nullable
 ```
 
 ### The four modes
@@ -250,20 +250,20 @@ Client events are ordinary events, so the temporal primitives from
 [Chapter 15](../04-safety/15-monitors.md) work with no new syntax:
 
 ```python
-courier_failed = match.event(type = "client_return",
-                             client = "gRPC-Courier",
+orders_failed = match.event(type = "client_return",
+                             client = "gRPC-Orders",
                              operation = "get_order",
                              success = "false")
 
-test("orders_never_drops_under_courier_failure",
+test("orders_never_drops_under_upstream_failure",
     body   = drive_traffic,
-    expect = always(no_dropped_orders, between = ("body_start", courier_failed)),
+    expect = always(no_dropped_orders, between = ("body_start", orders_failed)),
 )
 ```
 
 Before clients, the closest you could write was
-`match.event(type="step_send", target="courier")` — which matches *any*
-call to courier, from anywhere. Now the anchor says which caller, which
+`match.event(type="step_send", target="orders")` — which matches *any*
+call to orders, from anywhere. Now the anchor says which caller, which
 operation, and whether it failed.
 
 ## 6 · Faults, TLS, and remote targets

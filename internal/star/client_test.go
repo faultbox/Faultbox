@@ -70,10 +70,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [id, courier_eta]
+                required: [id, eta]
                 properties:
                   id: {type: integer}
-                  courier_eta: {type: string}
+                  eta: {type: string}
   /orders:
     post:
       operationId: createOrder

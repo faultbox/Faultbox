@@ -91,11 +91,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [id, courier_eta]
+                required: [id, eta]
                 properties:
                   id:
                     type: integer
-                  courier_eta:
+                  eta:
                     type: string
         "404":
           description: missing
@@ -469,7 +469,7 @@ func TestValidateHTTPResponse(t *testing.T) {
 
 	t.Run("conforming response passes", func(t *testing.T) {
 		err := table.ValidateHTTPResponse(getOrder, 200, "application/json",
-			[]byte(`{"id": 1, "courier_eta": "12m"}`))
+			[]byte(`{"id": 1, "eta": "12m"}`))
 		if err != nil {
 			t.Errorf("expected conformance, got: %v", err)
 		}
@@ -477,16 +477,16 @@ func TestValidateHTTPResponse(t *testing.T) {
 
 	t.Run("null in a required field is a violation", func(t *testing.T) {
 		err := table.ValidateHTTPResponse(getOrder, 200, "application/json",
-			[]byte(`{"id": 1, "courier_eta": null}`))
+			[]byte(`{"id": 1, "eta": null}`))
 		if err == nil {
-			t.Fatal("expected a schema violation for a null courier_eta")
+			t.Fatal("expected a schema violation for a null eta")
 		}
 	})
 
 	t.Run("missing required field is a violation", func(t *testing.T) {
 		err := table.ValidateHTTPResponse(getOrder, 200, "application/json", []byte(`{"id": 1}`))
 		if err == nil {
-			t.Fatal("expected a schema violation for the missing courier_eta")
+			t.Fatal("expected a schema violation for the missing eta")
 		}
 	})
 
@@ -591,7 +591,7 @@ func TestExecuteHTTPRequest_ContractLoop(t *testing.T) {
 			Pattern: "GET /orders/*",
 			Response: &MockResponse{
 				Status:      200,
-				Body:        []byte(`{"id": 1001, "courier_eta": "12m"}`),
+				Body:        []byte(`{"id": 1001, "eta": "12m"}`),
 				ContentType: "application/json",
 			},
 		},
@@ -599,7 +599,7 @@ func TestExecuteHTTPRequest_ContractLoop(t *testing.T) {
 			Pattern: "GET /healthz",
 			Response: &MockResponse{
 				Status:      200,
-				Body:        []byte(`{"courier_eta": null}`),
+				Body:        []byte(`{"eta": null}`),
 				ContentType: "application/json",
 			},
 		},
@@ -667,7 +667,7 @@ func TestExecuteHTTPRequest_ContractLoop(t *testing.T) {
 		}
 		err = table.ValidateHTTPResponse(op, res.StatusCode, ResponseContentType(res), []byte(res.Body))
 		if err == nil {
-			t.Fatal("expected a contract violation for the null courier_eta")
+			t.Fatal("expected a contract violation for the null eta")
 		}
 	})
 }

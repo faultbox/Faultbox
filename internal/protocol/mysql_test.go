@@ -8,7 +8,7 @@ import (
 )
 
 // TestMySQLFilterLoggerSuppressesNoise covers the v0.11.3 fix for
-// inDrive Freight feedback #12: during healthcheck poll the mysql
+// the customer feedback #12: during healthcheck poll the mysql
 // driver emits "[mysql] packets.go:58 unexpected EOF" for every
 // attempt. The filter must drop known retry-noise substrings and pass
 // real messages through.

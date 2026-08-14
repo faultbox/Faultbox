@@ -184,7 +184,7 @@ func NewManager(onEvent OnProxyEvent) *Manager {
 // cell 1 while the listener fd stayed bound, leaving the cached proxy
 // entry pointing at a zombie listener. Cells 2..N would then `Accept` no
 // new connections, and clients would see TCP-level connection-reset
-// (Finding K, Freight 2026-04-30).
+// (Finding K, customer report 2026-04-30).
 //
 // The proxy's lifetime is the Manager's lifetime: explicit teardown
 // happens via StopAll / StopService.

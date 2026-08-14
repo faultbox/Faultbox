@@ -16,21 +16,21 @@ import (
 // buildOrderDescriptorSet synthesizes a FileDescriptorSet for:
 //
 //	syntax = "proto3";
-//	package courier.v1;
+//	package orders.v1;
 //	message GetOrderRequest { int64 order_id = 1; string include_items = 2; }
-//	message Order { int64 id = 1; string courier_eta = 2; }
+//	message Order { int64 id = 1; string eta = 2; }
 //	message ListOrdersRequest { string status = 1; }
 //	message OrderList { }
-//	service CourierService {
+//	service OrderService {
 //	  rpc GetOrder (GetOrderRequest) returns (Order);
 //	  rpc ListOrdersV2 (ListOrdersRequest) returns (OrderList);
 //	  rpc StreamOrders (ListOrdersRequest) returns (stream Order);   // skipped: streaming
 //	}
 func buildOrderDescriptorSet() *descriptorpb.FileDescriptorSet {
 	syntax := "proto3"
-	pkg := "courier.v1"
+	pkg := "orders.v1"
 	fdp := &descriptorpb.FileDescriptorProto{
-		Name:    proto.String("courier/v1/courier.proto"),
+		Name:    proto.String("orders/v1/orders.proto"),
 		Package: &pkg,
 		Syntax:  &syntax,
 		MessageType: []*descriptorpb.DescriptorProto{
@@ -45,7 +45,7 @@ func buildOrderDescriptorSet() *descriptorpb.FileDescriptorSet {
 				Name: proto.String("Order"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					msgField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64),
-					msgField("courier_eta", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+					msgField("eta", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				},
 			},
 			{
@@ -58,22 +58,22 @@ func buildOrderDescriptorSet() *descriptorpb.FileDescriptorSet {
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
-				Name: proto.String("CourierService"),
+				Name: proto.String("OrderService"),
 				Method: []*descriptorpb.MethodDescriptorProto{
 					{
 						Name:       proto.String("GetOrder"),
-						InputType:  proto.String(".courier.v1.GetOrderRequest"),
-						OutputType: proto.String(".courier.v1.Order"),
+						InputType:  proto.String(".orders.v1.GetOrderRequest"),
+						OutputType: proto.String(".orders.v1.Order"),
 					},
 					{
 						Name:       proto.String("ListOrdersV2"),
-						InputType:  proto.String(".courier.v1.ListOrdersRequest"),
-						OutputType: proto.String(".courier.v1.OrderList"),
+						InputType:  proto.String(".orders.v1.ListOrdersRequest"),
+						OutputType: proto.String(".orders.v1.OrderList"),
 					},
 					{
 						Name:            proto.String("StreamOrders"),
-						InputType:       proto.String(".courier.v1.ListOrdersRequest"),
-						OutputType:      proto.String(".courier.v1.Order"),
+						InputType:       proto.String(".orders.v1.ListOrdersRequest"),
+						OutputType:      proto.String(".orders.v1.Order"),
 						ServerStreaming: proto.Bool(true),
 					},
 				},
@@ -83,7 +83,7 @@ func buildOrderDescriptorSet() *descriptorpb.FileDescriptorSet {
 	return &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{fdp}}
 }
 
-func loadCourierTable(t *testing.T) *OperationTable {
+func loadGRPCOrdersTable(t *testing.T) *OperationTable {
 	t.Helper()
 	path := writeFds(t, buildOrderDescriptorSet())
 	files, err := LoadDescriptorSet(path)
@@ -98,7 +98,7 @@ func loadCourierTable(t *testing.T) *OperationTable {
 }
 
 func TestBuildGRPCOperations_NamesAndContract(t *testing.T) {
-	table := loadCourierTable(t)
+	table := loadGRPCOrdersTable(t)
 
 	// StreamOrders is dropped: v1 is unary-only, and one streaming method
 	// must not make the whole descriptor set unusable.
@@ -111,7 +111,7 @@ func TestBuildGRPCOperations_NamesAndContract(t *testing.T) {
 	if table.Contract.Kind != ContractGRPC {
 		t.Errorf("contract kind = %q, want %q", table.Contract.Kind, ContractGRPC)
 	}
-	if table.Contract.Version != "courier.v1.CourierService" {
+	if table.Contract.Version != "orders.v1.OrderService" {
 		t.Errorf("contract version = %q, want the service FQN", table.Contract.Version)
 	}
 
@@ -119,10 +119,10 @@ func TestBuildGRPCOperations_NamesAndContract(t *testing.T) {
 	if !ok {
 		t.Fatal("get_order not found")
 	}
-	if op.FullMethod != "/courier.v1.CourierService/GetOrder" {
+	if op.FullMethod != "/orders.v1.OrderService/GetOrder" {
 		t.Errorf("full method = %q", op.FullMethod)
 	}
-	if op.Wire() != "/courier.v1.CourierService/GetOrder" {
+	if op.Wire() != "/orders.v1.OrderService/GetOrder" {
 		t.Errorf("Wire() = %q", op.Wire())
 	}
 
@@ -145,8 +145,8 @@ func TestBuildGRPCOperations_NamesAndContract(t *testing.T) {
 }
 
 func TestBuildGRPCOperations_LookupByContractName(t *testing.T) {
-	table := loadCourierTable(t)
-	op, ok := table.LookupContractName("/courier.v1.CourierService/GetOrder")
+	table := loadGRPCOrdersTable(t)
+	op, ok := table.LookupContractName("/orders.v1.OrderService/GetOrder")
 	if !ok {
 		t.Fatal("LookupContractName by full method path failed")
 	}
@@ -162,8 +162,8 @@ func TestBuildGRPCOperations_MultiServiceRequiresSelection(t *testing.T) {
 		Name: proto.String("BillingService"),
 		Method: []*descriptorpb.MethodDescriptorProto{{
 			Name:       proto.String("Charge"),
-			InputType:  proto.String(".courier.v1.GetOrderRequest"),
-			OutputType: proto.String(".courier.v1.Order"),
+			InputType:  proto.String(".orders.v1.GetOrderRequest"),
+			OutputType: proto.String(".orders.v1.Order"),
 		}},
 	})
 	path := writeFds(t, set)
@@ -176,14 +176,14 @@ func TestBuildGRPCOperations_MultiServiceRequiresSelection(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when the set declares multiple services")
 	}
-	for _, want := range []string{"grpc_service=", "courier.v1.BillingService", "courier.v1.CourierService"} {
+	for _, want := range []string{"grpc_service=", "orders.v1.BillingService", "orders.v1.OrderService"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err.Error(), want)
 		}
 	}
 
 	// Naming one resolves it.
-	table, err := BuildGRPCOperations(files, path, "courier.v1.BillingService", nil)
+	table, err := BuildGRPCOperations(files, path, "orders.v1.BillingService", nil)
 	if err != nil {
 		t.Fatalf("BuildGRPCOperations with grpc_service=: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestBuildGRPCOperations_MultiServiceRequiresSelection(t *testing.T) {
 	}
 
 	// An unknown service name lists the candidates.
-	_, err = BuildGRPCOperations(files, path, "courier.v1.NoSuchService", nil)
+	_, err = BuildGRPCOperations(files, path, "orders.v1.NoSuchService", nil)
 	if err == nil || !strings.Contains(err.Error(), "available:") {
 		t.Errorf("expected an error listing available services, got: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestBuildGRPCOperations_Rename(t *testing.T) {
 
 	// ...and the full wire path.
 	table, err = BuildGRPCOperations(files, path, "",
-		map[string]string{"/courier.v1.CourierService/GetOrder": "fetch_order"})
+		map[string]string{"/orders.v1.OrderService/GetOrder": "fetch_order"})
 	if err != nil {
 		t.Fatalf("BuildGRPCOperations: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestBuildGRPCOperations_Rename(t *testing.T) {
 }
 
 func TestBuildGRPCRequest(t *testing.T) {
-	table := loadCourierTable(t)
+	table := loadGRPCOrdersTable(t)
 	op, _ := table.Lookup("get_order")
 
 	req, err := table.BuildGRPCRequest(op, map[string]any{
@@ -242,7 +242,7 @@ func TestBuildGRPCRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildGRPCRequest: %v", err)
 	}
-	if req.FullMethod != "/courier.v1.CourierService/GetOrder" {
+	if req.FullMethod != "/orders.v1.OrderService/GetOrder" {
 		t.Errorf("full method = %q", req.FullMethod)
 	}
 
@@ -265,7 +265,7 @@ func TestBuildGRPCRequest(t *testing.T) {
 }
 
 func TestBuildGRPCRequest_Errors(t *testing.T) {
-	table := loadCourierTable(t)
+	table := loadGRPCOrdersTable(t)
 	op, _ := table.Lookup("get_order")
 
 	t.Run("unknown kwarg suggests the nearest field", func(t *testing.T) {
@@ -290,7 +290,7 @@ func TestBuildGRPCRequest_Errors(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected a type error")
 		}
-		if !strings.Contains(err.Error(), "courier.v1.GetOrderRequest") {
+		if !strings.Contains(err.Error(), "orders.v1.GetOrderRequest") {
 			t.Errorf("error should name the request message type, got: %v", err)
 		}
 	})
@@ -340,11 +340,11 @@ func startTypedMock(t *testing.T, routes []MockRoute) string {
 
 func TestInvokeGRPCUnary_TypedRoundTrip(t *testing.T) {
 	addr := startTypedMock(t, []MockRoute{{
-		Pattern:  "/courier.v1.CourierService/GetOrder",
-		Response: &MockResponse{Body: []byte(`{"id": 1001, "courier_eta": "12m"}`)},
+		Pattern:  "/orders.v1.OrderService/GetOrder",
+		Response: &MockResponse{Body: []byte(`{"id": 1001, "eta": "12m"}`)},
 	}})
 
-	table := loadCourierTable(t)
+	table := loadGRPCOrdersTable(t)
 	op, _ := table.Lookup("get_order")
 	req, err := table.BuildGRPCRequest(op, map[string]any{"order_id": int64(1001)})
 	if err != nil {
@@ -369,8 +369,8 @@ func TestInvokeGRPCUnary_TypedRoundTrip(t *testing.T) {
 	if decoded["id"] != "1001" && decoded["id"] != float64(1001) {
 		t.Errorf("response id = %v, want 1001", decoded["id"])
 	}
-	if decoded["courierEta"] != "12m" && decoded["courier_eta"] != "12m" {
-		t.Errorf("response courier_eta missing from %v", decoded)
+	if decoded["eta"] != "12m" {
+		t.Errorf("response eta missing from %v", decoded)
 	}
 
 	if err := table.ValidateGRPCResponse(op, resp); err != nil {
@@ -381,11 +381,11 @@ func TestInvokeGRPCUnary_TypedRoundTrip(t *testing.T) {
 func TestInvokeGRPCUnary_StatusError(t *testing.T) {
 	// The mock turns a non-zero Status into a gRPC status code.
 	addr := startTypedMock(t, []MockRoute{{
-		Pattern:  "/courier.v1.CourierService/GetOrder",
-		Response: &MockResponse{Status: int(codes.Unavailable), Body: []byte("courier down")},
+		Pattern:  "/orders.v1.OrderService/GetOrder",
+		Response: &MockResponse{Status: int(codes.Unavailable), Body: []byte("orders down")},
 	}})
 
-	table := loadCourierTable(t)
+	table := loadGRPCOrdersTable(t)
 	op, _ := table.Lookup("get_order")
 	req, err := table.BuildGRPCRequest(op, map[string]any{"order_id": int64(1)})
 	if err != nil {
@@ -402,7 +402,7 @@ func TestInvokeGRPCUnary_StatusError(t *testing.T) {
 	if resp.CodeName != "Unavailable" {
 		t.Errorf("code name = %q, want Unavailable", resp.CodeName)
 	}
-	if !strings.Contains(resp.Message, "courier down") {
+	if !strings.Contains(resp.Message, "orders down") {
 		t.Errorf("status message = %q, want the mock's message", resp.Message)
 	}
 
@@ -416,7 +416,7 @@ func TestInvokeGRPCUnary_StatusError(t *testing.T) {
 func TestInvokeGRPCUnary_UnroutedMethodIsUnimplemented(t *testing.T) {
 	addr := startTypedMock(t, nil)
 
-	table := loadCourierTable(t)
+	table := loadGRPCOrdersTable(t)
 	op, _ := table.Lookup("get_order")
 	req, err := table.BuildGRPCRequest(op, map[string]any{"order_id": int64(1)})
 	if err != nil {
@@ -441,7 +441,7 @@ func TestInvokeGRPCUnary_ConnectionRefused(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	table := loadCourierTable(t)
+	table := loadGRPCOrdersTable(t)
 	op, _ := table.Lookup("get_order")
 	req, err := table.BuildGRPCRequest(op, map[string]any{"order_id": int64(1)})
 	if err != nil {

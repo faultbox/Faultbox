@@ -20,8 +20,8 @@ func TestParseShimSignal(t *testing.T) {
 	}{
 		{"no filter", "0\n", 0, ""},
 		{"listener fd", "5\n", 5, ""},
-		{"exec enoent", "ERR exec /tmp/truck-api-bin: no such file or directory\n", -1,
-			"launch target: exec /tmp/truck-api-bin: no such file or directory"},
+		{"exec enoent", "ERR exec /tmp/order-service-bin: no such file or directory\n", -1,
+			"launch target: exec /tmp/order-service-bin: no such file or directory"},
 		{"garbage", "bogus\n", -1, `parse listener fd "bogus"`},
 		{"empty", "\n", -1, "parse listener fd"},
 	}

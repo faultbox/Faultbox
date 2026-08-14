@@ -47,7 +47,7 @@ All fault rules continue to fire on the plaintext between the two TLS legs. Six
 plugins ship today (http, http2, gRPC, Kafka, Redis, TCP); the rest are tracked
 in [RFC-039](https://github.com/faultbox/Faultbox/issues/106).
 
-**Remote services** (RFC-036) -- `service(remote="geo.staging.svc.cluster.local")`
+**Remote services** (RFC-036) -- `service(remote="config-service.staging.svc.cluster.local")`
 points at an externally-running endpoint instead of launching a process. Useful
 when dependency images aren't distributed to developers (k8s dev platforms, etc.):
 Faultbox stands up its proxy in front of each interface and dials the remote

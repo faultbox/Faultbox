@@ -6,7 +6,7 @@ like Python, but the dialect is intentionally narrower. This page
 collects the gotchas every customer hits in their first week so you
 can skip the rediscovery.
 
-> **Why this page exists.** The inDrive PoC lost ~2 hours to dialect
+> **Why this page exists.** An early field evaluation lost ~2 hours to dialect
 > surprises (FB §2.1 #8). One reference document up front would have
 > caught most of them.
 

@@ -1,4 +1,4 @@
-# inDrive / truck-api PoC — Feedback Analysis & 0.9.x / 0.11.0 Roadmap
+# the customer / order-service PoC — Feedback Analysis & 0.9.x / 0.11.0 Roadmap
 
 **Authored:** 2026-04-22
 **Inputs:** [FAULTBOX_FEEDBACK.md](FAULTBOX_FEEDBACK.md), [FAULTBOX_REPRODUCIBILITY.md](FAULTBOX_REPRODUCIBILITY.md), [TEST_COVERAGE.md](TEST_COVERAGE.md)
@@ -191,7 +191,7 @@ blockers (FB §6).
 | E2 | Public roadmap | Convert RFC README into release-grouped roadmap | XS | 4 | Precondition for customer planning |
 | E3 | Reference customer (public or NDA) | Sales process; not an engineering task | — | — | Usually precedes first paid customer |
 | E4 | Support SLA in writing | Legal / commercial | — | — | Required for contract |
-| E5 | Case-study writeup of inDrive v0.9.4 turnaround | Marketing; 1d to co-author w/ customer | S | 4 | Strong GTM artifact |
+| E5 | Case-study writeup of the customer v0.9.4 turnaround | Marketing; 1d to co-author w/ customer | S | 4 | Strong GTM artifact |
 
 ### Group G — v0.11.0 Interactive HTML Reports
 

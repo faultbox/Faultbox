@@ -60,7 +60,7 @@ func TestWarnRemoteBundle(t *testing.T) {
 	defer tmp.Close()
 
 	warnRemoteBundle(tmp, []bundle.RemoteRecord{
-		{Service: "geo", Interface: "public", Host: "geo.staging:8080", Protocol: "http"},
+		{Service: "config", Interface: "public", Host: "config.staging:8080", Protocol: "http"},
 		{Service: "auth", Interface: "rpc", Host: "auth.staging:50051", Protocol: "grpc"},
 	})
 	if _, err := tmp.Seek(0, 0); err != nil {
@@ -75,7 +75,7 @@ func TestWarnRemoteBundle(t *testing.T) {
 	for _, frag := range []string{
 		"WARNING",
 		"2 remote service interface",
-		"geo.public -> geo.staging:8080 (http)",
+		"config.public -> config.staging:8080 (http)",
 		"auth.rpc -> auth.staging:50051 (grpc)",
 		"telepresence connect",
 		"RFC-037",

@@ -23,7 +23,7 @@ caught all four. By the end of 30 minutes you'll have:
   with explicit `expect_*` outcomes per cell.
 - A reproducible `.fb` bundle uploaded as a CI artifact.
 
-The shape mirrors what inDrive's truck-api PoC produced over six
+The shape mirrors what an early field evaluation produced over six
 weeks; this is the curated short version.
 
 ## Stack overview
@@ -36,7 +36,7 @@ The service we'll model:
 │ (test)  │                  │  api     │── MySQL (orders/offers)
 └─────────┘                  │  (Go)    │── Redis (cache)
                              │          │── Kafka (event bus)
-                             │          │── gRPC: geo-config
+                             │          │── gRPC: config-service
                              │          │── gRPC: user-service
                              │          │── gRPC: balance-api
                              └──────────┘
@@ -49,7 +49,7 @@ Three categories of dependency:
 - **Real containers** for stateful infra (MySQL, Redis, Kafka).
   These have nuanced syscall and protocol behaviour we want to
   exercise faithfully.
-- **Typed gRPC mocks** for internal upstreams (geo-config etc.).
+- **Typed gRPC mocks** for internal upstreams (config-service etc.).
   Real instances would need their own configs, secrets, and a
   sidecar fleet — unworkable for a hermetic test.
 - **JWT issuer mock** for the auth layer. Real OIDC issuers are
@@ -96,13 +96,13 @@ bus = service("bus",
 
 # --- Internal gRPC upstreams (typed mocks) -----------------------
 
-geo = grpc.server(
-    name        = "geo-config",
+config = grpc.server(
+    name        = "config-service",
     interface   = interface("main", "grpc", 9001),
     descriptors = "./proto/all_upstreams.pb",
     services    = {
-        "/inDriver.geo_config.GeoConfigService/GetCity": {
-            "response": {"id": 169, "name": "Almaty", "country": "KZ"},
+        "/example.config.ConfigService/GetSetting": {
+            "response": {"id": 169, "name": "default", "scope": "default"},
         },
     },
 )
@@ -112,7 +112,7 @@ users = grpc.server(
     interface   = interface("main", "grpc", 9002),
     descriptors = "./proto/all_upstreams.pb",
     services    = {
-        "/inDriver.users.UserService/Get": {
+        "/example.user.UserService/Get": {
             "response": {"id": 1, "name": "alice", "verified": True},
         },
     },
@@ -123,7 +123,7 @@ balance = grpc.server(
     interface   = interface("main", "grpc", 9003),
     descriptors = "./proto/all_upstreams.pb",
     services    = {
-        "/inDriver.balance.BalanceService/Get": {
+        "/example.billing.BillingService/Get": {
             "response": {"user_id": 1, "amount": "5000.00"},
         },
     },
@@ -146,13 +146,13 @@ api = service("api",
         "DATABASE_URL":      "mysql://root:test@%s/appdb" % db.main.addr,
         "REDIS_URL":         cache.main.addr,
         "KAFKA_BROKERS":     bus.main.addr,
-        "GEO_CONFIG_ADDR":   geo.main.addr,
+        "CONFIG_ADDR":   config.main.addr,
         "USER_SERVICE_ADDR": users.main.addr,
         "BALANCE_API_ADDR":  balance.main.addr,
         "OIDC_ISSUER":       auth.service.main.addr,
         "OIDC_JWKS_URL":     auth.service.main.addr + "/.well-known/jwks.json",
     },
-    depends_on = [db, cache, bus, geo, users, balance, auth.service],
+    depends_on = [db, cache, bus, config, users, billing, auth.service],
     healthcheck = http("http://localhost:8080/healthz"),
 )
 ```
@@ -167,7 +167,7 @@ Notable choices:
 - **`jwt.server()`** + **`grpc.server(descriptors=…)`** replace the
   hand-written Go binaries every customer ended up writing. Note the
   return-shape asymmetry: `grpc.server()` returns a plain service, so
-  you address it as `geo.main` and pass `geo` to `depends_on=`.
+  you address it as `config.main` and pass `config` to `depends_on=`.
   `jwt.server()` returns a struct wrapping the service, so it's
   `auth.service.main` and `auth.service` - plus `auth.sign(...)` for
   minting tokens.
@@ -265,7 +265,7 @@ bus_down = fault_assumption("bus_down",
 
 users_unavailable = fault_assumption("users_unavailable",
     target = users.main,
-    rules  = [grpc_faults.unavailable(method = "/inDriver.users.UserService/Get")],
+    rules  = [grpc_faults.unavailable(method = "/example.user.UserService/Get")],
 )
 ```
 

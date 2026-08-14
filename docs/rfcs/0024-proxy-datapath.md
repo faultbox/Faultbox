@@ -7,7 +7,7 @@
 - **Implemented:** 2026-04-22 — 3 phases shipped on `rfc/024-proxy-datapath`
 - **Discussion:** [#54](https://github.com/faultbox/Faultbox/issues/54)
 - **Depends on:** none (extends the v0.8+ protocol-proxy machinery in place)
-- **Customer motivation:** truck-api on v0.8.8 reported that selective
+- **Customer motivation:** order-service on v0.8.8 reported that selective
   per-gRPC-service injection was non-functional because the proxy never saw
   app traffic. v0.9.4 fixed the proxy *dispatch* gap; v0.9.5 closes the
   architectural gap by putting the proxy in the SUT's data path.
@@ -34,7 +34,7 @@ v0.9.5 fixes this by:
    upstream addr (`localhost:5432`, `127.0.0.1:5432`, or `<svc>:5432` in
    container mode) gets redirected to the proxy.
 
-The upshot: a plain `fault(geo_config.main, response(status=503), run=…)`
+The upshot: a plain `fault(config_service.main, response(status=503), run=…)`
 now actually injects 503s into the SUT's gRPC calls — closing the
 customer-reported architectural gap.
 
@@ -80,7 +80,7 @@ SUT's `pgx` dial actually reaches the proxy.
 
 | OQ | Resolution |
 |---|---|
-| 1. Pass-through latency acceptable? | Shipping without a formal benchmark. All 14 proxies already parse wire format on every request (that's how they match rules); adding pass-through mode is a straight `io.Copy` in the no-rules branch. Customer will validate on truck-api. |
+| 1. Pass-through latency acceptable? | Shipping without a formal benchmark. All 14 proxies already parse wire format on every request (that's how they match rules); adding pass-through mode is a straight `io.Copy` in the no-rules branch. Customer will validate on order-service. |
 | 2. `.internal_addr` magic vs explicit `.real_addr`? | **Magic.** No `.real_addr` ships in v0.9.5 — the data-path rewrite is silent. An explicit escape hatch can be added later without breaking anyone. |
 | 3. Skip proxy for `faultbox_opt_out=True`? | Yes — no filter, no faults, no proxy value. Implicitly handled: no interface-level opt-out exists today, and opt-out services still get proxies (harmless, still pass-through). Revisit if load overhead shows up. |
 | 4. Mock services? | Skip. Explicit `!svc.IsMock()` check in `preStartProxies`. |

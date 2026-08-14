@@ -6,7 +6,7 @@
 - **Accepted:** 2026-04-21 — open questions resolved
 - **Implemented:** 2026-04-22 — 4 phases shipped on `epic/v0.9.0`
 - **Discussion:** [#52](https://github.com/faultbox/Faultbox/issues/52)
-- **Customer motivation:** truck-api Phase 1 shipped on v0.8.8 using the Go-binary fallback; v0.9.0 collapses that binary to ~10 lines of Starlark.
+- **Customer motivation:** order-service Phase 1 shipped on v0.8.8 using the Go-binary fallback; v0.9.0 collapses that binary to ~10 lines of Starlark.
 - **Depends on:** RFC-017 (Native Mock Services — v0.8.0)
 - **Go-binary fallback:** retained in `docs/mock-services.md` as a power-user escape hatch for streaming / complex dynamic logic.
 
@@ -20,8 +20,8 @@ loose-decoding stubs (Node, Python, some hand-written Go) — but
 **fails for clients with compiled proto stubs**, which is the
 overwhelming majority of real-world Go gRPC code.
 
-Customers with codebases like inDriver's truck-api (`github.com/inDriver/geo-config/proto`,
-`github.com/inDriver/balance-api/proto`, …) cannot use the native mock
+Customers with codebases like the customerr's order-service (`github.com/example/config-service/proto`,
+`github.com/example/balance-api/proto`, …) cannot use the native mock
 because their app's compiled stubs reject the generic `Struct` payload
 at decode time with a type mismatch.
 
@@ -50,10 +50,10 @@ permissive mode). Either way the test is meaningless.
 
 ### Why customers need this
 
-From a current customer (truck-api, inDriver):
+From a current customer (order-service, the customerr):
 
 > Phase 1 plan — mock 8 upstream gRPC services. Recommended approach:
-> single Go mock binary that imports the real `github.com/inDriver/*`
+> single Go mock binary that imports the real `github.com/example/*`
 > proto packages from go.mod and implements `Unimplemented*Server`
 > for each.
 
@@ -98,40 +98,40 @@ and a `services=` map of method-path → handler:
 ```python
 load("@faultbox/mocks/grpc.star", "grpc")
 
-geo_config = grpc.server(
-    name = "geo-config",
+config_service = grpc.server(
+    name = "config-service",
     interface = interface("main", "grpc", 9001),
 
     # Where the proto schema comes from (see "Descriptor sources" below).
-    descriptors = "./proto/geo_config.pb",      # protoc -o output, OR
-    # descriptors = ["./proto/geo_config.proto"],  # raw .proto files
-    # descriptors = grpc.descriptors_from_module("github.com/inDriver/geo-config/proto"),
+    descriptors = "./proto/config_service.pb",      # protoc -o output, OR
+    # descriptors = ["./proto/config_service.proto"],  # raw .proto files
+    # descriptors = grpc.descriptors_from_module("github.com/example/config-service/proto"),
 
     services = {
-        "/inDriver.geo_config.GeoConfigService/GetCity": {
+        "/example.config.ConfigService/GetSetting": {
             "response": {
                 "city_id":   42,
-                "name":      "Almaty",
-                "country":   "KZ",
-                "currency":  "KZT",
+                "name":      "primary",
+                "scope":   "default",
+                "currency":  "USD",
             },
         },
-        "/inDriver.geo_config.GeoConfigService/ListCountries": {
+        "/example.config.ConfigService/ListSettings": {
             "response": {
-                "countries": [
-                    {"code": "KZ", "name": "Kazakhstan"},
-                    {"code": "RU", "name": "Russia"},
+                "scopes": [
+                    {"code": "default", "name": "Default"},
+                    {"code": "other", "name": "Other"},
                 ],
             },
         },
 
         # Status-only error (no body).
-        "/inDriver.geo_config.GeoConfigService/AdminUpdate": {
+        "/example.config.ConfigService/AdminUpdate": {
             "error": {"code": "PERMISSION_DENIED", "message": "admin only"},
         },
 
         # Dynamic handler — receives the typed request as a dict.
-        "/inDriver.geo_config.GeoConfigService/GetCityByCoords": grpc.dynamic(
+        "/example.config.ConfigService/GetSettingByKey": grpc.dynamic(
             lambda req: {
                 "response": {
                     "city_id": 1 if req["latitude"] > 0 else 2,
@@ -157,8 +157,8 @@ Three options, in order of friendliness:
    Generated once per customer codebase via a build step:
    ```
    protoc \
-     --include_imports --descriptor_set_out=geo_config.pb \
-     proto/inDriver/geo_config/*.proto
+     --include_imports --descriptor_set_out=config_service.pb \
+     proto/example/config/*.proto
    ```
    **This is the v1 default.** It separates "Faultbox knows what
    your protos look like" from "Faultbox knows where your protos
@@ -171,13 +171,13 @@ Three options, in order of friendliness:
 
 3. **Go module bridge.** Helper `grpc.descriptors_from_module(path)`
    that scans a Go module path for `*.pb.go` files and reflects on
-   their compiled descriptors at spec-load time. Solves the truck-api
+   their compiled descriptors at spec-load time. Solves the order-service
    case directly but couples Faultbox to the Go ecosystem. Considered
    for v2.
 
 ### Multi-service / multi-port single mock
 
-A common pattern (per truck-api Phase 1) is one mock process exposing
+A common pattern (per order-service Phase 1) is one mock process exposing
 many gRPC services on different ports:
 
 ```python
@@ -185,26 +185,26 @@ upstreams = grpc.cluster(
     name = "upstreams",
     descriptors = "./proto/all_upstreams.pb",
     interfaces = {
-        "geo_config":   ("grpc", 9001),
-        "geo_facade":   ("grpc", 9002),
+        "config_service":   ("grpc", 9001),
+        "config_facade":   ("grpc", 9002),
         "user_service": ("grpc", 9003),
         "balance_api":  ("grpc", 9004),
     },
     services = {
-        "/inDriver.geo_config.GeoConfigService/*":   { ... },
-        "/inDriver.geo_facade.GeoFacadeService/*":   { ... },
-        "/inDriver.user.UserService/*":              { ... },
-        "/inDriver.balance.BalanceService/*":        { ... },
+        "/example.config.ConfigService/*":   { ... },
+        "/example.config_facade.GeoFacadeService/*":   { ... },
+        "/example.user.UserService/*":              { ... },
+        "/example.billing.BillingService/*":        { ... },
     },
     # routes auto-bind to the correct port based on which service
     # the method belongs to (resolved from the descriptor set)
 )
 
-# Reference individual upstreams as upstreams.geo_config etc.
+# Reference individual upstreams as upstreams.config_service etc.
 ```
 
 `grpc.cluster()` is a convenience over N invocations of `grpc.server()`
-sharing a single descriptor set. Helps the truck-api-style "8 mocks
+sharing a single descriptor set. Helps the order-service-style "8 mocks
 on 8 ports" use case without 8x boilerplate.
 
 ### Default response shape
@@ -220,8 +220,8 @@ Existing fault rules continue to apply against typed mocks unchanged:
 ```python
 load("@faultbox/recipes/grpc.star", "grpc_faults")
 
-geo_unstable = fault_assumption("geo_unstable",
-    target = upstreams.geo_config,
+config_unstable = fault_assumption("config_unstable",
+    target = upstreams.config_service,
     rules  = [grpc_faults.unavailable()],
 )
 ```
@@ -283,21 +283,21 @@ mocks unchanged.
 ## Resolved Questions (2026-04-21)
 
 1. **Streaming RPCs → SKIP for v1.** Only revisit if a paying customer
-   asks. Truck-api's entire Phase 1 surface is unary; we have no
+   asks. The order service's entire Phase 1 surface is unary; we have no
    evidence the added complexity (Starlark generators / iterator
    semantics / backpressure model) is worth carrying until someone
    shows us a concrete gap.
 
 2. **Custom error details (`google.rpc.Status` + typed details)
    → DEFERRED to v2.** Plain status-code errors via `grpc.error(code)`
-   cover the truck-api use case and likely 90% of early adopters.
+   cover the order-service use case and likely 90% of early adopters.
    Add when the first customer hits a real need.
 
 3. **Descriptor-set authoring tooling (`faultbox proto build`)
    → NO, never.** We will not ship a `protoc` wrapper and we will
    not take `protoc` as a dependency (build-time or otherwise).
    Customers maintain their own `.pb` files via their existing build
-   pipeline — the inDrive monorepo pattern (a dedicated proto
+   pipeline — the the customer monorepo pattern (a dedicated proto
    repository that publishes `.proto` + pre-generated `.pb.go`) is
    the canonical shape. The RFC + docs will describe exactly what
    Faultbox needs as input (a `FileDescriptorSet` `.pb` file, built

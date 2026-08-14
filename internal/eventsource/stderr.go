@@ -14,7 +14,7 @@ func init() {
 }
 
 // stderrSource is the stdout-source twin for the service's stderr stream.
-// Customer ask (inDrive Freight, 2026-04-30): every Go service using zap
+// Customer ask (customer report, 2026-04-30): every Go service using zap
 // or logrus defaults to stderr; the v0.12.15.x arc worked around that
 // with an FB_LOG_TO_STDOUT env-gate, but a one-line
 // observe=[stderr(decoder=...)] removes the SUT-side change for every

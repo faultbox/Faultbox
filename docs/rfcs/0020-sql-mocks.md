@@ -28,7 +28,7 @@ This is explicitly deferred from RFC-017 because SQL mock semantics are their ow
 
 ### Real usage is SQL-heavy
 
-From the truck-api customer intake (pre-RFC-017 feedback): MySQL is the **P0** dependency — every request touches it. Postgres comes up repeatedly in other deployments. A mock story that covers HTTP auth stubs but forces users back to container-based MySQL/Postgres for database dependencies leaves the hardest half of real topologies uncovered.
+From the order-service customer intake (pre-RFC-017 feedback): MySQL is the **P0** dependency — every request touches it. Postgres comes up repeatedly in other deployments. A mock story that covers HTTP auth stubs but forces users back to container-based MySQL/Postgres for database dependencies leaves the hardest half of real topologies uncovered.
 
 ### Recipes aren't enough
 

@@ -286,7 +286,7 @@ func (p *mysqlProxy) forwardHandshake(client, server net.Conn) error {
 	// followed by `OK(0x00)` — with NO client packet in between.
 	// Pre-v0.12.15 this looped after the AuthMoreData expecting a
 	// client reply that never came, deadlocking until the client's
-	// connect timeout fired (Finding H, Freight 2026-04-29).
+	// connect timeout fired (Finding H, customer report 2026-04-29).
 	//
 	// 16 rounds gives generous headroom for any future plugin while
 	// staying bounded against a malformed peer.

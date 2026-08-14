@@ -272,11 +272,11 @@ func TestRemote_RemotesRejectsNonStringValue(t *testing.T) {
 
 func TestRemote_PlainStringHostHappyPath(t *testing.T) {
 	err := loadStringErr(t, `
-geo = service("geo-config",
+config = service("config",
     interface("public",   "http", 8080),
     interface("internal", "grpc", 9090),
-    remote = "geo-config.staging.svc.cluster.local",
-    healthcheck = http("geo-config.staging.svc.cluster.local:8080/healthz"),
+    remote = "config-service.staging.svc.cluster.local",
+    healthcheck = http("config-service.staging.svc.cluster.local:8080/healthz"),
 )
 `)
 	if err != nil {
@@ -365,14 +365,14 @@ service("svc", "/usr/bin/x", interface("main", "http", 8080))
 
 func TestRemote_FaultAssumption_RejectsSyscallFault(t *testing.T) {
 	err := loadStringErr(t, `
-geo = service("geo",
+config = service("config",
     interface("public", "http", 8080),
-    remote = "geo.example",
-    healthcheck = http("geo.example:8080/healthz"),
+    remote = "config.example",
+    healthcheck = http("config.example:8080/healthz"),
 )
 
 fault_assumption("net_blip",
-    target = geo,
+    target = config,
     write  = deny("EIO"),
 )
 `)
@@ -387,14 +387,14 @@ fault_assumption("net_blip",
 
 func TestRemote_FaultAssumption_AcceptsProtocolRules(t *testing.T) {
 	err := loadStringErr(t, `
-geo = service("geo",
+config = service("config",
     interface("public", "http", 8080),
-    remote = "geo.example",
-    healthcheck = http("geo.example:8080/healthz"),
+    remote = "config.example",
+    healthcheck = http("config.example:8080/healthz"),
 )
 
-fault_assumption("geo_unavailable",
-    target = geo.public,
+fault_assumption("config_unavailable",
+    target = config.public,
     rules  = [error(path = "/v1/regions/**", status = 503)],
 )
 `)
@@ -410,24 +410,24 @@ func TestK8sDiscovery_ServiceReturnsClusterDNS(t *testing.T) {
 	src := `
 load("@faultbox/discovery/k8s.star", "k8s")
 
-geo = service("geo-config",
+config = service("config-service",
     interface("public", "http", 8080),
-    remote      = k8s.service("geo-config", namespace = "staging"),
-    healthcheck = http(k8s.endpoint("geo-config", 8080, namespace = "staging") + "/healthz"),
+    remote      = k8s.service("config-service", namespace = "staging"),
+    healthcheck = http(k8s.endpoint("config-service", 8080, namespace = "staging") + "/healthz"),
 )
 `
 	if err := rt.LoadString("test.star", src); err != nil {
 		t.Fatalf("LoadString: %v", err)
 	}
-	svc := rt.services["geo-config"]
+	svc := rt.services["config-service"]
 	if svc == nil {
 		t.Fatalf("service not registered")
 	}
-	want := "geo-config.staging.svc.cluster.local"
+	want := "config-service.staging.svc.cluster.local"
 	if svc.Remote != want {
 		t.Errorf("svc.Remote = %q; want %q", svc.Remote, want)
 	}
-	wantHC := "http://geo-config.staging.svc.cluster.local:8080/healthz"
+	wantHC := "http://config-service.staging.svc.cluster.local:8080/healthz"
 	if svc.Healthcheck.Test != wantHC {
 		t.Errorf("healthcheck = %q; want %q", svc.Healthcheck.Test, wantHC)
 	}
@@ -459,14 +459,14 @@ load("@faultbox/discovery/k8s.star", "k8s")
 
 svc = service("svc",
     interface("main", "http", 8080),
-    remote      = "geo.staging",
-    healthcheck = http(k8s.local("geo", 8080, namespace = "staging") + "/h"),
+    remote      = "config.staging",
+    healthcheck = http(k8s.local("config", 8080, namespace = "staging") + "/h"),
 )
 `
 	if err := rt.LoadString("test.star", src); err != nil {
 		t.Fatalf("LoadString: %v", err)
 	}
-	wantHC := "http://geo.staging:8080/h"
+	wantHC := "http://config.staging:8080/h"
 	if rt.services["svc"].Healthcheck.Test != wantHC {
 		t.Errorf("local short form: %q; want %q", rt.services["svc"].Healthcheck.Test, wantHC)
 	}
@@ -476,14 +476,14 @@ func TestRemote_FaultAssumption_RejectsSyscallEvenWithIfaceTarget(t *testing.T) 
 	// Targeting an interface_ref still has an underlying service; the gate
 	// must catch this too, not just bare service() targets.
 	err := loadStringErr(t, `
-geo = service("geo",
+config = service("config",
     interface("public", "http", 8080),
-    remote = "geo.example",
-    healthcheck = http("geo.example:8080/healthz"),
+    remote = "config.example",
+    healthcheck = http("config.example:8080/healthz"),
 )
 
 fault_assumption("disk_blip",
-    target = geo.public,
+    target = config.public,
     write  = deny("EIO"),
 )
 `)
