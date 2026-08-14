@@ -1,7 +1,3 @@
----
-title: "Chapter 13: LLM Agents & MCP Integration"
----
-
 # Chapter 13: LLM Agents & MCP Integration
 
 **Duration:** 15 minutes
