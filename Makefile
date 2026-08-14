@@ -73,6 +73,10 @@ testops-prep:
 	@# concurrent intercepted syscalls to strand the supervisor if a
 	@# dropped notification is ever mistaken for a closed listener again.
 	CGO_ENABLED=0 go build -o /tmp/pool-sut       ./poc/pool-sut/
+	@# Real h2c / gRPC / UDP server for the protocol audit's last three
+	@# protocols, which had no server to talk to and so carried unit
+	@# coverage only.
+	CGO_ENABLED=0 go build -o /tmp/protocol-servers ./poc/protocol-audit/servers/
 	@# RFC-040 leak harness drives the determinism_* corpus cases.
 	@# Linux-only — uses raw clock_gettime / getrandom syscalls via
 	@# golang.org/x/sys/unix, which doesn't compile on darwin.
