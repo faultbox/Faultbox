@@ -1120,6 +1120,22 @@ Both modes are always combined — you never lose isolation when adding faults.
   Kernel 5.19+ recommended for Go targets (`SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV`
   avoids SIGURG spin loops).
 
+### Variables
+
+| Variable | Effect |
+|---|---|
+| `FAULTBOX_BUNDLE_DIR` | Directory for emitted `.fb` bundles (overridden by `--bundle`) |
+| `FAULTBOX_PROXY_BIND` | Bind interface for proxy **and** `mock_service` listeners |
+
+`FAULTBOX_PROXY_BIND` defaults to `0.0.0.0` on Linux and `127.0.0.1`
+elsewhere. The Linux default is what makes proxies and mocks reachable
+from a containerized SUT: `host.docker.internal` resolves to the docker0
+bridge gateway, and nothing on that bridge can reach host loopback.
+
+Set it to `127.0.0.1` on a shared runner with a public NIC to keep
+listeners strictly host-local - at the cost of container reachability,
+so a containerized SUT will no longer reach either.
+
 ---
 
 ## Troubleshooting

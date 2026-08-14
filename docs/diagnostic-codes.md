@@ -82,6 +82,28 @@ syscalls.
 
 Look for infinite retry loops, missing timeouts on network calls, or deadlocks.
 
+Fires only when a fault actually **fired**. Before v0.18.0 it fired on every
+timeout, so a run with no faults at all was reported as timing out "while faults
+were active" — naming a cause that did not exist and sending readers to look for
+retry loops in a service that had never started. The two codes below cover what
+it used to absorb.
+
+### `TIMEOUT_NO_FAULT_FIRED`
+
+> The test timed out; faults were declared but none fired.
+
+The timeout is not explained by an injected fault. Check service startup and
+healthchecks first, then whether the fault targets the syscall or operation the
+service actually uses — see [`FAULT_NOT_FIRED`](#fault_not_fired).
+
+### `TIMEOUT_NO_FAULTS`
+
+> The test timed out and the run injected no faults.
+
+A plain timeout. Check that every service started and passed its healthcheck: a
+missing image or a failing readiness check reaches the deadline the same way a
+hung service does.
+
 ### `ASSERTION_MISMATCH`
 
 > An assertion failed, with the specific values.

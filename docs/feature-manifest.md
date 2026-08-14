@@ -64,6 +64,9 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | Feature | Tier | Mechanism | Status | Notes |
 |---|---|---|---|---|
 | `mock_service()` + HTTP routes | 2 | testops corpus (http_basic, mock_demo) | 🟢 | |
+| `mock_service()` reachable from a containerized SUT | 2 | `internal/star/mock_reachability_test.go` (bind + env substitution, faulted and unfaulted, plus the binary-consumer case) | 🟢 | Fixed in v0.18.0 (F-2). Mocks bind via `FAULTBOX_PROXY_BIND` and resolve to `host.docker.internal` for container consumers; exempt from the RFC-035 fault gate, since a mock has no DNS name to fall back on. Corpus still lacks an end-to-end container+mock spec |
+| Seccomp supervisor survives dropped notifications | 1 | `internal/engine/launch_linux_test.go` (errno classification, ENOENT-is-never-a-closed-fd, supervisor-failure reporting) + `poc/pool-sut/` (24-connection SUT under filter) | 🟢 | Fixed in v0.18.0 (F-1/F-4). ENOENT from `NOTIF_RECV` is a per-notification transient, not a closed listener. A loop that ends while its target lives now fails the test loudly instead of leaving every intercepted syscall blocked forever. The poc spec is a liveness gate, not a deterministic reproduction of the race |
+| Filter installed for multi-line / spaced `fault()` | 1 | `internal/star/spec_statements.go` + scan behaviour verified in Lima (`rule_count`/`seccomp` on both spellings) | 🟡 | Fixed in v0.18.0. Still a source heuristic: a fault built through a variable or a helper function installs no filter, and `FAULT_NOT_FIRED` is the only backstop. Needs an AST-based scan to close properly |
 | Redis mock (miniredis) | 2 | testops corpus (redis_basic, mock_demo) | 🟢 | |
 | Kafka mock (kfake) | 2 | testops corpus (kafka_basic, mock_demo) | 🟢 | |
 | MongoDB mock | 2 | testops corpus (mongo_basic, mock_demo) | 🟢 | |
