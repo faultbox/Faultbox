@@ -91,12 +91,18 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 	data := getStringKwarg(kwargs, "data", "")
 	key := getStringKwarg(kwargs, "key", "")
 
+	// A step must not reuse DefaultTransport's metadata/connections from a
+	// broker that a previous test stopped at the same address (G4). Writers
+	// constructed as literals do not own/close that shared transport.
+	transport := &kafka.Transport{}
+	defer transport.CloseIdleConnections()
 	writer := &kafka.Writer{
 		Addr:                   kafka.TCP(addr),
 		Topic:                  topic,
 		BatchTimeout:           100 * time.Millisecond,
 		MaxAttempts:            5,
 		AllowAutoTopicCreation: true,
+		Transport:              transport,
 	}
 	defer writer.Close()
 
