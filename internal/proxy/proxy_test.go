@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -61,7 +62,10 @@ func TestHTTPProxyErrorRule(t *testing.T) {
 	defer cancel()
 
 	var events []ProxyEvent
+	var eventsMu sync.Mutex
 	p := newHTTPProxy(func(evt ProxyEvent) {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
 		events = append(events, evt)
 	}, "test-svc")
 	proxyAddr, _ := p.Start(ctx, mockLn.Addr().String())
@@ -98,13 +102,18 @@ func TestHTTPProxyErrorRule(t *testing.T) {
 	// RFC-034 added connection-lifecycle events (proxy_conn_open /
 	// _close); count only the legacy events for this assertion.
 	ruleEvents := 0
-	for _, e := range events {
+	// Connection-close callbacks can arrive after the response has been read.
+	// Snapshot under the same lock used by the asynchronous event collector.
+	eventsMu.Lock()
+	snapshot := append([]ProxyEvent(nil), events...)
+	eventsMu.Unlock()
+	for _, e := range snapshot {
 		if e.Type == "" {
 			ruleEvents++
 		}
 	}
 	if ruleEvents != 1 {
-		t.Errorf("expected 1 rule-fired event, got %d (total events: %d)", ruleEvents, len(events))
+		t.Errorf("expected 1 rule-fired event, got %d (total events: %d)", ruleEvents, len(snapshot))
 	}
 }
 
