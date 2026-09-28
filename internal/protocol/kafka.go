@@ -119,6 +119,9 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 	}
 	if len(key) > 0 {
 		msg.Key = key
+	} else if binaryKey, ok := kwargs["key"].([]byte); ok {
+		// Kafka distinguishes an explicit empty binary key from a null key.
+		msg.Key = binaryKey
 	}
 
 	// Retry loop to handle transient errors on first publish:
@@ -168,7 +171,8 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 func kafkaBytes(kwargs map[string]any, name string) ([]byte, error) {
 	v, ok := kwargs[name]
 	if !ok {
-		return nil, nil
+		// The documented default is an empty value, not a tombstone (nil).
+		return []byte{}, nil
 	}
 	switch b := v.(type) {
 	case string:

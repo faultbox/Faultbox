@@ -124,4 +124,41 @@ func TestKafkaBinaryRecordsAndCommitEvents(t *testing.T) {
 	if !seen["kafka.commit:3"] {
 		t.Fatalf("missing acknowledged commit: %v", seen)
 	}
+
+	for _, explicitKey := range []bool{false, true} {
+		topic := fmt.Sprintf("empty-%v", explicitKey)
+		args := map[string]any{"topic": topic}
+		if explicitKey {
+			args["data"] = []byte{}
+			args["key"] = []byte{}
+		}
+		result, err := p.ExecuteStep(ctx, addr, "publish", args)
+		if err != nil || !result.Success {
+			t.Fatalf("empty publish: %+v %v", result, err)
+		}
+		r, err := kgo.NewClient(kgo.SeedBrokers(addr), kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{topic: {0: kgo.NewOffset().AtStart()}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fetched := r.PollRecords(ctx, 1)
+		r.Close()
+		if err := fetched.Err(); err != nil {
+			t.Fatal(err)
+		}
+		records := fetched.Records()
+		if len(records) != 1 {
+			t.Fatalf("expected empty record, got %d", len(records))
+		}
+		msg := records[0]
+
+		if msg.Value == nil || len(msg.Value) != 0 {
+			t.Fatalf("empty value became a tombstone: %#v", msg.Value)
+		}
+		if explicitKey && msg.Key == nil {
+			t.Fatal("empty binary key became null")
+		}
+		if !explicitKey && msg.Key != nil {
+			t.Fatal("omitted key became non-null")
+		}
+	}
 }
