@@ -267,7 +267,7 @@ type Runtime struct {
 	// runNonce identifies this process's run. Used to scope Kafka
 	// consumer groups so committed offsets cannot leak between runs
 	// against a reused broker — see defaultKafkaGroup.
-	runNonce string
+	runNonce     string
 	containerIDs map[string]string // service name → container ID (for cleanup)
 	baseDir      string            // directory of the loaded .star file (for build= paths)
 	sourceText   string            // raw .star source for syscall scanning
@@ -1388,6 +1388,7 @@ func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf)
 		rt.currentLeafMu.Unlock()
 	}()
 	tr := rt.runTestImpl(ctx, name)
+	enforceMockErrors(&tr)
 
 	// RFC-052 Gap 8: resolve this test's candidate positive controls now that
 	// its verdict is known. Hooked here rather than inside runTestImpl because
@@ -1957,9 +1958,9 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 			reason += " — " + why
 		}
 		return TestResult{
-			Name:   name,
-			Result: "fail",
-			Reason: reason,
+			Name:            name,
+			Result:          "fail",
+			Reason:          reason,
 			DurationMs:      time.Since(start).Milliseconds(),
 			Events:          events,
 			Matrix:          matrixInfo,

@@ -56,6 +56,16 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
 		switch key {
+		case "state":
+			state, ok := kv[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("mock_service() state must be a dict (got %s)", kv[1].Type())
+			}
+			snapshot, err := freezeMockState(state)
+			if err != nil {
+				return nil, fmt.Errorf("mock_service() %q state: %w", name, err)
+			}
+			svc.Mock.StateInit = snapshot
 		case "routes":
 			dict, ok := kv[1].(*starlark.Dict)
 			if !ok {

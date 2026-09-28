@@ -88,6 +88,9 @@ type MockRequest struct {
 	Headers map[string]string // HTTP request headers; nil for non-HTTP
 	Query   map[string]string // HTTP query params; nil for non-HTTP
 	Body    []byte            // raw request body bytes
+	// BodyJSON is set for typed gRPC dynamic handlers. It uses protobuf JSON
+	// with proto field names; 64-bit integers are strings, bytes are base64.
+	BodyJSON []byte
 }
 
 // DynamicFn computes a MockResponse per request. Returning a non-nil error

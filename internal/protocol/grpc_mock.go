@@ -31,7 +31,8 @@ import (
 // specific message type will need the real backend.
 //
 // Dynamic handlers receive a MockRequest with Path populated; Body is the
-// raw wire bytes of the unary request message (protobuf-encoded).
+// raw wire bytes of the unary request message (protobuf-encoded). In typed
+// mode BodyJSON also contains the decoded request using protobuf JSON rules.
 //
 // Error responses: grpc_error() producers set Status to a gRPC code; the
 // handler translates Status to the gRPC status code with the Body as the
@@ -122,7 +123,21 @@ func (h *grpcMockHandler) serve(srv any, stream grpc.ServerStream) error {
 	var resp *MockResponse
 	switch {
 	case matched && route.Dynamic != nil:
-		dyn, err := route.Dynamic(MockRequest{Path: method, Body: reqFrame.data})
+		req := MockRequest{Path: method, Body: reqFrame.data}
+		if h.descriptors != nil {
+			inDesc, _, err := ResolveMethod(h.descriptors, method)
+			if err != nil {
+				emitWith(h.emit, "resolve_error", map[string]string{"method": method, "error": err.Error()})
+				return status.Error(codes.Internal, fmt.Sprintf("mock: %s", err))
+			}
+			decoded, err := TypedMessageToJSON(h.descriptors, inDesc, reqFrame.data)
+			if err != nil {
+				emitWith(h.emit, "decode_error", map[string]string{"method": method, "error": err.Error()})
+				return status.Error(codes.Internal, fmt.Sprintf("mock: decode request for %s: %s", method, err))
+			}
+			req.BodyJSON = decoded
+		}
+		dyn, err := route.Dynamic(req)
 		if err != nil {
 			emitWith(h.emit, "dynamic_error", map[string]string{"method": method, "error": err.Error()})
 			return status.Error(codes.Internal, err.Error())

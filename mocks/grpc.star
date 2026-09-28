@@ -28,7 +28,7 @@
 #             "/example.config.ConfigService/AdminUpdate": {
 #                 "error": {"code": "PERMISSION_DENIED", "message": "admin only"},
 #             },
-#             # Dynamic handler — receives the typed request as a dict.
+#             # Dynamic handler — req["body"] is the typed request dict.
 #             "/example.config.ConfigService/GetSettingByKey":
 #                 grpc.dynamic(lambda req: grpc.response({"id": 1, "name": "north"})),
 #             # Raw wire bytes for exotic cases (oneofs, extensions).
@@ -52,7 +52,7 @@
 #   - grpc.dynamic(fn)             — per-request Starlark handler
 #   - grpc.raw_response(bytes)     — escape hatch, pre-encoded wire bytes
 
-def _server(name, interface, descriptors, services = {}, depends_on = [], tls = False):
+def _server(name, interface, descriptors, services = {}, depends_on = [], tls = False, state = {}):
     # Walk the services map and convert each value into a mock_response
     # compatible with the routes= kwarg on mock_service().
     routes = {}
@@ -81,6 +81,7 @@ def _server(name, interface, descriptors, services = {}, depends_on = [], tls = 
         routes      = routes,
         depends_on  = depends_on,
         tls         = tls,
+        state       = state,
     )
 
 grpc = struct(
@@ -95,8 +96,10 @@ grpc = struct(
     # grpc.error(code, message) — status-code error. code is the canonical
     # name ("UNAVAILABLE") or integer.
     error = lambda code, message = "": grpc_error(code = code, message = message),
-    # grpc.dynamic(fn) — per-request handler; fn receives a request dict
-    # and must return one of grpc.response / grpc.error / grpc.raw_response.
+    # grpc.dynamic(fn) — fn receives body (protobuf JSON with proto field
+    # names), raw_body (bytes), state (frozen snapshot), state_revision.
+    # int64/uint64 fields in body are strings. Return one of grpc.response /
+    # grpc.error / grpc.raw_response. Change state from tests via set_state().
     dynamic = lambda fn: dynamic(fn = fn),
 
     # Shorthands for the gRPC status codes people reach for most often.

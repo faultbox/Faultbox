@@ -60,6 +60,7 @@ mock_service(name, *interfaces,
 | `default` | Fallback response when no route matches. Default: HTTP 404 / protocol-appropriate error. |
 | `tls` | When True, terminate TLS using a per-runtime mock CA. See [TLS](#tls) below. |
 | `config` | Opaque dict passed to the protocol plugin. Used by stdlib wrappers. |
+| `state` | Initial dict for dynamic handlers. Defaults to `{}`; restored on every test/plan leaf. |
 | `depends_on` | Same semantics as `service()` — start ordering. |
 
 Returns a `ServiceDef` — interchangeable with real services in `fault()`,
@@ -82,6 +83,66 @@ dynamic(fn)
 (`method`, `path`, `headers`, `query`, `body`) and returns a response.
 Used for JWT signing, per-request flag lookups, anything where the
 canned answer depends on the request.
+
+Handlers also receive `raw_body` (Starlark `bytes`), `state` (a frozen snapshot)
+and `state_revision` (an integer starting at 0 for each test). In typed gRPC
+mocks, `body` is decoded using protobuf JSON: proto field names (`user_id`),
+64-bit integers as strings, enums as names, and bytes as base64 strings.
+Ordinary scalar defaults and empty lists/maps are included; absent optional
+fields and unselected oneofs are omitted. Well-known types follow their
+protobuf JSON representation. Without descriptors, `body` remains a raw
+byte-carrying string, as it does for other protocols.
+
+### Change mock state during a test
+
+`mock.set_state(state)` atomically **replaces** the whole state dict. Values
+may be dicts with string keys, lists, strings, integers, finite floats, bools
+or None. Faultbox copies and freezes them: later edits to the caller's dict
+do not change the mock. Each dynamic invocation retains one snapshot even
+if the test switches state while that handler is running. A call already
+in flight may therefore still return the previous response.
+
+```python
+load("@faultbox/mocks/grpc.star", "grpc")
+
+def answer(req):
+    if req["state"].get("down", False):
+        return grpc.unavailable("upstream unavailable")
+    key = str(req["body"]["id"])
+    return grpc.response({"id": key, "name": req["state"]["users"][key]})
+
+config = grpc.server(
+    name = "config",
+    interface = interface("main", "grpc", 9001),
+    descriptors = "proto/config.pb",
+    state = {"users": {"42": "old"}},
+    services = {"/example.config.ConfigService/GetSetting": grpc.dynamic(answer)},
+)
+
+def test_aggregate_lag():
+    # Start the business operation and check the old aggregate here.
+    config.set_state({"users": {"42": "new"}})
+    # Subsequent handler invocations now see the new aggregate.
+    config.set_state({"down": True})
+    # Exercise the upstream-error fallback here.
+```
+
+Use test steps/events to decide when to switch state, or a test-body `sleep()`
+for an explicit wall-clock lag. State changes are only allowed from test
+bodies, including their parallel branches, not during spec loading or from
+mock handlers. Handlers must return responses without mutating shared state.
+Each replacement emits `mock.state_changed` with `revision` and the JSON
+`state`; simultaneous replacements are ordered by their revision numbers.
+Every test and every `choose()` leaf starts again from `state=` at revision 0.
+
+### Mock implementation errors fail the test
+
+`mock.encode_error`, `mock.decode_error`, `mock.resolve_error` and
+`mock.dynamic_error` prevent PASS, even if the SUT handles the resulting
+error successfully. CLI/JSON diagnostics name the mock, method and error
+(`MOCK_ENCODE_ERROR`, etc.). This also applies to static typed responses
+when they are first requested. Explicit `grpc.error(...)` responses and
+HTTP error statuses remain valid test inputs and do not invalidate a run.
 
 ## HTTP / HTTP/2 mocks
 
