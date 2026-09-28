@@ -151,6 +151,9 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 			// Before RFC-055 this used the raw path, so `./api.yaml`
 			// only loaded when faultbox happened to run from the spec's
 			// directory.
+			if err := rt.captureResource(rt.resolveSpecPath(path)); err != nil {
+				return nil, err
+			}
 			spec, err := protocol.LoadOpenAPI(rt.resolveSpecPath(path))
 			if err != nil {
 				return nil, fmt.Errorf("mock_service() %q openapi: %w", name, err)
@@ -224,6 +227,9 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 			if err != nil {
 				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
 			}
+			if err := rt.captureResource(rt.resolveSpecPath(path)); err != nil {
+				return nil, err
+			}
 			files, err := protocol.LoadDescriptorSet(rt.resolveSpecPath(path))
 			if err != nil {
 				return nil, fmt.Errorf("mock_service() %q descriptors: %w", name, err)
@@ -238,6 +244,9 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 
 	// Validate every interface declares a protocol that implements MockHandler.
 	for _, iface := range svc.Interfaces {
+		if svc.Mock.TLS[iface.Name] && iface.Protocol != "http" && iface.Protocol != "http2" && iface.Protocol != "grpc" {
+			return nil, fmt.Errorf("mock_service %q: tls=True is supported only for HTTP, HTTP/2 and gRPC mocks", name)
+		}
 		p, ok := protocol.Get(iface.Protocol)
 		if !ok {
 			return nil, fmt.Errorf("mock_service() %q: unknown protocol %q", name, iface.Protocol)
@@ -247,6 +256,9 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 		}
 	}
 
+	if err := validateStaticGRPCMock(svc); err != nil {
+		return nil, err
+	}
 	if err := rt.registerService(svc); err != nil {
 		return nil, err
 	}

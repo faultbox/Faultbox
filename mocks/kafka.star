@@ -24,13 +24,14 @@
 # topics with messages is not yet supported — kfake has no public API
 # for it. For now, produce seed messages from the test itself.
 
-def _broker(name, interface, topics = {}, partitions = 1, depends_on = []):
+def _broker(name, interface, topics = {}, partitions = 1, depends_on = [], advertise_host = ""):
     return mock_service(
         name,
         interface,
         config = {
             "topics":     topics,
             "partitions": partitions,
+            "advertise_host": advertise_host,
         },
         depends_on = depends_on,
     )

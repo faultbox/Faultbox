@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"io"
 	"net"
 	"strings"
@@ -81,22 +82,24 @@ func kafkaEcho(t *testing.T, useTLS bool) (string, *tls.Config, *int32, func()) 
 // to keep the proxy's parser happy.
 func sendKafkaFrame(t *testing.T, c net.Conn, apiKey int16, topic string) {
 	t.Helper()
-	// Build payload: api_key + api_version + correlation_id +
-	// client_id_len(2)=0 + topic_count placeholder + topic_len + topic.
-	body := make([]byte, 0, 32+len(topic))
-	tmp := make([]byte, 8)
-	binary.BigEndian.PutUint16(tmp[0:], uint16(apiKey))
-	binary.BigEndian.PutUint16(tmp[2:], 0) // api_version
-	binary.BigEndian.PutUint32(tmp[4:], 1) // correlation_id
-	body = append(body, tmp...)
-	// client_id: int16 length=0
-	body = append(body, 0, 0)
-	// Topic name (int16 length + bytes) — proxy's extractTopic
-	// scans forward for any reasonable string, so this lands.
-	tlen := make([]byte, 2)
-	binary.BigEndian.PutUint16(tlen, uint16(len(topic)))
-	body = append(body, tlen...)
-	body = append(body, []byte(topic)...)
+	var req kmsg.Request
+	if apiKey == kafkaAPIProduce {
+		r := kmsg.NewPtrProduceRequest()
+		r.SetVersion(3)
+		r.Acks = 1
+		r.Topics = []kmsg.ProduceRequestTopic{{Topic: topic, Partitions: []kmsg.ProduceRequestTopicPartition{{Partition: 0}}}}
+		req = r
+	} else {
+		r := kmsg.NewPtrFetchRequest()
+		r.SetVersion(4)
+		r.Topics = []kmsg.FetchRequestTopic{{Topic: topic, Partitions: []kmsg.FetchRequestTopicPartition{{Partition: 0}}}}
+		req = r
+	}
+	body := make([]byte, 10)
+	binary.BigEndian.PutUint16(body, uint16(apiKey))
+	binary.BigEndian.PutUint16(body[2:], uint16(req.GetVersion()))
+	binary.BigEndian.PutUint32(body[4:], 1)
+	body = req.AppendTo(body)
 
 	hdr := make([]byte, 4)
 	binary.BigEndian.PutUint32(hdr, uint32(len(body)))

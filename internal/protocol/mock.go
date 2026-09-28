@@ -37,6 +37,9 @@ type MockSpec struct {
 	Default *MockResponse
 	Config  map[string]any
 	TLSCert *tls.Certificate
+	// KafkaAdvertise resolves the proxy endpoint after startup. Metadata and
+	// coordinator responses must keep real Kafka clients on the fault path.
+	KafkaAdvertise func() string
 
 	// Descriptors, when non-nil, signals that responses on this mock should
 	// be wire-encoded using the types in this registry rather than as

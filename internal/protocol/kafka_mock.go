@@ -39,8 +39,16 @@ func (p *kafkaProtocol) ServeMock(ctx context.Context, addr string, spec MockSpe
 	}
 
 	topics := extractTopicNames(spec.Config)
+	observer := &kafkaObserver{emit: emit, advertise: spec.KafkaAdvertise, topics: make(map[[16]byte]string)}
 
 	opts := []kfake.Opt{
+		kfake.ListenFn(func(network, address string) (net.Listener, error) {
+			ln, err := net.Listen(network, address)
+			if err != nil {
+				return nil, err
+			}
+			return &kafkaObservedListener{Listener: ln, observer: observer}, nil
+		}),
 		kfake.Ports(port),
 		kfake.NumBrokers(1),
 		kfake.AllowAutoTopicCreation(),

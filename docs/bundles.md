@@ -130,6 +130,42 @@ that produced it.
 consuming binary already, so re-archiving them would bloat bundles
 without adding reproducibility value.
 
+### Declared inputs and portable paths
+
+Bundles also capture files read by `load_file/load_json/load_yaml`, mock/client
+descriptor sets and OpenAPI contracts, and available binary SUT executables.
+External files use a path hash beneath `_external/`, so two files named
+`migrations.sql` cannot overwrite each other.
+
+Declare additional files that the SUT reads with `resource(path)`. It returns
+an absolute path, captures the file (or a directory tree), and is remapped to
+the extracted copy on replay. Environment strings are not guessed as paths.
+
+```python
+app = service("app",
+    binary = "./bin/app",
+    cwd = resource("runtime"),
+    env = {"CONFIG_FILE_PATH": resource("config/local.yaml")},
+)
+```
+
+`cwd=` sets the working directory of a binary service; omission preserves the
+inherited working directory. Use `resource()` for relative runtime assets
+such as translation archives. For containers, declare resource-backed volume
+sources and use the image's WORKDIR.
+
+`spec/.faultbox-resources.json` records original-to-archive paths, SHA-256
+digests and file modes. Replay verifies digests and restores executable bits
+before loading the spec. `env.json.resources` and `env.json.binary_digests`
+expose the same provenance. Corrupt or missing captured inputs stop replay.
+Resources are limited to 512 MiB per file; directory resources reject symlinks
+(declare the target as a separate resource instead).
+
+Portability covers declared files, not arbitrary ambient filesystem access.
+The compatible OS/architecture, dynamic libraries, container images, Docker
+and any remote services still need to be available. A missing executable in
+a failed run is recorded as `resource_missing`; it cannot be packaged.
+
 ## Version compatibility
 
 `manifest.faultbox_version` records which Faultbox binary produced

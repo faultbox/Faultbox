@@ -14,7 +14,9 @@ kafka = service("kafka",
 
 ### `publish(topic="", data="", key="")`
 
-Publish a message to a topic.
+Publish a message to a topic and wait for broker acknowledgement (`acks=all`).
+Each step owns its transport, so restarting a mock at the same address does
+not reuse connections or metadata from an earlier test.
 
 ```python
 kafka.broker.publish(topic="order-events", data='{"id":1,"action":"created"}', key="order-1")
@@ -24,8 +26,22 @@ kafka.broker.publish(topic="notifications", data="hello world")
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `topic` | string | required | Topic name |
-| `data` | string | required | Message value (body) |
-| `key` | string | `""` | Message key (for partitioning) |
+| `data` | string or bytes | `""` | Message value (body), transmitted unchanged |
+| `key` | string or bytes | `""` | Message key (for partitioning) |
+
+For protobuf messages, use the shared encoder:
+
+```python
+payload = proto_encode(
+    descriptors = "proto/events.pb",
+    message = "orders.v1.OrderCreated",
+    body = {"order_id": "123", "city_id": 1},
+)
+kafka.broker.publish(topic="orders", data=payload, key=b"\x00\xff")
+```
+
+`proto_encode()` returns Starlark `bytes` and validates message/field names
+using protobuf JSON rules. Its descriptor file is included in bundles.
 
 **Response:**
 
@@ -84,8 +100,17 @@ resp = kafka.broker.consume(topic="order-events")
 | `.data["offset"]` | int | Message offset |
 | `.data["key"]` | string | Message key |
 | `.data["value"]` | string | Message value |
+| `.data["key_base64"]` | string | Exact key bytes as base64 |
+| `.data["value_base64"]` | string | Exact value bytes as base64 (use for binary payloads) |
 
 ## Fault Rules
+
+Built-in single-broker Kafka mocks advertise their proxy automatically in
+Metadata and FindCoordinator replies. When the topology includes containers,
+the default advertised host is the host's `docker0` IPv4 address when available.
+Custom networking can set `kafka.broker(advertise_host="...")` to an address
+reachable by all clients. The setup below still applies to real brokers.
+
 
 > **Before you write one: point the broker at the proxy.**
 >

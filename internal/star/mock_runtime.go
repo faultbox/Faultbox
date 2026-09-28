@@ -57,7 +57,7 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 				return fmt.Errorf("mock %q interface %q: tls init: %w", svcName, ifaceName, err)
 			}
 			cert, err := mt.serverCert(
-				[]string{"localhost", svcName},
+				[]string{"localhost", "host.docker.internal", svcName},
 				[]net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
 			)
 			if err != nil {
@@ -125,6 +125,38 @@ func (rt *Runtime) buildMockSpec(svcName, ifaceName string, svc *ServiceDef) (pr
 	routes := svc.Mock.Routes[ifaceName]
 	out := protocol.MockSpec{
 		Routes: make([]protocol.MockRoute, 0, len(routes)),
+	}
+	if svc.Interfaces[ifaceName].Protocol == "kafka" {
+		out.KafkaAdvertise = func() string {
+			addr := rt.proxyMgr.GetProxyAddr(svcName, ifaceName)
+			if addr == "" {
+				return ""
+			}
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return ""
+			}
+			// A bridge IP is reachable both from host binaries and Docker SUTs.
+			for _, consumer := range rt.services {
+				if consumer.IsContainer() {
+					if bridge, err := net.InterfaceByName("docker0"); err == nil {
+						addrs, _ := bridge.Addrs()
+						for _, a := range addrs {
+							ip, _, _ := net.ParseCIDR(a.String())
+							if ip.To4() != nil {
+								host = ip.String()
+								break
+							}
+						}
+					}
+					break
+				}
+			}
+			if override, ok := svc.Mock.Config[ifaceName]["advertise_host"].(string); ok && override != "" {
+				host = override
+			}
+			return net.JoinHostPort(host, port)
+		}
 	}
 
 	// RFC-021: when openapi= is set, compose the route table as

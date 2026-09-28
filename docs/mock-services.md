@@ -140,8 +140,8 @@ Every test and every `choose()` leaf starts again from `state=` at revision 0.
 `mock.encode_error`, `mock.decode_error`, `mock.resolve_error` and
 `mock.dynamic_error` prevent PASS, even if the SUT handles the resulting
 error successfully. CLI/JSON diagnostics name the mock, method and error
-(`MOCK_ENCODE_ERROR`, etc.). This also applies to static typed responses
-when they are first requested. Explicit `grpc.error(...)` responses and
+(`MOCK_ENCODE_ERROR`, etc.). Static typed responses are validated at spec load,
+including wildcard routes and fallbacks for known descriptor methods. Explicit `grpc.error(...)` responses and
 HTTP error statuses remain valid test inputs and do not invalidate a run.
 
 ## HTTP / HTTP/2 mocks
@@ -545,22 +545,50 @@ auth = mock_service("auth",
 When `tls=True`, Faultbox:
 
 1. Generates an ECDSA P-256 mock CA on first use (lazy, one per run).
-2. Signs a leaf cert for the mock with SANs `["localhost",
-   <service-name>, 127.0.0.1, ::1]`.
+2. Signs leaf certificates for mock and proxy with SANs `["localhost",
+   "host.docker.internal", <service-name>, 127.0.0.1, ::1]`.
 3. Writes the CA bundle to `${TMPDIR}/faultbox-ca-<timestamp>.pem`.
 4. Wraps the listener with TLS — HTTP, HTTP/2 (ALPN h2), gRPC.
+
+The path is exposed as `auth.ca_path` at spec load, so it can be used in env
+values or as a volume source. For example, a host binary can set
+`env={"SSL_CERT_FILE": auth.ca_path}`; a container can set
+`volumes={auth.ca_path: "/certs/mock-ca.pem:ro"}` and
+`env={"SSL_CERT_FILE": "/certs/mock-ca.pem"}`.
 
 SUTs trust the CA by reading that file. In binary mode, point your
 HTTP client's `RootCAs` at it; in container mode, mount it into the
 SUT container at a path the client picks up.
 
-TLS is supported on HTTP, HTTP/2, gRPC. Other protocols silently
-ignore `tls=True` for now; if you need TLS Kafka/Redis/MongoDB,
+TLS is supported on HTTP, HTTP/2, gRPC. Other protocols reject
+`tls=True`; if you need TLS Kafka/Redis/MongoDB,
 run the real service.
+
+## Kafka record events
+
+The Kafka mock emits these events after sending successful broker replies:
+
+| Event | Meaning | Fields |
+|---|---|---|
+| `mock.kafka.produce` | Broker acknowledged a record | `topic`, `partition`, `offset`, `client_id`, `key_base64`, `value_base64` |
+| `mock.kafka.fetch` | Broker sent a record in a fetch response | Same record fields |
+| `mock.kafka.commit` | Broker acknowledged a group's committed next offset | `topic`, `partition`, `offset`, `group`, `client_id` |
+
+Repeated fetches can emit the same offset more than once. Fetch is not proof
+of application processing; combine it with DB/API assertions. Commit offsets
+name the next record, so commit 3 covers offsets below 3. Fetch requests do not
+identify a consumer group; group attribution is available on commit events.
+Gzip/snappy/lz4/zstd record batches are decoded; transaction control records
+are excluded. A produce acknowledgement does not prove transaction commit.
+External clients using `acks=0` emit `mock.kafka.produce_unacknowledged`, which
+makes no persistence claim. Malformed client traffic emits
+`mock.kafka.protocol_error`; observation-decoder failures emit
+`mock.observation_error` and invalidate the run.
 
 ## Events
 
-Every mock interaction emits an event. Schema:
+Request/response mocks emit events for handled requests; Kafka emits the
+record and commit events listed above. Example schema:
 
 ```
 {
@@ -628,8 +656,14 @@ jwks_unavailable = fault_assumption("jwks_unavailable",
 )
 ```
 
-The mock answers normally, then the proxy layer rewrites the response —
-identical to faulting a real service.
+A proxy starts before dependent SUTs. Environment references to the mock are
+routed through it; `mock.main.proxy_addr` also works explicitly. Without a
+fault it forwards to the mock. An error/drop rule may short-circuit the call.
+TLS mocks keep TLS on both sides of the proxy using the shared CA.
+
+A protocol-fault scope with no observed hit emits `FAULT_NOT_FIRED` and marks
+an otherwise passing test `fault_bypassed`. A scenario requiring faults to fire
+fails instead. Unresolved `proxy_addr` references fail before the SUT launches.
 
 ## What mocks deliberately don't do
 

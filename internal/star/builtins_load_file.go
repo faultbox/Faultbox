@@ -97,10 +97,7 @@ func (rt *Runtime) readLoadFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("load_*(%q): network schemes are not supported — inline the content or download separately", path)
 	}
 
-	resolved := path
-	if !filepath.IsAbs(resolved) && rt.baseDir != "" {
-		resolved = filepath.Join(rt.baseDir, path)
-	}
+	resolved := rt.resolveSpecPath(path)
 
 	// Hermetic mode: make sure the final path (after symlink resolution)
 	// still lives under the spec directory. Off by default locally
@@ -140,6 +137,8 @@ func (rt *Runtime) readLoadFile(path string) ([]byte, error) {
 	// the file bytes alongside the .star tree. Mirrors the transitive
 	// load() capture logic in makeLoadFunc; paths outside baseDir land
 	// under _external/ via bundleSpecKey() at emit time.
+	rt.resourceMu.Lock()
+	defer rt.resourceMu.Unlock()
 	if rt.loadedSpecs == nil {
 		rt.loadedSpecs = make(map[string][]byte)
 	}

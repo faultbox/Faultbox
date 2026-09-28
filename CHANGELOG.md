@@ -10,6 +10,29 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+### Feasibility follow-ups
+
+- Descriptor sets accept included WKTs and out-of-order imports.
+- Mocks start proxies before dependent services; gRPC passthrough works with
+  in-process typed mocks and reflection. TLS proxies verify the mock CA,
+  exposed to specs as `mock.ca_path`. Unsupported mock TLS is rejected.
+- Empty protocol-fault scopes report `FAULT_NOT_FIRED` and mark passing runs
+  as `fault_bypassed`; unresolved proxy addresses fail before SUT launch.
+- Kafka publish supports binary keys/values and requires broker acknowledgement.
+  `proto_encode(...)` supplies reusable protobuf encoding. Kafka mocks emit
+  acknowledged per-record produce/fetch and group commit events and advertise
+  their proxy in metadata/coordinator replies.
+- Static typed mock responses are validated at load time, including wildcards
+  and default responses for known methods.
+- Bundles capture descriptors, binary SUTs and explicit `resource(...)` inputs,
+  remap external paths without basename collisions, verify SHA-256 hashes and
+  restore executable modes. Binary `cwd=` supports captured runtime assets.
+- Transitive module loads share one cache; teardown stops dependents before
+  their upstream mocks, reducing shutdown errors and duplicate warnings.
+- CI's HTTP proxy test synchronizes event collection. Testops builds the
+  current checkout into a temporary directory instead of reusing stale or
+  wrong-platform binaries.
+
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 

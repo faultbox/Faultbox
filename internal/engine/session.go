@@ -84,6 +84,7 @@ func (vc *VirtualClock) Timespec() (sec int64, nsec int64) {
 type SessionConfig struct {
 	// Binary is the path to the target executable.
 	Binary string
+	Cwd    string // optional child working directory
 	// Args are the arguments to pass to the target.
 	Args []string
 	// Env is extra environment variables for the target (KEY=VALUE).

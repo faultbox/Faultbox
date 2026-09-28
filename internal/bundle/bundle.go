@@ -139,6 +139,8 @@ type BypassedRule struct {
 // environment that produced the bundle. Every field is best-effort.
 // Fields the runtime cannot determine are omitted (not null).
 type Env struct {
+	Resources       []Resource        `json:"resources,omitempty"`
+	BinaryDigests   map[string]string `json:"binary_digests,omitempty"`
 	FaultboxVersion string            `json:"faultbox_version"`
 	FaultboxCommit  string            `json:"faultbox_commit,omitempty"`
 	HostOS          string            `json:"host_os,omitempty"`

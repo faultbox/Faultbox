@@ -197,6 +197,9 @@ func (rt *Runtime) buildClientTable(name string, target *InterfaceRef,
 
 	if openapiPath != "" {
 		resolved := rt.resolveSpecPath(openapiPath)
+		if err := rt.captureResource(resolved); err != nil {
+			return nil, fmt.Errorf("client(%q) openapi%s: %w", name, inheritedNote(inherited), err)
+		}
 		spec, err := protocol.LoadOpenAPI(resolved)
 		if err != nil {
 			return nil, fmt.Errorf("client(%q) openapi%s: %w", name, inheritedNote(inherited), err)
@@ -212,6 +215,9 @@ func (rt *Runtime) buildClientTable(name string, target *InterfaceRef,
 	}
 
 	resolved := rt.resolveSpecPath(descPath)
+	if err := rt.captureResource(resolved); err != nil {
+		return nil, fmt.Errorf("client(%q) descriptors%s: %w", name, inheritedNote(inherited), err)
+	}
 	files, err := protocol.LoadDescriptorSet(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("client(%q) descriptors%s: %w", name, inheritedNote(inherited), err)
@@ -233,6 +239,21 @@ func inheritedNote(inherited bool) string {
 // resolveSpecPath resolves a contract path relative to the spec's own
 // directory, matching load_file() and build= rather than the process CWD.
 func (rt *Runtime) resolveSpecPath(p string) string {
+	if rt.replayResources != nil {
+		original := p
+		if !filepath.IsAbs(original) {
+			original = filepath.Join(rt.replayResources.BaseDir, p)
+		}
+		for _, r := range rt.replayResources.Resources {
+			if filepath.Clean(original) == filepath.Clean(r.Source) {
+				return filepath.Join(rt.baseDir, r.Path)
+			}
+		}
+		// Already-resolved paths (resource() results) stay inside the replay tree.
+		if filepath.IsAbs(p) && strings.HasPrefix(p, rt.baseDir+string(filepath.Separator)) {
+			return p
+		}
+	}
 	if filepath.IsAbs(p) || rt.baseDir == "" {
 		return p
 	}

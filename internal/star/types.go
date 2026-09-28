@@ -59,6 +59,7 @@ func (r *RemotesVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: 
 
 type ServiceDef struct {
 	Name        string
+	Cwd         string // explicit binary working directory
 	Binary      string // local binary path (binary mode)
 	Image       string // container image reference (container mode)
 	Build       string // Dockerfile context path (container mode)
@@ -161,6 +162,14 @@ func (s *ServiceDef) Attr(name string) (starlark.Value, error) {
 		if s.IsMock() {
 			return starlark.NewBuiltin(s.Name+".set_state", s.setMockState), nil
 		}
+	case "ca_path":
+		if s.IsMock() {
+			mt, err := s.rt.getMockTLS()
+			if err != nil {
+				return nil, err
+			}
+			return starlark.String(mt.CAPath()), nil
+		}
 	case "get", "post", "put", "delete", "patch", "send":
 		// Shorthand: api.post(...) when service has a single interface.
 		iface, err := s.DefaultInterface()
@@ -176,7 +185,7 @@ func (s *ServiceDef) Attr(name string) (starlark.Value, error) {
 func (s *ServiceDef) AttrNames() []string {
 	names := []string{"name"}
 	if s.IsMock() {
-		names = append(names, "set_state")
+		names = append(names, "set_state", "ca_path")
 	}
 	for k := range s.Interfaces {
 		names = append(names, k)

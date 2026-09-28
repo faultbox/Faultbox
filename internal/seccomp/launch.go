@@ -5,6 +5,7 @@ package seccomp
 type LaunchConfig struct {
 	// TargetBinary is the path to the executable.
 	TargetBinary string
+	TargetDir    string // optional working directory, inherited when empty
 	// TargetArgs are arguments to pass.
 	TargetArgs []string
 	// TargetEnv is the environment for the target. If nil, inherits parent env.
