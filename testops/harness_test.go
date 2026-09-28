@@ -141,15 +141,11 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
-// ensureFaultboxBinary returns a path to ./bin/faultbox, building it if
-// missing. Always using the in-repo build avoids accidentally testing
-// the wrong binary from $PATH.
+// ensureFaultboxBinary builds this checkout for the current platform. A cached
+// bin/faultbox can be stale or belong to the host OS when running in Lima.
 func ensureFaultboxBinary(t *testing.T, root string) string {
 	t.Helper()
-	bin := filepath.Join(root, "bin", "faultbox")
-	if _, err := os.Stat(bin); err == nil {
-		return bin
-	}
+	bin := filepath.Join(t.TempDir(), "faultbox")
 	build := exec.Command("go", "build", "-o", bin, "./cmd/faultbox")
 	build.Dir = root
 	out, err := build.CombinedOutput()
