@@ -50,33 +50,25 @@ func LoadDescriptorSet(path string) (*protoregistry.Files, error) {
 		return nil, fmt.Errorf("parse descriptor set %s: %w", path, err)
 	}
 
-	files := new(protoregistry.Files)
-
-	// Pre-register the standard google.protobuf.* well-known types so that
-	// customer files importing them resolve even when the customer did NOT
-	// pass --include_imports to protoc. Non-fatal if any individual WKT
-	// fails to register (defensive; these are all in the stdlib).
+	// Prefer descriptors supplied by protoc; add only missing WKTs. Building
+	// the entire set at once also resolves imports regardless of file order.
+	seen := make(map[string]bool)
+	for _, f := range set.File {
+		if seen[f.GetName()] {
+			return nil, fmt.Errorf("duplicate descriptor file %q", f.GetName())
+		}
+		seen[f.GetName()] = true
+	}
 	protoregistry.GlobalFiles.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
-		if strings.HasPrefix(string(fd.Path()), "google/protobuf/") {
-			_ = files.RegisterFile(fd)
+		if strings.HasPrefix(fd.Path(), "google/protobuf/") && !seen[fd.Path()] {
+			set.File = append(set.File, protodesc.ToFileDescriptorProto(fd))
 		}
 		return true
 	})
-
-	// Register each file from the customer's descriptor set. protodesc.NewFile
-	// resolves imports against the registry we're building up, so customer
-	// files that import other customer files work if they appear in the set
-	// in topological order. `protoc --include_imports` emits them that way.
-	for _, fdp := range set.File {
-		fd, err := protodesc.NewFile(fdp, files)
-		if err != nil {
-			return nil, fmt.Errorf("register file %s: %w", fdp.GetName(), err)
-		}
-		if err := files.RegisterFile(fd); err != nil {
-			return nil, fmt.Errorf("add file %s to registry: %w", fdp.GetName(), err)
-		}
+	files, err := protodesc.NewFiles(&set)
+	if err != nil {
+		return nil, fmt.Errorf("register descriptor set %s: %w", path, err)
 	}
-
 	return files, nil
 }
 
