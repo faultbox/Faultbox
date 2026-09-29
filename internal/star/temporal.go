@@ -148,6 +148,7 @@ func (e *EventuallyExpectation) Hash() (uint32, error) {
 func (e *EventuallyExpectation) Name() string { return "eventually(" + funcName(e.predicate) + ")" }
 
 func (e *EventuallyExpectation) Evaluate(thread *starlark.Thread, log *EventLog) (Verdict, string, error) {
+	defer suppressSpecOutput(thread)()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.satisfied {
@@ -277,6 +278,7 @@ func (a *AlwaysExpectation) Hash() (uint32, error) { return 0, fmt.Errorf("unhas
 func (a *AlwaysExpectation) Name() string          { return "always(" + funcName(a.predicate) + ")" }
 
 func (a *AlwaysExpectation) Evaluate(thread *starlark.Thread, log *EventLog) (Verdict, string, error) {
+	defer suppressSpecOutput(thread)()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.violated {

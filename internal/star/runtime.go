@@ -231,9 +231,11 @@ type CrashInfo struct {
 
 // Runtime is the Starlark execution environment.
 type Runtime struct {
-	log    *slog.Logger
-	events *EventLog
-	eng    *engine.Engine
+	outputMu  sync.RWMutex
+	outputRun *specOutputRun
+	log       *slog.Logger
+	events    *EventLog
+	eng       *engine.Engine
 
 	// Service registry — populated during .star file load.
 	mu       sync.Mutex
@@ -1484,6 +1486,7 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// Reset event log and monitors for this test.
 	rt.events.Reset()
 	rt.events.ClearSubscribers()
+	defer rt.beginSpecOutput(name)()
 	rt.monitorMu.Lock()
 	rt.monitorErrors = nil
 	rt.monitorMu.Unlock()
@@ -1589,7 +1592,7 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// runs synchronously before the body; a setup error short-circuits
 	// to TerminationImmediateFail.
 	if testCfg != nil && testCfg.Setup != nil {
-		setupThread := &starlark.Thread{Name: name + "/setup"}
+		setupThread := rt.newSpecThread(name+"/setup", "setup", "")
 		if _, err := starlark.Call(setupThread, testCfg.Setup, nil, nil); err != nil {
 			rt.stopServices()
 			return TestResult{
@@ -1724,12 +1727,7 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// Run the test function. For legacy tests this is a synchronous
 	// call. For test()-declared tests we wrap it in a goroutine so the
 	// timeout (and terminate_when) can interrupt blocking primitives.
-	thread := &starlark.Thread{
-		Name: name,
-		Print: func(_ *starlark.Thread, msg string) {
-			fmt.Fprintln(os.Stderr, msg)
-		},
-	}
+	thread := rt.newSpecThread(name, "body", "")
 	rt.inTest.Store(true)
 
 	// RFC-041 §5.2 — signal the "body_start" lifecycle anchor to any
@@ -2436,12 +2434,7 @@ func (rt *Runtime) runSeedCallback(svcName string, svc *ServiceDef) error {
 	rt.log.Info("running seed", slog.String("service", svcName))
 	rt.events.Emit("service_seed", svcName, nil)
 
-	thread := &starlark.Thread{
-		Name: fmt.Sprintf("seed:%s", svcName),
-		Print: func(_ *starlark.Thread, msg string) {
-			fmt.Fprintln(os.Stderr, msg)
-		},
-	}
+	thread := rt.newSpecThread(fmt.Sprintf("seed:%s", svcName), "seed", svcName)
 	_, err := starlark.Call(thread, svc.Seed, nil, nil)
 	if err != nil {
 		return fmt.Errorf("seed() failed: %w", err)
@@ -2466,12 +2459,7 @@ func (rt *Runtime) runResetCallback(svcName string, svc *ServiceDef) error {
 	rt.log.Info("running "+label, slog.String("service", svcName))
 	rt.events.Emit("service_reset", svcName, nil)
 
-	thread := &starlark.Thread{
-		Name: fmt.Sprintf("reset:%s", svcName),
-		Print: func(_ *starlark.Thread, msg string) {
-			fmt.Fprintln(os.Stderr, msg)
-		},
-	}
+	thread := rt.newSpecThread(fmt.Sprintf("reset:%s", svcName), "reset", svcName)
 	_, err := starlark.Call(thread, cb, nil, nil)
 	if err != nil {
 		return fmt.Errorf("%s() failed: %w", label, err)

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	starlarkjson "go.starlark.net/lib/json"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 
@@ -26,6 +27,8 @@ type parallelResult struct {
 // builtins returns all Starlark built-in functions for a runtime.
 func (rt *Runtime) builtins() starlark.StringDict {
 	out := starlark.StringDict{
+		"json":    starlarkjson.Module,
+		"emit":    starlark.NewBuiltin("emit", rt.builtinEmit),
 		"service": starlark.NewBuiltin("service", rt.builtinService),
 		// Contract-driven callers (RFC-055). A topology entity in the same
 		// tier as service() and mock_service(): declared at spec load,
@@ -1317,6 +1320,7 @@ func (rt *Runtime) builtinAssertEq(thread *starlark.Thread, fn *starlark.Builtin
 // Checks that at least one event in the current trace matches all given filters.
 // Supports where=lambda for complex predicates on structured event data.
 func (rt *Runtime) builtinAssertEventually(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	defer suppressSpecOutput(thread)()
 	whereFn, whereKwargs := extractWhere(kwargs)
 	filters := extractEventFilters(whereKwargs)
 	events := rt.events.Events()
@@ -1348,6 +1352,7 @@ func (rt *Runtime) builtinAssertEventually(thread *starlark.Thread, fn *starlark
 // assert_never(service=, syscall=, path=, decision=, where=lambda)
 // Checks that no event in the current trace matches all given filters.
 func (rt *Runtime) builtinAssertNever(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	defer suppressSpecOutput(thread)()
 	whereFn, whereKwargs := extractWhere(kwargs)
 	filters := extractEventFilters(whereKwargs)
 	events := rt.events.Events()
@@ -2117,16 +2122,16 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 	if leaf := rt.snapshotCurrentLeaf(); leaf != nil {
 		if idx, pinned := leaf.InterleavingIndex(siteKey); pinned {
 			ordering := interleavingOrdering(site, idx)
-			return rt.parallelWithLeaf(callables, ordering)
+			return rt.parallelWithLeaf(callables, ordering, thread)
 		}
 	}
 
 	// If explore mode is active, install hold rules and use scheduler.
 	if rt.exploreMode == "all" || rt.exploreMode == "sample" {
-		return rt.parallelWithExplore(callables)
+		return rt.parallelWithExplore(callables, thread)
 	}
 
-	return rt.parallelSimple(callables)
+	return rt.parallelSimple(callables, thread)
 }
 
 // parallelWithLeaf launches branches in the order specified by the
@@ -2141,13 +2146,13 @@ func (rt *Runtime) builtinParallel(thread *starlark.Thread, fn *starlark.Builtin
 // surface and leaf descriptors locked in PRs 1-3 of this slice are
 // the substrate that work plugs into. Documented in the rc2
 // release notes so users know what "interleaving" means today.
-func (rt *Runtime) parallelWithLeaf(callables []starlark.Callable, ordering []int) (starlark.Value, error) {
+func (rt *Runtime) parallelWithLeaf(callables []starlark.Callable, ordering []int, parents ...*starlark.Thread) (starlark.Value, error) {
 	results := make([]parallelResult, len(callables))
 	for _, idx := range ordering {
 		if idx < 0 || idx >= len(callables) {
 			continue
 		}
-		t := &starlark.Thread{Name: fmt.Sprintf("parallel-%d", idx)}
+		t := childSpecThread(fmt.Sprintf("parallel-%d", idx), parents...)
 		val, err := starlark.Call(t, callables[idx], nil, nil)
 		results[idx] = parallelResult{value: val, err: err}
 	}
@@ -2155,7 +2160,7 @@ func (rt *Runtime) parallelWithLeaf(callables []starlark.Callable, ordering []in
 }
 
 // parallelSimple runs callables concurrently without interleaving control.
-func (rt *Runtime) parallelSimple(callables []starlark.Callable) (starlark.Value, error) {
+func (rt *Runtime) parallelSimple(callables []starlark.Callable, parents ...*starlark.Thread) (starlark.Value, error) {
 	results := make([]parallelResult, len(callables))
 	var wg sync.WaitGroup
 
@@ -2163,7 +2168,7 @@ func (rt *Runtime) parallelSimple(callables []starlark.Callable) (starlark.Value
 		wg.Add(1)
 		go func(idx int, callable starlark.Callable) {
 			defer wg.Done()
-			t := &starlark.Thread{Name: fmt.Sprintf("parallel-%d", idx)}
+			t := childSpecThread(fmt.Sprintf("parallel-%d", idx), parents...)
 			val, err := starlark.Call(t, callable, nil, nil)
 			results[idx] = parallelResult{value: val, err: err}
 		}(i, c)
@@ -2175,7 +2180,7 @@ func (rt *Runtime) parallelSimple(callables []starlark.Callable) (starlark.Value
 
 // parallelWithExplore runs callables with hold-and-release scheduling.
 // Syscalls from non-nondet services are held and released in permutation order.
-func (rt *Runtime) parallelWithExplore(callables []starlark.Callable) (starlark.Value, error) {
+func (rt *Runtime) parallelWithExplore(callables []starlark.Callable, parents ...*starlark.Thread) (starlark.Value, error) {
 	holdTag := fmt.Sprintf("explore-%d", rt.explorePerm)
 
 	// Install hold rules on all non-nondet services.
@@ -2214,7 +2219,7 @@ func (rt *Runtime) parallelWithExplore(callables []starlark.Callable) (starlark.
 		wg.Add(1)
 		go func(idx int, callable starlark.Callable) {
 			defer wg.Done()
-			t := &starlark.Thread{Name: fmt.Sprintf("parallel-%d", idx)}
+			t := childSpecThread(fmt.Sprintf("parallel-%d", idx), parents...)
 			val, err := starlark.Call(t, callable, nil, nil)
 			results[idx] = parallelResult{value: val, err: err}
 		}(i, c)
@@ -2419,6 +2424,7 @@ func dictToFilters(d *starlark.Dict) []eventFilter {
 // events(service=, syscall=, path=, decision=, where=lambda)
 // Returns a list of matching events from the current test's trace.
 func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	defer suppressSpecOutput(thread)()
 	whereFn, whereKwargs := extractWhere(kwargs)
 	filters := extractEventFilters(whereKwargs)
 	events := rt.events.Events()

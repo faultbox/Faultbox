@@ -21,6 +21,7 @@ import (
 // the spec-load error message so the user knows WHY this name is
 // forbidden, not just THAT it is.
 var monitorSandboxDenylist = map[string]string{
+	"emit": "emitting events from a predicate would recursively dispatch monitors",
 	// Fault injection — mutates runtime state and races with the test body.
 	"fault":            "fault injection from inside a monitor races with the test body",
 	"fault_all":        "fault injection from inside a monitor races with the test body",
