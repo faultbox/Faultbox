@@ -197,6 +197,16 @@ def test_inventory_down():
 
 ## Topology
 
+Binary services accept `cwd=resource("runtime")` to set and capture their
+working directory. `resource("config.yaml")` returns a path usable in env,
+args or volume sources and includes that input in replay bundles. See
+[declared inputs and portable paths](bundles.md#declared-inputs-and-portable-paths).
+
+`proto_encode(descriptors="schema.pb", message="pkg.Message", body={...})`
+validates a protobuf JSON-shaped body and returns wire-format `bytes` for
+Kafka `publish(data=...)` or other binary consumers. Descriptor files are
+captured with the spec.
+
 ### `service(name, [binary], *interfaces, ...)`
 
 Declares a service in the system under test. Returns a service object that can

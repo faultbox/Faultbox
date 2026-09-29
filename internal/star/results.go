@@ -363,7 +363,7 @@ func enrichTestOutput(tto *TestTraceOutput, tr *TestResult) {
 
 // buildDiagnostics analyzes test results and produces actionable hints.
 func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
-	var diags []Diagnostic
+	diags := protocolFaultDiagnostics(tr.Events)
 	seenMockErrors := make(map[string]bool)
 	for _, ev := range tr.Events {
 		if d, ok := mockErrorDiagnostic(ev); ok {

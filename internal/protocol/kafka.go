@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -88,8 +89,14 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 	if topic == "" {
 		return nil, fmt.Errorf("kafka.publish requires topic= argument")
 	}
-	data := getStringKwarg(kwargs, "data", "")
-	key := getStringKwarg(kwargs, "key", "")
+	data, err := kafkaBytes(kwargs, "data")
+	if err != nil {
+		return nil, err
+	}
+	key, err := kafkaBytes(kwargs, "key")
+	if err != nil {
+		return nil, err
+	}
 
 	// A step must not reuse DefaultTransport's metadata/connections from a
 	// broker that a previous test stopped at the same address (G4). Writers
@@ -102,15 +109,19 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 		BatchTimeout:           100 * time.Millisecond,
 		MaxAttempts:            5,
 		AllowAutoTopicCreation: true,
+		RequiredAcks:           kafka.RequireAll,
 		Transport:              transport,
 	}
 	defer writer.Close()
 
 	msg := kafka.Message{
-		Value: []byte(data),
+		Value: data,
 	}
-	if key != "" {
-		msg.Key = []byte(key)
+	if len(key) > 0 {
+		msg.Key = key
+	} else if binaryKey, ok := kwargs["key"].([]byte); ok {
+		// Kafka distinguishes an explicit empty binary key from a null key.
+		msg.Key = binaryKey
 	}
 
 	// Retry loop to handle transient errors on first publish:
@@ -118,7 +129,7 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 	//   - "Not Leader": partition leader election in progress.
 	//   - "unexpected EOF": broker restarted or not ready yet.
 	// Each attempt waits 1s before retrying, allowing Kafka time to converge.
-	var err error
+	err = nil
 	for attempt := 0; attempt < 10; attempt++ {
 		err = writer.WriteMessages(ctx, msg)
 		if err == nil {
@@ -157,6 +168,22 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 	}, nil
 }
 
+func kafkaBytes(kwargs map[string]any, name string) ([]byte, error) {
+	v, ok := kwargs[name]
+	if !ok {
+		// The documented default is an empty value, not a tombstone (nil).
+		return []byte{}, nil
+	}
+	switch b := v.(type) {
+	case string:
+		return []byte(b), nil
+	case []byte:
+		return b, nil
+	default:
+		return nil, fmt.Errorf("kafka.publish %s must be a string or bytes (got %T)", name, v)
+	}
+}
+
 func (p *kafkaProtocol) consume(ctx context.Context, addr string, kwargs map[string]any, start time.Time) (*StepResult, error) {
 	topic := getStringKwarg(kwargs, "topic", "")
 	if topic == "" {
@@ -187,11 +214,13 @@ func (p *kafkaProtocol) consume(ctx context.Context, addr string, kwargs map[str
 	}
 
 	body, _ := json.Marshal(map[string]any{
-		"topic":     msg.Topic,
-		"partition": msg.Partition,
-		"offset":    msg.Offset,
-		"key":       string(msg.Key),
-		"value":     string(msg.Value),
+		"topic":        msg.Topic,
+		"partition":    msg.Partition,
+		"offset":       msg.Offset,
+		"key":          string(msg.Key),
+		"value":        string(msg.Value),
+		"key_base64":   base64.StdEncoding.EncodeToString(msg.Key),
+		"value_base64": base64.StdEncoding.EncodeToString(msg.Value),
 	})
 	return &StepResult{
 		Body:       string(body),

@@ -2,6 +2,8 @@ package star
 
 import (
 	"context"
+	"github.com/faultbox/Faultbox/internal/gvisor"
+	"os"
 	"strings"
 	"testing"
 
@@ -90,6 +92,9 @@ def test_w():
 // and one that observes nothing because this machine was never registered.
 // Only the second is the user's to fix, so only the second should be reported.
 func TestWatchRefusesAnUnregisteredHost(t *testing.T) {
+	if _, err := os.Stat(gvisor.TraceConfigPath); err == nil {
+		t.Skip("requires an unregistered host; this machine already has setup-trace configuration")
+	}
 	res := runWatchTest(t, `
 def test_w():
     watch(db, files = ["/data/**"], run = lambda: None)

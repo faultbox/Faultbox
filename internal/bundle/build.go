@@ -89,6 +89,21 @@ func Build(in BuildInput) (*Writer, string, error) {
 		Crash:           in.Crash,
 	}
 	env := GatherEnv(in.FaultboxVersion, in.FaultboxCommit)
+	if data, ok := in.Specs[ResourceManifestName]; ok {
+		var resources ResourceManifest
+		if err := json.Unmarshal(data, &resources); err != nil {
+			return nil, "", fmt.Errorf("resources: %w", err)
+		}
+		env.Resources = resources.Resources
+		env.BinaryDigests = make(map[string]string)
+		for svc, source := range resources.Binaries {
+			for _, r := range resources.Resources {
+				if r.Source == source {
+					env.BinaryDigests[svc] = r.SHA256
+				}
+			}
+		}
+	}
 	if len(in.Remotes) > 0 {
 		env.Remotes = in.Remotes
 	}

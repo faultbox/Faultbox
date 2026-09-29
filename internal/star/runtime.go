@@ -2,6 +2,7 @@ package star
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"go.starlark.net/starlark"
 
 	faultbox "github.com/faultbox/Faultbox"
+	"github.com/faultbox/Faultbox/internal/bundle"
 	"github.com/faultbox/Faultbox/internal/config"
 	"github.com/faultbox/Faultbox/internal/container"
 	"github.com/faultbox/Faultbox/internal/engine"
@@ -267,12 +269,17 @@ type Runtime struct {
 	// runNonce identifies this process's run. Used to scope Kafka
 	// consumer groups so committed offsets cannot leak between runs
 	// against a reused broker — see defaultKafkaGroup.
-	runNonce     string
-	containerIDs map[string]string // service name → container ID (for cleanup)
-	baseDir      string            // directory of the loaded .star file (for build= paths)
-	sourceText   string            // raw .star source for syscall scanning
-	loadedSpecs  map[string][]byte // absolute path → bytes of every local .star loaded (RFC-025 Phase 4)
-	rootSpec     string            // absolute path of the root spec (LoadFile argument)
+	runNonce        string
+	containerIDs    map[string]string // service name → container ID (for cleanup)
+	baseDir         string            // directory of the loaded .star file (for build= paths)
+	sourceText      string            // raw .star source for syscall scanning
+	resourceMu      sync.Mutex
+	resourceModes   map[string]uint32
+	resourceDirs    map[string]bool
+	binarySources   map[string]string
+	replayResources *bundle.ResourceManifest
+	loadedSpecs     map[string][]byte // absolute path → bytes of every local .star loaded (RFC-025 Phase 4)
+	rootSpec        string            // absolute path of the root spec (LoadFile argument)
 
 	// Seed for deterministic probabilistic faults (nil = random).
 	seed *uint64
@@ -580,6 +587,12 @@ func (rt *Runtime) LoadFile(path string) error {
 		rt.rootSpec = absPath
 	}
 
+	var prepErr error
+	rt.replayResources, prepErr = bundle.PrepareResources(rt.baseDir)
+	if prepErr != nil {
+		return fmt.Errorf("replay resources: %w", prepErr)
+	}
+
 	// Read source for syscall scanning.
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -667,12 +680,24 @@ const stdlibPrefix = "@faultbox/"
 //  3. relative path → read from rt.baseDir (typically the spec's directory)
 func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
 	cache := make(map[string]starlark.StringDict)
+	loading := make(map[string]bool)
+	var load func(*starlark.Thread, string) (starlark.StringDict, error)
 
-	return func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
-		// Return cached result if already loaded.
-		if globals, ok := cache[module]; ok {
+	load = func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
+		key := module
+		if !strings.HasPrefix(module, stdlibPrefix) {
+			key = filepath.Clean(rt.resolveSpecPath(module))
+		}
+		// One cache for the entire load graph, including transitive imports.
+		if globals, ok := cache[key]; ok {
 			return globals, nil
 		}
+
+		if loading[key] {
+			return nil, fmt.Errorf("cyclic load: %s", module)
+		}
+		loading[key] = true
+		defer delete(loading, key)
 
 		var src []byte
 		var err error
@@ -690,10 +715,7 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 			modPath = module // preserve the @faultbox/... display name
 		} else {
 			// Resolve path relative to the base directory.
-			modPath = module
-			if rt.baseDir != "" && !filepath.IsAbs(module) {
-				modPath = filepath.Join(rt.baseDir, module)
-			}
+			modPath = rt.resolveSpecPath(module)
 			src, err = os.ReadFile(modPath)
 			if err != nil {
 				return nil, fmt.Errorf("load %q: %w", module, err)
@@ -713,16 +735,17 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 		rt.sourceText += "\n" + string(src)
 
 		modThread := &starlark.Thread{Name: module}
-		modThread.Load = rt.makeLoadFunc() // support nested loads
+		modThread.Load = load // support nested loads
 
 		globals, err := starlark.ExecFile(modThread, modPath, src, rt.builtins())
 		if err != nil {
 			return nil, fmt.Errorf("load %q: %w", module, err)
 		}
 
-		cache[module] = globals
+		cache[key] = globals
 		return globals, nil
 	}
+	return load
 }
 
 // DiscoverTests returns sorted test function names.
@@ -877,23 +900,20 @@ func (rt *Runtime) RootSpecPath() string {
 // `@faultbox/...` stdlib loads are excluded — they're baked into the
 // binary and don't need to travel with the bundle. Loads that resolve
 // outside the root spec's directory (absolute paths, `../`) are
-// preserved under a `_external/<basename>` prefix so they don't
+// preserved under a `_external/<path-hash>/<basename>` prefix so they don't
 // clobber tree entries. RFC-025 Phase 4.
 func (rt *Runtime) LoadedSpecs() map[string][]byte {
+	rt.resourceMu.Lock()
+	defer rt.resourceMu.Unlock()
 	if len(rt.loadedSpecs) == 0 {
 		return nil
 	}
-	out := make(map[string][]byte, len(rt.loadedSpecs))
-	for abs, data := range rt.loadedSpecs {
-		key := rt.bundleSpecKey(abs)
-		out[key] = data
-	}
-	return out
+	return rt.bundledResources()
 }
 
 // bundleSpecKey normalises an absolute path into the relative name a
 // bundle should store it under. Files within rt.baseDir keep their
-// tree layout; files outside it land under `_external/<basename>`
+// tree layout; files outside it land under `_external/<path-hash>/<basename>`
 // with a collision-safe suffix. Returns paths with forward slashes
 // regardless of host OS — tar bundles are portable.
 func (rt *Runtime) bundleSpecKey(absPath string) string {
@@ -903,7 +923,8 @@ func (rt *Runtime) bundleSpecKey(absPath string) string {
 	rel, err := filepath.Rel(rt.baseDir, absPath)
 	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
 		// Escape hatch for files outside the spec tree.
-		return "_external/" + filepath.Base(absPath)
+		hash := sha256.Sum256([]byte(absPath))
+		return fmt.Sprintf("_external/%x/%s", hash[:12], filepath.Base(absPath))
 	}
 	return filepath.ToSlash(rel)
 }
@@ -1389,6 +1410,14 @@ func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf)
 	}()
 	tr := rt.runTestImpl(ctx, name)
 	enforceMockErrors(&tr)
+	if diags := protocolFaultDiagnostics(tr.Events); tr.Result == "pass" && len(diags) > 0 {
+		tr.FaultBypassed = true
+		if rt.requireFaultsFire {
+			tr.Result = "fail"
+			tr.Reason = "FAULT_NOT_FIRED: " + diags[0].Message
+			tr.FaultBypassed = false
+		}
+	}
 
 	// RFC-052 Gap 8: resolve this test's candidate positive controls now that
 	// its verdict is known. Hooked here rather than inside runTestImpl because
@@ -2225,22 +2254,14 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			}
 		}
 
-		// RFC-024: pre-start a pass-through proxy for every proxy-capable
-		// interface. With no rules installed the proxy just forwards bytes,
-		// so the SUT sees identical behaviour to today. The upside is that
-		// any later fault(iface_ref, rule) call dispatches rules against
-		// the proxy the SUT is already talking to — closing the gap where
-		// protocol-level faults were cosmetic because the app bypassed the
-		// proxy. Mock services have no upstream and are skipped. Remote
-		// services (RFC-036) DO get proxies — that is how protocol faults
-		// reach a real pod the SUT thinks it's calling directly.
-		if !svc.IsMock() {
-			if err := rt.preStartProxies(ctx, svcName, svc); err != nil {
-				rt.log.Warn("pre-start proxy failed (faults may bypass app traffic)",
-					slog.String("service", svcName),
-					slog.String("error", err.Error()),
-				)
+		// Mocks are real upstream listeners too. Their proxies must exist
+		// before dependent SUTs receive addresses in their environment.
+		if err := rt.preStartProxies(ctx, svcName, svc); err != nil {
+			if svc.IsMock() {
+				return err
 			}
+			rt.log.Warn("pre-start proxy failed (faults may bypass app traffic)",
+				slog.String("service", svcName), slog.String("error", err.Error()))
 		}
 	}
 	return nil
@@ -2313,9 +2334,8 @@ func closedDoneChan() chan *engine.Result {
 // preStartProxies spins up a pass-through proxy per supported interface on a
 // just-started service. Subsequent services' env vars (built in buildEnv) will
 // then resolve upstream-interface references to the proxy listen address so
-// the SUT's own traffic reaches the proxy. Best-effort: a proxy failure is
-// logged but does not block startup — tests that don't use protocol-level
-// fault injection still work against the real upstream.
+// the SUT's own traffic reaches the proxy. Mock proxy failures abort startup; real-service callers retain their
+// best-effort fallback unless an explicit proxy address was requested.
 func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *ServiceDef) error {
 	for ifaceName, iface := range svc.Interfaces {
 		if !proxy.SupportsProxy(iface.Protocol) {
@@ -2337,7 +2357,16 @@ func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *Ser
 		var proxyAddr string
 		var tlsApplied bool
 		var err error
-		if iface.TLS != nil {
+		if svc.IsMock() && svc.Mock.TLS[ifaceName] {
+			serverCfg, clientCfg, tlsErr := rt.mockProxyTLS(svcName)
+			if tlsErr != nil {
+				return tlsErr
+			}
+			proxyAddr, tlsApplied, err = rt.proxyMgr.EnsureProxyTLS(ctx, svcName, ifaceName, iface.Protocol, targetAddr, serverCfg, clientCfg)
+			if err == nil && !tlsApplied {
+				return fmt.Errorf("mock %s.%s: proxy does not support TLS", svcName, ifaceName)
+			}
+		} else if iface.TLS != nil {
 			serverCfg, sErr := iface.TLS.ResolveServerConfig(rt.baseDir, []string{targetHostname(targetAddr)})
 			if sErr != nil {
 				return fmt.Errorf("proxy %s.%s: resolve server tls: %w", svcName, ifaceName, sErr)
@@ -2450,7 +2479,18 @@ func (rt *Runtime) runResetCallback(svcName string, svc *ServiceDef) error {
 
 // startBinaryService starts a service from a local binary (PoC 1 path).
 func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *ServiceDef) error {
+	if err := rt.captureBinary(svc); err != nil {
+		return err
+	}
+	if svc.Cwd != "" {
+		if err := rt.captureResource(svc.Cwd); err != nil {
+			return err
+		}
+	}
 	envVars := rt.buildEnv(svc)
+	if err := rt.validateProxyEnv(envVars); err != nil {
+		return err
+	}
 
 	var faultRules []engine.FaultRule
 	if svcRules := rt.requiredFaultRulesForService(svcName); svcRules != nil {
@@ -2574,6 +2614,7 @@ func (rt *Runtime) startBinaryService(ctx context.Context, svcName string, svc *
 
 	sessCfg := engine.SessionConfig{
 		Binary:             svc.Binary,
+		Cwd:                svc.Cwd,
 		Args:               svc.Args,
 		Env:                envVars,
 		Stdout:             sessStdout,
@@ -2668,6 +2709,9 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 
 	// Build container env (use container hostnames for inter-service refs).
 	envVars := rt.buildContainerEnv(svc)
+	if err := rt.validateProxyEnv(envVars); err != nil {
+		return err
+	}
 
 	// Find the shim binary path.
 	shimPath := rt.findShimPath()
@@ -3229,72 +3273,48 @@ func (rt *Runtime) stopServices() {
 		}
 	}
 
-	// Cancel non-reused sessions and tear down their proxies. Leaving
-	// the proxy alive across tests would cause the next test's
-	// EnsureProxy call to reuse a listener whose target points at the
-	// now-dead PID, so real traffic stalls until the proxy read
-	// timeout fires (see #61).
-	for name, rs := range rt.sessions {
+	// Dependents stop before dependencies. Keep upstream mocks and proxies
+	// alive while the SUT exits, rather than cancelling an unordered map.
+	order := append([]string(nil), rt.order...)
+	seen := make(map[string]bool)
+	for _, name := range order {
+		seen[name] = true
+	}
+	for name := range rt.sessions {
+		if !seen[name] {
+			order = append(order, name)
+		}
+	}
+	kept := make(map[string]*runningSession)
+	for i := len(order) - 1; i >= 0; i-- {
+		name := order[i]
+		rs, ok := rt.sessions[name]
+		if !ok {
+			continue
+		}
 		if reused[name] {
-			// Keep session alive; just clear dynamic fault rules. Mock
-			// services and no-seccomp container services don't carry an
-			// engine.Session — there's nothing to clear.
 			if rs.session != nil {
 				rs.session.ClearDynamicFaultRules()
 			}
+			kept[name] = rs
 			continue
 		}
 		rs.cancel()
-		if rt.proxyMgr != nil {
-			rt.proxyMgr.StopService(name)
-		}
-	}
-	// Wait for non-reused sessions to finish.
-	kept := make(map[string]*runningSession)
-	for name, rs := range rt.sessions {
-		if reused[name] {
-			kept[name] = rs
-			continue
+		if cid, ok := rt.containerIDs[name]; ok && rt.dockerClient != nil {
+			rt.dockerClient.StopContainer(context.Background(), cid, 5)
+			rt.dockerClient.RemoveContainer(context.Background(), cid)
+			delete(rt.containerIDs, name)
 		}
 		select {
 		case <-rs.done:
 		case <-time.After(5 * time.Second):
 		}
+		if rt.proxyMgr != nil {
+			rt.proxyMgr.StopService(name)
+		}
 	}
 	rt.sessions = kept
-
-	// Stop and remove non-reused Docker containers.
-	if rt.dockerClient != nil {
-		ctx := context.Background()
-		keptContainers := make(map[string]string)
-		for name, cid := range rt.containerIDs {
-			if reused[name] {
-				keptContainers[name] = cid
-				continue
-			}
-			rt.log.Debug("stopping container", slog.String("name", name))
-			rt.dockerClient.StopContainer(ctx, cid, 5)
-			rt.dockerClient.RemoveContainer(ctx, cid)
-		}
-		rt.containerIDs = keptContainers
-
-		// The network deliberately outlives the test. It used to be
-		// removed here whenever no container survived, so an N-test suite
-		// performed N create/destroy cycles on the same-named network.
-		//
-		// That churn is what the orders report (F-3) blames for Docker's
-		// embedded DNS black-holing from the second test onward: the
-		// first test's containers resolve names normally, and from
-		// session 2 the SUT's lookups against 127.0.0.11 hang while
-		// `docker exec getent hosts` in the same container still works.
-		// Their workaround was to make the entire topology DNS-free.
-		//
-		// Nothing needed the recreation. Per-test isolation comes from
-		// container lifecycle, not network lifecycle — containers are
-		// still destroyed and recreated around every test. The network is
-		// now created once per run and removed in cleanup(), which has
-		// always handled it.
-	}
+	// The Docker network outlives tests; cleanup() removes it at run end.
 
 	// Clean up socket directories only for non-reused services.
 	if len(reused) == 0 {
@@ -3569,12 +3589,17 @@ func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer st
 			// container, so mock_service() could not be used from a
 			// container at all.
 			if s.IsMock() {
-				if mode == containerConsumer {
-					target := fmt.Sprintf("host.docker.internal:%d", iface.Port)
-					out[fmt.Sprintf("localhost:%d", iface.Port)] = target
-					out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = target
-					out[fmt.Sprintf("%s:%d", name, iface.Port)] = target
+				target := rt.proxyMgr.GetProxyAddr(name, ifName)
+				if target == "" {
+					target = fmt.Sprintf("127.0.0.1:%d", iface.Port)
 				}
+				if mode == containerConsumer {
+					_, port, _ := splitHostPort(target)
+					target = fmt.Sprintf("host.docker.internal:%d", port)
+				}
+				out[fmt.Sprintf("localhost:%d", iface.Port)] = target
+				out[fmt.Sprintf("127.0.0.1:%d", iface.Port)] = target
+				out[fmt.Sprintf("%s:%d", name, iface.Port)] = target
 				continue
 			}
 			// The gate below asks "does a proxy fault target this
@@ -3857,6 +3882,15 @@ func (rt *Runtime) resolveProxyPlaceholders(v string, mode consumerMode) string 
 		v = strings.ReplaceAll(v, placeholder, replacement)
 	}
 	return v
+}
+
+func (rt *Runtime) validateProxyEnv(env []string) error {
+	for _, entry := range env {
+		if placeholder, ok := rt.hasUnresolvedProxyPlaceholder(entry); ok {
+			return fmt.Errorf("env references a proxy that did not start: %s", placeholder)
+		}
+	}
+	return nil
 }
 
 // hasUnresolvedProxyPlaceholder reports whether v still contains any
@@ -5026,6 +5060,10 @@ func starlarkKwargsToMap(kwargs []starlark.Tuple) map[string]any {
 	m := make(map[string]any)
 	for _, kv := range kwargs {
 		key, _ := starlark.AsString(kv[0])
+		if b, ok := kv[1].(starlark.Bytes); ok {
+			m[key] = []byte(b)
+			continue
+		}
 		if g, err := starlarkToGo(kv[1]); err == nil {
 			m[key] = g
 			continue

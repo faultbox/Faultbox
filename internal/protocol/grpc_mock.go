@@ -49,7 +49,7 @@ func (p *grpcProtocol) ServeMock(ctx context.Context, addr string, spec MockSpec
 		emit:        emit,
 		descriptors: spec.Descriptors,
 	}
-	opts := []grpc.ServerOption{grpc.UnknownServiceHandler(handler.serve)}
+	opts := []grpc.ServerOption{grpc.UnknownServiceHandler(handler.serve), grpc.ForceServerCodec(mockGRPCCodec{})}
 	if spec.TLSCert != nil {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(&tls.Config{
 			Certificates: []tls.Certificate{*spec.TLSCert},
@@ -234,6 +234,30 @@ func grpcMethodMatch(pattern, method string) bool {
 // contract that grpc-go's default codec checks for.
 type anyProto struct {
 	data []byte
+}
+
+// A proxy may advertise a process-global raw codec. The mock must own its
+// codec independently, while still supporting real protobuf reflection RPCs.
+type mockGRPCCodec struct{}
+
+func (mockGRPCCodec) Name() string { return "proto" }
+func (mockGRPCCodec) Marshal(v any) ([]byte, error) {
+	if raw, ok := v.(*anyProto); ok {
+		return raw.data, nil
+	}
+	if msg, ok := v.(proto.Message); ok {
+		return proto.Marshal(msg)
+	}
+	return nil, fmt.Errorf("grpc mock: cannot marshal %T", v)
+}
+func (mockGRPCCodec) Unmarshal(data []byte, v any) error {
+	if raw, ok := v.(*anyProto); ok {
+		return raw.Unmarshal(data)
+	}
+	if msg, ok := v.(proto.Message); ok {
+		return proto.Unmarshal(data, msg)
+	}
+	return fmt.Errorf("grpc mock: cannot unmarshal %T", v)
 }
 
 // Reset / String / ProtoMessage satisfy the proto.Message interface so

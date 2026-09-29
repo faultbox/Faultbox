@@ -9,7 +9,7 @@ import (
 // Only failures to execute/encode the mock itself invalidate test evidence.
 func mockErrorDiagnostic(ev Event) (Diagnostic, bool) {
 	switch ev.Type {
-	case "mock.encode_error", "mock.decode_error", "mock.resolve_error", "mock.dynamic_error":
+	case "mock.encode_error", "mock.decode_error", "mock.resolve_error", "mock.dynamic_error", "mock.observation_error":
 	default:
 		return Diagnostic{}, false
 	}

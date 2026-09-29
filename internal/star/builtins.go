@@ -100,6 +100,8 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"struct": starlark.NewBuiltin("struct", starlarkstruct.Make),
 		// Mock services (RFC-017).
 		"mock_service":        starlark.NewBuiltin("mock_service", rt.builtinMockService),
+		"resource":            starlark.NewBuiltin("resource", rt.builtinResource),
+		"proto_encode":        starlark.NewBuiltin("proto_encode", rt.builtinProtoEncode),
 		"json_response":       starlark.NewBuiltin("json_response", builtinJSONResponse),
 		"text_response":       starlark.NewBuiltin("text_response", builtinTextResponse),
 		"bytes_response":      starlark.NewBuiltin("bytes_response", builtinBytesResponse),
@@ -298,6 +300,12 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 		case "binary":
 			s, _ := starlark.AsString(kv[1])
 			svc.Binary = s
+		case "cwd":
+			value, ok := starlark.AsString(kv[1])
+			if !ok {
+				return nil, fmt.Errorf("service cwd must be a path string")
+			}
+			svc.Cwd = rt.resolveSpecPath(value)
 		case "image":
 			s, _ := starlark.AsString(kv[1])
 			svc.Image = s
@@ -483,7 +491,7 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 			case "name":
 				return nil, fmt.Errorf("service(): name is the first positional argument - write service(\"myname\", ...), not name=")
 			}
-			return nil, fmt.Errorf("service(%q): unknown keyword argument %q; valid: binary, image, build, remote, healthcheck, env, args, depends_on, volumes, ports, observe, ops, reuse, seed, reset, seccomp, nondeterministic_ok", name, key)
+			return nil, fmt.Errorf("service(%q): unknown keyword argument %q; valid: binary, cwd, image, build, remote, healthcheck, env, args, depends_on, volumes, ports, observe, ops, reuse, seed, reset, seccomp, nondeterministic_ok", name, key)
 		}
 	}
 
@@ -549,6 +557,9 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 		}
 	}
 
+	if svc.Cwd != "" && svc.Binary == "" {
+		return nil, fmt.Errorf("service cwd is supported for binary services; use image WORKDIR for containers")
+	}
 	if err := rt.registerService(svc); err != nil {
 		return nil, err
 	}
@@ -2599,14 +2610,16 @@ func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *Interfac
 		rt.proxyMgr.AddRule(svcName, ifaceName, rule)
 	}
 
-	// Emit event.
-	rt.events.Emit("proxy_fault_applied", svcName, map[string]string{
-		"interface": ifaceName,
-		"protocol":  proto,
-		"proxy":     proxyAddr,
-		"source":    sourceSvc,
-	})
+	// Packet-only scopes have no protocol rules to count.
+	if len(proxyFaults) > 0 {
+		rt.events.Emit("proxy_fault_applied", svcName, map[string]string{
+			"interface": ifaceName,
+			"protocol":  proto,
+			"proxy":     proxyAddr,
+			"source":    sourceSvc,
+		})
 
+	}
 	// Packet-level rules install onto the netstack gateway for the same window.
 	if len(packetFaults) > 0 {
 		cleanup, err := rt.applyPacketFaults(thread, sourceSvc, svcName, ifaceName, packetFaults)

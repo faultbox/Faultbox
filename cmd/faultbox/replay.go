@@ -13,9 +13,9 @@ import (
 // promised this since v0.9.7; v0.10.0 ships it as the second
 // consumer of the bundle format (after `faultbox inspect`).
 //
-//   faultbox replay run.fb                       # rerun every test
-//   faultbox replay run.fb --test test_foo       # rerun one test
-//   faultbox replay run.fb --extract-only ./out  # extract spec/ but don't run
+//	faultbox replay run.fb                       # rerun every test
+//	faultbox replay run.fb --test test_foo       # rerun one test
+//	faultbox replay run.fb --extract-only ./out  # extract spec/ but don't run
 //
 // Behaviour:
 //
@@ -109,6 +109,11 @@ func replayCmd(args []string) int {
 	if err != nil {
 		cleanup()
 		fmt.Fprintf(os.Stderr, "error: extract spec/: %v\n", err)
+		return 1
+	}
+	if _, err := bundle.PrepareResources(dst); err != nil {
+		cleanup()
+		fmt.Fprintf(os.Stderr, "error: replay resources: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(os.Stderr, "Extracted %d spec files to %s\n", n, dst)

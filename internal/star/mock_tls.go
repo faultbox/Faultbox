@@ -134,3 +134,18 @@ func (rt *Runtime) MockCAPath() string {
 	}
 	return rt.mockTLSImpl.CAPath()
 }
+
+func (rt *Runtime) mockProxyTLS(service string) (*tls.Config, *tls.Config, error) {
+	mt, err := rt.getMockTLS()
+	if err != nil {
+		return nil, nil, err
+	}
+	cert, err := mt.serverCert([]string{"localhost", "host.docker.internal", service}, []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback})
+	if err != nil {
+		return nil, nil, err
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(mt.ca)
+	return &tls.Config{Certificates: []tls.Certificate{*cert}, MinVersion: tls.VersionTLS12},
+		&tls.Config{RootCAs: roots, ServerName: service, MinVersion: tls.VersionTLS12}, nil
+}

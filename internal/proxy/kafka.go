@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
+	"github.com/faultbox/Faultbox/internal/kafkawire"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"io"
 	"math/rand"
 	"net"
@@ -21,6 +23,7 @@ const (
 type kafkaProxy struct {
 	mu       sync.RWMutex
 	rules    []Rule
+	topicIDs map[[16]byte]string
 	target   string
 	listener net.Listener
 	onEvent  OnProxyEvent
@@ -39,8 +42,9 @@ type kafkaProxy struct {
 
 func newKafkaProxy(onEvent OnProxyEvent, svcName string) *kafkaProxy {
 	return &kafkaProxy{
-		onEvent: onEvent,
-		svcName: svcName,
+		onEvent:  onEvent,
+		topicIDs: make(map[[16]byte]string),
+		svcName:  svcName,
 	}
 }
 
@@ -174,6 +178,16 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 			return
 		}
 
+		// acks=0 produces have no response; do not consume the next response.
+		if req, _, _, err := kafkawire.DecodeRequest(payload); err == nil {
+			if produce, ok := req.(*kmsg.ProduceRequest); ok && produce.Acks == 0 {
+				if duplicate {
+					serverConn.Write(lenBuf)
+					serverConn.Write(payload)
+				}
+				continue
+			}
+		}
 		// Forward response back.
 		respLenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(serverConn, respLenBuf); err != nil {
@@ -192,6 +206,7 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 			return
 		}
 		tracker.AddBytesS2C(respLen)
+		p.learnTopics(payload, resp)
 		clientConn.Write(respLenBuf)
 		clientConn.Write(resp)
 
@@ -334,49 +349,62 @@ func (p *kafkaProxy) forwardDuplicate(serverConn net.Conn, lenBuf, payload []byt
 	return nil
 }
 
-// extractTopic tries to extract the topic name from a Kafka Produce/Fetch request.
-// This is simplified — real parsing requires knowing the API version.
+// extractTopic handles versioned request headers and flexible Kafka bodies.
 func (p *kafkaProxy) extractTopic(payload []byte) string {
-	// Skip: api_key(2) + api_version(2) + correlation_id(4)
-	offset := 8
-
-	// Skip client_id (2-byte length + string).
-	if offset+2 > len(payload) {
+	req, _, _, err := kafkawire.DecodeRequest(payload)
+	if err != nil {
 		return ""
 	}
-	clientIDLen := int(int16(binary.BigEndian.Uint16(payload[offset:])))
-	offset += 2
-	if clientIDLen > 0 {
-		offset += clientIDLen
-	}
-
-	// For Produce (API v0-2): skip acks(2) + timeout(4) + topic_count(4).
-	// Then: topic_name_len(2) + topic_name.
-	// This is highly version-dependent — simplified extraction.
-	// Scan forward looking for a reasonable-length string.
-	for i := offset; i < len(payload)-2 && i < offset+50; i++ {
-		strLen := int(int16(binary.BigEndian.Uint16(payload[i:])))
-		if strLen > 0 && strLen < 256 && i+2+strLen <= len(payload) {
-			candidate := string(payload[i+2 : i+2+strLen])
-			// Heuristic: topic names are alphanumeric with dots/dashes/underscores.
-			if isTopicName(candidate) {
-				return candidate
-			}
+	var name string
+	var id [16]byte
+	switch r := req.(type) {
+	case *kmsg.ProduceRequest:
+		if len(r.Topics) > 0 {
+			name = r.Topics[0].Topic
+			id = r.Topics[0].TopicID
+		}
+	case *kmsg.FetchRequest:
+		if len(r.Topics) > 0 {
+			name = r.Topics[0].Topic
+			id = r.Topics[0].TopicID
 		}
 	}
-	return ""
+	if name != "" {
+		return name
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.topicIDs[id]
 }
 
-func isTopicName(s string) bool {
-	if len(s) == 0 {
-		return false
+func (p *kafkaProxy) learnTopics(request, response []byte) {
+	if len(request) < 2 || binary.BigEndian.Uint16(request) != 3 || len(response) < 4 {
+		return
 	}
-	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_') {
-			return false
+	req, _, _, err := kafkawire.DecodeRequest(request)
+	if err != nil {
+		return
+	}
+	resp := req.ResponseKind()
+	resp.SetVersion(req.GetVersion())
+	body := response[4:]
+	if resp.IsFlexible() {
+		body, err = kafkawire.SkipTags(body)
+		if err != nil {
+			return
 		}
 	}
-	return true
+	if resp.ReadFrom(body) != nil {
+		return
+	}
+	metadata := resp.(*kmsg.MetadataResponse)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, topic := range metadata.Topics {
+		if topic.Topic != nil {
+			p.topicIDs[topic.TopicID] = *topic.Topic
+		}
+	}
 }
 
 func (p *kafkaProxy) AddRule(rule Rule) {

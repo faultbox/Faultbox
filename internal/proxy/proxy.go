@@ -197,7 +197,7 @@ func (m *Manager) EnsureProxy(ctx context.Context, svcName, ifaceName, protocol,
 		return rp.listenAddr, nil // already running
 	}
 
-	p, err := newProxy(protocol, m.onEvent, svcName)
+	p, err := newProxy(protocol, m.interfaceEmitter(ifaceName), svcName)
 	if err != nil {
 		return "", fmt.Errorf("create %s proxy for %s: %w", protocol, key, err)
 	}
@@ -241,7 +241,7 @@ func (m *Manager) EnsureProxyTLS(ctx context.Context, svcName, ifaceName, protoc
 		return rp.listenAddr, false, nil // already running
 	}
 
-	p, err := newProxy(protocol, m.onEvent, svcName)
+	p, err := newProxy(protocol, m.interfaceEmitter(ifaceName), svcName)
 	if err != nil {
 		return "", false, fmt.Errorf("create %s proxy for %s: %w", protocol, key, err)
 	}
@@ -266,6 +266,21 @@ func (m *Manager) EnsureProxyTLS(ctx context.Context, svcName, ifaceName, protoc
 	}
 
 	return addr, tlsApplied, nil
+}
+
+func (m *Manager) interfaceEmitter(iface string) OnProxyEvent {
+	if m.onEvent == nil {
+		return nil
+	}
+	return func(ev ProxyEvent) {
+		fields := make(map[string]string, len(ev.Fields)+1)
+		for k, v := range ev.Fields {
+			fields[k] = v
+		}
+		fields["interface"] = iface
+		ev.Fields = fields
+		m.onEvent(ev)
+	}
 }
 
 // AddRule adds a fault rule to the proxy for the given service interface.

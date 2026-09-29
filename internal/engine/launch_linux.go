@@ -132,6 +132,7 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	// Launch via unified shim.
 	childPid, listenerFd, err := seccomp.Launch(seccomp.LaunchConfig{
 		TargetBinary: s.cfg.Binary,
+		TargetDir:    s.cfg.Cwd,
 		TargetArgs:   s.cfg.Args,
 		TargetEnv:    targetEnv,
 		SyscallNrs:   syscallNrs,

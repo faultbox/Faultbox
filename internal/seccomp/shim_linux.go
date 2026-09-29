@@ -223,6 +223,7 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 
 	// Fork+exec ourselves as the child shim.
 	childPid, err := syscall.ForkExec(self, os.Args[:1], &syscall.ProcAttr{
+		Dir:   cfg.TargetDir,
 		Env:   env,
 		Files: fds,
 		Sys:   sysAttr,
