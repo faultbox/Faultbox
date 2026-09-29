@@ -538,6 +538,7 @@ func (l *EventListVal) Attr(name string) (starlark.Value, error) {
 }
 
 func (l *EventListVal) listMap(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	defer suppressSpecOutput(thread)()
 	var fn starlark.Callable
 	if err := starlark.UnpackPositionalArgs("events.map", args, kwargs, 1, &fn); err != nil {
 		return nil, err
@@ -554,6 +555,7 @@ func (l *EventListVal) listMap(thread *starlark.Thread, _ *starlark.Builtin, arg
 }
 
 func (l *EventListVal) listFilter(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	defer suppressSpecOutput(thread)()
 	var fn starlark.Callable
 	if err := starlark.UnpackPositionalArgs("events.filter", args, kwargs, 1, &fn); err != nil {
 		return nil, err
@@ -572,6 +574,7 @@ func (l *EventListVal) listFilter(thread *starlark.Thread, _ *starlark.Builtin, 
 }
 
 func (l *EventListVal) listReduce(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	defer suppressSpecOutput(thread)()
 	var fn starlark.Callable
 	var initial starlark.Value
 	if err := starlark.UnpackArgs("events.reduce", args, kwargs, "fn", &fn, "initial", &initial); err != nil {

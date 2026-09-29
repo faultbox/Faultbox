@@ -106,6 +106,11 @@ Every builtin grouped by what it's for. Use Cmd-F to jump.
 [`expect_error_within`](#expect_success--expect_error_withinms--expect_hang-v098),
 [`expect_hang`](#expect_success--expect_error_withinms--expect_hang-v098).
 
+**Spec evidence and JSON** —
+[`emit`](#spec-evidence),
+[`print`](#spec-evidence),
+[`json`](#json-module).
+
 **Event sources & decoders** —
 [`events`](#event-sources),
 [`stdout`](#event-sources),
@@ -3946,3 +3951,58 @@ Hooks receive a context with:
 Monitors (basic `monitor()` builtin) are already implemented — see the
 Monitors section above. State machine hooks will extend monitors with
 per-service state tracking and lifecycle-aware fault decisions.
+
+
+## Spec evidence
+
+Use `emit(type, data)` to record machine-readable test evidence:
+
+```python
+def test_snapshot():
+    snapshot = {"case": "AGG-11", "observed": {"wd": "DENIED"}}
+    emit(type="asis.snapshot", data=snapshot)
+    print("ASIS-SNAPSHOT", json.encode(snapshot))
+```
+
+`emit("asis.snapshot", snapshot)` creates a `custom.asis.snapshot` event.
+Custom types are always prefixed with `custom.` to distinguish them from runtime
+errors and fault evidence. The supplied type must start with an ASCII letter,
+contain only letters, digits, `.`, `_`, or `-`, and be at most 128 characters.
+`data` must be JSON-encodable; unsupported values and cycles fail the call.
+
+The payload is copied to `fields.data` as JSON at emission time. Later mutations
+of `snapshot` cannot rewrite the event. Trace queries expose it as `event.data`:
+
+```python
+eventually(lambda t: t.last(match.event(type="custom.asis.snapshot")).data["observed"]["wd"] == "DENIED")
+```
+
+Test-phase `print()` still writes to the console and also records `spec.stdout`
+events with `fields.message`. Both event kinds carry `test`, `phase`, `thread`,
+`source`, and `line` fields and are included in JSON traces and `.fb` bundles,
+including when an assertion later fails. They are evidence, not assertions.
+
+Capture and `emit()` are available in test bodies, imported helpers called by
+those bodies, `setup`, service `seed`/`reset`, and their `parallel` branches.
+Seed/reset events also identify the service. Late output from an ended test is
+excluded from subsequent traces. Load-time and mock-handler prints remain
+console-only. Predicates (including monitors, temporal expectations, and trace
+query callbacks) cannot call `emit()`; their prints remain console-only to avoid
+recursive event dispatch. Client `before` hooks are also console-only.
+
+## JSON module
+
+The global `json` module provides `encode(value)`, `decode(text)`, `indent(text)`,
+and `encode_indent(value)`. No `load()` or handwritten recursive encoder is
+required. It handles nested dictionaries/lists, Unicode escaping, `None`/`null`,
+booleans, and exact integers, including values above 2^53.
+
+```python
+text = json.encode({"id": 9007199254740993, "items": [None, True, "Алматы"]})
+assert_eq(json.decode(text)["id"], 9007199254740993)
+print(json.indent(text))
+```
+
+Invalid JSON, cyclic structures, unsupported types, and non-finite floats are
+reported as errors. This does not enable recursion in user-defined Starlark
+functions or change `load_json()` path resolution.

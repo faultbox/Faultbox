@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -61,16 +62,19 @@ func (grpcRawCodec) Unmarshal(data []byte, v any) error {
 func init() { encoding.RegisterCodec(grpcRawCodec{}) }
 
 type grpcProxy struct {
-	mu       sync.RWMutex
-	rules    []Rule
-	target   string
-	server   *grpc.Server
-	listener net.Listener
-	onEvent  OnProxyEvent
-	svcName  string
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	upstream *grpc.ClientConn
+	mu          sync.RWMutex
+	rules       []Rule
+	target      string
+	server      *grpc.Server
+	listener    net.Listener
+	onEvent     OnProxyEvent
+	svcName     string
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	upstream    *grpc.ClientConn
+	ctx         context.Context
+	rpcSequence atomic.Uint64
+	stopOnce    sync.Once
 
 	// RFC-038 Phase 3: TLS material. serverTLS wraps the listener
 	// (ALPN h2 forced); clientTLS becomes upstream credentials via
@@ -97,6 +101,7 @@ func (p *grpcProxy) SetTLS(server, client *tls.Config) {
 func (p *grpcProxy) Start(ctx context.Context, target string) (string, error) {
 	p.target = target
 	ctx, p.cancel = context.WithCancel(ctx)
+	p.ctx = ctx
 
 	// gRPC owns TLS termination on the server side via grpc.Creds —
 	// pre-wrapping the listener via ListenTLS would double-up the
@@ -139,6 +144,7 @@ func (p *grpcProxy) Start(ctx context.Context, target string) (string, error) {
 	// frames reach handleStream as raw bytes — mirrors the upstream
 	// client codec above so passthrough is a byte-identity transform.
 	serverOpts := []grpc.ServerOption{
+		grpc.WaitForHandlers(true),
 		grpc.UnknownServiceHandler(p.handleStream),
 		grpc.ForceServerCodec(grpcRawCodec{}),
 	}
@@ -158,7 +164,7 @@ func (p *grpcProxy) Start(ctx context.Context, target string) (string, error) {
 	}()
 	go func() {
 		<-ctx.Done()
-		p.server.GracefulStop()
+		p.Stop()
 	}()
 
 	return listenAddr, nil
@@ -166,6 +172,7 @@ func (p *grpcProxy) Start(ctx context.Context, target string) (string, error) {
 
 // handleStream is the catch-all handler for all gRPC methods.
 func (p *grpcProxy) handleStream(srv interface{}, stream grpc.ServerStream) error {
+	rpcID := fmt.Sprint(p.rpcSequence.Add(1))
 	// Extract method name from context.
 	method, ok := grpc.MethodFromServerStream(stream)
 	if !ok {
@@ -186,8 +193,10 @@ func (p *grpcProxy) handleStream(srv interface{}, stream grpc.ServerStream) erro
 			continue
 		}
 
-		if rule.Delay > 0 {
-			time.Sleep(rule.Delay)
+		if rule.Delay > 0 || rule.Action == ActionDelay {
+			if err := p.waitDelay(stream.Context(), method, rpcID, rule.Delay); err != nil {
+				return err
+			}
 		}
 
 		switch rule.Action {
@@ -205,21 +214,13 @@ func (p *grpcProxy) handleStream(srv interface{}, stream grpc.ServerStream) erro
 					Protocol: "grpc",
 					Action:   "error",
 					To:       p.svcName,
-					Fields:   map[string]string{"method": method, "code": code.String(), "error": errMsg},
+					Fields:   map[string]string{"method": method, "rpc_id": rpcID, "code": code.String(), "error": errMsg},
 				})
 			}
 			return status.Error(code, errMsg)
 
 		case ActionDelay:
-			if p.onEvent != nil {
-				p.onEvent(ProxyEvent{
-					Protocol: "grpc",
-					Action:   "delay",
-					To:       p.svcName,
-					Fields:   map[string]string{"method": method, "delay_ms": fmt.Sprintf("%d", rule.Delay.Milliseconds())},
-				})
-			}
-			// Fall through to forward.
+			// The hit was recorded before waiting; fall through to forward.
 
 		case ActionDrop:
 			if p.onEvent != nil {
@@ -227,7 +228,7 @@ func (p *grpcProxy) handleStream(srv interface{}, stream grpc.ServerStream) erro
 					Protocol: "grpc",
 					Action:   "drop",
 					To:       p.svcName,
-					Fields:   map[string]string{"method": method},
+					Fields:   map[string]string{"method": method, "rpc_id": rpcID},
 				})
 			}
 			return status.Errorf(codes.Unavailable, "connection dropped")
@@ -236,6 +237,45 @@ func (p *grpcProxy) handleStream(srv interface{}, stream grpc.ServerStream) erro
 
 	// Forward to upstream.
 	return p.forwardRPC(stream, method)
+}
+
+func (p *grpcProxy) waitDelay(ctx context.Context, method, rpcID string, delay time.Duration) error {
+	start := time.Now()
+	emit := func(typ, phase string, err error) {
+		if p.onEvent == nil {
+			return
+		}
+		fields := map[string]string{"method": method, "rpc_id": rpcID, "phase": phase, "delay_ms": fmt.Sprint(delay.Milliseconds()), "elapsed_ms": fmt.Sprint(time.Since(start).Milliseconds())}
+		if err != nil {
+			fields["error"] = err.Error()
+			fields["code"] = status.Code(err).String()
+		}
+		p.onEvent(ProxyEvent{Type: typ, Protocol: "grpc", Action: "delay", To: p.svcName, Fields: fields})
+	}
+	// Count the injection when it starts, not after the client's deadline.
+	emit("", "started", nil)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	var err error
+	select {
+	case <-ctx.Done():
+		err = status.FromContextError(ctx.Err()).Err()
+	case <-p.ctx.Done():
+		err = status.Error(codes.Unavailable, "faultbox proxy stopped")
+	case <-timer.C:
+		// Cancellation and timer expiry can become ready together.
+		if ctx.Err() != nil {
+			err = status.FromContextError(ctx.Err()).Err()
+		} else if p.ctx.Err() != nil {
+			err = status.Error(codes.Unavailable, "faultbox proxy stopped")
+		}
+	}
+	if err != nil {
+		emit("proxy_delay_cancelled", "cancelled", err)
+		return err
+	}
+	emit("proxy_delay_completed", "completed", nil)
+	return nil
 }
 
 // forwardRPC proxies a single RPC to the upstream server. Handles
@@ -315,12 +355,27 @@ func (p *grpcProxy) ClearRules() {
 }
 
 func (p *grpcProxy) Stop() error {
-	if p.cancel != nil {
-		p.cancel()
-	}
-	if p.upstream != nil {
-		p.upstream.Close()
-	}
+	p.stopOnce.Do(func() {
+		if p.onEvent != nil {
+			p.onEvent(ProxyEvent{Type: "proxy_stopping", Protocol: "grpc", To: p.svcName})
+		}
+		if p.cancel != nil {
+			p.cancel()
+		}
+		// WaitForHandlers keeps terminal events inside teardown. Run Stop in a
+		// tracked worker so an unrelated stuck handler cannot bypass the
+		// common ProxyStopTimeout bound.
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			if p.upstream != nil {
+				p.upstream.Close()
+			}
+			if p.server != nil {
+				p.server.Stop()
+			}
+		}()
+	})
 	waitConns(&p.wg, p.onEvent, p.svcName, "grpc")
 	return nil
 }
