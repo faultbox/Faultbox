@@ -20,7 +20,7 @@ type kafkaProtocol struct{}
 func (p *kafkaProtocol) Name() string { return "kafka" }
 
 func (p *kafkaProtocol) Methods() []string {
-	return []string{"publish", "consume"}
+	return []string{"publish", "consume", "consume_many"}
 }
 
 // kafkaReadyTopic is a sentinel topic used to verify broker readiness for produce.
@@ -79,6 +79,8 @@ func (p *kafkaProtocol) ExecuteStep(ctx context.Context, addr, method string, kw
 		return p.publish(ctx, addr, kwargs, start)
 	case "consume":
 		return p.consume(ctx, addr, kwargs, start)
+	case "consume_many":
+		return p.consumeMany(ctx, addr, kwargs, start)
 	default:
 		return nil, fmt.Errorf("unsupported kafka method %q", method)
 	}

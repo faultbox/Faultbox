@@ -23,7 +23,18 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 	if svc.Mock == nil {
 		return fmt.Errorf("startMockService: %q has nil Mock config", svcName)
 	}
-	svc.Mock.resetState()
+	var initial *starlark.Dict
+	if cfg := rt.testConfigs[rt.currentTestName]; cfg != nil {
+		initial = cfg.MockState[svcName]
+	}
+	svc.Mock.resetStateWith(initial)
+	if initial != nil {
+		data, err := marshalJSONBody(initial)
+		if err != nil {
+			return err
+		}
+		rt.events.Emit("mock.state_initialized", svcName, map[string]string{"state": string(data), "revision": "0", "source": "test"})
+	}
 
 	svcCtx, svcCancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

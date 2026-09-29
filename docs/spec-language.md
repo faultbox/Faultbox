@@ -207,6 +207,16 @@ validates a protobuf JSON-shaped body and returns wire-format `bytes` for
 Kafka `publish(data=...)` or other binary consumers. Descriptor files are
 captured with the spec.
 
+`proto_decode(descriptors="schema.pb", message="pkg.Message", data=wire)`
+decodes those bytes into a Starlark value using protobuf JSON rules. Use
+`data_base64=` instead of `data=` to decode a Kafka response's `value_base64`.
+`consume_many` can decode a bounded batch directly; see the
+[Kafka reference](protocols/kafka.md#bounded-batch-observation-consume_many).
+
+For boot-cached configuration, `test(..., mock_state={mock.name: state})`
+replaces the named mocks' initial states **before** service startup. Existing
+`setup=` still runs after startup. See [mock state](mock-services.md#change-mock-state-during-a-test).
+
 ### `service(name, [binary], *interfaces, ...)`
 
 Declares a service in the system under test. Returns a service object that can
@@ -3147,10 +3157,14 @@ Notes:
   family.
 - `clock=` is reserved; `"wall"` is the only accepted value in this release.
 
-### `test(name, body=, setup=, expect=, timeout=, terminate_when=, assume=, clock=)`
+### `test(name, body=, setup=, mock_state=, expect=, timeout=, terminate_when=, assume=, clock=)`
 
 Declarative test wrapper with explicit temporal config. Registered as
 `test_<name>` so CLI `--test foo` and `--test test_foo` both work.
+
+`mock_state={service_name: state_dict}` applies initial mock profiles before
+services boot; `setup=` runs afterwards. States are reset for every test and
+plan leaf. Reused consumers depending on an overridden mock must disable reuse.
 
 ```python
 test("eventual_propagation",

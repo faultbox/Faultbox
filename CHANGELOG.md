@@ -10,6 +10,21 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+### Boot-time mock profiles and typed Kafka observation
+
+- `test(mock_state={service_name: state})` initializes mocks before dependent
+  SUTs boot, so cached feature toggles differ correctly across tests in one
+  spec. Overrides are isolated per test/plan leaf, with startup trace events;
+  reused dependent consumers are rejected rather than retaining stale config.
+- Kafka `consume_many` reads a bounded batch with record, overall-time and
+  post-assignment idle limits. It supports typed protobuf decoding, exact
+  bytes/null flags, offsets and explicit stop reasons. Successful batches
+  commit to an isolated observation group and repeated calls resume there.
+- `proto_decode` decodes wire bytes or base64 using captured descriptors.
+  Response JSON integers now reach Starlark without a float64 intermediate,
+  preserving full-width Kafka offsets. Legacy single-record consume remains
+  available.
+
 ### Feasibility follow-ups
 
 - Descriptor sets accept included WKTs and out-of-order imports.
