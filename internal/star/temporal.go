@@ -21,6 +21,7 @@ import (
 //   - register Expect with the temporal-expectation list (if set)
 //   - watch TerminateWhen on the event log (if set)
 type TestConfig struct {
+	MockState     map[string]*starlark.Dict // immutable per-test initial mock states
 	Body          starlark.Callable
 	Setup         starlark.Callable
 	Expect        ExpectationVal
@@ -504,6 +505,7 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 	var expectArg starlark.Value = starlark.None
 	var twArg starlark.Value = starlark.None
 	var assumeArg starlark.Value = starlark.None
+	var mockStateArg starlark.Value = starlark.None
 	var timeoutStr string
 	var clockStr = "wall"
 	if err := starlark.UnpackArgs("test", args, kwargs,
@@ -514,6 +516,7 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 		"timeout?", &timeoutStr,
 		"terminate_when?", &twArg,
 		"assume?", &assumeArg,
+		"mock_state?", &mockStateArg,
 		"clock?", &clockStr,
 	); err != nil {
 		return nil, err
@@ -526,6 +529,28 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 	}
 
 	cfg := &TestConfig{Body: body}
+	if mockStateArg != starlark.None {
+		states, ok := mockStateArg.(*starlark.Dict)
+		if !ok {
+			return nil, fmt.Errorf("test(%q): mock_state must be a dict keyed by mock service names", name)
+		}
+		cfg.MockState = make(map[string]*starlark.Dict, states.Len())
+		for _, pair := range states.Items() {
+			service, ok := starlark.AsString(pair[0])
+			if !ok || service == "" {
+				return nil, fmt.Errorf("test(%q): mock_state keys must be non-empty service names", name)
+			}
+			state, ok := pair[1].(*starlark.Dict)
+			if !ok {
+				return nil, fmt.Errorf("test(%q): mock_state[%q] must be a dict", name, service)
+			}
+			frozen, err := freezeMockState(state)
+			if err != nil {
+				return nil, fmt.Errorf("test(%q): mock_state[%q]: %w", name, service, err)
+			}
+			cfg.MockState[service] = frozen
+		}
+	}
 	if setupArg != starlark.None {
 		cb, ok := setupArg.(starlark.Callable)
 		if !ok {

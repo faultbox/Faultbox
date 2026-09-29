@@ -60,9 +60,16 @@ func copyMockState(v starlark.Value, depth int) (starlark.Value, error) {
 }
 
 func (m *MockConfig) resetState() {
+	m.resetStateWith(nil)
+}
+
+func (m *MockConfig) resetStateWith(override *starlark.Dict) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	m.state = m.StateInit
+	if override != nil {
+		m.state = override
+	}
 	if m.state == nil {
 		m.state = starlark.NewDict(0)
 		m.state.Freeze()

@@ -1500,6 +1500,9 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	rt.lastAssertion = nil
 	rt.currentTestName = name
 	defer func() { rt.currentTestName = "" }()
+	if err := rt.validateTestMockState(rt.testConfigs[name]); err != nil {
+		return TestResult{Name: name, Result: "fail", Reason: err.Error(), DurationMs: time.Since(start).Milliseconds(), Events: rt.events.Events()}
+	}
 
 	// Wait for ports to be free.
 	rt.waitPortsFree(10 * time.Second)
