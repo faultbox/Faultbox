@@ -181,19 +181,54 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 		close(notifDone)
 	}
 
-	// Kill child when context is cancelled.
+	// The pidfd pins the process identity so a delayed escalation cannot hit
+	// a recycled PID. Older kernels fall back to Kill while watching waitDone.
+	waitDone := make(chan struct{})
+	terminationDone := make(chan struct{})
+	pidfd, pidfdErr := unix.PidfdOpen(childPid, 0)
+	if pidfdErr != nil {
+		pidfd = -1
+	}
 	go func() {
-		<-ctx.Done()
-		// Send SIGTERM first, then SIGKILL after 2s.
-		unix.Kill(childPid, unix.SIGTERM)
-		time.Sleep(2 * time.Second)
-		unix.Kill(childPid, unix.SIGKILL)
+		defer close(terminationDone)
+		if pidfd >= 0 {
+			defer unix.Close(pidfd)
+		}
+		select {
+		case <-waitDone:
+			return
+		case <-ctx.Done():
+		}
+		signal := func(sig unix.Signal) {
+			if pidfd >= 0 {
+				_ = unix.PidfdSendSignal(pidfd, sig, nil, 0)
+			} else {
+				select {
+				case <-waitDone:
+					return
+				default:
+				}
+				_ = unix.Kill(childPid, sig)
+			}
+		}
+		status, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", childPid))
+		if namespaceInitWithoutTermHandler(string(status)) {
+			signal(unix.SIGKILL)
+			return
+		}
+		signal(unix.SIGTERM)
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-waitDone:
+		case <-timer.C:
+			signal(unix.SIGKILL)
+		}
 	}()
 
 	// Wait for the child process.
 	exitCode := 0
 	var waitErr error
-	waitDone := make(chan struct{})
 	go func() {
 		defer close(waitDone)
 		statusPath := fmt.Sprintf("/proc/%d/status", childPid)
@@ -224,6 +259,7 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	}()
 
 	<-waitDone
+	<-terminationDone
 
 	// Stop the notification loop and close the fd.
 	close(stopNotif)

@@ -231,3 +231,17 @@ fault_scenario("cache_consistent",
     ),
 )
 ```
+
+
+## Binary values
+
+Every successful result retains `value` for text compatibility and adds
+`value_base64` and `value_is_null`. Base64 is lossless for arbitrary bytes;
+missing values are null and empty strings encode as `""`. For array responses,
+`value_base64` preserves the array shape, base64-encodes strings, and retains
+integer/null elements. Use this field for compressed/protobuf values: the text
+`value` can contain replacement characters for invalid UTF-8.
+
+`set`, `lpush`, and `rpush` accept `value=` as string or bytes, or mutually
+exclusive `value_base64=`. Bulk responses are read fully even when fragmented.
+See `decompress()` and `proto_decode()` in the spec reference for zstd/gzip payloads.

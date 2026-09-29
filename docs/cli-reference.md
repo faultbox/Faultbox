@@ -1146,13 +1146,10 @@ so a containerized SUT will no longer reach either.
 Error: Conflict. The container name "/faultbox-postgres" is already in use
 ```
 
-Faultbox auto-cleans stale containers at suite start (v0.5.0+). If you
-see this after upgrading, run once manually:
-
-```bash
-docker rm -f $(docker ps -aq --filter name=faultbox) 2>/dev/null
-docker network rm faultbox-net 2>/dev/null
-```
+Each run now has unique container/network names and an `io.faultbox.run` label.
+Startup does not delete resources from other runs. Inspect leftovers with
+`docker ps -a --filter label=io.faultbox.run`; remove only IDs belonging to a
+run you know has ended. Do not sweep the shared `faultbox-*` prefix.
 
 ### Multi-process container warning
 

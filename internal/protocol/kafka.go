@@ -116,6 +116,13 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 	}
 	defer writer.Close()
 
+	var acknowledged kafka.Message
+	writer.Completion = func(messages []kafka.Message, err error) {
+		if err == nil && len(messages) > 0 {
+			acknowledged = messages[0]
+		}
+	}
+
 	msg := kafka.Message{
 		Value: data,
 	}
@@ -162,7 +169,7 @@ func (p *kafkaProtocol) publish(ctx context.Context, addr string, kwargs map[str
 		}, nil
 	}
 
-	body, _ := json.Marshal(map[string]any{"published": true, "topic": topic})
+	body, _ := json.Marshal(map[string]any{"published": true, "topic": topic, "partition": acknowledged.Partition, "offset": acknowledged.Offset, "key_base64": base64.StdEncoding.EncodeToString(msg.Key), "key_is_null": msg.Key == nil})
 	return &StepResult{
 		Body:       string(body),
 		Success:    true,

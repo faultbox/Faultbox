@@ -99,7 +99,7 @@ func Launch(ctx context.Context, client *Client, cfg LaunchConfig, log *slog.Log
 	)
 
 	// Create host-side directory for Unix socket fd passing.
-	socketDir := filepath.Join(os.TempDir(), "faultbox-sockets", cfg.Name)
+	socketDir := filepath.Join(client.SocketDir(), cfg.Name)
 	os.MkdirAll(socketDir, 0755)
 	socketPath := filepath.Join(socketDir, "fd.sock")
 	os.Remove(socketPath) // clean up from previous run

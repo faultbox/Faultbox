@@ -389,7 +389,7 @@ messages naming the offending kwarg):
   `fsync=deny()`, etc.) — Faultbox can't seccomp a remote process.
   Move them to protocol faults (`response()` / `error()` / `delay()`)
   or use `mock_service()` if you need full process control.
-- `seed=`, `reset=`, `reuse=` — Faultbox doesn't own the lifecycle.
+- `reset=`, `reuse=` — Faultbox does not own the process lifecycle. Explicit `seed=` is supported: it runs after remote readiness and before dependents, on each test.
 - `volumes=`, `ports=`, `args=`, `binary=`, `image=`, `build=` —
   meaningless without a launched process.
 - `seccomp=` — implied false; cannot be set.
@@ -4006,3 +4006,73 @@ print(json.indent(text))
 Invalid JSON, cyclic structures, unsupported types, and non-finite floats are
 reported as errors. This does not enable recursion in user-defined Starlark
 functions or change `load_json()` path resolution.
+
+
+## Shared-host runs and direct interfaces
+
+Containers, bridge networks, and shim sockets are isolated by a random run ID.
+Container names are `faultbox-<run>-<service>`, networks `faultbox-<run>-net`,
+and Docker resources have the `io.faultbox.run` label. Service DNS names inside
+the run's network stay unchanged. Startup never sweeps other runs or legacy
+`faultbox-*` resources. Interrupted-run leftovers require explicit cleanup;
+normal teardown removes only the run's own resources. Explicit fixed host ports
+must still be unique across concurrent runs.
+
+`interface("main", "mysql", 3306, proxy=False)` disables automatic protocol
+proxying and address rewrites for that interface. Steps use the real upstream;
+`proxy_addr` and protocol fault injection fail explicitly. The default remains
+`proxy=True`. Actual env address rewrites are logged at INFO and as
+`env_address_rewrite` events, with variable name and source/destination addresses;
+full env values (which may contain credentials) are never included.
+
+Remote endpoints and still-running reused services are excluded from the
+pre-test wait for free ports. The MySQL proxy relays server responses as a byte
+stream, including prepared-statement metadata, binary rows, multiple results,
+and commands that have no response.
+
+## Per-test parameters during startup
+
+`test(params={...})` copies and freezes a JSON-compatible dictionary.
+`current_test()` returns a struct with `name` (the `test_`-prefixed name) and
+`params`; missing parameters default to `{}`. It is available to test bodies,
+setup, seed/reset callbacks and their parallel branches, including imported
+helpers. It is unavailable at load time and inside mock handlers.
+
+```python
+def seed_db():
+    flag = current_test().params["approval_required"]
+    assert_true(db.main.exec(sql="UPDATE city SET approval_required = %d" % int(flag)).ok)
+
+db = service("db", interface("main", "mysql", 3306), remote="127.0.0.2",
+             healthcheck=tcp("127.0.0.2:3306"), seed=seed_db)
+# Declare the SUT with depends_on=[db]. The seed completes before it starts.
+test("approval_on", params={"approval_required": True}, body=check_approval)
+```
+
+An explicit remote `seed` runs every test after readiness. It does not give
+Faultbox ownership of the remote process. For reused managed services,
+`reset` (or `seed` fallback) reads the new parameters. Keep a boot-caching SUT
+at the default `reuse=False` when startup parameters change. `setup` retains its
+post-start timing.
+
+## Binary decompression
+
+`decompress(format="zstd" | "gzip", data=<bytes>)` returns bytes suitable for
+`proto_decode()`. Use `data_base64=` instead of `data=` for Redis/Kafka results.
+The output limit is 16 MiB by default; `max_output_bytes` accepts 1 through
+1 GiB. Invalid input and limit violations fail the call.
+
+```python
+r = cache.main.get(key="vm-token")
+wire = decompress(format="zstd", data_base64=r.data["value_base64"])
+token = proto_decode(descriptors="tokens.pb", message="example.Token", data=wire)
+```
+
+`events(service=..., where=...)` combines the keyword filters and predicate
+with AND, applying keyword filters first. `proto_encode()` now uses deterministic
+protobuf serialization for repeated encoding with the same schema/library;
+protobuf deterministic mode is not a cross-version canonical encoding.
+
+A Linux binary running as PID 1 in its namespace with no SIGTERM handler is
+terminated immediately during teardown, since PID 1 ignores default-action
+TERM. A process with a handler keeps the normal two-second grace period.

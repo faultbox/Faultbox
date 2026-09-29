@@ -211,11 +211,12 @@ func (s *ServiceDef) DefaultInterface() (*InterfaceDef, error) {
 // ---------------------------------------------------------------------------
 
 type InterfaceDef struct {
-	Name     string
-	Protocol string
-	Port     int
-	HostPort int    // actual host-mapped port (container mode, 0 = same as Port)
-	Spec     string // path to protocol spec file (swagger, proto, etc.)
+	ProxyDisabled bool // explicit proxy=False
+	Name          string
+	Protocol      string
+	Port          int
+	HostPort      int    // actual host-mapped port (container mode, 0 = same as Port)
+	Spec          string // path to protocol spec file (swagger, proto, etc.)
 
 	// TLS — RFC-038 Phase 2. When non-nil the interface declares
 	// upstream TLS; Phase 3 plugins consume this via TLS.Resolve()
@@ -325,12 +326,18 @@ func (r *InterfaceRef) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable
 func (r *InterfaceRef) Attr(name string) (starlark.Value, error) {
 	switch name {
 	case "addr":
+		if r.Service.IsRemote() {
+			return starlark.String(remoteUpstreamAddr(r.Service, r.Interface)), nil
+		}
 		port := r.Interface.Port
 		if r.Interface.HostPort > 0 {
 			port = r.Interface.HostPort
 		}
 		return starlark.String(fmt.Sprintf("localhost:%d", port)), nil
 	case "internal_addr":
+		if r.Service.IsRemote() {
+			return starlark.String(remoteUpstreamAddr(r.Service, r.Interface)), nil
+		}
 		// For container-to-container: use service name as hostname.
 		// For binary mode: same as addr (localhost).
 		if r.Service.IsContainer() {
@@ -342,6 +349,9 @@ func (r *InterfaceRef) Attr(name string) (starlark.Value, error) {
 	case "port":
 		return starlark.MakeInt(r.Interface.Port), nil
 	case "proxy_addr", "proxy_host", "proxy_port":
+		if r.Interface.ProxyDisabled {
+			return nil, fmt.Errorf("%s.%s: proxy is disabled", r.Service.Name, r.Interface.Name)
+		}
 		// RFC-033: late-bound proxy address. The proxy doesn't exist at
 		// spec-load time, so we hand back a unique placeholder string that
 		// buildEnv resolves later. Use this to wire host-binary SUTs to
@@ -407,6 +417,7 @@ func (m *StepMethod) CallInternal(thread *starlark.Thread, args starlark.Tuple, 
 // ---------------------------------------------------------------------------
 
 type Response struct {
+	Headers    map[string][]string
 	Status     int
 	Body       string
 	DurationMs int64
@@ -441,6 +452,21 @@ func (r *Response) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: re
 
 func (r *Response) Attr(name string) (starlark.Value, error) {
 	switch name {
+	case "headers", "header_values":
+		d := starlark.NewDict(len(r.Headers))
+		for k, values := range r.Headers {
+			var v starlark.Value = starlark.String(strings.Join(values, ", "))
+			if name == "header_values" {
+				items := make([]starlark.Value, len(values))
+				for i, s := range values {
+					items[i] = starlark.String(s)
+				}
+				v = starlark.NewList(items)
+			}
+			_ = d.SetKey(starlark.String(k), v)
+		}
+		d.Freeze()
+		return d, nil
 	case "status":
 		return starlark.MakeInt(r.Status), nil
 	case "body":
@@ -471,7 +497,7 @@ func (r *Response) Attr(name string) (starlark.Value, error) {
 }
 
 func (r *Response) AttrNames() []string {
-	return []string{"status", "body", "data", "ok", "error", "duration_ms",
+	return []string{"headers", "header_values", "status", "body", "data", "ok", "error", "duration_ms",
 		"client", "operation", "contract_ok", "contract_error"}
 }
 

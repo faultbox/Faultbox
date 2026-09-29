@@ -92,12 +92,14 @@ func (p *http2Protocol) ExecuteStep(ctx context.Context, addr, method string, kw
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	respBody, readErr := readHTTPResponseBody(resp.Body, kwargs)
 
 	return &StepResult{
 		StatusCode: resp.StatusCode,
+		Headers:    resp.Header.Clone(),
+		Error:      errorString(readErr),
 		Body:       strings.TrimSpace(string(respBody)),
-		Success:    true,
+		Success:    readErr == nil,
 		DurationMs: elapsed,
 		Fields:     map[string]string{"proto": resp.Proto},
 	}, nil

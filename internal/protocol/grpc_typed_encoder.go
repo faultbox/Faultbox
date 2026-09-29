@@ -49,7 +49,7 @@ func JSONToTypedMessage(files *protoregistry.Files, desc protoreflect.MessageDes
 	if err := opts.Unmarshal(jsonBytes, msg); err != nil {
 		return nil, fmt.Errorf("encode as %s: %w", desc.FullName(), err)
 	}
-	return proto.Marshal(msg)
+	return (proto.MarshalOptions{Deterministic: true}).Marshal(msg)
 }
 
 // TypedMessageToJSON decodes a dynamic request without losing int64/uint64

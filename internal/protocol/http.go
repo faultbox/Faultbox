@@ -93,7 +93,7 @@ func (p *httpProtocol) ExecuteStep(ctx context.Context, addr, method string, kwa
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	respBody, readErr := readHTTPResponseBody(resp.Body, kwargs)
 	bodyStr := strings.TrimSpace(string(respBody))
 
 	// content_type rides along in Fields so RFC-055 clients can check the
@@ -107,8 +107,10 @@ func (p *httpProtocol) ExecuteStep(ctx context.Context, addr, method string, kwa
 
 	return &StepResult{
 		StatusCode: resp.StatusCode,
+		Headers:    resp.Header.Clone(),
+		Error:      errorString(readErr),
 		Body:       bodyStr,
-		Success:    true,
+		Success:    readErr == nil,
 		DurationMs: elapsed,
 		Fields:     fields,
 	}, nil

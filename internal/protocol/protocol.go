@@ -39,12 +39,13 @@ type Protocol interface {
 // Body is always a JSON string — the Starlark runtime auto-decodes it
 // into a native dict/list on Response.data.
 type StepResult struct {
-	StatusCode int               // HTTP-style status (0 for non-HTTP protocols on success)
-	Body       string            // JSON-encoded response data
-	Success    bool              // true if the step completed without error
-	Error      string            // error message if Success is false
-	DurationMs int64             // step execution time in milliseconds
-	Fields     map[string]string // optional extra fields for event emission
+	Headers    map[string][]string // HTTP response headers, with repeated values preserved
+	StatusCode int                 // HTTP-style status (0 for non-HTTP protocols on success)
+	Body       string              // JSON-encoded response data
+	Success    bool                // true if the step completed without error
+	Error      string              // error message if Success is false
+	DurationMs int64               // step execution time in milliseconds
+	Fields     map[string]string   // optional extra fields for event emission
 }
 
 // registry holds all registered protocol plugins.

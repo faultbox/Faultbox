@@ -8,6 +8,7 @@ import (
 
 	starlarkjson "go.starlark.net/lib/json"
 	"go.starlark.net/starlark"
+	"go.starlark.net/starlarkstruct"
 )
 
 const specOutputKey = "faultbox.specOutput"
@@ -19,6 +20,7 @@ type specOutputRun struct {
 	mu     sync.RWMutex
 	active bool
 	test   string
+	params *starlark.Dict
 	events *EventLog
 }
 
@@ -29,6 +31,11 @@ type specOutputContext struct {
 
 func (rt *Runtime) beginSpecOutput(name string) func() {
 	run := &specOutputRun{active: true, test: name, events: rt.events}
+	run.params = starlark.NewDict(0)
+	if cfg := rt.testConfigs[name]; cfg != nil && cfg.Params != nil {
+		run.params = cfg.Params
+	}
+	run.params.Freeze()
 	rt.outputMu.Lock()
 	rt.outputRun = run
 	rt.outputMu.Unlock()
@@ -116,4 +123,20 @@ func (rt *Runtime) builtinEmit(t *starlark.Thread, _ *starlark.Builtin, args sta
 		return nil, err
 	}
 	return starlark.None, nil
+}
+
+func (rt *Runtime) builtinCurrentTest(t *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if err := starlark.UnpackArgs("current_test", args, kwargs); err != nil {
+		return nil, err
+	}
+	output, _ := t.Local(specOutputKey).(*specOutputContext)
+	if output == nil {
+		return nil, fmt.Errorf("current_test() requires a test, setup, seed/reset or parallel callback")
+	}
+	output.run.mu.RLock()
+	defer output.run.mu.RUnlock()
+	if !output.run.active {
+		return nil, fmt.Errorf("current_test(): test has ended")
+	}
+	return starlarkstruct.FromStringDict(starlark.String("test_context"), starlark.StringDict{"name": starlark.String(output.run.test), "params": output.run.params}), nil
 }

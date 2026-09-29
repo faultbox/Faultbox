@@ -206,3 +206,18 @@ func TestEnforceReplayVersionPolicyMajorDriftRefuses(t *testing.T) {
 	// (enforceReplayVersionPolicy does this when Kind == VersionMajorDrift.)
 	_ = r
 }
+
+func TestReplayCanWriteNewBundle(t *testing.T) {
+	source := writeReplayBundle(t, faultboxVersion())
+	output := filepath.Join(t.TempDir(), "new.fb")
+	if code := replayCmd([]string{source, "--bundle", output}); code != 0 {
+		t.Fatalf("replay exited %d", code)
+	}
+	result, err := bundle.Open(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Manifest().Summary.Passed != 1 {
+		t.Fatalf("bad replay result: %+v", result.Manifest().Summary)
+	}
+}

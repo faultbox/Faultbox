@@ -162,11 +162,9 @@ Most-likely causes:
 - **VM out of resources** — check `limactl shell faultbox-dev free
   -h`. seccomp-notify is memory-light but Docker daemon + your
   containers add up.
-- **Stale Docker network** — `docker network rm faultbox-net` then
-  re-run.
-- **Stale containers from a previous test** — `docker ps -a |
-  grep faultbox-` and `docker rm -f` anything reusable. The runtime
-  cleans up on success but a panic mid-test can orphan containers.
+- **Interrupted-run resources** — inspect the `io.faultbox.run` label and
+  remove only the container/network IDs belonging to the ended run. New runs
+  use isolated names and never sweep the shared `faultbox-*` prefix.
 
 If the hang is reproducible: kill it with `Ctrl-C`, then
 `faultbox inspect run-*.fb` — the partial bundle usually shows
@@ -211,7 +209,7 @@ inside its container errors on `dial tcp: lookup db: no such host`.
 Cause: test-body requests run from the test driver (host process) which
 uses `localhost:<HostPort>` to reach the container. The SUT inside its
 container needs to use the Docker DNS name (`db`) over the
-`faultbox-net` bridge.
+run-specific `faultbox-<run>-net` bridge.
 
 Fix: pass the right address into the SUT's env:
 

@@ -1227,12 +1227,10 @@ func (rt *Runtime) cleanup() {
 			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
 			rt.networkID = ""
 		}
+		os.RemoveAll(rt.dockerClient.SocketDir())
 		rt.dockerClient.Close()
 		rt.dockerClient = nil
 	}
-	// Final socket cleanup.
-	socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
-	os.RemoveAll(socketBase)
 }
 
 // runTestSafely wraps RunTest in a defer/recover so a Go runtime
@@ -2183,17 +2181,6 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 	copy(order, rt.order)
 	rt.mu.Unlock()
 
-	// The leftover sweep now runs once, at Docker client init — see
-	// startContainerService. It used to run here, before every test, and
-	// it removes the faultbox network along with the containers, so each
-	// test destroyed the network and the next recreated it.
-	//
-	// Running it here could never have been once-per-run anyway: the
-	// Docker client is created lazily during the first test's container
-	// launch, so the guard above it was false on test 1 and the sweep
-	// first fired on test 2 — destroying the network test 1 had just
-	// created.
-
 	for _, svcName := range order {
 		svc := rt.services[svcName]
 
@@ -2246,9 +2233,8 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			return err
 		}
 
-		// Run seed callback for newly started services. Remote services
-		// reject seed= at spec load (RFC-036), so this is unreachable for
-		// them; left unguarded here for clarity.
+		// Explicit seeds run after readiness and before dependents, including
+		// remote infrastructure whose process lifecycle remains externally owned.
 		if svc.Seed != nil {
 			if err := rt.runSeedCallback(svcName, svc); err != nil {
 				return fmt.Errorf("seed service %q: %w", svcName, err)
@@ -2339,7 +2325,7 @@ func closedDoneChan() chan *engine.Result {
 // best-effort fallback unless an explicit proxy address was requested.
 func (rt *Runtime) preStartProxies(ctx context.Context, svcName string, svc *ServiceDef) error {
 	for ifaceName, iface := range svc.Interfaces {
-		if !proxy.SupportsProxy(iface.Protocol) {
+		if iface.ProxyDisabled || !proxy.SupportsProxy(iface.Protocol) {
 			continue
 		}
 		if rt.proxyMgr.GetProxyAddr(svcName, ifaceName) != "" {
@@ -2634,31 +2620,9 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		}
 		rt.dockerClient = dc
 		rt.containerIDs = make(map[string]string)
-
-		// Sweep leftovers from a previous interrupted run, once, before
-		// anything of this run exists. CleanupStale removes faultbox-
-		// prefixed networks as well as containers, so it must happen
-		// before EnsureNetwork below — and never again, or it would
-		// destroy the network the running suite is using.
-		dc.CleanupStale(ctx)
 	}
 
-	// Ensure the network on every container start, not only at client
-	// init (F-3).
-	//
-	// EnsureNetwork used to run once, inside the block above. stopServices
-	// then removed the network after each test and cleared networkID — but
-	// dockerClient stayed non-nil, so nothing ever recreated it. From the
-	// second test onward every container launched with an empty network
-	// ID, landing on Docker's default bridge, which has no embedded DNS
-	// for container names. That is the reported symptom exactly: the first
-	// test resolves peers by name and every test after it hangs on
-	// lookups.
-	//
-	// EnsureNetwork is idempotent — it reuses an existing faultbox-net and
-	// creates one only when absent — so calling it per start also
-	// self-heals if the network is removed underneath us, which the stale
-	// -network sweep in container.Client does whenever nothing is attached.
+	// Each Docker client owns an isolated network across this suite's tests.
 	netID, err := rt.dockerClient.EnsureNetwork(ctx)
 	if err != nil {
 		return fmt.Errorf("docker network: %w", err)
@@ -2668,7 +2632,7 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 	// Resolve image: either pull or build from Dockerfile.
 	imageName := svc.Image
 	if svc.Build != "" {
-		imageName = fmt.Sprintf("faultbox-%s:latest", svc.Name)
+		imageName = fmt.Sprintf("faultbox-%s-%s:latest", rt.dockerClient.RunID(), svc.Name)
 		buildCtx := svc.Build
 		if !filepath.IsAbs(buildCtx) && rt.baseDir != "" {
 			buildCtx = filepath.Join(rt.baseDir, buildCtx)
@@ -3176,7 +3140,7 @@ func (rt *Runtime) buildContainerEnv(svc *ServiceDef) []string {
 	// container follow-up.
 	subs := rt.proxyAddrSubstitutionsFor(containerConsumer)
 	for k, v := range svc.Env {
-		v = applyAddrSubstitutions(v, subs)
+		v = rt.rewriteEnvAddresses(svc.Name, k, v, subs)
 		v = rt.resolveProxyPlaceholders(v, containerConsumer)
 		if placeholder, ok := rt.hasUnresolvedProxyPlaceholder(v); ok {
 			rt.log.Warn("env var references a proxy that did not start",
@@ -3309,8 +3273,9 @@ func (rt *Runtime) stopServices() {
 
 	// Clean up socket directories only for non-reused services.
 	if len(reused) == 0 {
-		socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
-		os.RemoveAll(socketBase)
+		if rt.dockerClient != nil {
+			os.RemoveAll(rt.dockerClient.SocketDir())
+		}
 	}
 
 	// Any partition left open by partition_start() is removed here, so it
@@ -3362,8 +3327,9 @@ func (rt *Runtime) stopReusedServices() {
 		rt.containerIDs = make(map[string]string)
 	}
 
-	socketBase := filepath.Join(os.TempDir(), "faultbox-sockets")
-	os.RemoveAll(socketBase)
+	if rt.dockerClient != nil {
+		os.RemoveAll(rt.dockerClient.SocketDir())
+	}
 }
 
 // buildEnv creates the environment for a service with auto-injection.
@@ -3425,7 +3391,7 @@ func (rt *Runtime) buildEnv(svc *ServiceDef) []string {
 	// pair across every interface that has a running proxy.
 	substitutions := rt.proxyAddrSubstitutionsForService(svc.Name)
 	for k, v := range svc.Env {
-		v = applyAddrSubstitutions(v, substitutions)
+		v = rt.rewriteEnvAddresses(svc.Name, k, v, substitutions)
 		// RFC-033: resolve any iface.proxy_addr / proxy_host / proxy_port
 		// placeholders the spec embedded at load time.
 		v = rt.resolveProxyPlaceholders(v, binaryConsumer)
@@ -3568,6 +3534,13 @@ func (rt *Runtime) proxyAddrSubstitutionsConsumer(mode consumerMode, consumer st
 			continue
 		}
 		for ifName, iface := range s.Interfaces {
+			if iface.ProxyDisabled && !s.IsMock() {
+				if mode == binaryConsumer && s.IsContainer() {
+					out[fmt.Sprintf("%s:%d", name, iface.Port)] = proxyTargetAddr(s, iface)
+				}
+				continue
+			}
+
 			// Mock services must always be rewritten for a container
 			// consumer, and are exempt from the fault gate below.
 			//
@@ -4773,11 +4746,8 @@ func errorBodyForTrace(statusCode int, body string) (string, bool) {
 
 // executeStep runs an HTTP or TCP step against a running service.
 func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, method string, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	port := ref.Interface.Port
-	if ref.Interface.HostPort > 0 {
-		port = ref.Interface.HostPort
-	}
-	addr := fmt.Sprintf("localhost:%d", port)
+	addr := proxyTargetAddr(ref.Service, ref.Interface)
+
 	targetSvc := ref.Service.Name
 
 	// If a proxy is running for this interface, route through it.
@@ -4911,6 +4881,7 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	return &Response{
 		Status:     stepResult.StatusCode,
 		Body:       stepResult.Body,
+		Headers:    stepResult.Headers,
 		DurationMs: stepResult.DurationMs,
 		Ok:         stepResult.Success,
 		Error:      stepResult.Error,
@@ -5114,7 +5085,10 @@ func (rt *Runtime) waitPortsFree(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		allFree := true
-		for _, svc := range rt.services {
+		for name, svc := range rt.services {
+			if svc.IsRemote() || rt.sessions[name] != nil {
+				continue
+			}
 			for _, iface := range svc.Interfaces {
 				conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", iface.Port), 100*time.Millisecond)
 				if err == nil {
@@ -5132,4 +5106,24 @@ func (rt *Runtime) waitPortsFree(timeout time.Duration) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// Log only address substitutions, never the complete env value (which may be a DSN with a password).
+func (rt *Runtime) rewriteEnvAddresses(service, key, value string, subs map[string]string) string {
+	rewritten := applyAddrSubstitutions(value, subs)
+	if rewritten != value {
+		keys := make([]string, 0, len(subs))
+		for source := range subs {
+			keys = append(keys, source)
+		}
+		sort.Strings(keys)
+		for _, source := range keys {
+			target := subs[source]
+			if source != target && strings.Contains(value, source) {
+				rt.log.Info("environment address routed", slog.String("service", service), slog.String("variable", key), slog.String("from", source), slog.String("to", target))
+				rt.events.Emit("env_address_rewrite", service, map[string]string{"variable": key, "from": source, "to": target})
+			}
+		}
+	}
+	return rewritten
 }

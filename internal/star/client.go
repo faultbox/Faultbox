@@ -398,6 +398,7 @@ func (rt *Runtime) executeHTTPClientCall(c *ClientVal, op *protocol.Operation, a
 	resp := &Response{
 		Status:     res.StatusCode,
 		Body:       res.Body,
+		Headers:    res.Headers,
 		DurationMs: res.DurationMs,
 		Ok:         res.Success,
 		Error:      res.Error,

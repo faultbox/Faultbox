@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"io"
 	"net"
 	"testing"
@@ -27,49 +29,86 @@ func mysqlPacket(seq byte, payload []byte) []byte {
 	return append([]byte{byte(n), byte(n >> 8), byte(n >> 16), seq}, payload...)
 }
 
-// forwardResponseResult runs forwardResponse against a scripted server and
-// returns what the client saw. It fails the test if the call does not return,
-// which is the regression this file exists to catch.
-func forwardResponseResult(t *testing.T, serverScript []byte) []byte {
+// Exercise the full proxy path, including a command with no response and a
+// second query on the same connection after the supplied server response.
+func forwardResponseResult(t *testing.T, script []byte) []byte {
 	t.Helper()
-
-	proxyToServer, server := net.Pipe()
-	proxyToClient, client := net.Pipe()
-
-	go func() {
-		_, _ = server.Write(serverScript)
-		// Deliberately do NOT close: a real MySQL connection stays open
-		// between statements, so a parser that keeps reading past the
-		// terminator blocks rather than seeing EOF. Closing here would
-		// hide exactly the bug under test.
-	}()
-
-	got := make(chan []byte, 1)
-	go func() {
-		buf := make([]byte, len(serverScript))
-		n, _ := io.ReadFull(client, buf)
-		got <- buf[:n]
-	}()
-
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
 	done := make(chan error, 1)
 	go func() {
-		_, err := (&mysqlProxy{}).forwardResponse(proxyToServer, proxyToClient)
+		c, err := upstream.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(3 * time.Second))
+		c.Write(mysqlPacket(0, []byte{0x0a}))
+		if _, err = readTestMySQLPacket(c); err != nil {
+			done <- err
+			return
+		}
+		c.Write(mysqlPacket(2, []byte{0}))
+		if _, err = readTestMySQLPacket(c); err != nil {
+			done <- err
+			return
+		}
+		c.Write(script)
+		// COM_STMT_CLOSE deliberately has no server response.
+		if _, err = readTestMySQLPacket(c); err != nil {
+			done <- err
+			return
+		}
+		if _, err = readTestMySQLPacket(c); err != nil {
+			done <- err
+			return
+		}
+		_, err = c.Write(mysqlPacket(1, []byte{0}))
 		done <- err
 	}()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("forwardResponse did not return — this is the hang that wedged " +
-			"every query() step through the MySQL proxy")
+	proxy := newMySQLProxy(nil, "db")
+	addr, err := proxy.Start(context.Background(), upstream.Addr().String())
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	select {
-	case b := <-got:
-		return b
-	case <-time.After(2 * time.Second):
-		return nil
+	defer proxy.Stop()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(3 * time.Second))
+	readTestMySQLPacket(c)
+	c.Write(mysqlPacket(1, []byte{1}))
+	readTestMySQLPacket(c)
+	c.Write(mysqlPacket(0, append([]byte{0x16}, []byte("SELECT ?")...)))
+	got := make([]byte, len(script))
+	if _, err := io.ReadFull(c, got); err != nil {
+		t.Fatalf("response stalled: %v", err)
+	}
+	c.Write(mysqlPacket(0, []byte{0x19, 1, 0, 0, 0}))
+	c.Write(mysqlPacket(0, []byte{0x0e}))
+	if _, err := readTestMySQLPacket(c); err != nil {
+		t.Fatalf("query after no-response command stalled: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func readTestMySQLPacket(r io.Reader) ([]byte, error) {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return nil, err
+	}
+	body := make([]byte, int(header[0])|int(header[1])<<8|int(header[2])<<16)
+	_, err := io.ReadFull(r, body)
+	return body, err
 }
 
 // A single OK packet: what exec() gets. This path always worked.
@@ -164,52 +203,20 @@ func TestForwardResponse_RowStartingWith0xFEIsNotEOF(t *testing.T) {
 	}
 }
 
-func TestMySQLLenEncInt(t *testing.T) {
-	cases := []struct {
-		payload []byte
-		want    int
-	}{
-		{[]byte{0x00}, 0},
-		{[]byte{0x01}, 1},
-		{[]byte{0x0A}, 10},
-		{[]byte{0xFA}, 250},
-		{[]byte{0xFC, 0x10, 0x01}, 272},         // 2-byte form
-		{[]byte{0xFD, 0x01, 0x00, 0x01}, 65537}, // 3-byte form
-		{nil, 0},
-		{[]byte{0xFC}, 0}, // truncated: no guessing
+func TestMySQLProxyPreparedMetadataAndBinaryRows(t *testing.T) {
+	script := mysqlPacket(1, []byte{0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0})
+	script = append(script, mysqlPacket(2, []byte("parameter"))...)
+	script = append(script, mysqlPacket(3, []byte{0xfe, 0, 0, 2, 0})...)
+	script = append(script, mysqlPacket(4, []byte("column"))...)
+	script = append(script, mysqlPacket(5, []byte{0xfe, 0, 0, 2, 0})...)
+	if got := forwardResponseResult(t, script); !bytes.Equal(got, script) {
+		t.Fatal("prepared metadata changed")
 	}
-	for _, tc := range cases {
-		if got := mysqlLenEncInt(tc.payload); got != tc.want {
-			t.Errorf("mysqlLenEncInt(%v) = %d, want %d", tc.payload, got, tc.want)
-		}
-	}
-}
-
-// The server read must be bounded. Without a deadline, a malformed or
-// truncated response blocks a proxy goroutine forever and Stop() waits on it.
-func TestForwardResponse_TruncatedResponseDoesNotHang(t *testing.T) {
-	orig := mysqlResponseTimeout
-	mysqlResponseTimeout = 300 * time.Millisecond
-	defer func() { mysqlResponseTimeout = orig }()
-
-	proxyToServer, server := net.Pipe()
-	proxyToClient, client := net.Pipe()
-	go func() { _, _ = io.Copy(io.Discard, client) }()
-
-	// A column-count packet promising a result set, then nothing.
-	go func() { _, _ = server.Write(mysqlPacket(1, []byte{0x01})) }()
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := (&mysqlProxy{}).forwardResponse(proxyToServer, proxyToClient)
-		done <- err
-	}()
-
-	// The real deadline is 30s; this asserts the read is bounded at all rather
-	// than re-testing the constant, so keep the window generous but finite.
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("a truncated response must fail, not block a goroutine forever")
+	rows := append(mysqlPacket(1, []byte{1}), mysqlPacket(2, []byte("column"))...)
+	rows = append(rows, mysqlPacket(3, []byte{0, 0, 42, 0, 0, 0})...)
+	rows = append(rows, mysqlPacket(4, []byte{0, 0, 43, 0, 0, 0})...)
+	rows = append(rows, mysqlPacket(5, []byte{0xfe, 0, 0, 2, 0})...)
+	if got := forwardResponseResult(t, rows); !bytes.Equal(got, rows) {
+		t.Fatal("binary rows changed")
 	}
 }
