@@ -52,6 +52,20 @@ func JSONToTypedMessage(files *protoregistry.Files, desc protoreflect.MessageDes
 	return proto.Marshal(msg)
 }
 
+// TypedMessageToJSON decodes a dynamic request without losing int64/uint64
+// precision. Use proto field names so handlers can access e.g. user_id.
+func TypedMessageToJSON(files *protoregistry.Files, desc protoreflect.MessageDescriptor, wire []byte) ([]byte, error) {
+	msg := dynamicpb.NewMessage(desc)
+	if err := proto.Unmarshal(wire, msg); err != nil {
+		return nil, fmt.Errorf("decode as %s: %w", desc.FullName(), err)
+	}
+	return (protojson.MarshalOptions{
+		UseProtoNames:     true,
+		EmitDefaultValues: true,
+		Resolver:          typesResolver{files: files},
+	}).Marshal(msg)
+}
+
 // typesResolver adapts a *protoregistry.Files to the protojson.Resolver
 // interface. protojson needs to look up message types by full name (for
 // Any unpacking) and extension types; we forward to the per-mock

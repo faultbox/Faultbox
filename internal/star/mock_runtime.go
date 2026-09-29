@@ -23,6 +23,7 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 	if svc.Mock == nil {
 		return fmt.Errorf("startMockService: %q has nil Mock config", svcName)
 	}
+	svc.Mock.resetState()
 
 	svcCtx, svcCancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -239,7 +240,11 @@ func (rt *Runtime) dynamicHandlerBridge(svcName, ifaceName, pattern string, fn s
 		defer rt.mu.Unlock()
 
 		thread := &starlark.Thread{Name: fmt.Sprintf("mock-%s-%s-%s", svcName, ifaceName, pattern)}
+		thread.SetLocal("mock_handler", true)
 		reqDict := toStarlarkRequest(req)
+		state, revision := rt.services[svcName].Mock.stateSnapshot()
+		_ = reqDict.SetKey(starlark.String("state"), state)
+		_ = reqDict.SetKey(starlark.String("state_revision"), starlark.MakeUint64(revision))
 		result, err := starlark.Call(thread, fn, starlark.Tuple{reqDict}, nil)
 		if err != nil {
 			return nil, fmt.Errorf("dynamic handler %s: %w", pattern, err)

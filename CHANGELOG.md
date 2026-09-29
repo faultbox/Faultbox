@@ -13,6 +13,26 @@ Per-release "What's new" pages live on the site at
 Next-version work is tracked in
 [GitHub Issues](https://github.com/faultbox/Faultbox/issues).
 
+### Fixed
+
+- Kafka `publish()` owns and closes its transport, so metadata and connections
+  cannot leak into the next test's broker at the same address. A regression
+  restarts kfake five times and reads each acknowledged record without a retry.
+- Typed gRPC dynamic mocks decode requests into `req["body"]` using protobuf
+  JSON with proto field names; original wire bytes remain in `req["raw_body"]`.
+- Mock encode/decode/resolve/handler errors now invalidate otherwise passing
+  tests and appear as `MOCK_*_ERROR` diagnostics, including when the SUT fails
+  open. Intentional gRPC/HTTP error responses remain valid test inputs.
+
+### Added
+
+- `mock_service(state=...)` and `grpc.server(state=...)` declare initial
+  dynamic-handler state. `mock.set_state(...)` replaces an immutable snapshot
+  during a test, with automatic reset between tests/plan leaves and
+  `mock.state_changed` trace events. Handlers read `req["state"]` and
+  `req["state_revision"]` to implement per-user answers, stale aggregates
+  and upstream-error/recovery scenarios.
+
 ## [0.18.1] - 2026-08-15
 
 Follow-ups to the v0.18.0 field report: one determinism fix in two

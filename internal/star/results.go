@@ -364,6 +364,16 @@ func enrichTestOutput(tto *TestTraceOutput, tr *TestResult) {
 // buildDiagnostics analyzes test results and produces actionable hints.
 func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
 	var diags []Diagnostic
+	seenMockErrors := make(map[string]bool)
+	for _, ev := range tr.Events {
+		if d, ok := mockErrorDiagnostic(ev); ok {
+			key := d.Code + "\x00" + d.Message
+			if !seenMockErrors[key] {
+				diags = append(diags, d)
+				seenMockErrors[key] = true
+			}
+		}
+	}
 
 	hasFaults := len(tto.Faults) > 0
 	passed := tr.Result == "pass"

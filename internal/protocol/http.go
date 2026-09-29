@@ -201,6 +201,7 @@ func (m *mockHTTPMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dyn, err := route.Dynamic(buildMockRequest(r, bodyBytes))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("dynamic handler error: %v", err), http.StatusInternalServerError)
+			emitWith(m.emit, "dynamic_error", map[string]string{"method": r.Method, "path": r.URL.Path, "error": err.Error()})
 			emitWith(m.emit, op, map[string]string{"status": "500", "error": err.Error()})
 			return
 		}

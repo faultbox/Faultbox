@@ -157,6 +157,10 @@ func (s *ServiceDef) Attr(name string) (starlark.Value, error) {
 	switch name {
 	case "name":
 		return starlark.String(s.Name), nil
+	case "set_state":
+		if s.IsMock() {
+			return starlark.NewBuiltin(s.Name+".set_state", s.setMockState), nil
+		}
 	case "get", "post", "put", "delete", "patch", "send":
 		// Shorthand: api.post(...) when service has a single interface.
 		iface, err := s.DefaultInterface()
@@ -171,6 +175,9 @@ func (s *ServiceDef) Attr(name string) (starlark.Value, error) {
 
 func (s *ServiceDef) AttrNames() []string {
 	names := []string{"name"}
+	if s.IsMock() {
+		names = append(names, "set_state")
+	}
 	for k := range s.Interfaces {
 		names = append(names, k)
 	}

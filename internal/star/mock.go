@@ -3,6 +3,7 @@ package star
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"go.starlark.net/starlark"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -13,6 +14,13 @@ import (
 // MockConfig holds mock configuration keyed per interface. Populated by
 // the mock_service() builtin; consumed by Runtime.startMockService.
 type MockConfig struct {
+	// Immutable snapshots: tests replace state atomically; a handler retains
+	// the snapshot it received even if the next request sees a new version.
+	StateInit     *starlark.Dict
+	stateMu       sync.RWMutex
+	state         *starlark.Dict
+	stateRevision uint64
+
 	// Routes per interface name. Insertion order is preserved — earlier
 	// routes take precedence when multiple patterns match.
 	Routes map[string][]MockRouteEntry
@@ -134,6 +142,10 @@ func toStarlarkRequest(req protocol.MockRequest) *starlark.Dict {
 	_ = d.SetKey(starlark.String("query"), query)
 
 	_ = d.SetKey(starlark.String("body"), starlark.String(string(req.Body)))
+	_ = d.SetKey(starlark.String("raw_body"), starlark.Bytes(string(req.Body)))
+	if req.BodyJSON != nil {
+		_ = d.SetKey(starlark.String("body"), jsonToStarlark(string(req.BodyJSON)))
+	}
 	return d
 }
 
