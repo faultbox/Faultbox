@@ -95,6 +95,30 @@ byte-carrying string, as it does for other protocols.
 
 ### Change mock state during a test
 
+For services that read and cache configuration during boot, use per-test
+initial state instead of changing it in the body:
+
+```python
+test("toggles_on", body=scenario,
+     mock_state={geoconfig.name: {"toggles": {"enabled": True}},
+                 wd2.name: {"status": "approved"}})
+```
+
+`mock_state` is keyed by mock **service name**, with concrete state dicts as
+values. Each value replaces that mock's declared `state=` for this test. It
+is copied/frozen at declaration and applied at revision 0 before the mock
+listener starts, so dependent services see it during startup. Unspecified
+mocks retain their declared initial state. Every test and plan leaf resets
+independently; body-time `set_state()` changes never modify these defaults.
+Overrides emit `mock.state_initialized` events before service startup.
+
+The lifecycle is: initialize mocks with test overrides → start dependents →
+`setup=` → body → teardown. Existing `setup=` remains after service startup.
+Unknown/non-mock targets fail before anything starts. A reused service that
+depends (directly or transitively) on an overridden mock is rejected: disable
+`reuse` for that consumer so cached boot configuration cannot survive across
+profiles. Unrelated reusable infrastructure can stay running.
+
 `mock.set_state(state)` atomically **replaces** the whole state dict. Values
 may be dicts with string keys, lists, strings, integers, finite floats, bools
 or None. Faultbox copies and freezes them: later edits to the caller's dict

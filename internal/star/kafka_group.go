@@ -67,7 +67,7 @@ func defaultKafkaGroup(nonce, testName string) string {
 // name carries a per-run nonce, and putting it in the trace would make
 // two runs of the same spec differ in a field nothing asserts on.
 func (rt *Runtime) applyKafkaGroupDefault(protocolName, method string, args map[string]any) {
-	if protocolName != "kafka" || method != "consume" {
+	if protocolName != "kafka" || (method != "consume" && method != "consume_many") {
 		return
 	}
 	if g, ok := args["group"]; ok {
@@ -76,4 +76,9 @@ func (rt *Runtime) applyKafkaGroupDefault(protocolName, method string, args map[
 		}
 	}
 	args["group"] = defaultKafkaGroup(rt.runNonce, rt.currentTestName)
+	if method == "consume_many" {
+		if leaf := rt.snapshotCurrentLeaf(); leaf != nil {
+			args["group"] = fmt.Sprintf("%s-leaf-%d", args["group"], leaf.Index)
+		}
+	}
 }

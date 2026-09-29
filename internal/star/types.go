@@ -2,11 +2,11 @@
 package star
 
 import (
-	jsonPkg "encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	starlarkjson "go.starlark.net/lib/json"
 	"go.starlark.net/starlark"
 
 	"github.com/faultbox/Faultbox/internal/protocol"
@@ -802,12 +802,14 @@ func jsonToStarlark(s string) starlark.Value {
 	if len(s) == 0 {
 		return nil
 	}
-	// Try to parse as JSON using Go's json package, then convert.
-	var raw any
-	if err := jsonUnmarshal([]byte(s), &raw); err != nil {
+	// Decode directly to Starlark so int64 Kafka offsets never pass through
+	// float64 (which rounds integers above 2^53).
+	value, err := starlark.Call(&starlark.Thread{Name: "json-response"},
+		starlarkjson.Module.Members["decode"].(starlark.Callable), starlark.Tuple{starlark.String(s)}, nil)
+	if err != nil {
 		return nil
 	}
-	return goToStarlark(raw)
+	return value
 }
 
 // goToStarlark converts a Go value (from json.Unmarshal) to Starlark.
@@ -839,11 +841,6 @@ func goToStarlark(v any) starlark.Value {
 	default:
 		return starlark.String(fmt.Sprint(v))
 	}
-}
-
-// jsonUnmarshal is a thin wrapper for encoding/json.Unmarshal.
-func jsonUnmarshal(data []byte, v any) error {
-	return jsonPkg.Unmarshal(data, v)
 }
 
 // ---------------------------------------------------------------------------

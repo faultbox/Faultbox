@@ -103,6 +103,68 @@ resp = kafka.broker.consume(topic="order-events")
 | `.data["key_base64"]` | string | Exact key bytes as base64 |
 | `.data["value_base64"]` | string | Exact value bytes as base64 (use for binary payloads) |
 
+### Bounded batch observation: `consume_many(...)`
+
+```python
+batch = bus.main.consume_many(
+    topic="users.v1",
+    max_records=100,
+    timeout="5s",
+    idle_timeout="250ms",
+    descriptors="proto/users.pb",
+    message="example.User",
+)
+assert_true(batch.ok, batch.error)
+for record in batch.data["records"]:
+    user = record["data"]
+    print(user["id"], record["partition"], record["offset"])
+```
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `topic` | required | Topic to observe |
+| `max_records` | 100 | Maximum returned records, from 1 to 10000 |
+| `timeout` | `"5s"` | Overall read/commit budget, including group assignment |
+| `idle_timeout` | `"250ms"` | Quiet period after assignment or the last collected batch |
+| `group` | scoped to run/test/plan leaf | Observation group; repeat calls resume after committed records |
+| `descriptors`, `message` | omitted | Optional descriptor file and message FQN; provide both for typed decoding |
+
+One client serves the entire call. It commits each fetched batch only after
+all its records decode successfully, then closes at the end of the call.
+It never defaults to the SUT's group. The descriptor file is captured for
+bundle replay. The active test's cancellation interrupts the read; consumer
+shutdown uses a bounded LeaveGroup wait.
+
+The response contains `records`, `stop_reason`, `group`, `assigned` and
+`committed_records`. Normal stop reasons are `max_records`, `idle_timeout`
+and `timeout`. A quiet, assigned empty topic returns `ok=True` with an empty
+list. Failure to get an assignment before timeout, broker/fetch errors,
+malformed protobuf, failed commits and test cancellation return `ok=False`.
+Partial records remain available; inspect `committed_records` after a failure.
+A timed/idle observation does not prove that a live topic has no future records.
+
+Each record carries `topic`, `partition`, exact integer `offset`,
+`key_base64`, `value_base64`, `key_is_null`, and `value_is_null`. Readable
+UTF-8 values also appear in `key`/`value`; those fields are null for binary
+data or tombstones. Base64 plus the null flags preserve the exact wire value,
+including the difference between an empty value and a tombstone.
+
+Typed `data` follows protobuf JSON with proto field names, enums as names,
+and int64/uint64 fields as strings. Tombstones have `data=None`; empty non-null
+messages decode normally. Record order is guaranteed only within a partition.
+
+For an existing single-record `consume()` result, or a saved binary payload:
+
+```python
+decoded = proto_decode(descriptors="proto/users.pb", message="example.User",
+                       data_base64=record["value_base64"])
+# Alternatively: data=wire_bytes (or a byte-carrying load_file() string).
+```
+
+`proto_decode` requires exactly one of `data` and `data_base64`. It rejects
+invalid base64, invalid descriptors/message names and malformed wire data.
+The existing single-record `consume()` API remains available.
+
 ## Fault Rules
 
 Built-in single-broker Kafka mocks advertise their proxy automatically in

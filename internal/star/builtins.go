@@ -102,6 +102,7 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		"mock_service":        starlark.NewBuiltin("mock_service", rt.builtinMockService),
 		"resource":            starlark.NewBuiltin("resource", rt.builtinResource),
 		"proto_encode":        starlark.NewBuiltin("proto_encode", rt.builtinProtoEncode),
+		"proto_decode":        starlark.NewBuiltin("proto_decode", rt.builtinProtoDecode),
 		"json_response":       starlark.NewBuiltin("json_response", builtinJSONResponse),
 		"text_response":       starlark.NewBuiltin("text_response", builtinTextResponse),
 		"bytes_response":      starlark.NewBuiltin("bytes_response", builtinBytesResponse),

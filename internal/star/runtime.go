@@ -4850,7 +4850,18 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	// step_send event above so the per-run nonce stays out of the trace.
 	rt.applyKafkaGroupDefault(ref.Interface.Protocol, method, stepArgs)
 
-	stepResult, err := p.ExecuteStep(context.Background(), addr, method, stepArgs)
+	stepCtx := context.Background()
+	if ref.Interface.Protocol == "kafka" && method == "consume_many" {
+		stepCtx = rt.testContext()
+		if path, ok := stepArgs["descriptors"].(string); ok && path != "" {
+			resolved := rt.resolveSpecPath(path)
+			if err := rt.captureResource(resolved); err != nil {
+				return nil, err
+			}
+			stepArgs["descriptors"] = resolved
+		}
+	}
+	stepResult, err := p.ExecuteStep(stepCtx, addr, method, stepArgs)
 	if err != nil {
 		return nil, err
 	}
