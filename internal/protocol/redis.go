@@ -3,8 +3,10 @@ package protocol
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -106,11 +108,20 @@ func (p *redisProtocol) ExecuteStep(ctx context.Context, addr, method string, kw
 	}
 
 	var args []string
+	var redisValue string
+	if method == "set" || method == "lpush" || method == "rpush" {
+		value, err := redisInputBytes(kwargs)
+		if err != nil {
+			return nil, err
+		}
+		redisValue = string(value)
+	}
+
 	switch method {
 	case "get":
 		args = []string{"GET", getStringKwarg(kwargs, "key", "")}
 	case "set":
-		args = []string{"SET", getStringKwarg(kwargs, "key", ""), getStringKwarg(kwargs, "value", "")}
+		args = []string{"SET", getStringKwarg(kwargs, "key", ""), redisValue}
 	case "del":
 		args = []string{"DEL", getStringKwarg(kwargs, "key", "")}
 	case "ping":
@@ -119,9 +130,9 @@ func (p *redisProtocol) ExecuteStep(ctx context.Context, addr, method string, kw
 		pattern := getStringKwarg(kwargs, "pattern", "*")
 		args = []string{"KEYS", pattern}
 	case "lpush":
-		args = []string{"LPUSH", getStringKwarg(kwargs, "key", ""), getStringKwarg(kwargs, "value", "")}
+		args = []string{"LPUSH", getStringKwarg(kwargs, "key", ""), redisValue}
 	case "rpush":
-		args = []string{"RPUSH", getStringKwarg(kwargs, "key", ""), getStringKwarg(kwargs, "value", "")}
+		args = []string{"RPUSH", getStringKwarg(kwargs, "key", ""), redisValue}
 	case "lrange":
 		key := getStringKwarg(kwargs, "key", "")
 		start := getStringKwarg(kwargs, "start", "0")
@@ -170,7 +181,7 @@ func (p *redisProtocol) ExecuteStep(ctx context.Context, addr, method string, kw
 		}, nil
 	}
 
-	body, _ := json.Marshal(map[string]any{"value": val})
+	body, _ := json.Marshal(map[string]any{"value": val, "value_base64": redisBase64(val), "value_is_null": val == nil})
 	return &StepResult{
 		Body:       string(body),
 		Success:    true,
@@ -215,7 +226,7 @@ func readRESP(r *bufio.Reader) (any, error) {
 			return nil, nil // null bulk string
 		}
 		buf := make([]byte, n+2) // +2 for \r\n
-		_, err := r.Read(buf)
+		_, err := io.ReadFull(r, buf)
 		if err != nil {
 			return nil, err
 		}
@@ -235,5 +246,43 @@ func readRESP(r *bufio.Reader) (any, error) {
 		return result, nil
 	default:
 		return line, nil
+	}
+}
+
+// The base64 tree preserves nulls, integers and array shape; only strings encode.
+func redisBase64(value any) any {
+	switch v := value.(type) {
+	case string:
+		return base64.StdEncoding.EncodeToString([]byte(v))
+	case []any:
+		out := make([]any, len(v))
+		for i, e := range v {
+			out[i] = redisBase64(e)
+		}
+		return out
+	default:
+		return value
+	}
+}
+func redisInputBytes(kwargs map[string]any) ([]byte, error) {
+	if raw, ok := kwargs["value_base64"]; ok {
+		if _, exists := kwargs["value"]; exists {
+			return nil, fmt.Errorf("redis: use value or value_base64, not both")
+		}
+		text, ok := raw.(string)
+		if !ok {
+			return nil, fmt.Errorf("redis: value_base64 must be a string")
+		}
+		return base64.StdEncoding.DecodeString(text)
+	}
+	switch v := kwargs["value"].(type) {
+	case nil:
+		return []byte{}, nil
+	case string:
+		return []byte(v), nil
+	case []byte:
+		return v, nil
+	default:
+		return nil, fmt.Errorf("redis: value must be string or bytes")
 	}
 }

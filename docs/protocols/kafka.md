@@ -393,3 +393,9 @@ message_loss = fault_assumption("message_loss",
 # This does NOT work on Confluent images (syscall-level, needs seccomp):
 # disk_error = fault_assumption("disk_error", target=kafka, write=deny("EIO"))
 ```
+
+
+A successful `publish()` receipt includes `published`, `topic`, `partition`,
+`offset`, `key_base64`, and `key_is_null`, taken from the acknowledged broker
+response. A consumer commit must advance **past** that offset to acknowledge the
+record; whether the commit occurs before or after processing is SUT-specific.

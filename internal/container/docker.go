@@ -3,6 +3,8 @@ package container
 import (
 	"archive/tar"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,8 +24,9 @@ import (
 
 // Client wraps the Docker Engine API client.
 type Client struct {
-	cli *client.Client
-	log *slog.Logger
+	cli   *client.Client
+	log   *slog.Logger
+	runID string
 }
 
 // NewClient creates a Docker client from environment variables.
@@ -37,7 +40,12 @@ func NewClient(ctx context.Context, log *slog.Logger) (*Client, error) {
 		cli.Close()
 		return nil, fmt.Errorf("docker ping: %w", err)
 	}
-	return &Client{cli: cli, log: log}, nil
+	nonce := make([]byte, 8)
+	if _, err := rand.Read(nonce); err != nil {
+		cli.Close()
+		return nil, err
+	}
+	return &Client{cli: cli, log: log, runID: hex.EncodeToString(nonce)}, nil
 }
 
 // Close releases the Docker client resources.
@@ -192,13 +200,11 @@ func (c *Client) CreateContainer(ctx context.Context, opts CreateOpts) (string, 
 	}
 
 	// Use the service name (without "faultbox-" prefix) as hostname for DNS resolution.
-	hostname := opts.Name
-	if len(hostname) > 10 && hostname[:9] == "faultbox-" {
-		hostname = hostname[9:]
-	}
+	hostname := strings.TrimPrefix(opts.Name, "faultbox-")
 
 	cfg := &container.Config{
 		Image:        opts.Image,
+		Labels:       map[string]string{"io.faultbox.run": c.runID},
 		Hostname:     hostname,
 		Entrypoint:   opts.Entrypoint,
 		Cmd:          opts.Cmd,
@@ -230,20 +236,20 @@ func (c *Client) CreateContainer(ctx context.Context, opts CreateOpts) (string, 
 	netCfg := &network.NetworkingConfig{}
 	if opts.NetworkID != "" {
 		netCfg.EndpointsConfig = map[string]*network.EndpointSettings{
-			"faultbox-net": {
+			c.ownedName("net"): {
 				NetworkID: opts.NetworkID,
 				Aliases:   []string{hostname}, // DNS alias = service name
 			},
 		}
 	}
 
-	resp, err := c.cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, opts.Name)
+	resp, err := c.cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, c.ownedName(opts.Name))
 	if err != nil {
 		return "", fmt.Errorf("create container %s: %w", opts.Name, err)
 	}
 
 	c.log.Info("container created",
-		slog.String("name", opts.Name),
+		slog.String("name", c.ownedName(opts.Name)),
 		slog.String("id", resp.ID[:12]),
 		slog.String("image", opts.Image),
 	)
@@ -292,10 +298,10 @@ func (c *Client) RemoveContainerByName(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("list containers: %w", err)
 	}
-	target := "/" + name
+	target := "/" + c.ownedName(name)
 	for _, ctr := range containers {
 		for _, n := range ctr.Names {
-			if n == target {
+			if n == target && ctr.Labels["io.faultbox.run"] == c.runID {
 				c.cli.ContainerStop(ctx, ctr.ID, container.StopOptions{})
 				return c.cli.ContainerRemove(ctx, ctr.ID, container.RemoveOptions{
 					Force:         true,
@@ -307,43 +313,12 @@ func (c *Client) RemoveContainerByName(ctx context.Context, name string) error {
 	return nil
 }
 
-// CleanupStale removes all containers and networks with the "faultbox-" prefix.
-// Called at suite start to clean up from previous failed/interrupted runs.
-func (c *Client) CleanupStale(ctx context.Context) {
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
-	if err != nil {
-		c.log.Debug("cleanup: list containers failed", slog.String("error", err.Error()))
-		return
-	}
-	for _, ctr := range containers {
-		for _, name := range ctr.Names {
-			if len(name) > 0 && name[0] == '/' {
-				name = name[1:]
-			}
-			if len(name) > 9 && name[:9] == "faultbox-" {
-				c.log.Debug("cleanup: removing stale container", slog.String("name", name))
-				c.cli.ContainerStop(ctx, ctr.ID, container.StopOptions{})
-				c.cli.ContainerRemove(ctx, ctr.ID, container.RemoveOptions{
-					Force:         true,
-					RemoveVolumes: true,
-				})
-				break
-			}
-		}
-	}
-
-	// Clean up stale networks.
-	networks, err := c.cli.NetworkList(ctx, network.ListOptions{})
-	if err != nil {
-		return
-	}
-	for _, net := range networks {
-		if len(net.Name) > 9 && net.Name[:9] == "faultbox-" {
-			c.log.Debug("cleanup: removing stale network", slog.String("name", net.Name))
-			c.cli.NetworkRemove(ctx, net.ID)
-		}
-	}
+// RunID identifies resources owned by this client, including parallel suites.
+func (c *Client) RunID() string { return c.runID }
+func (c *Client) ownedName(name string) string {
+	return "faultbox-" + c.runID + "-" + strings.TrimPrefix(name, "faultbox-")
 }
+func (c *Client) SocketDir() string { return filepath.Join(os.TempDir(), "faultbox-sockets", c.runID) }
 
 // ContainerPID returns the host-namespace PID of the container's init process.
 func (c *Client) ContainerPID(ctx context.Context, id string) (int, error) {

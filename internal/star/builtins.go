@@ -27,9 +27,11 @@ type parallelResult struct {
 // builtins returns all Starlark built-in functions for a runtime.
 func (rt *Runtime) builtins() starlark.StringDict {
 	out := starlark.StringDict{
-		"json":    starlarkjson.Module,
-		"emit":    starlark.NewBuiltin("emit", rt.builtinEmit),
-		"service": starlark.NewBuiltin("service", rt.builtinService),
+		"json":         starlarkjson.Module,
+		"emit":         starlark.NewBuiltin("emit", rt.builtinEmit),
+		"current_test": starlark.NewBuiltin("current_test", rt.builtinCurrentTest),
+		"decompress":   starlark.NewBuiltin("decompress", builtinDecompress),
+		"service":      starlark.NewBuiltin("service", rt.builtinService),
 		// Contract-driven callers (RFC-055). A topology entity in the same
 		// tier as service() and mock_service(): declared at spec load,
 		// bound to an interface, and its own actor in the trace.
@@ -530,7 +532,7 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 		if svc.Healthcheck == nil {
 			return nil, fmt.Errorf("service() %q is remote (remote=...) and requires healthcheck= so Faultbox can verify the upstream is reachable before tests run; declare e.g. healthcheck = http(\"%s:<port>/healthz\") or tcp(\"%s:<port>\")", svc.Name, anyHostFor(svc), anyHostFor(svc))
 		}
-		incompatible := []string{"seed", "reset", "reuse", "volumes", "ports", "args", "seccomp", "observe"}
+		incompatible := []string{"reset", "reuse", "volumes", "ports", "args", "seccomp", "observe"}
 		for _, k := range incompatible {
 			if present[k] {
 				return nil, fmt.Errorf("service() %q is remote (remote=...); %s= is not supported on remote services because Faultbox does not own their lifecycle. Use mock_service() if you need full control, or remove %s= and apply protocol-level faults instead", svc.Name, k, k)
@@ -587,6 +589,7 @@ func anyHostFor(svc *ServiceDef) string {
 // interface(name, protocol, port, spec=, tls=)
 func builtinInterface(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var name, protocol string
+	proxyEnabled := true
 	var port int
 	var spec string
 	var tlsVal starlark.Value
@@ -596,15 +599,17 @@ func builtinInterface(thread *starlark.Thread, fn *starlark.Builtin, args starla
 		"port", &port,
 		"spec?", &spec,
 		"tls?", &tlsVal,
+		"proxy?", &proxyEnabled,
 	); err != nil {
 		return nil, err
 	}
 
 	iface := &InterfaceDef{
-		Name:     name,
-		Protocol: protocol,
-		Port:     port,
-		Spec:     spec,
+		Name:          name,
+		ProxyDisabled: !proxyEnabled,
+		Protocol:      protocol,
+		Port:          port,
+		Spec:          spec,
 	}
 
 	// RFC-038 Phase 2: tls=tls_cert(...) attaches TLS material the
@@ -1044,6 +1049,9 @@ func (rt *Runtime) builtinFaultFromAssumption(thread *starlark.Thread, assumptio
 		svcName := pr.Target.Service.Name
 		ifaceName := pr.Target.Interface.Name
 		proto := pr.Target.Interface.Protocol
+		if pr.Target.Interface.ProxyDisabled {
+			return nil, fmt.Errorf("fault(): proxy is disabled for %s.%s", svcName, ifaceName)
+		}
 		targetAddr := proxyTargetAddr(pr.Target.Service, pr.Target.Interface)
 		if _, err := rt.proxyMgr.EnsureProxy(context.Background(), svcName, ifaceName, proto, targetAddr); err != nil {
 			return nil, fmt.Errorf("fault() proxy start for %s.%s: %w", svcName, ifaceName, err)
@@ -2435,7 +2443,7 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 		// (syscall=, path=, decision=) only make sense for those families, and
 		// widening it would change what existing specs see.
 		//
-		// The where= path does NOT filter by type. The lambda *is* the filter,
+		// The where= path does NOT filter by type. The predicate and explicit keyword filters apply,
 		// and pre-filtering silently hid every other family from it — including
 		// `proxy`, which docs/spec-language.md has always shown as
 		// `events(where=lambda e: e.type == "proxy" ...)`. That example could
@@ -2448,6 +2456,9 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 
 		se := &StarlarkEvent{ev: ev}
 
+		if len(filters) > 0 && !matchesFilters(ev, filters) {
+			continue
+		}
 		if whereFn != nil {
 			res, err := starlark.Call(thread, whereFn, starlark.Tuple{se}, nil)
 			if err != nil {
@@ -2456,8 +2467,6 @@ func (rt *Runtime) builtinEvents(thread *starlark.Thread, fn *starlark.Builtin, 
 			if !res.Truth() {
 				continue
 			}
-		} else if len(filters) > 0 && !matchesFilters(ev, filters) {
-			continue
 		}
 
 		result = append(result, se)
@@ -2536,6 +2545,9 @@ func (v *DecoderVal) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: 
 func (rt *Runtime) builtinFaultProtocol(thread *starlark.Thread, ifRef *InterfaceRef, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	svcName := ifRef.Service.Name
 	ifaceName := ifRef.Interface.Name
+	if ifRef.Interface.ProxyDisabled {
+		return nil, fmt.Errorf("fault(): proxy is disabled for %s.%s", svcName, ifaceName)
+	}
 	proto := ifRef.Interface.Protocol
 
 	// Extract run= and source= from kwargs, rest are ignored for protocol faults.

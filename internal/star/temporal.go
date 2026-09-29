@@ -21,6 +21,7 @@ import (
 //   - register Expect with the temporal-expectation list (if set)
 //   - watch TerminateWhen on the event log (if set)
 type TestConfig struct {
+	Params        *starlark.Dict            // immutable per-test parameters, visible during seed and body
 	MockState     map[string]*starlark.Dict // immutable per-test initial mock states
 	Body          starlark.Callable
 	Setup         starlark.Callable
@@ -508,6 +509,7 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 	var twArg starlark.Value = starlark.None
 	var assumeArg starlark.Value = starlark.None
 	var mockStateArg starlark.Value = starlark.None
+	var paramsArg starlark.Value = starlark.None
 	var timeoutStr string
 	var clockStr = "wall"
 	if err := starlark.UnpackArgs("test", args, kwargs,
@@ -519,6 +521,7 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 		"terminate_when?", &twArg,
 		"assume?", &assumeArg,
 		"mock_state?", &mockStateArg,
+		"params?", &paramsArg,
 		"clock?", &clockStr,
 	); err != nil {
 		return nil, err
@@ -531,6 +534,17 @@ func (rt *Runtime) builtinTest(_ *starlark.Thread, _ *starlark.Builtin, args sta
 	}
 
 	cfg := &TestConfig{Body: body}
+	if paramsArg != starlark.None {
+		params, ok := paramsArg.(*starlark.Dict)
+		if !ok {
+			return nil, fmt.Errorf("test(%q): params must be a dict", name)
+		}
+		frozen, err := freezeMockState(params)
+		if err != nil {
+			return nil, fmt.Errorf("test(%q): params: %w", name, err)
+		}
+		cfg.Params = frozen
+	}
 	if mockStateArg != starlark.None {
 		states, ok := mockStateArg.(*starlark.Dict)
 		if !ok {

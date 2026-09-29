@@ -74,6 +74,9 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 	}
 	defer serverConn.Close()
 
+	stopClose := context.AfterFunc(ctx, func() { clientConn.Close(); serverConn.Close() })
+	defer stopClose()
+
 	// RFC-034: per-connection lifecycle tracker. Emits proxy_conn_open
 	// now, proxy_handshake_complete after auth succeeds, and
 	// proxy_conn_close in deferred cleanup with byte counts +
@@ -91,6 +94,17 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		return
 	}
 	tracker.EmitHandshakeComplete("", 0)
+
+	// Responses are an independent byte stream: PREPARE has metadata packets,
+	// EXECUTE has binary rows (0x00 is not an OK terminator), CLOSE has no reply,
+	// and multi-result/LOCAL INFILE exchanges cannot be treated as one response.
+	responseDone := make(chan struct{})
+	go func() {
+		defer close(responseDone)
+		_, _ = io.Copy(clientConn, tracker.WrapServerReader(serverConn))
+		clientConn.Close()
+	}()
+	defer func() { serverConn.Close(); clientConn.Close(); <-responseDone }()
 
 	// Proxy command packets.
 	for {
@@ -112,9 +126,6 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		tracker.AddBytesC2S(4)
 
 		payloadLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
-		if payloadLen == 0 {
-			continue
-		}
 
 		payload := make([]byte, payloadLen)
 		if _, err := io.ReadFull(clientConn, payload); err != nil {
@@ -124,7 +135,7 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		tracker.AddBytesC2S(payloadLen)
 
 		// COM_QUERY = 0x03, COM_STMT_PREPARE = 0x16
-		if len(payload) > 0 && (payload[0] == 0x03 || payload[0] == 0x16) {
+		if header[3] == 0 && len(payload) > 0 && (payload[0] == 0x03 || payload[0] == 0x16) {
 			query := string(payload[1:])
 			if handled := p.checkRules(clientConn, header[3], query); handled {
 				continue
@@ -141,13 +152,6 @@ func (p *mysqlProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 			return
 		}
 
-		// Forward server response(s) back to client.
-		respBytes, err := p.forwardResponse(serverConn, clientConn)
-		if err != nil {
-			closeReason = classifyCloseReason(err, "server")
-			return
-		}
-		tracker.AddBytesS2C(respBytes)
 	}
 }
 
@@ -314,159 +318,6 @@ func (p *mysqlProxy) forwardHandshake(client, server net.Conn) error {
 		}
 	}
 	return fmt.Errorf("handshake exceeded %d rounds without OK/ERR", maxRounds)
-}
-
-// mysqlResponseTimeout bounds a single server read in the command phase.
-//
-// The client side of the loop has always had a deadline; the server side had
-// none, so any mis-parse of the response framing blocked a proxy goroutine
-// forever. Stop() waits on the connection WaitGroup, so one stuck goroutine
-// hung the entire run in teardown — not even the per-test timeout fired,
-// because the test itself had already finished.
-//
-// A deadline turns that class of bug into a failed test with a legible error
-// instead of a hang, which is the only acceptable behaviour for a tool whose
-// job is reporting what happened.
-// A var, not a const, so tests can shorten it — asserting that the read is
-// bounded should not cost 30 seconds of suite time.
-var mysqlResponseTimeout = 30 * time.Second
-
-// forwardResponse forwards one COM_* response from server to client.
-//
-// Returns total bytes read from the server side so the connection-lifecycle
-// tracker can update bytes_s2c for proxy_conn_close. Includes packet headers
-// and payloads.
-//
-// # Why this parses the result set rather than guessing
-//
-// The previous implementation forwarded one packet per loop iteration and then
-// peeked with a 100 ms deadline to decide whether more was coming. The peek
-// consumed the terminator, so the *next* iteration issued an unconditional,
-// deadline-free read for a packet the server would never send — and blocked
-// forever. `exec()` was unaffected (a single OK packet returns above), so the
-// bug was specific to `query()`: every result-set step through the MySQL proxy
-// hung, permanently.
-//
-// It stayed invisible because the proxy could not reach the command phase at
-// all until v0.16.1 fixed the credentials that let a step authenticate. One
-// bug was hiding behind another, and neither was visible to a spec that did
-// not assert on the result of a step.
-//
-// The framing (MySQL 8 COM_QUERY):
-//
-//	OK (0x00) | ERR (0xFF) | LOCAL INFILE (0xFB) → single packet, done
-//	otherwise → column count N, then N column definitions, then
-//	            [EOF] when the client did not negotiate CLIENT_DEPRECATE_EOF,
-//	            then row packets, terminated by EOF (0xFE) or OK (0x00) or ERR
-//
-// Both EOF styles are handled without knowing the negotiated capability
-// flags: a 0x00 terminator is the deprecate-EOF final OK and ends the
-// response, while the first 0xFE after the column definitions is the
-// column-definition terminator and the second ends the rows.
-func (p *mysqlProxy) forwardResponse(server, client net.Conn) (int, error) {
-	bytesRead := 0
-
-	readPacket := func() (payload []byte, n int, err error) {
-		if err := server.SetReadDeadline(time.Now().Add(mysqlResponseTimeout)); err != nil {
-			return nil, 0, err
-		}
-		defer server.SetReadDeadline(time.Time{})
-
-		header := make([]byte, 4)
-		if _, err := io.ReadFull(server, header); err != nil {
-			return nil, 0, err
-		}
-		n = 4
-		payloadLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
-		payload = make([]byte, payloadLen)
-		if payloadLen > 0 {
-			if _, err := io.ReadFull(server, payload); err != nil {
-				return nil, n, err
-			}
-			n += payloadLen
-		}
-		if _, err := client.Write(header); err != nil {
-			return nil, n, err
-		}
-		if len(payload) > 0 {
-			if _, err := client.Write(payload); err != nil {
-				return nil, n, err
-			}
-		}
-		return payload, n, nil
-	}
-
-	first, n, err := readPacket()
-	bytesRead += n
-	if err != nil {
-		return bytesRead, err
-	}
-
-	// Single-packet responses: OK, ERR, or a LOCAL INFILE request (which the
-	// client answers next, so this exchange is over either way).
-	if len(first) > 0 && (first[0] == mysqlPktOK || first[0] == mysqlPktERR || first[0] == mysqlPktLocalInfile) {
-		return bytesRead, nil
-	}
-	// An EOF as the very first packet is not a result set either.
-	if len(first) > 0 && first[0] == mysqlPktEOF && len(first) < 9 {
-		return bytesRead, nil
-	}
-
-	// Result set. first is the column-count packet — a length-encoded
-	// integer, and for any plausible column count that is its first byte.
-	columns := mysqlLenEncInt(first)
-
-	for i := 0; i < columns; i++ {
-		_, n, err := readPacket()
-		bytesRead += n
-		if err != nil {
-			return bytesRead, err
-		}
-	}
-
-	sawColumnDefEOF := false
-	for {
-		payload, n, err := readPacket()
-		bytesRead += n
-		if err != nil {
-			return bytesRead, err
-		}
-		if len(payload) == 0 {
-			continue
-		}
-		switch {
-		case payload[0] == mysqlPktERR:
-			return bytesRead, nil
-		case payload[0] == mysqlPktOK:
-			// CLIENT_DEPRECATE_EOF: the final packet is an OK, not an EOF.
-			return bytesRead, nil
-		case payload[0] == mysqlPktEOF && len(payload) < 9:
-			if sawColumnDefEOF {
-				return bytesRead, nil // end of rows
-			}
-			sawColumnDefEOF = true // end of column definitions; rows follow
-		}
-		// Otherwise a row packet — keep going.
-	}
-}
-
-// mysqlLenEncInt decodes the leading length-encoded integer of a payload.
-// Only the first byte matters for realistic column counts; the multi-byte
-// forms are decoded anyway so a wide result set is not mis-framed.
-func mysqlLenEncInt(payload []byte) int {
-	if len(payload) == 0 {
-		return 0
-	}
-	switch b := payload[0]; {
-	case b < 0xFB:
-		return int(b)
-	case b == 0xFC && len(payload) >= 3:
-		return int(payload[1]) | int(payload[2])<<8
-	case b == 0xFD && len(payload) >= 4:
-		return int(payload[1]) | int(payload[2])<<8 | int(payload[3])<<16
-	default:
-		return 0
-	}
 }
 
 func forwardMySQLPacket(src, dst net.Conn) error {

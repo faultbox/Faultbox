@@ -33,9 +33,10 @@ import (
 // transitive load()s and don't get re-executed independently.
 func replayCmd(args []string) int {
 	var (
-		bundlePath  string
-		testFilter  string
-		extractOnly string
+		bundlePath   string
+		outputBundle string
+		testFilter   string
+		extractOnly  string
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -43,6 +44,11 @@ func replayCmd(args []string) int {
 		case a == "-h", a == "--help":
 			printReplayUsage()
 			return 0
+		case strings.HasPrefix(a, "--bundle="):
+			outputBundle = strings.TrimPrefix(a, "--bundle=")
+		case a == "--bundle" && i+1 < len(args):
+			outputBundle = args[i+1]
+			i++
 		case strings.HasPrefix(a, "--test="):
 			testFilter = strings.TrimPrefix(a, "--test=")
 		case a == "--test" && i+1 < len(args):
@@ -136,7 +142,11 @@ func replayCmd(args []string) int {
 	testArgs := []string{
 		rootInExtract,
 		"--seed", fmt.Sprintf("%d", man.Seed),
-		"--no-bundle",
+	}
+	if outputBundle != "" {
+		testArgs = append(testArgs, "--bundle", outputBundle)
+	} else {
+		testArgs = append(testArgs, "--no-bundle")
 	}
 	if testFilter != "" {
 		testArgs = append(testArgs, "--test", testFilter)
@@ -256,6 +266,7 @@ func printReplayUsage() {
 USAGE
   faultbox replay <bundle.fb>                    # rerun every test
   faultbox replay <bundle.fb> --test <name>      # rerun one test
+  faultbox replay <bundle.fb> --bundle <new.fb> # save the replay as a new bundle
   faultbox replay <bundle.fb> --extract-only <dir>
       # extract spec/ to dir, don't run; useful for inspecting/editing
       # before re-running manually

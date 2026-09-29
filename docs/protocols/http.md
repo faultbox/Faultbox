@@ -159,3 +159,10 @@ api = service("api",
     observe = [observe.stdout(decoder=decoder("json"))],
 )
 ```
+
+
+HTTP response bodies retain the existing surrounding-whitespace trimming. The default maximum is 16 MiB;
+step calls accept `max_response_bytes=` (1 byte through 1 GiB). Oversized,
+truncated, or unreadable bodies return `ok=False` and an error, never a silently
+partial success. `headers` maps canonical header names to comma-joined strings;
+`header_values` maps them to lists, preserving repeated headers such as Set-Cookie.

@@ -89,7 +89,7 @@ service("svc",
 
 // ---- Incompatible kwargs ----
 
-func TestRemote_RejectsSeed(t *testing.T) {
+func TestRemote_AllowsExplicitSeed(t *testing.T) {
 	err := loadStringErr(t, `
 def _seed(): pass
 service("svc",
@@ -99,7 +99,9 @@ service("svc",
     seed = _seed,
 )
 `)
-	mustContain(t, err, "remote", "seed=", "not supported")
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRemote_RejectsReset(t *testing.T) {

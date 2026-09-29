@@ -47,7 +47,7 @@ Identical to HTTP/1.1, with one additional field:
 | Field | Type | Description |
 |-------|------|-------------|
 | `.status` | int | HTTP status code |
-| `.body` | string | Response body (truncated at 64KB) |
+| `.body` | string | Complete response body (subject to the explicit size limit) |
 | `.ok` | bool | `True` on any HTTP response |
 | `.duration_ms` | int | Request time |
 | `.fields["proto"]` | string | Negotiated protocol — expect `"HTTP/2.0"` |
@@ -147,3 +147,10 @@ faulty = fault_assumption("faulty_api",
 - gRPC rides on HTTP/2 but has its own protocol plugin (`"grpc"`) because
   gRPC's semantics (methods named by path, trailers, status codes in
   headers) deserve first-class support.
+
+
+HTTP response bodies retain the existing surrounding-whitespace trimming. The default maximum is 16 MiB;
+step calls accept `max_response_bytes=` (1 byte through 1 GiB). Oversized,
+truncated, or unreadable bodies return `ok=False` and an error, never a silently
+partial success. `headers` maps canonical header names to comma-joined strings;
+`header_values` maps them to lists, preserving repeated headers such as Set-Cookie.

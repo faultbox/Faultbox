@@ -106,7 +106,7 @@ Three service sources - exactly one required:
 
 ## Container networking
 
-Containers run on a Docker bridge network (`faultbox-net`). Two addressing
+Containers run on a Docker bridge network (`faultbox-<run>-net`, isolated per run). Two addressing
 modes:
 
 | Attribute | Returns | Used by |
