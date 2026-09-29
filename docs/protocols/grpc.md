@@ -98,6 +98,18 @@ slow_orders = fault_assumption("slow_orders",
 )
 ```
 
+A matched delay emits its `proxy` hit (`action="delay"`, `phase="started"`)
+before waiting. The RPC deadline, client cancellation, or proxy shutdown ends
+the wait promptly. A separate `proxy_delay_completed` or
+`proxy_delay_cancelled` event records its outcome; `rpc_id` correlates these
+events within the service/interface proxy. Outcome events do not count as
+additional fault hits.
+
+Leaving a fault scope clears rules for new RPCs. Already-matched RPCs retain
+their delay, subject to cancellation. Clearing rules keeps the proxy listener
+open; explicit test teardown emits `proxy_stopping`, cancels active RPCs, and
+closes it.
+
 ### `drop(method=)`
 
 Returns `UNAVAILABLE` with "connection dropped" message.
