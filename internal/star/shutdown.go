@@ -62,6 +62,11 @@ func (rt *Runtime) stopOneService(name string, rs *runningSession) {
 			}
 		})
 	}
+	if cleanup := rt.processCleanups[name]; cleanup != nil {
+		cleanup()
+		delete(rt.processCleanups, name)
+	}
+
 	if mgr := rt.proxyMgr; mgr != nil {
 		rt.shutdownPhase(name, "proxy_stop", func(context.Context) error { mgr.StopService(name); return nil })
 	}

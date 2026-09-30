@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/faultbox/Faultbox/internal/connowner"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -154,9 +155,10 @@ type ProxyEvent struct {
 
 // Manager manages proxy lifecycle per service interface.
 type Manager struct {
-	mu      sync.Mutex
-	proxies map[string]*runningProxy // key: "serviceName:interfaceName"
-	onEvent OnProxyEvent
+	connections *connowner.Tracker
+	mu          sync.Mutex
+	proxies     map[string]*runningProxy // key: "serviceName:interfaceName"
+	onEvent     OnProxyEvent
 }
 
 type runningProxy struct {
@@ -167,10 +169,14 @@ type runningProxy struct {
 }
 
 // NewManager creates a proxy manager.
-func NewManager(onEvent OnProxyEvent) *Manager {
+func NewManager(onEvent OnProxyEvent) *Manager { return NewManagerWithConnections(onEvent, nil) }
+
+// NewManagerWithConnections retains original managed-process ownership across forwarding.
+func NewManagerWithConnections(onEvent OnProxyEvent, connections *connowner.Tracker) *Manager {
 	return &Manager{
-		proxies: make(map[string]*runningProxy),
-		onEvent: onEvent,
+		connections: connections,
+		proxies:     make(map[string]*runningProxy),
+		onEvent:     onEvent,
 	}
 }
 
@@ -202,6 +208,9 @@ func (m *Manager) EnsureProxy(ctx context.Context, svcName, ifaceName, protocol,
 		return "", fmt.Errorf("create %s proxy for %s: %w", protocol, key, err)
 	}
 
+	if kafka, ok := p.(*kafkaProxy); ok {
+		kafka.connections = m.connections
+	}
 	pCtx, cancel := context.WithCancel(context.Background())
 	listenAddr, err := p.Start(pCtx, targetAddr)
 	if err != nil {
@@ -251,6 +260,9 @@ func (m *Manager) EnsureProxyTLS(ctx context.Context, svcName, ifaceName, protoc
 		tlsApplied = true
 	}
 
+	if kafka, ok := p.(*kafkaProxy); ok {
+		kafka.connections = m.connections
+	}
 	pCtx, cancel := context.WithCancel(context.Background())
 	addr, err := p.Start(pCtx, targetAddr)
 	if err != nil {

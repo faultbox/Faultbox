@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
+	"github.com/faultbox/Faultbox/internal/connowner"
 	"github.com/faultbox/Faultbox/internal/kafkawire"
 	"github.com/twmb/franz-go/pkg/kmsg"
 	"io"
@@ -21,15 +22,16 @@ const (
 )
 
 type kafkaProxy struct {
-	mu       sync.RWMutex
-	rules    []Rule
-	topicIDs map[[16]byte]string
-	target   string
-	listener net.Listener
-	onEvent  OnProxyEvent
-	svcName  string
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	connections *connowner.Tracker
+	mu          sync.RWMutex
+	rules       []Rule
+	topicIDs    map[[16]byte]string
+	target      string
+	listener    net.Listener
+	onEvent     OnProxyEvent
+	svcName     string
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 
 	// RFC-038 Phase 3: TLS material. Kafka brokers expose
 	// SSL/PLAINTEXT listeners on separate ports — there is no
@@ -106,6 +108,13 @@ func (p *kafkaProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		return
 	}
 	defer serverConn.Close()
+	if p.connections != nil {
+		release := p.connections.Forward(clientConn, serverConn)
+		defer release()
+	}
+	// Shutdown must also release bindings for an idle connection.
+	stop := context.AfterFunc(ctx, func() { clientConn.Close(); serverConn.Close() })
+	defer stop()
 
 	// RFC-034: per-connection lifecycle tracker. Kafka has no
 	// explicit handshake — client jumps straight to Produce/Fetch

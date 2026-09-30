@@ -10,6 +10,19 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+### Process-scoped Kafka readiness (G49)
+
+- Managed Linux consumers with identical client IDs on the same topic are
+  distinguished by proven process instance. Socket ownership survives Kafka
+  proxy forwarding and separate coordinator/data connections; no client ID
+  changes or log-readiness fallback are needed for separate managed processes.
+- Source service, root PID and instance accompany readiness, fetch, produce and
+  commit evidence. Each consumer needs its own Fetch and its own completion
+  commit; stale/reused PIDs and unresolved competing owners fail closed.
+- Native process registration happens before exec through a parent/child gate.
+  Process cleanup unregisters only that generation, while closed connections
+  remove their forwarding bindings.
+
 ### Repeatable harness execution
 
 - Typed `grpc.call(descriptors=..., body=...)` invokes real unary services

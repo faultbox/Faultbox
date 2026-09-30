@@ -98,6 +98,11 @@ type SessionConfig struct {
 	Namespaces NamespaceConfig
 	// FaultRules to apply via seccomp-notify interception.
 	FaultRules []FaultRule
+	// OnProcessStart registers the host PID before a binary target can exec.
+	// The returned cleanup runs once after exit or any subsequent launch
+	// failure, including when registration returns both cleanup and an error.
+	// Applies to Linux binary launches; external-listener sessions are already running.
+	OnProcessStart func(pid int) (cleanup func(), err error)
 	// OnSyscall is called for every intercepted syscall (optional).
 	// Must be safe to call from multiple goroutines.
 	OnSyscall func(SyscallEvent)

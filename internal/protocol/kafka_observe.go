@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/faultbox/Faultbox/internal/connowner"
 	"github.com/faultbox/Faultbox/internal/kafkawire"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -24,7 +25,9 @@ type kafkaObserver struct {
 	topics        map[[16]byte]string
 	sequence      uint64
 	groups        map[string]*kafkaObservedGroup
-	fetchSessions map[int32]map[kafkaTopicPartition]kafkaSessionPosition
+	fetchSessions map[kafkaFetchSessionKey]map[kafkaTopicPartition]kafkaSessionPosition
+	connections   *connowner.Tracker
+	sourceActive  func(connowner.Source) bool
 	ambiguous     map[kafkaClientPartition]bool
 }
 type kafkaObservedListener struct {
@@ -37,7 +40,11 @@ func (l *kafkaObservedListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &kafkaObservedConn{Conn: c, observer: l.observer, pending: make(map[int32]kafkaPending)}, nil
+	observed := &kafkaObservedConn{Conn: c, observer: l.observer, pending: make(map[int32]kafkaPending)}
+	if l.observer.connections != nil {
+		observed.owner = l.observer.connections.Bind(c.RemoteAddr(), c.LocalAddr())
+	}
+	return observed, nil
 }
 
 type kafkaPending struct {
@@ -45,13 +52,23 @@ type kafkaPending struct {
 	client    string
 	sequence  uint64
 	positions []kafkaFetchPosition
+	source    connowner.Source
+	owner     *connowner.Binding
 }
 type kafkaObservedConn struct {
 	net.Conn
 	observer                   *kafkaObserver
+	owner                      *connowner.Binding
 	readMu, writeMu, pendingMu sync.Mutex
 	input, output              []byte
 	pending                    map[int32]kafkaPending
+}
+
+func (c *kafkaObservedConn) Close() error {
+	if c.owner != nil {
+		c.owner.Close()
+	}
+	return c.Conn.Close()
 }
 
 func kafkaFrames(buffer *[]byte, data []byte, visit func([]byte) error) error {
@@ -96,7 +113,12 @@ func (c *kafkaObservedConn) Read(b []byte) (int, error) {
 			emitWith(c.observer.emit, "kafka.produce_unacknowledged", map[string]string{"client_id": client})
 			return nil
 		}
-		pending := c.observer.request(req, client)
+		var source connowner.Source
+		if c.owner != nil {
+			source = c.owner.Source()
+		}
+		pending := c.observer.request(req, client, source)
+		pending.owner = c.owner
 		c.pendingMu.Lock()
 		defer c.pendingMu.Unlock()
 		if len(c.pending) >= 1024 {
@@ -231,7 +253,7 @@ func (o *kafkaObserver) observe(p kafkaPending, response kmsg.Response) {
 						}
 						for _, batch := range input.Partitions {
 							if batch.Partition == part.Partition {
-								o.records("kafka.produce", name, part.Partition, p.client, batch.Records, &part.BaseOffset)
+								o.records("kafka.produce", name, part.Partition, p.client, batch.Records, &part.BaseOffset, p.source)
 							}
 						}
 					}
@@ -242,7 +264,7 @@ func (o *kafkaObserver) observe(p kafkaPending, response kmsg.Response) {
 		for _, t := range r.Topics {
 			for _, part := range t.Partitions {
 				if part.ErrorCode == 0 {
-					o.records("kafka.fetch", o.topic(t.Topic, t.TopicID), part.Partition, p.client, part.RecordBatches, nil)
+					o.records("kafka.fetch", o.topic(t.Topic, t.TopicID), part.Partition, p.client, part.RecordBatches, nil, p.source)
 				}
 			}
 		}
@@ -257,7 +279,7 @@ func (o *kafkaObserver) observe(p kafkaPending, response kmsg.Response) {
 						}
 						for _, commit := range input.Partitions {
 							if commit.Partition == part.Partition {
-								emitWith(o.emit, "kafka.commit", map[string]string{"topic": t.Topic, "partition": fmt.Sprint(part.Partition), "offset": fmt.Sprint(commit.Offset), "group": req.Group, "client_id": p.client})
+								emitWith(o.emit, "kafka.commit", sourceFields(map[string]string{"topic": t.Topic, "partition": fmt.Sprint(part.Partition), "offset": fmt.Sprint(commit.Offset), "group": req.Group, "client_id": p.client}, p.source))
 							}
 						}
 					}
@@ -267,7 +289,7 @@ func (o *kafkaObserver) observe(p kafkaPending, response kmsg.Response) {
 	}
 }
 
-func (o *kafkaObserver) records(op, topic string, partition int32, client string, data []byte, produceOffset *int64) {
+func (o *kafkaObserver) records(op, topic string, partition int32, client string, data []byte, produceOffset *int64, source connowner.Source) {
 	for len(data) > 0 {
 		if len(data) < 12 {
 			o.recordError("truncated record batch")
@@ -308,7 +330,7 @@ func (o *kafkaObserver) records(op, topic string, partition int32, client string
 				return
 			}
 			records = records[n+int(length):]
-			emitWith(o.emit, op, map[string]string{"topic": topic, "partition": fmt.Sprint(partition), "offset": fmt.Sprint(base + int64(record.OffsetDelta)), "client_id": client, "key_base64": base64.StdEncoding.EncodeToString(record.Key), "value_base64": base64.StdEncoding.EncodeToString(record.Value)})
+			emitWith(o.emit, op, sourceFields(map[string]string{"topic": topic, "partition": fmt.Sprint(partition), "offset": fmt.Sprint(base + int64(record.OffsetDelta)), "client_id": client, "key_base64": base64.StdEncoding.EncodeToString(record.Key), "value_base64": base64.StdEncoding.EncodeToString(record.Value)}, source))
 		}
 		if produceOffset != nil {
 			next := base + int64(batch.LastOffsetDelta) + 1

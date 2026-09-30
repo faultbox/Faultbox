@@ -3,11 +3,14 @@ package protocol
 import (
 	"fmt"
 
+	"github.com/faultbox/Faultbox/internal/connowner"
+
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
 // Classic Fetch has no group ID. Attribution is deliberately limited to a
-// unique CURRENT assignment for (client ID, topic, partition), never a socket.
+// unique CURRENT assignment for (proven process instance, client ID, topic,
+// partition). Unknown owners remain candidates, rather than presumed distinct.
 // Capture that assignment when the request arrives, then validate it again
 // when the broker acknowledges the concrete fetch offset.
 type kafkaObservedGroup struct {
@@ -17,6 +20,7 @@ type kafkaObservedGroup struct {
 }
 type kafkaObservedMember struct {
 	client     string
+	source     connowner.Source
 	assignment uint64
 	partitions map[kafkaTopicPartition]bool // value: starting position acknowledged
 }
@@ -25,13 +29,19 @@ type kafkaTopicPartition struct {
 	partition int32
 }
 type kafkaClientPartition struct {
-	client string
+	client   string
+	instance string
 	kafkaTopicPartition
+}
+type kafkaFetchSessionKey struct {
+	id               int32
+	instance, client string
 }
 type kafkaAssignmentRef struct {
 	group, member     string
 	generation        int32
 	epoch, assignment uint64
+	source            connowner.Source
 }
 type kafkaFetchPosition struct {
 	kafkaTopicPartition
@@ -67,10 +77,17 @@ func (o *kafkaObserver) invalidate(group, reason string, sequence uint64) kafkaG
 	}
 	return kafkaGroupEvent{"kafka.group_rebalance", map[string]string{"group": group, "generation": fmt.Sprint(g.generation), "epoch": fmt.Sprint(g.epoch), "reason": reason}}
 }
-func (o *kafkaObserver) request(req kmsg.Request, client string) kafkaPending {
+func (o *kafkaObserver) request(req kmsg.Request, client string, sources ...connowner.Source) kafkaPending {
 	o.mu.Lock()
 	o.sequence++
 	p := kafkaPending{req: req, client: client, sequence: o.sequence}
+	if len(sources) > 0 {
+		p.source = sources[0]
+	}
+	if !o.activeSource(p.source) {
+		o.mu.Unlock()
+		return p
+	}
 	var events []kafkaGroupEvent
 	switch r := req.(type) {
 	case *kmsg.JoinGroupRequest:
@@ -78,7 +95,7 @@ func (o *kafkaObserver) request(req kmsg.Request, client string) kafkaPending {
 	case *kmsg.FetchRequest:
 		positions := make(map[kafkaTopicPartition]kafkaSessionPosition)
 		if r.SessionID > 0 && r.SessionEpoch > 0 {
-			for key, pos := range o.fetchSessions[r.SessionID] {
+			for key, pos := range o.fetchSessions[p.sessionKey(r.SessionID)] {
 				positions[key] = pos
 			}
 		}
@@ -108,8 +125,8 @@ func (o *kafkaObserver) request(req kmsg.Request, client string) kafkaPending {
 			}
 			for group, g := range o.groups {
 				for member, m := range g.members {
-					if _, ok := m.partitions[key]; ok && m.client == client {
-						pos.refs = append(pos.refs, kafkaAssignmentRef{group, member, g.generation, g.epoch, m.assignment})
+					if _, ok := m.partitions[key]; ok && o.matchesSource(m, client, p.source) {
+						pos.refs = append(pos.refs, kafkaAssignmentRef{group, member, g.generation, g.epoch, m.assignment, m.source})
 					}
 				}
 			}
@@ -119,7 +136,7 @@ func (o *kafkaObserver) request(req kmsg.Request, client string) kafkaPending {
 	}
 	o.mu.Unlock()
 	for _, e := range events {
-		emitWith(o.emit, e.op, e.fields)
+		emitWith(o.emit, e.op, sourceFields(e.fields, p.source))
 	}
 	return p
 }
@@ -127,8 +144,21 @@ func groupFields(group, member, client string, g *kafkaObservedGroup) map[string
 	return map[string]string{"group": group, "member_id": member, "client_id": client, "generation": fmt.Sprint(g.generation), "epoch": fmt.Sprint(g.epoch)}
 }
 func (o *kafkaObserver) observeGroup(p kafkaPending, response kmsg.Response) {
+	if !o.activeSource(p.source) {
+		return
+	}
+	// A binding is sticky to one process incarnation. Never let a pending
+	// request acquire the identity of a restarted process or recycled PID.
+	if p.owner != nil && p.owner.Source() != p.source {
+		emitWith(o.emit, "kafka.group_attribution_unavailable", sourceFields(map[string]string{"client_id": p.client, "reason": "connection ownership changed after request; awaiting a new exchange"}, p.source))
+		return
+	}
 	var events []kafkaGroupEvent
 	o.mu.Lock()
+	if !o.activeSource(p.source) {
+		o.mu.Unlock()
+		return
+	}
 	switch r := response.(type) {
 	case *kmsg.JoinGroupResponse:
 		req := p.req.(*kmsg.JoinGroupRequest)
@@ -137,7 +167,7 @@ func (o *kafkaObserver) observeGroup(p kafkaPending, response kmsg.Response) {
 			if r.Generation >= g.generation {
 				g.generation = r.Generation
 				if g.members[r.MemberID] == nil {
-					g.members[r.MemberID] = &kafkaObservedMember{client: p.client}
+					g.members[r.MemberID] = &kafkaObservedMember{client: p.client, source: p.source}
 				}
 				events = append(events, kafkaGroupEvent{"kafka.group_join", groupFields(req.Group, r.MemberID, p.client, g)})
 			}
@@ -148,7 +178,7 @@ func (o *kafkaObserver) observeGroup(p kafkaPending, response kmsg.Response) {
 		if r.ErrorCode == 0 && req.Generation == g.generation && p.sequence >= g.epoch && (g.members[req.MemberID] == nil || g.members[req.MemberID].assignment <= p.sequence) {
 			var assignment kmsg.ConsumerMemberAssignment
 			if err := assignment.ReadFrom(r.MemberAssignment); err == nil {
-				m := &kafkaObservedMember{client: p.client, assignment: p.sequence, partitions: make(map[kafkaTopicPartition]bool)}
+				m := &kafkaObservedMember{client: p.client, source: p.source, assignment: p.sequence, partitions: make(map[kafkaTopicPartition]bool)}
 				g.members[req.MemberID] = m
 				for _, t := range assignment.Topics {
 					for _, part := range t.Partitions {
@@ -197,7 +227,7 @@ func (o *kafkaObserver) observeGroup(p kafkaPending, response kmsg.Response) {
 	}
 	o.mu.Unlock()
 	for _, e := range events {
-		emitWith(o.emit, e.op, e.fields)
+		emitWith(o.emit, e.op, sourceFields(e.fields, p.source))
 	}
 }
 
@@ -207,7 +237,7 @@ func (o *kafkaObserver) observeGroup(p kafkaPending, response kmsg.Response) {
 func (o *kafkaObserver) observeFetch(p kafkaPending, r *kmsg.FetchResponse) []kafkaGroupEvent {
 	req := p.req.(*kmsg.FetchRequest)
 	if r.ErrorCode != 0 {
-		delete(o.fetchSessions, req.SessionID)
+		delete(o.fetchSessions, p.sessionKey(req.SessionID))
 		return nil
 	}
 	statuses := make(map[kafkaTopicPartition]bool)
@@ -235,19 +265,19 @@ func (o *kafkaObserver) observeFetch(p kafkaPending, r *kmsg.FetchResponse) []ka
 		matches := 0
 		for _, g := range o.groups {
 			for _, m := range g.members {
-				if _, ok := m.partitions[pos.kafkaTopicPartition]; ok && m.client == p.client {
+				if _, ok := m.partitions[pos.kafkaTopicPartition]; ok && o.matchesSource(m, p.client, p.source) {
 					matches++
 				}
 			}
 		}
-		key := kafkaClientPartition{p.client, pos.kafkaTopicPartition}
+		key := kafkaClientPartition{p.client, p.source.Instance, pos.kafkaTopicPartition}
 		if len(pos.refs) > 1 || matches > 1 {
 			if !o.ambiguous[key] {
 				if o.ambiguous == nil {
 					o.ambiguous = make(map[kafkaClientPartition]bool)
 				}
 				o.ambiguous[key] = true
-				events = append(events, kafkaGroupEvent{"kafka.group_ready_ambiguous", map[string]string{"client_id": p.client, "topic": pos.topic, "partition": fmt.Sprint(pos.partition), "reason": "client_id is shared by multiple active assignments; configure a unique consumer client_id"}})
+				events = append(events, kafkaGroupEvent{"kafka.group_ready_ambiguous", map[string]string{"client_id": p.client, "topic": pos.topic, "partition": fmt.Sprint(pos.partition), "reason": "multiple active assignments remain possible for this process/client/topic/partition; ownership is unresolved or groups share one process"}})
 			}
 			continue
 		}
@@ -261,7 +291,13 @@ func (o *kafkaObserver) observeFetch(p kafkaPending, r *kmsg.FetchResponse) []ka
 			continue
 		}
 		m := g.members[ref.member]
-		if m == nil || m.assignment != ref.assignment {
+		if m == nil || m.assignment != ref.assignment || m.source != ref.source || !o.matchesSource(m, p.client, p.source) {
+			continue
+		}
+		// A transient ownership lookup miss is not permission to borrow a
+		// managed member's Fetch. Fallback is only for wholly unowned clients.
+		if p.source.Known() != m.source.Known() {
+			events = append(events, kafkaGroupEvent{"kafka.group_attribution_unavailable", map[string]string{"group": ref.group, "member_id": ref.member, "client_id": p.client, "topic": pos.topic, "partition": fmt.Sprint(pos.partition), "reason": "assignment and Fetch do not both have matching proven process ownership"}})
 			continue
 		}
 		if ready, ok := m.partitions[pos.kafkaTopicPartition]; !ok || ready {
@@ -271,16 +307,38 @@ func (o *kafkaObserver) observeFetch(p kafkaPending, r *kmsg.FetchResponse) []ka
 		f := groupFields(ref.group, ref.member, p.client, g)
 		f["topic"], f["partition"], f["offset"], f["assignment"] = pos.topic, fmt.Sprint(pos.partition), fmt.Sprint(pos.offset), fmt.Sprint(ref.assignment)
 		f["attribution"], f["position_source"] = "unique_client_id", "fetch"
+		if p.source.Known() && m.source.Known() && p.source.Instance == m.source.Instance {
+			f["attribution"] = "process_instance"
+		}
 		events = append(events, kafkaGroupEvent{"kafka.group_ready", f})
 	}
 	if r.SessionID > 0 {
 		if o.fetchSessions == nil {
-			o.fetchSessions = make(map[int32]map[kafkaTopicPartition]kafkaSessionPosition)
+			o.fetchSessions = make(map[kafkaFetchSessionKey]map[kafkaTopicPartition]kafkaSessionPosition)
 		}
-		o.fetchSessions[r.SessionID] = session
+		o.fetchSessions[p.sessionKey(r.SessionID)] = session
 	}
 	if req.SessionEpoch == -1 {
-		delete(o.fetchSessions, req.SessionID)
+		delete(o.fetchSessions, p.sessionKey(req.SessionID))
 	}
 	return events
+}
+
+func (p kafkaPending) sessionKey(id int32) kafkaFetchSessionKey {
+	return kafkaFetchSessionKey{id: id, instance: p.source.Instance, client: p.client}
+}
+func (o *kafkaObserver) activeSource(source connowner.Source) bool {
+	return !source.Known() || o.sourceActive == nil || o.sourceActive(source)
+}
+func (o *kafkaObserver) matchesSource(member *kafkaObservedMember, client string, source connowner.Source) bool {
+	if member.client != client || !o.activeSource(member.source) {
+		return false
+	}
+	return !source.Known() || !member.source.Known() || source.Instance == member.source.Instance
+}
+func sourceFields(fields map[string]string, source connowner.Source) map[string]string {
+	if source.Known() {
+		fields["source_service"], fields["source_instance"], fields["source_pid"] = source.Service, source.Instance, fmt.Sprint(source.PID)
+	}
+	return fields
 }

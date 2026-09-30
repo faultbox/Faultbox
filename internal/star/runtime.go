@@ -25,6 +25,7 @@ import (
 	faultbox "github.com/faultbox/Faultbox"
 	"github.com/faultbox/Faultbox/internal/bundle"
 	"github.com/faultbox/Faultbox/internal/config"
+	"github.com/faultbox/Faultbox/internal/connowner"
 	"github.com/faultbox/Faultbox/internal/container"
 	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/eventsource"
@@ -231,6 +232,8 @@ type CrashInfo struct {
 
 // Runtime is the Starlark execution environment.
 type Runtime struct {
+	connections     *connowner.Tracker
+	processCleanups map[string]func()
 	shutdownFailed  atomic.Bool
 	shutdownTimeout time.Duration // optional override for embedded runtimes/tests
 	outputMu        sync.RWMutex
@@ -518,6 +521,8 @@ type runningSession struct {
 // New creates a new Starlark runtime.
 func New(logger *slog.Logger) *Runtime {
 	rt := &Runtime{
+		connections:       connowner.New(),
+		processCleanups:   make(map[string]func()),
 		log:               logging.WithComponent(logger, "starlark"),
 		runNonce:          newRunNonce(),
 		events:            NewEventLog(),
@@ -537,7 +542,7 @@ func New(logger *slog.Logger) *Runtime {
 		detAllow:   make(map[string]bool),
 		vacuity:    newVacuityState(),
 	}
-	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
+	rt.proxyMgr = proxy.NewManagerWithConnections(rt.emitProxyEvent, rt.connections)
 	rt.packetRules = newPacketRuleRegistry()
 	rt.packetGW = newPacketGatewayState()
 	rt.watches = newWatchRegistry()
@@ -2732,6 +2737,10 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		return codedf(CodeLaunchFailed, "launch container %q: %w", svcName, err)
 	}
 	rt.containerIDs[svcName] = result.ContainerID
+	if result.HostPID > 0 {
+		cleanup, _ := rt.registerProcess(svcName, result.HostPID)
+		rt.processCleanups[svcName] = cleanup
+	}
 
 	// RFC-054 M5: attach the trace session now that the sandbox exists. Done
 	// after the container ID is recorded, because routeFileIO attributes each
@@ -2864,6 +2873,9 @@ func (rt *Runtime) makeSyscallCallback(svcName string) func(engine.SyscallEvent)
 // launchSession creates and starts a session, waits for healthcheck.
 func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *ServiceDef, sessCfg engine.SessionConfig) error {
 	svcLog := rt.log.With(slog.String("service", svcName))
+	if !svc.IsContainer() {
+		sessCfg.OnProcessStart = func(pid int) (func(), error) { return rt.registerProcess(svcName, pid) }
+	}
 	session, err := engine.NewSession(sessCfg, svcLog)
 	if err != nil {
 		return fmt.Errorf("create session for %q: %w", svcName, err)

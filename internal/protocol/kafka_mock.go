@@ -52,7 +52,10 @@ func (p *kafkaProtocol) ServeMock(ctx context.Context, addr string, spec MockSpe
 	}
 
 	topics := extractTopicNames(spec.Config)
-	observer := &kafkaObserver{emit: emit, advertise: spec.KafkaAdvertise, topics: make(map[[16]byte]string)}
+	observer := &kafkaObserver{emit: emit, advertise: spec.KafkaAdvertise, topics: make(map[[16]byte]string), connections: spec.KafkaConnections}
+	if spec.KafkaConnections != nil {
+		observer.sourceActive = spec.KafkaConnections.IsActive
+	}
 
 	opts := []kfake.Opt{
 		kfake.ListenFn(func(network, address string) (net.Listener, error) {
