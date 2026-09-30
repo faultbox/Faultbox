@@ -137,6 +137,12 @@ func TestKafkaCommitBarrierIdentityAndOffset(t *testing.T) {
 				if err != nil || !result.(*Response).Ok {
 					t.Fatal(result, err)
 				}
+				commits := rt.events.EventsByType("mock.kafka.commit")
+				replies := rt.events.EventsByType("step_recv")
+				if len(replies) != 1 || replies[0].VectorClock["bus"] < commits[0].VectorClock["bus"] {
+					t.Fatal("barrier response did not inherit observed broker evidence")
+				}
+
 			} else if err == nil {
 				t.Fatalf("%s falsely succeeded", kind)
 			}

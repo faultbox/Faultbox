@@ -250,9 +250,20 @@ func (rt *Runtime) executeKafkaWait(thread *starlark.Thread, ref *InterfaceRef, 
 		return rt.connections != nil && rt.connections.IsActive(connowner.Source{Service: f["source_service"], Instance: f["source_instance"], PID: pid})
 	}
 	start := time.Now()
-	rt.events.Emit("step_send", "test", map[string]string{"target": ref.Service.Name, "interface": ref.Interface.Name, "protocol": "kafka", "method": method, "source_service": service, "group": group})
+	rt.events.MergeClock(ref.Service.Name, "test")
+	caller := rt.callerInTest(thread)
+	send := map[string]string{"target": ref.Service.Name, "interface": ref.Interface.Name, "protocol": "kafka", "method": method, "source_service": service, "group": group}
+	if caller != "" {
+		send["spec"] = caller
+	}
+	rt.events.Emit("step_send", "test", send)
 	defer func() {
-		fields := map[string]string{"target": ref.Service.Name, "method": method, "duration_ms": fmt.Sprint(time.Since(start).Milliseconds()), "success": fmt.Sprint(err == nil)}
+		rt.events.MergeClock("test", ref.Service.Name)
+		rt.vacuity.noteStep(ref.Service.Name, ref.Interface.Name, err == nil)
+		fields := map[string]string{"target": ref.Service.Name, "interface": ref.Interface.Name, "protocol": "kafka", "method": method, "duration_ms": fmt.Sprint(time.Since(start).Milliseconds()), "success": fmt.Sprint(err == nil)}
+		if caller != "" {
+			fields["spec"] = caller
+		}
 		if err != nil {
 			fields["error"] = err.Error()
 		}
