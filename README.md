@@ -133,14 +133,17 @@ Faultbox **complements** integration tests — it doesn't replace them.
 - **Not production chaos** — Faultbox is a pre-prod / local / CI tool.
   Use Gremlin or Chaos Mesh in real environments.
 
-## v0.18.2: repeatable service harnesses
+## v0.19.0: environment checks and Kafka barriers
 
-Descriptor-backed unary gRPC calls, typed per-test mock state and Kafka Fetch-position
-barriers reduce harness setup code. Managed Linux consumers may share a Kafka client
-ID: readiness and commit events identify the originating process instance. Nested
-module resources survive bundle replay, and startup/teardown failures report their cause.
-See the [changelog](CHANGELOG.md#0182---2026-09-30) and
-[Kafka readiness reference](docs/protocols/kafka.md#mock-consumer-group-readiness).
+`faultbox doctor` diagnoses Linux, Docker/shim, packet-fault and trace prerequisites
+without changing the environment. A [macOS quickstart](docs/guides/macos.md) provides
+a minimal Lima profile with Docker and host/guest version checks.
+
+Kafka mocks provide native `wait_ready` and `wait_committed` steps with current
+assignment and process identity checks. Publish receipts belong to one test and
+broker incarnation; a commit still does not prove business processing. See the
+[consumer barriers](docs/protocols/kafka.md#consumer-barriers) and
+[changelog](CHANGELOG.md#0190---2026-09-30).
 
 ## Install
 
@@ -153,7 +156,8 @@ release, verifies the checksum, and installs to `~/.faultbox/bin`.
 
 Or install a specific version:
 ```bash
-FAULTBOX_VERSION=0.1.0 curl -fsSL https://faultbox.io/install.sh | sh
+curl -fsSL https://faultbox.io/install.sh -o /tmp/faultbox-install.sh
+FAULTBOX_VERSION=0.19.0 sh /tmp/faultbox-install.sh
 ```
 
 For macOS execution, follow the [Linux runner quickstart](docs/guides/macos.md).

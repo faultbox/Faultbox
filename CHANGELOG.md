@@ -10,6 +10,8 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-30
+
 ### Added
 
 - Read-only `faultbox doctor` reports native Linux, Docker/shim, packet-fault,
@@ -3616,7 +3618,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.2...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.19.0...HEAD
+[0.19.0]: https://github.com/faultbox/Faultbox/compare/release-0.18.2...release-0.19.0
 [0.18.2]: https://github.com/faultbox/Faultbox/compare/release-0.18.1...release-0.18.2
 [0.18.1]: https://github.com/faultbox/Faultbox/compare/release-0.18.0...release-0.18.1
 [0.18.0]: https://github.com/faultbox/Faultbox/compare/release-0.17.0...release-0.18.0
