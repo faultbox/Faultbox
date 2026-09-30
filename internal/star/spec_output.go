@@ -55,7 +55,8 @@ func (rt *Runtime) newSpecThread(name, phase, service string) *starlark.Thread {
 	rt.outputMu.RLock()
 	run := rt.outputRun
 	rt.outputMu.RUnlock()
-	t := &starlark.Thread{Name: name, Print: printSpecOutput}
+	t := boundedThread(&starlark.Thread{Name: name, Print: printSpecOutput})
+	t.SetLocal("faultbox.context", rt.testContext())
 	if run != nil {
 		t.SetLocal(specOutputKey, &specOutputContext{run: run, phase: phase, service: service})
 	}
@@ -65,9 +66,10 @@ func (rt *Runtime) newSpecThread(name, phase, service string) *starlark.Thread {
 // Children inherit capabilities, never acquire them from the current runtime.
 // This also prevents an aliased parallel() in a predicate from enabling emit().
 func childSpecThread(name string, parents ...*starlark.Thread) *starlark.Thread {
-	t := &starlark.Thread{Name: name, Print: printSpecOutput}
+	t := boundedThread(&starlark.Thread{Name: name, Print: printSpecOutput})
 	if len(parents) > 0 && parents[0] != nil && parents[0].Local(specOutputSuppressedKey) != true {
 		t.SetLocal(specOutputKey, parents[0].Local(specOutputKey))
+		t.SetLocal("faultbox.context", parents[0].Local("faultbox.context"))
 	}
 	return t
 }

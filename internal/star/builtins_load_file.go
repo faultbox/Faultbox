@@ -40,7 +40,7 @@ func (rt *Runtime) builtinLoadFile(thread *starlark.Thread, fn *starlark.Builtin
 	if err := starlark.UnpackArgs("load_file", args, kwargs, "path", &path); err != nil {
 		return nil, err
 	}
-	data, err := rt.readLoadFile(path)
+	data, err := rt.readLoadFile(rt.resolveCallerPath(thread, path))
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ func (rt *Runtime) builtinLoadYAML(thread *starlark.Thread, fn *starlark.Builtin
 	if err := starlark.UnpackArgs("load_yaml", args, kwargs, "path", &path); err != nil {
 		return nil, err
 	}
-	data, err := rt.readLoadFile(path)
+	data, err := rt.readLoadFile(rt.resolveCallerPath(thread, path))
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func (rt *Runtime) builtinLoadJSON(thread *starlark.Thread, fn *starlark.Builtin
 	if err := starlark.UnpackArgs("load_json", args, kwargs, "path", &path); err != nil {
 		return nil, err
 	}
-	data, err := rt.readLoadFile(path)
+	data, err := rt.readLoadFile(rt.resolveCallerPath(thread, path))
 	if err != nil {
 		return nil, err
 	}

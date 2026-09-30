@@ -83,7 +83,7 @@ func TestDeterminismL2StillErrors(t *testing.T) {
 func TestPacketFaultRequiresGvisorRuntime(t *testing.T) {
 	rt := New(testLogger())
 	spec := `
-db = service("db", "/bin/true", interface("main", "tcp", 5432))
+db = service("db", "/bin/true", interface("main", "tcp", 0))
 
 def test_packets():
     fault(db.main, packet_drop(), run = lambda: None)

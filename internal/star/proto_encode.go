@@ -9,16 +9,16 @@ import (
 )
 
 // proto_encode is reusable for Kafka and any other binary step API.
-func (rt *Runtime) builtinProtoEncode(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (rt *Runtime) builtinProtoEncode(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var path, message string
 	var body starlark.Value
 	if err := starlark.UnpackArgs("proto_encode", args, kwargs, "descriptors", &path, "message", &message, "body", &body); err != nil {
 		return nil, err
 	}
-	if err := rt.captureResource(rt.resolveSpecPath(path)); err != nil {
+	if err := rt.captureResource(rt.resolveCallerPath(thread, path)); err != nil {
 		return nil, err
 	}
-	files, err := protocol.LoadDescriptorSet(rt.resolveSpecPath(path))
+	files, err := protocol.LoadDescriptorSet(rt.resolveCallerPath(thread, path))
 	if err != nil {
 		return nil, err
 	}

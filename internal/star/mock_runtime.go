@@ -39,6 +39,11 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 	svcCtx, svcCancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	var wg sync.WaitGroup
+	startupFinished := make(chan struct{})
+	defer close(startupFinished)
+	go func() { <-startupFinished; wg.Wait(); close(done) }()
+	rt.sessions[svcName] = &runningSession{cancel: svcCancel, done: mockDoneChan(done)}
+	serveErrors := make(chan error, len(svc.Interfaces))
 
 	for ifaceName, iface := range svc.Interfaces {
 		p, ok := protocol.Get(iface.Protocol)
@@ -93,6 +98,7 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 		go func(name, bindAddr string) {
 			defer wg.Done()
 			if err := mh.ServeMock(svcCtx, bindAddr, spec, emit); err != nil {
+				serveErrors <- fmt.Errorf("mock %s.%s: %w", svcName, name, err)
 				rt.log.Error("mock handler failed",
 					slog.String("service", svcName),
 					slog.String("interface", name),
@@ -100,10 +106,23 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 			}
 		}(ifaceName, bindAddr)
 
-		if err := waitMockReady(ctx, iface.Protocol, addr, 3*time.Second); err != nil {
+		ready := make(chan error, 1)
+		go func() { ready <- waitMockReady(ctx, iface.Protocol, addr, 3*time.Second) }()
+		select {
+		case err := <-serveErrors:
 			svcCancel()
-			wg.Wait()
-			return fmt.Errorf("mock %q interface %q not ready: %w", svcName, ifaceName, err)
+			return startupFailure(svcName, -1, err)
+		case err := <-ready:
+			if err != nil {
+				svcCancel()
+				return fmt.Errorf("mock %q interface %q not ready: %w", svcName, ifaceName, err)
+			}
+		}
+		select {
+		case err := <-serveErrors:
+			svcCancel()
+			return startupFailure(svcName, -1, err)
+		default:
 		}
 
 		rt.log.Info("mock service listening",
@@ -111,17 +130,6 @@ func (rt *Runtime) startMockService(ctx context.Context, svcName string, svc *Se
 			slog.String("interface", ifaceName),
 			slog.String("addr", addr),
 			slog.String("bind", bindAddr))
-	}
-
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	rt.sessions[svcName] = &runningSession{
-		session: nil,
-		cancel:  svcCancel,
-		done:    mockDoneChan(done),
 	}
 
 	rt.events.Emit("service_started", svcName, map[string]string{"kind": "mock"})
@@ -274,18 +282,20 @@ func resolveExampleSelector(name string) protocol.ExampleSelector {
 
 // dynamicHandlerBridge wraps a Starlark callable so it satisfies
 // protocol.DynamicFn. Each invocation runs on a fresh Starlark thread; the
-// runtime-wide mutex serializes concurrent invocations to keep Starlark
-// state modifications safe (though mock handlers should not mutate shared
-// state in practice).
+// per-mock mutex serializes its invocations; an unrelated mock or runtime
+// operation does not wait for this handler. Globals and installed state are frozen.
 func (rt *Runtime) dynamicHandlerBridge(svcName, ifaceName, pattern string, fn starlark.Callable) protocol.DynamicFn {
 	return func(req protocol.MockRequest) (*protocol.MockResponse, error) {
 		rt.mu.Lock()
-		defer rt.mu.Unlock()
+		mock := rt.services[svcName].Mock
+		rt.mu.Unlock()
+		mock.handlerMu.Lock()
+		defer mock.handlerMu.Unlock()
 
-		thread := &starlark.Thread{Name: fmt.Sprintf("mock-%s-%s-%s", svcName, ifaceName, pattern)}
+		thread := boundedThread(&starlark.Thread{Name: fmt.Sprintf("mock-%s-%s-%s", svcName, ifaceName, pattern)})
 		thread.SetLocal("mock_handler", true)
 		reqDict := toStarlarkRequest(req)
-		state, revision := rt.services[svcName].Mock.stateSnapshot()
+		state, revision := mock.stateSnapshot()
 		_ = reqDict.SetKey(starlark.String("state"), state)
 		_ = reqDict.SetKey(starlark.String("state_revision"), starlark.MakeUint64(revision))
 		result, err := starlark.Call(thread, fn, starlark.Tuple{reqDict}, nil)

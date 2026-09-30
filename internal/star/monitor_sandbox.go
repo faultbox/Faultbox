@@ -77,7 +77,7 @@ var monitorSandboxDenylist = map[string]string{
 // Using a fresh thread per Evaluate call ensures monitors cannot leak
 // per-call state through thread-local data.
 func newSandboxThread(monitorID string) *starlark.Thread {
-	return &starlark.Thread{Name: "monitor:" + monitorID}
+	return boundedThread(&starlark.Thread{Name: "monitor:" + monitorID})
 }
 
 // validateSandboxNode walks the AST under root and returns an error on

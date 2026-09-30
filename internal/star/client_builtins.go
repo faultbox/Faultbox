@@ -122,6 +122,12 @@ func (rt *Runtime) builtinClient(thread *starlark.Thread, fn *starlark.Builtin,
 		}
 	}
 
+	if openapiPath != "" {
+		openapiPath = rt.resolveCallerPath(thread, openapiPath)
+	}
+	if descPath != "" {
+		descPath = rt.resolveCallerPath(thread, descPath)
+	}
 	table, err := rt.buildClientTable(name, target, openapiPath, descPath, grpcService, rename)
 	if err != nil {
 		return nil, err

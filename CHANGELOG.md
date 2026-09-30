@@ -10,6 +10,25 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+### Repeatable harness execution
+
+- Typed `grpc.call(descriptors=..., body=...)` invokes real unary services
+  without reflection or a JSON proxy helper, preserving protobuf integer and
+  Any types, status, metadata, response headers and cancellation.
+- Kafka mock group join/assignment/generation and acknowledged initial Fetch
+  positions supply `group_ready` startup barriers without warm-up records.
+  Ambiguous client-ID attribution is reported rather than guessed.
+- Module-relative file/contract paths work through nested imports, runtime
+  helper calls and bundle replay. Recursive Starlark helpers are enabled with
+  a call-depth guard; dynamic mocks use per-mock locks.
+- Container TCP probes are upgraded to the declared protocol; startup detects
+  occupied fixed ports and early exits. `check` warns about fixed listeners in
+  the actual host ephemeral range.
+- Startup callbacks support cancellable sleeps. Shutdown phases are bounded,
+  attributed and fail the run on error; proxy registry locks are released
+  before calling protocol stop callbacks. TLS CA use and clearing a remote
+  gRPC delay in flight have end-to-end regression coverage.
+
 ### Boot-time mock profiles and typed Kafka observation
 
 - `test(mock_state={service_name: state})` initializes mocks before dependent

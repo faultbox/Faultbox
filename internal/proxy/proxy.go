@@ -382,38 +382,26 @@ func extractPort(addr string) int {
 }
 
 // StopAll shuts down all running proxies.
-func (m *Manager) StopAll() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Manager) StopAll() { m.stopMatching("") }
 
+// Remove entries before stopping them. Protocol shutdown can call an observer
+// which reads advertised addresses through this manager; never hold m.mu there.
+func (m *Manager) StopService(svcName string) { m.stopMatching(svcName + ":") }
+func (m *Manager) stopMatching(prefix string) {
+	m.mu.Lock()
+	var pending []*runningProxy
 	for key, rp := range m.proxies {
-		rp.cancel()
-		if rp.proxy != nil {
-			rp.proxy.Stop()
+		if strings.HasPrefix(key, prefix) {
+			pending = append(pending, rp)
+			delete(m.proxies, key)
 		}
-		delete(m.proxies, key)
 	}
-}
-
-// StopService tears down every proxy belonging to a single service,
-// across all of its interfaces. Used during per-test teardown so that
-// a following test's EnsureProxy call allocates a fresh listener bound
-// to the new backend target, rather than returning a stale one whose
-// upstream points at a dead PID from the previous test.
-func (m *Manager) StopService(svcName string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	prefix := svcName + ":"
-	for key, rp := range m.proxies {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
+	m.mu.Unlock()
+	for _, rp := range pending {
 		rp.cancel()
 		if rp.proxy != nil {
 			rp.proxy.Stop()
 		}
-		delete(m.proxies, key)
 	}
 }
 

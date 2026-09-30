@@ -489,3 +489,16 @@ func ShimConfigJSON(cfg ShimConfig) string {
 	data, _ := json.Marshal(cfg)
 	return string(data)
 }
+
+// ContainerExit reports actual process state; a published TCP port is not proof
+// the container process remains alive during readiness.
+func (c *Client) ContainerExit(ctx context.Context, id string) (bool, int, error) {
+	inspect, err := c.cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return false, 0, err
+	}
+	if inspect.State == nil {
+		return false, 0, fmt.Errorf("container %s has no process state", id)
+	}
+	return !inspect.State.Running, inspect.State.ExitCode, nil
+}

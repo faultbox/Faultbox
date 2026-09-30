@@ -78,10 +78,14 @@ func sleepFor(ctx context.Context, d time.Duration) error {
 // and emitting one would reset the quiescence timer of any await_stable in a
 // parallel() branch — reintroducing, from the inside, the interference this
 // primitive exists to escape.
-func (rt *Runtime) builtinSleep(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if !rt.inTest.Load() {
+func (rt *Runtime) builtinSleep(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var output *specOutputContext
+	if thread != nil {
+		output, _ = thread.Local(specOutputKey).(*specOutputContext)
+	}
+	if !rt.inTest.Load() && output == nil {
 		return nil, fmt.Errorf("sleep() may only be called inside a test body; " +
-			"got call at module top level (or inside setup=)")
+			"got call at module top level (startup callbacks are supported)")
 	}
 	var durStr string
 	clockStr := "wall"
@@ -98,7 +102,7 @@ func (rt *Runtime) builtinSleep(_ *starlark.Thread, _ *starlark.Builtin, args st
 	if err != nil {
 		return nil, fmt.Errorf("sleep() bad duration %q: %w", durStr, err)
 	}
-	if err := sleepFor(rt.testContext(), d); err != nil {
+	if err := sleepFor(rt.executionContext(thread), d); err != nil {
 		return nil, fmt.Errorf("sleep: %w", err)
 	}
 	return starlark.None, nil

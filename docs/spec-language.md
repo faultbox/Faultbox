@@ -1664,8 +1664,8 @@ for user in fixture["users"]:
 rates = load_json("./config/rates.json")
 ```
 
-Path resolution is **relative to the spec file's directory** (same
-base as `load()`), not the process `cwd`. Absolute paths work but
+Path resolution is **relative to the module containing the call** (same
+base as `load()`), not the root spec or process `cwd`. Absolute paths work but
 emit an INFO log line.
 
 Security guardrails (see RFC-026 for rationale):
@@ -2606,7 +2606,7 @@ rules = [mongodb.disk_full(), checkout.post_q2_race()]
 ```
 
 The `@faultbox/` prefix is reserved for the stdlib; everything else hits
-the filesystem relative to the spec's directory.
+the filesystem relative to the importing module's directory.
 
 ---
 
@@ -4004,8 +4004,8 @@ print(json.indent(text))
 ```
 
 Invalid JSON, cyclic structures, unsupported types, and non-finite floats are
-reported as errors. This does not enable recursion in user-defined Starlark
-functions or change `load_json()` path resolution.
+reported as errors. Recursive user functions are supported with a depth guard;
+`load_json()` follows the calling module's directory.
 
 
 ## Shared-host runs and direct interfaces
@@ -4076,3 +4076,38 @@ protobuf deterministic mode is not a cross-version canonical encoding.
 A Linux binary running as PID 1 in its namespace with no SIGTERM handler is
 terminated immediately during teardown, since PID 1 ignores default-action
 TERM. A process with a handler keeps the normal two-second grace period.
+
+
+## Module paths, startup callbacks and shutdown
+
+`load()`, `load_file()`, `load_json()`, `load_yaml()`, `resource()`, protobuf
+encoding/decoding, typed step `descriptors=`, mock contracts and explicit client
+contracts resolve relative paths against the **calling module**. A helper called
+later from a test keeps the directory where the helper was defined. Embedded
+`@faultbox/` constructors preserve the caller's path context. Inherited
+`interface(spec=...)` contracts retain their declaration location.
+
+There is no fallback to the root spec when a module-local path is missing: such
+a fallback would silently select the wrong fixture when sibling modules contain
+the same filename. Use `resource("./file")` in the declaring module when passing
+a path string to another module. Existing `../harness/...` paths in sibling
+`gen/` and `harness/` layouts generally point to the same files, but portable
+modules should use their own relative paths. Canonical module caching prevents
+repeat declarations/warnings from `./`/`../` spelling aliases. Captured resource
+manifests preserve this resolution across bundle replay and re-bundling.
+
+`seed`, `reset` and `setup` may call `sleep()`. Their waits and protocol steps
+are cancellable; startup callbacks have a bounded context. Sleeping at module
+load is still rejected. Parallel branches retain their original test/callback
+context so late work cannot inherit the next test's timeout.
+
+Dynamic handlers serialize per mock service, rather than holding the runtime
+registry mutex. One slow mock therefore does not block unrelated mocks; handlers
+of the same mock still execute serially and installed state remains immutable.
+
+Shutdown operations have a ten-second bound per phase and identify the service
+and phase on failure (`service_stop_error`, `TEARDOWN_FAILED`). Such a failure
+cannot produce PASS: subsequent tests are aborted and the runtime must not be
+reused. Final CLI cleanup also has a bound and returns a nonzero exit status on
+failure. Proxy stop callbacks run outside the proxy registry lock, preventing
+advertised-address observers from deadlocking shutdown.

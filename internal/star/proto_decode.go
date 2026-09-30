@@ -8,7 +8,7 @@ import (
 	"go.starlark.net/starlark"
 )
 
-func (rt *Runtime) builtinProtoDecode(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (rt *Runtime) builtinProtoDecode(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var path, message string
 	var data, b64 starlark.Value = starlark.None, starlark.None
 	if err := starlark.UnpackArgs("proto_decode", args, kwargs, "descriptors", &path, "message", &message, "data?", &data, "data_base64?", &b64); err != nil {
@@ -38,7 +38,7 @@ func (rt *Runtime) builtinProtoDecode(_ *starlark.Thread, _ *starlark.Builtin, a
 			return nil, fmt.Errorf("proto_decode data must be bytes or a byte-carrying string")
 		}
 	}
-	resolved := rt.resolveSpecPath(path)
+	resolved := rt.resolveCallerPath(thread, path)
 	if err := rt.captureResource(resolved); err != nil {
 		return nil, err
 	}
