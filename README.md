@@ -133,6 +133,15 @@ Faultbox **complements** integration tests — it doesn't replace them.
 - **Not production chaos** — Faultbox is a pre-prod / local / CI tool.
   Use Gremlin or Chaos Mesh in real environments.
 
+## v0.18.2: repeatable service harnesses
+
+Descriptor-backed unary gRPC calls, typed per-test mock state and Kafka Fetch-position
+barriers reduce harness setup code. Managed Linux consumers may share a Kafka client
+ID: readiness and commit events identify the originating process instance. Nested
+module resources survive bundle replay, and startup/teardown failures report their cause.
+See the [changelog](CHANGELOG.md#0182---2026-09-30) and
+[Kafka readiness reference](docs/protocols/kafka.md#mock-consumer-group-readiness).
+
 ## Install
 
 ```bash

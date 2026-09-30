@@ -71,6 +71,7 @@ faultbox/
 │   ├── engine/               # Session lifecycle, fault rules, hold queues, notification loop
 │   ├── seccomp/              # BPF filter generation, seccomp-notify API, arch tables
 │   ├── star/                 # Starlark runtime, builtins, event log, per-service filtering
+│   ├── connowner/            # Managed Linux process/socket ownership and proxy forwarding identity
 │   ├── container/            # Docker API wrapper, network, container launch, Unix socket fd passing
 │   ├── protocol/             # Protocol plugins (http, http2, tcp, udp, postgres, mysql, redis, kafka, nats, grpc, mongodb, cassandra, clickhouse)
 │   ├── netfault/             # Packet-level faults on gVisor netstack (RFC-054)

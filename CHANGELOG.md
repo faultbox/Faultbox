@@ -10,6 +10,8 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-09-30
+
 ### Process-scoped Kafka readiness (G49)
 
 - Managed Linux consumers with identical client IDs on the same topic are
@@ -3594,7 +3596,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.1...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.2...HEAD
+[0.18.2]: https://github.com/faultbox/Faultbox/compare/release-0.18.1...release-0.18.2
 [0.18.1]: https://github.com/faultbox/Faultbox/compare/release-0.18.0...release-0.18.1
 [0.18.0]: https://github.com/faultbox/Faultbox/compare/release-0.17.0...release-0.18.0
 [0.17.0]: https://github.com/faultbox/Faultbox/compare/release-0.16.1...release-0.17.0
