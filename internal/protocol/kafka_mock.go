@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -31,15 +32,30 @@ func (p *kafkaProtocol) ServeMock(ctx context.Context, addr string, spec MockSpe
 		return fmt.Errorf("mock kafka addr %q: %w", addr, err)
 	}
 
+	// Starlark integers cross the mock configuration boundary as int64.
+	// Preserve the native Go caller forms and validate before narrowing.
+	var requestedPartitions int64
+	switch v := spec.Config["partitions"].(type) {
+	case int:
+		requestedPartitions = int64(v)
+	case int32:
+		requestedPartitions = int64(v)
+	case int64:
+		requestedPartitions = v
+	}
+	if requestedPartitions > math.MaxInt32 {
+		return fmt.Errorf("mock kafka partitions: %d exceeds the maximum %d", requestedPartitions, math.MaxInt32)
+	}
 	partitions := int32(1)
-	if v, ok := spec.Config["partitions"].(int32); ok && v > 0 {
-		partitions = v
-	} else if v, ok := spec.Config["partitions"].(int); ok && v > 0 {
-		partitions = int32(v)
+	if requestedPartitions > 0 {
+		partitions = int32(requestedPartitions)
 	}
 
 	topics := extractTopicNames(spec.Config)
-	observer := &kafkaObserver{emit: emit, advertise: spec.KafkaAdvertise, topics: make(map[[16]byte]string)}
+	observer := &kafkaObserver{emit: emit, advertise: spec.KafkaAdvertise, topics: make(map[[16]byte]string), connections: spec.KafkaConnections}
+	if spec.KafkaConnections != nil {
+		observer.sourceActive = spec.KafkaConnections.IsActive
+	}
 
 	opts := []kfake.Opt{
 		kfake.ListenFn(func(network, address string) (net.Listener, error) {

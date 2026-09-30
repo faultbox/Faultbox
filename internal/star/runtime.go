@@ -25,6 +25,7 @@ import (
 	faultbox "github.com/faultbox/Faultbox"
 	"github.com/faultbox/Faultbox/internal/bundle"
 	"github.com/faultbox/Faultbox/internal/config"
+	"github.com/faultbox/Faultbox/internal/connowner"
 	"github.com/faultbox/Faultbox/internal/container"
 	"github.com/faultbox/Faultbox/internal/engine"
 	"github.com/faultbox/Faultbox/internal/eventsource"
@@ -231,11 +232,15 @@ type CrashInfo struct {
 
 // Runtime is the Starlark execution environment.
 type Runtime struct {
-	outputMu  sync.RWMutex
-	outputRun *specOutputRun
-	log       *slog.Logger
-	events    *EventLog
-	eng       *engine.Engine
+	connections     *connowner.Tracker
+	processCleanups map[string]func()
+	shutdownFailed  atomic.Bool
+	shutdownTimeout time.Duration // optional override for embedded runtimes/tests
+	outputMu        sync.RWMutex
+	outputRun       *specOutputRun
+	log             *slog.Logger
+	events          *EventLog
+	eng             *engine.Engine
 
 	// Service registry — populated during .star file load.
 	mu       sync.Mutex
@@ -516,6 +521,8 @@ type runningSession struct {
 // New creates a new Starlark runtime.
 func New(logger *slog.Logger) *Runtime {
 	rt := &Runtime{
+		connections:       connowner.New(),
+		processCleanups:   make(map[string]func()),
 		log:               logging.WithComponent(logger, "starlark"),
 		runNonce:          newRunNonce(),
 		events:            NewEventLog(),
@@ -535,7 +542,7 @@ func New(logger *slog.Logger) *Runtime {
 		detAllow:   make(map[string]bool),
 		vacuity:    newVacuityState(),
 	}
-	rt.proxyMgr = proxy.NewManager(rt.emitProxyEvent)
+	rt.proxyMgr = proxy.NewManagerWithConnections(rt.emitProxyEvent, rt.connections)
 	rt.packetRules = newPacketRuleRegistry()
 	rt.packetGW = newPacketGatewayState()
 	rt.watches = newWatchRegistry()
@@ -626,10 +633,10 @@ func (rt *Runtime) LoadFile(path string) error {
 		return codedf(CodeSpecForbiddenLambda, "load %s: %w", path, err)
 	}
 
-	thread := &starlark.Thread{Name: "load"}
+	thread := boundedThread(&starlark.Thread{Name: "load"})
 	thread.Load = rt.makeLoadFunc()
 
-	globals, err := starlark.ExecFile(thread, path, nil, rt.builtins())
+	globals, err := starlark.ExecFileOptions(specFileOptions(), thread, absPath, src, rt.builtins())
 	if err != nil {
 		return codedf(specLoadCode(err), "load %s: %w", path, err)
 	}
@@ -656,10 +663,10 @@ func (rt *Runtime) LoadString(name, src string) error {
 	if err := validateAssumeLambdasInSource(name, src); err != nil {
 		return codedf(CodeSpecForbiddenLambda, "load: %w", err)
 	}
-	thread := &starlark.Thread{Name: "load"}
+	thread := boundedThread(&starlark.Thread{Name: "load"})
 	thread.Load = rt.makeLoadFunc()
 	rt.sourceText = src
-	globals, err := starlark.ExecFile(thread, name, src, rt.builtins())
+	globals, err := starlark.ExecFileOptions(specFileOptions(), thread, name, src, rt.builtins())
 	if err != nil {
 		return codedf(specLoadCode(err), "load: %w", err)
 	}
@@ -688,7 +695,7 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 	load = func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
 		key := module
 		if !strings.HasPrefix(module, stdlibPrefix) {
-			key = filepath.Clean(rt.resolveSpecPath(module))
+			key = filepath.Clean(rt.resolveCallerPath(thread, module))
 		}
 		// One cache for the entire load graph, including transitive imports.
 		if globals, ok := cache[key]; ok {
@@ -717,7 +724,7 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 			modPath = module // preserve the @faultbox/... display name
 		} else {
 			// Resolve path relative to the base directory.
-			modPath = rt.resolveSpecPath(module)
+			modPath = key
 			src, err = os.ReadFile(modPath)
 			if err != nil {
 				return nil, fmt.Errorf("load %q: %w", module, err)
@@ -736,10 +743,11 @@ func (rt *Runtime) makeLoadFunc() func(thread *starlark.Thread, module string) (
 		// Append module source for syscall scanning.
 		rt.sourceText += "\n" + string(src)
 
-		modThread := &starlark.Thread{Name: module}
+		modThread := boundedThread(&starlark.Thread{Name: module})
+		modThread.SetLocal("faultbox.module", modPath)
 		modThread.Load = load // support nested loads
 
-		globals, err := starlark.ExecFile(modThread, modPath, src, rt.builtins())
+		globals, err := starlark.ExecFileOptions(specFileOptions(), modThread, modPath, src, rt.builtins())
 		if err != nil {
 			return nil, fmt.Errorf("load %q: %w", module, err)
 		}
@@ -1009,7 +1017,7 @@ func matchTestFilter(testName, filter string, matrixBases map[string]bool) bool 
 //
 // Idempotent, and safe to defer immediately after New().
 func (rt *Runtime) Close() {
-	rt.closePacketGateway()
+	rt.shutdownPhase("", "packet_gateway_close", func(context.Context) error { rt.closePacketGateway(); return nil })
 }
 
 // RunAll executes all (or filtered) test functions.
@@ -1048,7 +1056,7 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 	// racing through the remainder: every derived per-test context is already
 	// dead, so each would start services, fail instantly, and be recorded as a
 	// verdict that was never measured.
-	cancelled := func() bool { return ctx.Err() != nil }
+	cancelled := func() bool { return ctx.Err() != nil || rt.shutdownFailed.Load() }
 
 	for _, name := range tests {
 		if cfg.Filter != "" && !matchTestFilter(name, cfg.Filter, matrixBases) {
@@ -1211,7 +1219,20 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 
 	// Clean up Docker resources after all tests.
 	rt.cleanup()
-
+	if rt.shutdownFailed.Load() && len(suite.Tests) > 0 {
+		last := &suite.Tests[len(suite.Tests)-1]
+		previous := last.Result
+		last.Events = rt.events.Events()
+		enforceShutdownErrors(last)
+		if previous != "fail" && last.Result == "fail" {
+			suite.Fail++
+			if previous == "pass" {
+				suite.Pass--
+			} else if previous == "inconclusive" {
+				suite.Inconclusive--
+			}
+		}
+	}
 	return suite, nil
 }
 
@@ -1222,9 +1243,9 @@ func (rt *Runtime) cleanup() {
 	rt.stopReusedServices()
 
 	if rt.dockerClient != nil {
-		ctx := context.Background()
 		if rt.networkID != "" {
-			rt.dockerClient.RemoveNetwork(ctx, rt.networkID)
+			dc, id := rt.dockerClient, rt.networkID
+			rt.shutdownPhase("", "docker_network_remove", func(ctx context.Context) error { return dc.RemoveNetwork(ctx, id) })
 			rt.networkID = ""
 		}
 		os.RemoveAll(rt.dockerClient.SocketDir())
@@ -1410,6 +1431,7 @@ func (rt *Runtime) RunTestLeaf(ctx context.Context, name string, leaf *PlanLeaf)
 	}()
 	tr := rt.runTestImpl(ctx, name)
 	enforceMockErrors(&tr)
+	enforceShutdownErrors(&tr)
 	if diags := protocolFaultDiagnostics(tr.Events); tr.Result == "pass" && len(diags) > 0 {
 		tr.FaultBypassed = true
 		if rt.requireFaultsFire {
@@ -1470,6 +1492,9 @@ func copyBoolVecMap(m map[string][]bool) map[string][]bool {
 // in the function — those still build the result without LeafID, and
 // RunTestLeaf stamps the leaf ordinal on the final value.
 func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
+	if rt.shutdownFailed.Load() {
+		return TestResult{Name: name, Result: "fail", Reason: "TEARDOWN_FAILED: previous cleanup failed; create a fresh runtime"}
+	}
 	start := time.Now()
 
 	fn, ok := rt.globals[name].(starlark.Callable)
@@ -1505,8 +1530,7 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 		return TestResult{Name: name, Result: "fail", Reason: err.Error(), DurationMs: time.Since(start).Milliseconds(), Events: rt.events.Events()}
 	}
 
-	// Wait for ports to be free.
-	rt.waitPortsFree(10 * time.Second)
+	// Fixed listeners are checked immediately before each fresh service starts.
 
 	// Start services — use a generous timeout covering image pull + container
 	// startup + seccomp fd passing. Healthcheck waits are handled separately
@@ -1520,6 +1544,11 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	defer rt.setTestContext(nil)
 
 	if err := rt.startServices(testCtx); err != nil {
+		fields := map[string]string{"error": err.Error()}
+		if code, ok := Classify(err); ok {
+			fields["code"] = string(code)
+		}
+		rt.events.Emit("service_start_error", "", fields)
 		rt.stopServices()
 		return TestResult{
 			Name: name, Result: "fail",
@@ -1591,6 +1620,8 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// to TerminationImmediateFail.
 	if testCfg != nil && testCfg.Setup != nil {
 		setupThread := rt.newSpecThread(name+"/setup", "setup", "")
+		setupDone := callbackContext(setupThread, ctx)
+		defer setupDone()
 		if _, err := starlark.Call(setupThread, testCfg.Setup, nil, nil); err != nil {
 			rt.stopServices()
 			return TestResult{
@@ -1709,7 +1740,7 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	if testCfg != nil && testCfg.TerminateWhen != nil {
 		twSubID = rt.events.Subscribe(nil, func(Event) error {
 			// Fresh starlark.Thread per call (review note N1).
-			twThread := &starlark.Thread{Name: name + "/terminate_when"}
+			twThread := boundedThread(&starlark.Thread{Name: name + "/terminate_when"})
 			v, _, _ := testCfg.TerminateWhen.Evaluate(twThread, rt.events)
 			if v == VerdictPass {
 				twOnce.Do(func() {
@@ -2024,7 +2055,7 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	//   otherwise             → PASS
 	expectations := rt.snapshotExpectations()
 	if len(expectations) > 0 {
-		finThread := &starlark.Thread{Name: name + "/finalize"}
+		finThread := boundedThread(&starlark.Thread{Name: name + "/finalize"})
 		anyPending := false
 		for _, exp := range expectations {
 			v, msg := exp.Finalize(finThread, rt.events, cause)
@@ -2212,10 +2243,14 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 			}
 
 			// Run reset (or seed as fallback) to re-initialize state between tests.
-			if err := rt.runResetCallback(svcName, svc); err != nil {
+			if err := rt.runResetCallback(svcName, svc, ctx); err != nil {
 				return fmt.Errorf("reset service %q: %w", svcName, err)
 			}
 			continue
+		}
+
+		if err := checkFixedServicePorts(svc); err != nil {
+			return err
 		}
 
 		var err error
@@ -2236,7 +2271,7 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		// Explicit seeds run after readiness and before dependents, including
 		// remote infrastructure whose process lifecycle remains externally owned.
 		if svc.Seed != nil {
-			if err := rt.runSeedCallback(svcName, svc); err != nil {
+			if err := rt.runSeedCallback(svcName, svc, ctx); err != nil {
 				return fmt.Errorf("seed service %q: %w", svcName, err)
 			}
 		}
@@ -2416,11 +2451,12 @@ func targetHostname(target string) string {
 
 // runSeedCallback executes the seed() Starlark callable for a service.
 // Called once after first healthcheck to initialize service state.
-func (rt *Runtime) runSeedCallback(svcName string, svc *ServiceDef) error {
+func (rt *Runtime) runSeedCallback(svcName string, svc *ServiceDef, contexts ...context.Context) error {
 	rt.log.Info("running seed", slog.String("service", svcName))
 	rt.events.Emit("service_seed", svcName, nil)
 
 	thread := rt.newSpecThread(fmt.Sprintf("seed:%s", svcName), "seed", svcName)
+	defer callbackContext(thread, contexts...)()
 	_, err := starlark.Call(thread, svc.Seed, nil, nil)
 	if err != nil {
 		return fmt.Errorf("seed() failed: %w", err)
@@ -2431,7 +2467,7 @@ func (rt *Runtime) runSeedCallback(svcName string, svc *ServiceDef) error {
 
 // runResetCallback executes the reset() (or seed() as fallback) Starlark
 // callable for a reused service. Called before each test except the first.
-func (rt *Runtime) runResetCallback(svcName string, svc *ServiceDef) error {
+func (rt *Runtime) runResetCallback(svcName string, svc *ServiceDef, contexts ...context.Context) error {
 	cb := svc.Reset
 	label := "reset"
 	if cb == nil {
@@ -2446,6 +2482,7 @@ func (rt *Runtime) runResetCallback(svcName string, svc *ServiceDef) error {
 	rt.events.Emit("service_reset", svcName, nil)
 
 	thread := rt.newSpecThread(fmt.Sprintf("reset:%s", svcName), "reset", svcName)
+	defer callbackContext(thread, contexts...)()
 	_, err := starlark.Call(thread, cb, nil, nil)
 	if err != nil {
 		return fmt.Errorf("%s() failed: %w", label, err)
@@ -2700,6 +2737,10 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 		return codedf(CodeLaunchFailed, "launch container %q: %w", svcName, err)
 	}
 	rt.containerIDs[svcName] = result.ContainerID
+	if result.HostPID > 0 {
+		cleanup, _ := rt.registerProcess(svcName, result.HostPID)
+		rt.processCleanups[svcName] = cleanup
+	}
 
 	// RFC-054 M5: attach the trace session now that the sandbox exists. Done
 	// after the container ID is recorded, because routeFileIO attributes each
@@ -2762,14 +2803,17 @@ func (rt *Runtime) startContainerService(ctx context.Context, svcName string, sv
 			if timeout <= 0 {
 				timeout = 10 * time.Second
 			}
-			hcTest := rt.resolveHealthcheck(svc)
-			hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
+			hcTest := rt.readinessCheckForStart(svc)
+			hcCtx, hcCancel := context.WithTimeout(ctx, timeout)
 			defer hcCancel()
-			if err := waitReady(hcCtx, hcTest, timeout); err != nil {
+			if err := rt.waitContainerReady(hcCtx, svcName, result.ContainerID, hcTest, timeout); err != nil {
+				if _, coded := Classify(err); coded {
+					return err
+				}
 				return codedf(CodeHealthcheckTimeout, "service %q not ready: %w", svcName, err)
 			}
 			rt.events.Emit("service_ready", svcName, nil)
-			rt.log.Info("service ready", slog.String("service", svcName), slog.String("check", hcTest))
+			rt.log.Info("service ready", slog.String("service", svcName), slog.String("check", redactedHealthcheck(hcTest)))
 		}
 		return nil
 	}
@@ -2829,6 +2873,9 @@ func (rt *Runtime) makeSyscallCallback(svcName string) func(engine.SyscallEvent)
 // launchSession creates and starts a session, waits for healthcheck.
 func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *ServiceDef, sessCfg engine.SessionConfig) error {
 	svcLog := rt.log.With(slog.String("service", svcName))
+	if !svc.IsContainer() {
+		sessCfg.OnProcessStart = func(pid int) (func(), error) { return rt.registerProcess(svcName, pid) }
+	}
 	session, err := engine.NewSession(sessCfg, svcLog)
 	if err != nil {
 		return fmt.Errorf("create session for %q: %w", svcName, err)
@@ -2847,7 +2894,12 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 	sessionReady := make(chan struct{})
 	go func() {
 		close(sessionReady)
-		r, _ := session.Run(svcCtx)
+		r, runErr := session.Run(svcCtx)
+		if r == nil {
+			r = &engine.Result{ExitCode: -1, Error: runErr}
+		} else if r.Error == nil {
+			r.Error = runErr
+		}
 		done <- r
 	}()
 	<-sessionReady
@@ -2860,17 +2912,16 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 
 	rt.events.Emit("service_started", svcName, nil)
 
-	// Wait for healthcheck using a fresh context derived from the background —
-	// not from startServices' testCtx (which has a short 30s deadline).
-	// The healthcheck defines its own maximum wait time via the timeout parameter.
+	// Readiness honors the service timeout and startup cancellation. A stopped
+	// caller must not leave a background healthcheck probing indefinitely.
 	if svc.Healthcheck != nil {
 		timeout := svc.Healthcheck.Timeout
 		if timeout <= 0 {
 			timeout = 10 * time.Second
 		}
 		// For containers with mapped ports, adjust the healthcheck URL.
-		hcTest := rt.resolveHealthcheck(svc)
-		hcCtx, hcCancel := context.WithTimeout(context.Background(), timeout)
+		hcTest := rt.readinessCheckForStart(svc)
+		hcCtx, hcCancel := context.WithTimeout(ctx, timeout)
 		defer hcCancel()
 
 		// Race the healthcheck against session exit: a service that
@@ -2887,17 +2938,17 @@ func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *Servi
 			}
 		case r := <-done:
 			done <- r // put back: stopServices selects on this channel during teardown
-			if r != nil && r.Error != nil {
-				return fmt.Errorf("service %q exited before becoming ready: %w", svcName, r.Error)
-			}
-			exitCode := -1
-			if r != nil {
-				exitCode = r.ExitCode
-			}
-			return fmt.Errorf("service %q exited before becoming ready (exit code %d)", svcName, exitCode)
+			return startupResultError(svcName, r)
 		}
+		select {
+		case r := <-done:
+			done <- r
+			return startupResultError(svcName, r)
+		default:
+		}
+
 		rt.events.Emit("service_ready", svcName, nil)
-		svcLog.Info("service ready", slog.String("check", hcTest))
+		svcLog.Info("service ready", slog.String("check", redactedHealthcheck(hcTest)))
 	}
 	return nil
 }
@@ -3254,20 +3305,14 @@ func (rt *Runtime) stopServices() {
 			kept[name] = rs
 			continue
 		}
-		rs.cancel()
-		if cid, ok := rt.containerIDs[name]; ok && rt.dockerClient != nil {
-			rt.dockerClient.StopContainer(context.Background(), cid, 5)
-			rt.dockerClient.RemoveContainer(context.Background(), cid)
-			delete(rt.containerIDs, name)
-		}
-		select {
-		case <-rs.done:
-		case <-time.After(5 * time.Second):
-		}
-		if rt.proxyMgr != nil {
-			rt.proxyMgr.StopService(name)
+		rt.stopOneService(name, rs)
+	}
+	for name := range rt.containerIDs {
+		if rt.sessions[name] == nil {
+			rt.stopOneService(name, nil)
 		}
 	}
+
 	rt.sessions = kept
 	// The Docker network outlives tests; cleanup() removes it at run end.
 
@@ -3297,36 +3342,39 @@ func (rt *Runtime) stopServices() {
 	// (docs/design/2026-04-27) were written about. Reused services keep their
 	// gateway, since their connections are still live.
 	if len(reused) == 0 {
-		rt.closePacketGateway()
-		rt.closeFSObservation(context.Background())
+		rt.shutdownPhase("", "packet_gateway_close", func(context.Context) error { rt.closePacketGateway(); return nil })
+		rt.shutdownPhase("", "observation_close", func(ctx context.Context) error { rt.closeFSObservation(ctx); return nil })
 	}
 }
 
 // stopReusedServices tears down containers that were kept alive via reuse=True.
 // Called once at suite end by cleanup().
 func (rt *Runtime) stopReusedServices() {
-	for name, rs := range rt.sessions {
-		rt.log.Debug("stopping reused session", slog.String("service", name))
-		rs.cancel()
+	order := append([]string(nil), rt.order...)
+	seen := make(map[string]bool)
+	for _, name := range order {
+		seen[name] = true
 	}
-	for _, rs := range rt.sessions {
-		select {
-		case <-rs.done:
-		case <-time.After(5 * time.Second):
+	var extra []string
+	for name := range rt.sessions {
+		if !seen[name] {
+			extra = append(extra, name)
+			seen[name] = true
 		}
+	}
+	for name := range rt.containerIDs {
+		if !seen[name] {
+			extra = append(extra, name)
+			seen[name] = true
+		}
+	}
+	sort.Strings(extra)
+	order = append(order, extra...)
+	for i := len(order) - 1; i >= 0; i-- {
+		name := order[i]
+		rt.stopOneService(name, rt.sessions[name])
 	}
 	rt.sessions = make(map[string]*runningSession)
-
-	if rt.dockerClient != nil {
-		ctx := context.Background()
-		for name, cid := range rt.containerIDs {
-			rt.log.Debug("removing reused container", slog.String("name", name))
-			rt.dockerClient.StopContainer(ctx, cid, 5)
-			rt.dockerClient.RemoveContainer(ctx, cid)
-		}
-		rt.containerIDs = make(map[string]string)
-	}
-
 	if rt.dockerClient != nil {
 		os.RemoveAll(rt.dockerClient.SocketDir())
 	}
@@ -4808,11 +4856,15 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 	// step_send event above so the per-run nonce stays out of the trace.
 	rt.applyKafkaGroupDefault(ref.Interface.Protocol, method, stepArgs)
 
-	stepCtx := context.Background()
-	if ref.Interface.Protocol == "kafka" && method == "consume_many" {
-		stepCtx = rt.testContext()
+	stepCtx := rt.executionContext(thread)
+	if ref.Interface.Protocol == "grpc" || (ref.Interface.Protocol == "kafka" && method == "consume_many") {
+		if ref.Interface.Protocol == "grpc" {
+			if _, explicit := stepArgs["descriptors"]; !explicit && ref.Interface.Spec != "" {
+				stepArgs["descriptors"] = ref.Interface.Spec
+			}
+		}
 		if path, ok := stepArgs["descriptors"].(string); ok && path != "" {
-			resolved := rt.resolveSpecPath(path)
+			resolved := rt.resolveCallerPath(thread, path)
 			if err := rt.captureResource(resolved); err != nil {
 				return nil, err
 			}
@@ -5077,34 +5129,6 @@ func waitReady(ctx context.Context, check string, timeout time.Duration) error {
 			}
 		}
 		return fmt.Errorf("unsupported healthcheck scheme in %q", check)
-	}
-}
-
-// waitPortsFree waits for service ports to be available.
-func (rt *Runtime) waitPortsFree(timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		allFree := true
-		for name, svc := range rt.services {
-			if svc.IsRemote() || rt.sessions[name] != nil {
-				continue
-			}
-			for _, iface := range svc.Interfaces {
-				conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", iface.Port), 100*time.Millisecond)
-				if err == nil {
-					conn.Close()
-					allFree = false
-					break
-				}
-			}
-			if !allFree {
-				break
-			}
-		}
-		if allFree {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 

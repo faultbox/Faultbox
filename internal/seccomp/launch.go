@@ -10,6 +10,10 @@ type LaunchConfig struct {
 	TargetArgs []string
 	// TargetEnv is the environment for the target. If nil, inherits parent env.
 	TargetEnv []string
+	// BeforeExec runs in the parent with the child host PID while the shim is
+	// blocked before filter installation and target exec. An error aborts launch
+	// and reaps the child. Nil preserves the ungated launch path.
+	BeforeExec func(pid int) error
 	// SyscallNrs to intercept via seccomp (empty = no filter).
 	SyscallNrs []uint32
 	// Cloneflags for namespace creation (e.g., CLONE_NEWPID | CLONE_NEWNET).

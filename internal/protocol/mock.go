@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 
+	"github.com/faultbox/Faultbox/internal/connowner"
+
 	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
@@ -40,6 +42,10 @@ type MockSpec struct {
 	// KafkaAdvertise resolves the proxy endpoint after startup. Metadata and
 	// coordinator responses must keep real Kafka clients on the fault path.
 	KafkaAdvertise func() string
+	// KafkaConnections proves ownership across separate Kafka coordinator and
+	// fetch connections using registered process instances. Nil keeps external
+	// clients on conservative, unique-client-ID attribution.
+	KafkaConnections *connowner.Tracker
 
 	// Descriptors, when non-nil, signals that responses on this mock should
 	// be wire-encoded using the types in this registry rather than as

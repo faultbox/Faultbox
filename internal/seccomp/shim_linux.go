@@ -30,6 +30,8 @@ type ShimConfig struct {
 	TargetEnv []string `json:"target_env,omitempty"`
 	// PipeFd is the write end of a pipe for signaling the parent.
 	PipeFd int `json:"pipe_fd"`
+	// GateFd is the optional parent-to-child permit pipe (0 means ungated).
+	GateFd int `json:"gate_fd,omitempty"`
 }
 
 // IsShimChild returns true if this process is a re-exec'd shim child.
@@ -38,15 +40,23 @@ func IsShimChild() bool {
 }
 
 // RunShimChild is called in the child process. It:
-// 1. Resolves and verifies the target binary
-// 2. Optionally installs the seccomp filter
-// 3. Writes the listener fd (or "0" if no filter) to the parent via pipe
-// 4. Execs the target binary
+// 1. Waits for the optional parent registration permit
+// 2. Resolves and verifies the target binary
+// 3. Optionally installs the seccomp filter
+// 4. Writes the listener fd (or "0" if no filter) to the parent via pipe
+// 5. Execs the target binary
 func RunShimChild() error {
 	configJSON := os.Getenv(ShimEnvKey)
 	var cfg ShimConfig
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		return fmt.Errorf("parse shim config: %w", err)
+	}
+
+	if cfg.GateFd > 0 {
+		if err := awaitExecPermit(cfg.GateFd); err != nil {
+			writePipeError(cfg.PipeFd, err)
+			return err
+		}
 	}
 
 	// Resolve and verify the target BEFORE signaling the parent. The
@@ -112,6 +122,26 @@ func RunShimChild() error {
 	return fmt.Errorf("exec %s: %w", binary, err)
 }
 
+// awaitExecPermit accepts exactly one explicit permit byte. EOF, a closed
+// descriptor or a malformed permit must never allow the target to execute.
+func awaitExecPermit(fd int) error {
+	defer unix.Close(fd)
+	var permit [1]byte
+	for {
+		n, err := unix.Read(fd, permit[:])
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("wait for parent exec permit: %w", err)
+		}
+		if n != 1 || permit[0] != 1 {
+			return fmt.Errorf("parent exec gate closed without a valid permit")
+		}
+		return nil
+	}
+}
+
 // writePipeError sends an "ERR <message>" line to the parent over the
 // signaling pipe so launch fails immediately with the root cause
 // instead of a downstream healthcheck timeout. Best-effort: if the
@@ -153,11 +183,12 @@ func parseShimSignal(raw string) (listenerFd int, childErr error) {
 // Returns the child PID and the listener fd (or -1 if no filter).
 //
 // Flow:
-//  1. Parent creates a pipe
+//  1. Parent creates the signal pipe and, when requested, an exec gate
 //  2. Parent ForkExecs itself with clone flags + _FAULTBOX_SECCOMP_CHILD env
-//  3. Child (in new namespaces) optionally installs filter, writes fd to pipe, execs target
-//  4. Parent reads fd from pipe
-//  5. If filter was installed, parent uses pidfd_getfd() to copy the listener fd
+//  3. Parent calls BeforeExec with the host PID, then releases the child gate
+//  4. Child (in new namespaces) optionally installs filter, writes fd to pipe, execs target
+//  5. Parent reads fd from pipe
+//  6. If filter was installed, parent uses pidfd_getfd() to copy the listener fd
 func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 	// Create a pipe for child → parent communication.
 	pipeFds := [2]int{}
@@ -166,6 +197,28 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 	}
 	pipeR, pipeW := pipeFds[0], pipeFds[1]
 	defer unix.Close(pipeR)
+	defer func() {
+		if pipeW >= 0 {
+			unix.Close(pipeW)
+		}
+	}()
+
+	gateR, gateW := -1, -1
+	if cfg.BeforeExec != nil {
+		gate := [2]int{}
+		if err := unix.Pipe2(gate[:], unix.O_CLOEXEC); err != nil {
+			return 0, -1, fmt.Errorf("exec gate pipe2: %w", err)
+		}
+		gateR, gateW = gate[0], gate[1]
+	}
+	defer func() {
+		if gateR >= 0 {
+			unix.Close(gateR)
+		}
+		if gateW >= 0 {
+			unix.Close(gateW)
+		}
+	}()
 
 	// The child gets: stdin(0), stdout(1), stderr(2), pipeW(3).
 	childPipeFd := 3
@@ -177,16 +230,17 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 		TargetEnv:    cfg.TargetEnv,
 		PipeFd:       childPipeFd,
 	}
+	if cfg.BeforeExec != nil {
+		shimCfg.GateFd = 4
+	}
 	cfgJSON, err := json.Marshal(shimCfg)
 	if err != nil {
-		unix.Close(pipeW)
 		return 0, -1, fmt.Errorf("marshal shim config: %w", err)
 	}
 
 	// Get our own executable path for re-exec.
 	self, err := os.Executable()
 	if err != nil {
-		unix.Close(pipeW)
 		return 0, -1, fmt.Errorf("get executable path: %w", err)
 	}
 
@@ -201,6 +255,9 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 		stderrFd = cfg.StderrFd
 	}
 	fds := []uintptr{0, stdoutFd, stderrFd, uintptr(pipeW)}
+	if gateR >= 0 {
+		fds = append(fds, uintptr(gateR))
+	}
 
 	// Build environment with shim config.
 	env := append(os.Environ(), ShimEnvKey+"="+string(cfgJSON))
@@ -229,12 +286,48 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 		Sys:   sysAttr,
 	})
 	if err != nil {
-		unix.Close(pipeW)
 		return 0, -1, fmt.Errorf("forkexec shim: %w", err)
 	}
 
-	// Parent: close write end of pipe, read child's message.
+	// Every post-fork launch failure must leave no blocked child or zombie.
+	// The PID cannot be reused before this parent's wait, so kill is safe here.
+	defer func() {
+		if err != nil {
+			_ = unix.Kill(childPid, unix.SIGKILL)
+			for {
+				_, waitErr := unix.Wait4(childPid, nil, 0, nil)
+				if waitErr != unix.EINTR {
+					break
+				}
+			}
+		}
+	}()
 	unix.Close(pipeW)
+	pipeW = -1
+	if gateR >= 0 {
+		unix.Close(gateR)
+		gateR = -1
+		if callbackErr := cfg.BeforeExec(childPid); callbackErr != nil {
+			return childPid, -1, fmt.Errorf("register process before exec: %w", callbackErr)
+		}
+		for {
+			n, writeErr := unix.Write(gateW, []byte{1})
+			if writeErr == unix.EINTR {
+				continue
+			}
+			if writeErr != nil {
+				return childPid, -1, fmt.Errorf("release child exec gate: %w", writeErr)
+			}
+			if n != 1 {
+				return childPid, -1, fmt.Errorf("release child exec gate: short write")
+			}
+			break
+		}
+		unix.Close(gateW)
+		gateW = -1
+	}
+
+	// Read the setup signal after registration has released the child.
 
 	buf := make([]byte, 512)
 	n, err := unix.Read(pipeR, buf)
@@ -250,7 +343,6 @@ func Launch(cfg LaunchConfig) (pid int, listenerFd int, err error) {
 		// The child failed before exec (e.g. target binary missing)
 		// and reported the root cause over the pipe. Reap it and fail
 		// the launch immediately with that message (F-2).
-		unix.Wait4(childPid, nil, 0, nil)
 		return childPid, -1, childErr
 	}
 

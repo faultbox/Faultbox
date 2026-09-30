@@ -82,17 +82,21 @@ test("two", params={"flag":False}, body=body)
 	}
 }
 
-func TestPortWaitIgnoresRemoteAndRunningServices(t *testing.T) {
+func TestStartupIgnoresOpenRemoteAndRunningPorts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
 	var port int
 	fmt.Sscanf(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"), "%d", &port)
 	rt := New(testLogger())
-	rt.services["remote"] = &ServiceDef{Remote: "127.0.0.1", Interfaces: map[string]*InterfaceDef{"http": {Port: port}}}
-	rt.services["reused"] = &ServiceDef{Reuse: true, Interfaces: map[string]*InterfaceDef{"http": {Port: port}}}
+	rt.services["remote"] = &ServiceDef{Name: "remote", Remote: "127.0.0.1", Healthcheck: &HealthcheckDef{Test: "tcp://" + strings.TrimPrefix(srv.URL, "http://"), Timeout: time.Second}, Interfaces: map[string]*InterfaceDef{"http": {Name: "http", Protocol: "tcp", Port: port}}}
+	rt.services["reused"] = &ServiceDef{Name: "reused", Reuse: true, Interfaces: map[string]*InterfaceDef{"http": {Name: "http", Protocol: "tcp", Port: port}}}
 	rt.sessions["reused"] = &runningSession{}
+	rt.order = []string{"remote", "reused"}
+	defer rt.cleanup()
 	start := time.Now()
-	rt.waitPortsFree(time.Second)
+	if err := rt.startServices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if time.Since(start) > 500*time.Millisecond {
 		t.Fatal("waited for externally owned/running ports")
 	}

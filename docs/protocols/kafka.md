@@ -274,6 +274,119 @@ each test gets a fresh Kafka with empty topics.
 
 ## Event Sources
 
+### Mock consumer-group readiness
+
+Built-in Kafka mocks emit the following `mock.kafka.*` events. These describe
+acknowledged **classic consumer-group protocol** exchanges (JoinGroup / SyncGroup /
+Fetch), including Kafka-go, Sarama and the default franz-go group protocol.
+
+| Event suffix | Evidence |
+|---|---|
+| `group_join` | Successful JoinGroup: `group`, `member_id`, `client_id`, `generation`, `epoch` |
+| `assign` | Successful SyncGroup, one event per assigned `topic` / `partition`; adds `assignment` |
+| `group_sync` | Completed SyncGroup, including empty assignments; adds `assignment`, `partitions` count |
+| `fetch_position` | Successful Fetch at concrete `offset`, including empty responses; carries `client_id`, `topic`, `partition`, `request_sequence` |
+| `group_ready` | Current assignment's first accepted Fetch position; adds `offset`, `attribution`, `position_source="fetch"` |
+| `group_rebalance` | Prior readiness invalidated: a join was requested, a heartbeat failed, or a member left; adds `reason` and advances `epoch` |
+| `group_leave` | Acknowledged departure of `member_id` |
+| `group_ready_ambiguous` | More than one current assignment remains possible after process ownership and client/topic/partition matching |
+| `group_attribution_unavailable` | Assignment or Fetch ownership is unresolved while the other is a known managed process; no readiness is inferred |
+
+All numeric fields in these events are strings; convert with `int()`. `epoch`
+and `assignment` are monotonic observation tokens scoped to this mock instance,
+not Kafka offsets. A `group_rebalance` event is an invalidation signal and does
+not claim that the requested rebalance succeeded.
+
+**Wait for `group_ready` before publishing the first test record.** An assignment
+alone is too early: a consumer with reset-to-latest may resolve the end offset
+later and skip records published in between. Readiness waits for a concrete
+successful Fetch, after offset reset, even when the topic is empty. No warm-up
+record, committed offset or SUT log is needed. Incremental Fetch sessions retain
+the acknowledged partition positions across empty responses.
+
+Readiness is emitted per assigned partition, once per assignment. Reject stale
+readiness after a rebalance; do not use an `any()` over all historical ready
+events. For example, this predicate checks partition zero of a single topic:
+
+```python
+def consumer_positioned(group, topic, partition=0, source_service=None):
+    history = events(service=bus.name, where=lambda e:
+        e.type.startswith("mock.kafka.") and e.fields.get("group") == group)
+    epoch = max([int(e.fields.get("epoch", "0")) for e in history] or [0])
+    current = [e for e in history if int(e.fields.get("epoch", "0")) == epoch]
+    generation = max([int(e.fields.get("generation", "0")) for e in current] or [0])
+    current = [e for e in current if int(e.fields.get("generation", "0")) == generation]
+    for ready in current:
+        if ready.type != "mock.kafka.group_ready":
+            continue
+        f = ready.fields
+        if source_service != None and f.get("source_service") != source_service:
+            continue
+        if f.get("topic") != topic or int(f.get("partition", "-1")) != partition:
+            continue
+        syncs = [int(e.fields["assignment"]) for e in current
+                 if e.type == "mock.kafka.group_sync"
+                 and e.fields.get("member_id") == f["member_id"]]
+        if syncs and int(f["assignment"]) == max(syncs):
+            return True
+    return False
+
+# In the test body, before its first publish:
+for _ in range(100):
+    if consumer_positioned("courier-group", "orders"):
+        break
+    sleep("100ms")
+assert_true(consumer_positioned("courier-group", "orders"), "consumer not positioned")
+bus.main.publish(topic="orders", data=payload)
+```
+
+For a multi-partition topic, check every partition the test may publish to.
+Readiness is a startup barrier, not a continuous liveness or processing guarantee.
+Use acknowledged commits past the published offset as a processing gate **only
+if the SUT commits after processing**; Kafka also allows committing earlier.
+
+Classic Fetch contains no group or member ID. On supported Linux managed
+processes, Faultbox associates the actual socket with the registered service's
+**process instance**, across separate coordinator and data connections. Kafka
+`client_id` remains part of the match; service names and client IDs alone never
+establish ownership. Two services can use the same client ID, topic and partition
+in different groups: each becomes ready only after its own acknowledged Fetch.
+Native Linux services register their host PID before the target is allowed to
+exec, including launches without seccomp filtering. Ownership is established
+from exact TCP endpoints and socket inodes within registered process trees;
+proxy connections preserve that original ownership in memory without changing
+Kafka headers or the SUT's `client_id`. `source_pid` is the registered service
+root's host PID; verified descendants belong to the same service instance.
+Kernel process start time and a registration token prevent PID reuse from
+reviving an old identity. Container PIDs can be registered when available, but
+network translation or inaccessible procfs can leave ownership unresolved.
+
+These events carry `source_service`, `source_instance`, and `source_pid`, with
+`attribution="process_instance"` on proven readiness. The event's `service`
+continues to identify the broker mock. Source fields also accompany acknowledged
+`produce`, `fetch`, and `commit` events, so completion gates can distinguish the
+process that committed a record from another consumer with the same client ID.
+When selecting by client ID/topic instead of a known group, also require the
+intended `source_service`; identical IDs may identify two different consumers.
+A completion gate should use the `group` and `source_instance` captured from
+that consumer's ready event, plus the topic/partition and an offset past the
+publish receipt. The other process's commit must not satisfy that gate.
+For a restarted service, compare the current `source_instance`, not only its name
+or PID; neither an old reply nor a fetch-session cache can position a new instance.
+
+Ownership is conservative. Assignments with unresolved owners still count as
+possible matches, and overlapping groups in the **same** process remain ambiguous.
+An unresolved Fetch cannot borrow a managed member's readiness, even if its client
+ID happens to be unique; `group_attribution_unavailable` explains that condition.
+For external or unsupported processes where **both** assignment and Fetch are
+unowned, the existing unique `(client_id, topic, partition)` fallback remains and
+reports `attribution="unique_client_id"`. Source fields are omitted when unknown.
+Give unowned clients distinct client IDs when their assignments overlap. A
+manually assigned external reader must also use a distinct ID from a grouped
+consumer of the same partitions. Raw `fetch_position` evidence remains available.
+The mock observes wire exchanges; it does not independently announce silent
+session expiry, nor support the KIP-848 consumer-group protocol in these events.
+
 ### Topic observer
 
 > **Not yet callable from Starlark.** `topic()` is a Go event-source

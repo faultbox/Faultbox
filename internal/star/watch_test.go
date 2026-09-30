@@ -10,9 +10,10 @@ import (
 	"github.com/faultbox/Faultbox/internal/gvisor/seccheck"
 )
 
+// These validation-only services never listen; do not collide with local DB ports.
 const watchSpecPrefix = `
 determinism(runtime = "gvisor")
-db = service("db", "/bin/true", interface("main", "tcp", 5432))
+db = service("db", "/bin/true", interface("main", "tcp", 0))
 `
 
 func loadWatchSpec(t *testing.T, body string) error {

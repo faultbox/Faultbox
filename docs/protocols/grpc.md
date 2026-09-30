@@ -12,37 +12,56 @@ orders = service("orders",
 
 ## Methods
 
-### `call(method="", body="{}")`
+### `call(method=, body={}, descriptors=)`
 
-Invoke a gRPC method with a JSON-encoded request body.
+Invoke a unary gRPC method using a local protobuf descriptor set. Reflection
+is not required. Faultbox encodes the request as the method's protobuf input
+and decodes the response as its protobuf output.
 
 ```python
 resp = orders.grpc.call(
     method="/orders.OrderService/CreateOrder",
-    body='{"item":"widget","qty":1}',
+    descriptors="./orders.pb",
+    body={"item": "widget", "qty": 1},
+    metadata={"authorization": "Bearer test-token"},
+    timeout="3s",
 )
-# resp.data = {"method": "/orders.OrderService/CreateOrder", "raw": "..."}
-
-resp = orders.grpc.call(
-    method="/health.HealthService/Check",
-    body="{}",
-)
+assert_true(resp.ok, resp.error)
+# resp.data contains the decoded response fields directly.
 ```
+
+Generate descriptors with `protoc --include_imports --descriptor_set_out=orders.pb
+orders.proto`. Descriptor paths are resolved relative to the Starlark module
+that makes the call. Standard `google.protobuf` types resolve automatically;
+include other imported schemas in the descriptor set.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `method` | string | required | Full gRPC method path (`/package.Service/Method`) |
-| `body` | string | `"{}"` | JSON-encoded request message |
+| `method` | string | required | Full unary gRPC path (`/package.Service/Method`) |
+| `descriptors` | string | omitted | FileDescriptorSet path; enables typed requests and responses |
+| `body` | dict or JSON string | `{}` | Typed request; unknown fields and invalid values fail before sending |
+| `metadata` | dict | `{}` | Request metadata; values are strings or lists of strings |
+| `timeout` | duration string | caller deadline | Positive RPC timeout; also respects earlier caller cancellation |
+| `body_base64` | string | omitted | Explicit raw protobuf bytes; cannot combine with `body` or `descriptors` |
 
-**Response:**
+**Typed response:** `.data` is the decoded message using protobuf field names
+(e.g. `order_id`). Integers of protobuf type `int64`/`uint64` are JSON strings,
+bytes are base64, enums are names, and standard well-known types use protobuf
+JSON rules. Default scalar fields are included. `.headers` contains response
+metadata. `.ok` is true for gRPC status OK, `.status` contains the numeric gRPC
+status (including failures), and `.duration_ms` records elapsed time.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `.data["method"]` | string | gRPC method called |
-| `.data["raw"]` | string | Raw response bytes as string |
-| `.ok` | bool | `True` if gRPC status is OK |
-| `.status` | int | gRPC status code (0=OK, see table below) |
-| `.duration_ms` | int | Execution time |
+Streaming methods are rejected. Schema, JSON, and argument errors are reported
+as spec errors; server errors and RPC deadlines produce a failed response with
+the real gRPC status.
+
+**Legacy raw calls:** without `descriptors`, a string `body` remains opaque
+bytes; it is not converted from JSON. An omitted body, `""`, or `"{}"` means an
+empty request, preserving existing health/ping calls. Dict bodies require
+`descriptors`. For arbitrary binary requests use `body_base64`. Raw responses
+retain `.data["method"]` and `.data["raw"]`, and add `.data["raw_base64"]` for
+lossless access to binary responses (the legacy `raw` string may replace invalid
+UTF-8).
 
 ## gRPC Status Codes
 

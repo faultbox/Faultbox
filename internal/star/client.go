@@ -600,7 +600,7 @@ func (rt *Runtime) applyBeforeHook(c *ClientVal, op *protocol.Operation, req *pr
 	}
 	_ = reqDict.SetKey(starlark.String("headers"), headerDict)
 
-	thread := &starlark.Thread{Name: "client-before-" + c.Name}
+	thread := boundedThread(&starlark.Thread{Name: "client-before-" + c.Name})
 	out, err := starlark.Call(thread, c.Before, starlark.Tuple{reqDict}, nil)
 	if err != nil {
 		return fmt.Errorf("client %q before= hook: %w", c.Name, err)

@@ -40,7 +40,7 @@ func TestEveryDeclaredConstantIsRegistered(t *testing.T) {
 	declared := []Code{
 		CodeSpecSyntax, CodeSpecForbiddenLambda, CodeSpecLoadFailed, CodeSpecRecipeNotFound,
 		CodeHealthcheckTimeout, CodeLaunchFailed, CodeDockerUnavailable, CodeTraceHostNotRegistered,
-		CodeFaultNotFilterable,
+		CodeFaultNotFilterable, CodePortInUse, CodeServiceExitedBeforeReady,
 	}
 	registered := map[Code]bool{}
 	for _, c := range AllCodes() {

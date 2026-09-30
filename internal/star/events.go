@@ -66,6 +66,15 @@ func NewEventLog() *EventLog {
 // the write lock would deadlock the moment any user predicate touches
 // trace.event/events/last/first/count/etc.
 func (l *EventLog) Emit(typ, service string, fields map[string]string) {
+	l.emit(typ, service, fields, true)
+}
+
+// recordOnly is for terminal supervisor errors. Dispatching user predicates
+// from a timeout reporter could itself block and defeat the shutdown bound.
+func (l *EventLog) recordOnly(typ, service string, fields map[string]string) {
+	l.emit(typ, service, fields, false)
+}
+func (l *EventLog) emit(typ, service string, fields map[string]string, dispatch bool) {
 	l.mu.Lock()
 	l.seq++
 
@@ -126,6 +135,9 @@ func (l *EventLog) Emit(typ, service string, fields map[string]string) {
 	}
 	l.mu.Unlock()
 
+	if !dispatch {
+		return
+	}
 	// Snapshot the subscriber list under subMu, then dispatch with NO
 	// locks held. Subscribers reading the log via TraceVal will acquire
 	// l.mu.RLock() themselves and see the newly-appended event.

@@ -14,6 +14,7 @@ import (
 // MockConfig holds mock configuration keyed per interface. Populated by
 // the mock_service() builtin; consumed by Runtime.startMockService.
 type MockConfig struct {
+	handlerMu sync.Mutex // serialize only this mock; other mocks remain independent
 	// Immutable snapshots: tests replace state atomically; a handler retains
 	// the snapshot it received even if the next request sees a new version.
 	StateInit     *starlark.Dict

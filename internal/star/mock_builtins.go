@@ -151,10 +151,10 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 			// Before RFC-055 this used the raw path, so `./api.yaml`
 			// only loaded when faultbox happened to run from the spec's
 			// directory.
-			if err := rt.captureResource(rt.resolveSpecPath(path)); err != nil {
+			if err := rt.captureResource(rt.resolveCallerPath(thread, path)); err != nil {
 				return nil, err
 			}
-			spec, err := protocol.LoadOpenAPI(rt.resolveSpecPath(path))
+			spec, err := protocol.LoadOpenAPI(rt.resolveCallerPath(thread, path))
 			if err != nil {
 				return nil, fmt.Errorf("mock_service() %q openapi: %w", name, err)
 			}
@@ -227,10 +227,10 @@ func (rt *Runtime) builtinMockService(thread *starlark.Thread, fn *starlark.Buil
 			if err != nil {
 				return nil, fmt.Errorf("mock_service() %q: %w", name, err)
 			}
-			if err := rt.captureResource(rt.resolveSpecPath(path)); err != nil {
+			if err := rt.captureResource(rt.resolveCallerPath(thread, path)); err != nil {
 				return nil, err
 			}
-			files, err := protocol.LoadDescriptorSet(rt.resolveSpecPath(path))
+			files, err := protocol.LoadDescriptorSet(rt.resolveCallerPath(thread, path))
 			if err != nil {
 				return nil, fmt.Errorf("mock_service() %q descriptors: %w", name, err)
 			}

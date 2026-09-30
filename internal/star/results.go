@@ -366,6 +366,14 @@ func buildDiagnostics(tto *TestTraceOutput, tr *TestResult) []Diagnostic {
 	diags := protocolFaultDiagnostics(tr.Events)
 	seenMockErrors := make(map[string]bool)
 	for _, ev := range tr.Events {
+		if ev.Type == "service_start_error" && ev.Fields["code"] != "" {
+			diags = append(diags, Diagnostic{Level: "error", Code: ev.Fields["code"], Message: ev.Fields["error"], Suggestion: Code(ev.Fields["code"]).Suggestion()})
+		}
+
+		if ev.Type == "service_stop_error" {
+			diags = append(diags, Diagnostic{Level: "error", Code: "TEARDOWN_FAILED", Service: ev.Service, Message: ev.Fields["phase"] + ": " + ev.Fields["error"], Suggestion: "Inspect this service or proxy shutdown; later tests are aborted to prevent leaked resources from contaminating results."})
+		}
+
 		if d, ok := mockErrorDiagnostic(ev); ok {
 			key := d.Code + "\x00" + d.Message
 			if !seenMockErrors[key] {

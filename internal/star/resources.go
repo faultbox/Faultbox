@@ -19,12 +19,12 @@ import (
 
 // resource() declares a file/directory consumed by the SUT (config, fixtures,
 // working directory, volume source). It returns its resolved local path.
-func (rt *Runtime) builtinResource(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (rt *Runtime) builtinResource(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var path string
 	if err := starlark.UnpackArgs("resource", args, kwargs, "path", &path); err != nil {
 		return nil, err
 	}
-	p := rt.resolveSpecPath(path)
+	p := rt.resolveCallerPath(thread, path)
 	if err := rt.captureResource(p); err != nil {
 		return nil, err
 	}

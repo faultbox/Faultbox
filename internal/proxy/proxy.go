@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/faultbox/Faultbox/internal/connowner"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -154,9 +155,10 @@ type ProxyEvent struct {
 
 // Manager manages proxy lifecycle per service interface.
 type Manager struct {
-	mu      sync.Mutex
-	proxies map[string]*runningProxy // key: "serviceName:interfaceName"
-	onEvent OnProxyEvent
+	connections *connowner.Tracker
+	mu          sync.Mutex
+	proxies     map[string]*runningProxy // key: "serviceName:interfaceName"
+	onEvent     OnProxyEvent
 }
 
 type runningProxy struct {
@@ -167,10 +169,14 @@ type runningProxy struct {
 }
 
 // NewManager creates a proxy manager.
-func NewManager(onEvent OnProxyEvent) *Manager {
+func NewManager(onEvent OnProxyEvent) *Manager { return NewManagerWithConnections(onEvent, nil) }
+
+// NewManagerWithConnections retains original managed-process ownership across forwarding.
+func NewManagerWithConnections(onEvent OnProxyEvent, connections *connowner.Tracker) *Manager {
 	return &Manager{
-		proxies: make(map[string]*runningProxy),
-		onEvent: onEvent,
+		connections: connections,
+		proxies:     make(map[string]*runningProxy),
+		onEvent:     onEvent,
 	}
 }
 
@@ -202,6 +208,9 @@ func (m *Manager) EnsureProxy(ctx context.Context, svcName, ifaceName, protocol,
 		return "", fmt.Errorf("create %s proxy for %s: %w", protocol, key, err)
 	}
 
+	if kafka, ok := p.(*kafkaProxy); ok {
+		kafka.connections = m.connections
+	}
 	pCtx, cancel := context.WithCancel(context.Background())
 	listenAddr, err := p.Start(pCtx, targetAddr)
 	if err != nil {
@@ -251,6 +260,9 @@ func (m *Manager) EnsureProxyTLS(ctx context.Context, svcName, ifaceName, protoc
 		tlsApplied = true
 	}
 
+	if kafka, ok := p.(*kafkaProxy); ok {
+		kafka.connections = m.connections
+	}
 	pCtx, cancel := context.WithCancel(context.Background())
 	addr, err := p.Start(pCtx, targetAddr)
 	if err != nil {
@@ -382,38 +394,26 @@ func extractPort(addr string) int {
 }
 
 // StopAll shuts down all running proxies.
-func (m *Manager) StopAll() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Manager) StopAll() { m.stopMatching("") }
 
+// Remove entries before stopping them. Protocol shutdown can call an observer
+// which reads advertised addresses through this manager; never hold m.mu there.
+func (m *Manager) StopService(svcName string) { m.stopMatching(svcName + ":") }
+func (m *Manager) stopMatching(prefix string) {
+	m.mu.Lock()
+	var pending []*runningProxy
 	for key, rp := range m.proxies {
-		rp.cancel()
-		if rp.proxy != nil {
-			rp.proxy.Stop()
+		if strings.HasPrefix(key, prefix) {
+			pending = append(pending, rp)
+			delete(m.proxies, key)
 		}
-		delete(m.proxies, key)
 	}
-}
-
-// StopService tears down every proxy belonging to a single service,
-// across all of its interfaces. Used during per-test teardown so that
-// a following test's EnsureProxy call allocates a fresh listener bound
-// to the new backend target, rather than returning a stale one whose
-// upstream points at a dead PID from the previous test.
-func (m *Manager) StopService(svcName string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	prefix := svcName + ":"
-	for key, rp := range m.proxies {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
+	m.mu.Unlock()
+	for _, rp := range pending {
 		rp.cancel()
 		if rp.proxy != nil {
 			rp.proxy.Stop()
 		}
-		delete(m.proxies, key)
 	}
 }
 

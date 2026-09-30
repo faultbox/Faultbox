@@ -391,14 +391,19 @@ func testCmd(args []string) int {
 // bundlePath ("" = default filename) and noBundle control RFC-025
 // archive bundle emission; when noBundle is true the run produces
 // only the legacy --output files and no .fb archive.
-func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level, dryRun bool, bundlePath string, noBundle, noPlan bool) int {
+func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, normalizePath, formatFlag string, logFormat logging.Format, logLevel slog.Level, dryRun bool, bundlePath string, noBundle, noPlan bool) (exitCode int) {
 	logger := logging.New(logging.Config{Format: logFormat, Level: logLevel})
 	rt := star.New(logger)
 	// The packet gateway's TUN device is persistent: it survives the process
 	// unless something removes it. Every return path from here — a spec that
 	// fails to load, a suite error, a signal — must go through teardown, or
 	// the host is left with an orphan.
-	defer rt.Close()
+	defer func() {
+		rt.Close()
+		if rt.ShutdownFailed() {
+			exitCode = 1
+		}
+	}()
 
 	// When --format json, redirect service stdout to stderr to keep stdout clean.
 	if formatFlag == "json" {

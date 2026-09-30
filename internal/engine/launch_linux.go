@@ -129,9 +129,25 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 		stderrFd = f.Fd()
 	}
 
+	var processCleanup func()
+	defer func() {
+		if processCleanup != nil {
+			processCleanup()
+		}
+	}()
+	var beforeExec func(int) error
+	if s.cfg.OnProcessStart != nil {
+		beforeExec = func(pid int) error {
+			var err error
+			processCleanup, err = s.cfg.OnProcessStart(pid)
+			return err
+		}
+	}
+
 	// Launch via unified shim.
 	childPid, listenerFd, err := seccomp.Launch(seccomp.LaunchConfig{
 		TargetBinary: s.cfg.Binary,
+		BeforeExec:   beforeExec,
 		TargetDir:    s.cfg.Cwd,
 		TargetArgs:   s.cfg.Args,
 		TargetEnv:    targetEnv,

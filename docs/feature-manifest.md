@@ -55,7 +55,7 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | Postgres proxy faults | 1 | `internal/proxy/postgres_test.go` + `postgres_auth_test.go` + corpus (postgres_fault_basic) | 🟢 | SQL-matched error rule against real postgres:16-alpine. This row previously claimed "auth bypassed because the proxy intercepts pre-backend" — that was wrong. The proxy must relay the startup exchange in **both** directions; relaying server→client only deadlocked SCRAM-SHA-256 (the postgres:14+ default), MD5 and cleartext. Fixed v0.16.0. |
 | Redis proxy faults | 1 | `internal/proxy/redis_test.go` + corpus (redis_fault_basic) | 🟢 | Key-pattern matched error rules via stdlib recipes (oom/loading/readonly) |
 | MySQL proxy faults | 2 | unit + `sqlmatch` canonicalizer | 🟢 | Strong unit coverage. The proxy's `forwardHandshake` handles `caching_sha2_password` (MySQL 8 default) including the fast-auth-success path. |
-| Protocol step clients reach the real server | 1 | `internal/protocol/{addr,mysql_dsn,postgres_connstr}_test.go` + `internal/star/{ready_credentials,kwargs}_test.go` + `internal/proxy/{mysql_resultset,nats_framing,postgres_auth}_test.go` + `poc/protocol-audit/` — **all 13 step protocols now have a real-server spec** | 🟢 | v0.16.1 covered 10 of 13 against stock images; http2, grpc and udp had no server to talk to and carried unit coverage only. v0.18.0 adds `poc/protocol-audit/servers/` (h2c via x/net/http2, grpc-go health service, UDP echo — first-party, but the standard implementations, so the wire bytes are real) and `http2-grpc-udp.star`, 7/7 passing. Writing it found that `grpc.call()` had **never** completed a round trip against any real server: it handed `[]byte` to grpc-go's proto codec and failed client-side before reaching the wire. Fixed with a raw-bytes codec. Remaining limit, documented rather than hidden: a JSON `body=` is sent verbatim, not marshalled into protobuf, so it works for empty-request methods (health/ping) or real wire bytes — descriptor-based invoke via reflection is the complete answer |
+| Protocol step clients reach the real server | 1 | `internal/protocol/{addr,mysql_dsn,postgres_connstr}_test.go` + `internal/star/{ready_credentials,kwargs}_test.go` + `internal/proxy/{mysql_resultset,nats_framing,postgres_auth}_test.go` + `poc/protocol-audit/` — **all 13 step protocols now have a real-server spec** | 🟢 | v0.16.1 covered 10 of 13 against stock images; http2, grpc and udp had no server to talk to and carried unit coverage only. v0.18.0 adds `poc/protocol-audit/servers/` (h2c via x/net/http2, grpc-go health service, UDP echo — first-party, but the standard implementations, so the wire bytes are real) and `http2-grpc-udp.star`, 7/7 passing. Writing it found that `grpc.call()` had **never** completed a round trip against any real server: it handed `[]byte` to grpc-go's proto codec and failed client-side before reaching the wire. Fixed with a raw-bytes codec. v0.18.2 adds descriptor-backed typed unary `grpc.call()` without reflection; JSON/dict requests become protobuf messages, including Any/WKTs and exact int64, while raw wire bytes remain supported |
 | Other protocols (HTTP2, UDP, Mongo, Cassandra, ClickHouse, Kafka, NATS, gRPC) | 2 | unit tests | 🟢 | 13 protocols, all have parse/proxy unit tests |
 | TLS-aware proxy (RFC-038) | 2 | `internal/proxy/{http,grpc,kafka,redis,tcp}_tls_test.go` + Phase 1/2 unit tests | 🟡 | 6 of 14 plugins migrated (http/http2/gRPC/Kafka/Redis/TCP). Postgres/MySQL/Mongo/Cassandra/ClickHouse/memcached/NATS/AMQP deferred to [RFC-039](https://github.com/faultbox/Faultbox/issues/106); UDP has no TLS story. Declarations against unmigrated plugins emit `proxy_tls_pending` event. |
 
@@ -106,6 +106,18 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | Multi-leaf bundle attribution (RFC-042 §8.8/§8.9, RFC-043 §5.2) | 1 | `internal/star/probability_fanout_test.go::TestRunAll_MultiLeafBundleShape` + `internal/star/choose_test.go` fan-out tests | 🟢 | `TestResult.LeafID` → `bundle.TestRow.LeafID` → HTML report's tests table ("[leaf N]" suffix). Single-leaf executions preserve the rc1 manifest shape byte-identically. |
 | `halt(reason="")` + halted outcome (RFC-043 §5.3) | 2 | `internal/star/halt_test.go` (sentinel, reason, kwarg/arity rejection, top-level rejection, setup rejection, RunTest path) | 🟢 | New SuiteResult.Halted counter + bundle.Summary.Halted + HTML "halted" outcome (grey pill, distinct from pass/fail/inconclusive) |
 | `assume(predicate)` + `test(assume=)` (RFC-043 §5.4) | 2 | `internal/star/assume_test.go` (top-level true/false, lambda choices inspection, type/arity rejection, per-test halt + pass, predicate raise → "error", per-leaf choices visibility, sandbox AST denylist rejections) | 🟢 | rc2: per-test predicates see the current leaf's axis assignment at body entry (body-time choose() calls included). Predicate Starlark errors map to `Result="error"`. §8.7 AST denylist enforced at spec load for lambda predicates (named `def`s slip past — same monitor-sandbox limitation). Plan-walker-time pruning + cost guard are follow-ups. |
+
+### Repeatable harness execution — Supported (v0.18.2)
+
+| Feature | Tier | Mechanism | Status | Notes |
+|---|---|---|---|---|
+| Typed unary `grpc.call(descriptors=, body=)` | 2 | `internal/protocol/grpc_step_test.go`, `grpc_dynamic_test.go`, `descriptor_imports_test.go` | 🟢 | Descriptor-backed protobuf JSON, Any/WKTs, exact integers, inherited contracts, metadata/status/headers and cancellation; raw bytes remain supported. |
+| Per-test typed mock state and boot profiles | 2 | `internal/star/mock_state_test.go`, `mock_initial_state_test.go`, `mock_followups_test.go`, `mock_concurrency_test.go` | 🟢 | `state`, `set_state`, `test(mock_state=)`, request decoding and mock error diagnostics. Per-mock serialization; per-test/leaf isolation. |
+| Kafka publish isolation and typed batch observation | 2 | `internal/protocol/kafka_restart_test.go`, `kafka_consume_many_test.go`, `internal/star/proto_decode_test.go` | 🟢 | Acknowledged binary-safe records, bounded `consume_many`, protobuf decoding and per-run observation groups. |
+| Kafka group readiness and process-scoped completion evidence | 2 | `internal/protocol/kafka_groups_test.go`, `kafka_owner_test.go`, `internal/connowner/*_test.go`, `internal/star/kafka_process_linux_test.go` | 🟢 | Successful current-assignment Fetch positions; real direct/proxied Linux child consumers sharing client IDs. `source_instance` separates processes; unknown/same-process competing owners remain conservative. A commit proves completion only when the SUT commits after processing. |
+| Portable resources and module-relative replay | 2 | `internal/bundle/resources_test.go`, `internal/star/resources_test.go`, `module_paths_test.go`, `cmd/faultbox/replay_test.go` | 🟢 | Captured binaries/contracts/resources with hashes and executable mode; nested module-relative paths and guarded recursive helpers. |
+| Structured spec output and native JSON | 2 | `internal/star/spec_output_test.go` | 🟢 | `emit`, captured print output and native JSON helpers; evidence survives failed runs. |
+| Bounded startup and teardown | 2 | `internal/star/service_readiness_test.go`, `shutdown_test.go`, `internal/proxy/stop_reentrant_test.go`, `internal/engine/process_lifecycle_linux_test.go` | 🟢 | Protocol container probes, early-exit/port diagnostics, cancellable callbacks, cleanup error attribution and pre-exec process registration. |
 
 ### Packet-level and filesystem mediation — Supported / Experimental
 
@@ -159,9 +171,9 @@ Everything here needs `determinism(runtime = "gvisor")` and is Linux-only.
 
 ## Summary counts
 
-- Critical (Tier 1): 15 rows, **100% green**. 🎉
-- Supported (Tier 2): 24 rows, **~55% green**.
-- Experimental (Tier 3): 8 rows, **~0% green** — expected; these are checklist-gated.
+- Critical (Tier 1): 23 rows, **23 green**.
+- Supported (Tier 2): 63 rows, **44 green**.
+- Experimental (Tier 3): 7 rows, **0 green**.
 
 PR #64 (proxy teardown, closes #57 + #61) + PR #62 (openat matching,
 closes #56) unlocked 5 Critical rows at once by turning on real

@@ -10,6 +10,40 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-09-30
+
+### Process-scoped Kafka readiness (G49)
+
+- Managed Linux consumers with identical client IDs on the same topic are
+  distinguished by proven process instance. Socket ownership survives Kafka
+  proxy forwarding and separate coordinator/data connections; no client ID
+  changes or log-readiness fallback are needed for separate managed processes.
+- Source service, root PID and instance accompany readiness, fetch, produce and
+  commit evidence. Each consumer needs its own Fetch and its own completion
+  commit; stale/reused PIDs and unresolved competing owners fail closed.
+- Native process registration happens before exec through a parent/child gate.
+  Process cleanup unregisters only that generation, while closed connections
+  remove their forwarding bindings.
+
+### Repeatable harness execution
+
+- Typed `grpc.call(descriptors=..., body=...)` invokes real unary services
+  without reflection or a JSON proxy helper, preserving protobuf integer and
+  Any types, status, metadata, response headers and cancellation.
+- Kafka mock group join/assignment/generation and acknowledged initial Fetch
+  positions supply `group_ready` startup barriers without warm-up records.
+  Ambiguous client-ID attribution is reported rather than guessed.
+- Module-relative file/contract paths work through nested imports, runtime
+  helper calls and bundle replay. Recursive Starlark helpers are enabled with
+  a call-depth guard; dynamic mocks use per-mock locks.
+- Container TCP probes are upgraded to the declared protocol; startup detects
+  occupied fixed ports and early exits. `check` warns about fixed listeners in
+  the actual host ephemeral range.
+- Startup callbacks support cancellable sleeps. Shutdown phases are bounded,
+  attributed and fail the run on error; proxy registry locks are released
+  before calling protocol stop callbacks. TLS CA use and clearing a remote
+  gRPC delay in flight have end-to-end regression coverage.
+
 ### Boot-time mock profiles and typed Kafka observation
 
 - `test(mock_state={service_name: state})` initializes mocks before dependent
@@ -3562,7 +3596,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.1...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.2...HEAD
+[0.18.2]: https://github.com/faultbox/Faultbox/compare/release-0.18.1...release-0.18.2
 [0.18.1]: https://github.com/faultbox/Faultbox/compare/release-0.18.0...release-0.18.1
 [0.18.0]: https://github.com/faultbox/Faultbox/compare/release-0.17.0...release-0.18.0
 [0.17.0]: https://github.com/faultbox/Faultbox/compare/release-0.16.1...release-0.17.0

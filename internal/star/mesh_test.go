@@ -236,8 +236,8 @@ func TestFaultSourceMustBeAService(t *testing.T) {
 	rt := New(testLogger())
 	src := `
 determinism(runtime = "gvisor")
-a = service("a", "/bin/true", interface("main", "tcp", 8080))
-b = service("b", "/bin/true", interface("main", "tcp", 9090))
+a = service("a", "/bin/true", interface("main", "tcp", 0))
+b = service("b", "/bin/true", interface("main", "tcp", 0))
 def test_s():
     fault(b.main, packet_drop(), source="a", run = lambda: None)
 `
@@ -254,7 +254,7 @@ func TestFaultSourceRejectsSelf(t *testing.T) {
 	rt := New(testLogger())
 	src := `
 determinism(runtime = "gvisor")
-b = service("b", "/bin/true", interface("main", "tcp", 9090))
+b = service("b", "/bin/true", interface("main", "tcp", 0))
 def test_s():
     fault(b.main, packet_drop(), source=b, run = lambda: None)
 `
@@ -275,8 +275,8 @@ def test_s():
 func TestPartitionRequiresGatewayRuntime(t *testing.T) {
 	rt := New(testLogger())
 	src := `
-a = service("a", "/bin/true", interface("main", "tcp", 8080))
-b = service("b", "/bin/true", interface("main", "tcp", 9090))
+a = service("a", "/bin/true", interface("main", "tcp", 0))
+b = service("b", "/bin/true", interface("main", "tcp", 0))
 def test_p():
     partition(a, b, run = lambda: None)
 `
@@ -343,8 +343,8 @@ func TestPartitionRejectsUnknownKwarg(t *testing.T) {
 	rt := New(testLogger())
 	src := `
 determinism(runtime = "gvisor")
-a = service("a", "/bin/true", interface("main", "tcp", 8080))
-b = service("b", "/bin/true", interface("main", "tcp", 9090))
+a = service("a", "/bin/true", interface("main", "tcp", 0))
+b = service("b", "/bin/true", interface("main", "tcp", 0))
 def test_p():
     partition(a, b, mode = "hard", run = lambda: None)
 `
@@ -361,8 +361,8 @@ func TestPartitionStopWithoutStart(t *testing.T) {
 	rt := New(testLogger())
 	src := `
 determinism(runtime = "gvisor")
-a = service("a", "/bin/true", interface("main", "tcp", 8080))
-b = service("b", "/bin/true", interface("main", "tcp", 9090))
+a = service("a", "/bin/true", interface("main", "tcp", 0))
+b = service("b", "/bin/true", interface("main", "tcp", 0))
 def test_p():
     partition_stop(a, b)
 `

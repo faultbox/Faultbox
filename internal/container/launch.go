@@ -296,9 +296,11 @@ func launchSimple(ctx context.Context, client *Client, cfg LaunchConfig, log *sl
 		hostPorts[containerPort] = hp
 	}
 
+	// Socket attribution needs the host PID even when seccomp is disabled.
+	hostPID, _ := client.ContainerPID(ctx, containerID)
 	return &LaunchResult{
 		ContainerID: containerID,
-		HostPID:     0,  // no seccomp — no PID tracking needed
+		HostPID:     hostPID,
 		ListenerFd:  -1, // no listener
 		HostPorts:   hostPorts,
 	}, nil

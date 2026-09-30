@@ -171,7 +171,7 @@ func matcherOrPredFromArg(arg starlark.Value) (*MatcherVal, error) {
 		return &MatcherVal{
 			name: "predicate",
 			matchFn: func(ev Event) bool {
-				t := &starlark.Thread{Name: "matcher-pred"}
+				t := boundedThread(&starlark.Thread{Name: "matcher-pred"})
 				res, err := starlark.Call(t, v, starlark.Tuple{newEventVal(ev, nil)}, nil)
 				if err != nil {
 					return false

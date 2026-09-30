@@ -68,6 +68,13 @@ func Run(specFile string, maxInstances int) *Result {
 	}
 
 	res.Tests = rt.DiscoverTests()
+	if low, high, err := star.HostEphemeralPortRange(); err == nil {
+		for _, d := range rt.FixedPortDiagnostics(low, high) {
+			res.Findings = append(res.Findings, Finding{
+				Level: d.Level, Code: d.Code, Message: d.Message, Suggestion: d.Suggestion,
+			})
+		}
+	}
 
 	// Plan enumeration is static — it walks declared tests and their fan-out
 	// without executing a body. Included by default (RFC-052 open question 4)

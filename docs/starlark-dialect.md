@@ -44,7 +44,7 @@ fixture  = load_yaml("./fixtures/users.yaml") # → dict / list / scalar
 config   = load_json("./config/rates.json")
 ```
 
-Paths resolve relative to the spec's directory, **not** cwd. See
+Paths resolve relative to the module containing the call, **not** the root spec or cwd. Imported helper functions keep their defining module's directory. See
 [RFC-026](https://github.com/faultbox/Faultbox/issues/66) for the
 security model.
 
@@ -171,3 +171,13 @@ captures all spec-load-time output for the `.fb` bundle's
   spec loads (every `load_file` lands under `spec/` automatically).
 - [Starlark spec](https://github.com/google/starlark-go/blob/master/doc/spec.md)
   — the upstream language reference from Google.
+
+
+## Recursive helpers
+
+Recursive functions are supported, including recursion in loaded modules. The
+runtime checks call depth periodically and cancels runaway recursion with a
+normal spec error (depth guard: 512 frames). This applies to load-time code,
+test bodies, parallel branches, predicates and dynamic mocks. The `json` module
+remains the simplest way to serialize JSON; recursion is useful for custom tree
+walkers. Other Starlark restrictions, including disabled `while`, are unchanged.

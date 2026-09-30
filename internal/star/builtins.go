@@ -35,9 +35,19 @@ func (rt *Runtime) builtins() starlark.StringDict {
 		// Contract-driven callers (RFC-055). A topology entity in the same
 		// tier as service() and mock_service(): declared at spec load,
 		// bound to an interface, and its own actor in the trace.
-		"client":    starlark.NewBuiltin("client", rt.builtinClient),
-		"interface": starlark.NewBuiltin("interface", builtinInterface),
-		"tcp":       starlark.NewBuiltin("tcp", builtinTCP),
+		"client": starlark.NewBuiltin("client", rt.builtinClient),
+		"interface": starlark.NewBuiltin("interface", func(t *starlark.Thread, b *starlark.Builtin, a starlark.Tuple, k []starlark.Tuple) (starlark.Value, error) {
+			value, err := builtinInterface(t, b, a, k)
+			if err != nil {
+				return nil, err
+			}
+			iface := value.(*InterfaceDef)
+			if iface.Spec != "" {
+				iface.Spec = rt.resolveCallerPath(t, iface.Spec)
+			}
+			return iface, nil
+		}),
+		"tcp": starlark.NewBuiltin("tcp", builtinTCP),
 		// Protocol-aware readiness — asks the service, not the port.
 		"ready":             starlark.NewBuiltin("ready", builtinReady),
 		"http":              starlark.NewBuiltin("http", builtinHTTP),
@@ -311,7 +321,7 @@ func (rt *Runtime) builtinService(thread *starlark.Thread, fn *starlark.Builtin,
 			if !ok {
 				return nil, fmt.Errorf("service cwd must be a path string")
 			}
-			svc.Cwd = rt.resolveSpecPath(value)
+			svc.Cwd = rt.resolveCallerPath(thread, value)
 		case "image":
 			s, _ := starlark.AsString(kv[1])
 			svc.Image = s

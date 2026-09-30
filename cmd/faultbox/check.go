@@ -112,7 +112,8 @@ Validate a spec without running it. Launches no processes, pulls no images,
 and does not need Docker.
 
 Reports spec-load errors with machine-readable codes, the discovered tests, and
-the plan's instance count.
+the plan's instance count. Warns when fixed host listeners overlap this host's
+ephemeral port range; run check inside Lima when Lima executes the suite.
 
 Flags:
   --format=text|json     Output format (default text).
