@@ -10,6 +10,26 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+### Added
+
+- Read-only `faultbox doctor` reports native Linux, Docker/shim, packet-fault,
+  filesystem-observation and optional Lima host/guest prerequisites in text/JSON.
+  A minimal macOS runtime profile includes Docker without language toolchains.
+- Kafka mock `wait_ready` and `wait_committed` replace hand-written polling.
+  They enforce current assignments, process identity, acknowledged offsets and
+  test/broker-scoped publish receipts. Timeout/ambiguity/stale evidence raise
+  coded errors. A commit is explicitly not a business-processing guarantee.
+- Kafka mocks diagnose missing-topic metadata responses without repeating every
+  poll. The documented barrier helper runs against a real consumer in tests.
+
+### Migration
+
+- Pass the original `publish()` Response to `wait_committed`, not `.data` or a
+  reconstructed offset. Establish readiness before publishing and repeat after
+  an assignment change. Existing low-level events and polling remain available.
+- Barriers currently require an observed Kafka mock; they do not pretend to
+  inspect consumer processes attached to an unobserved real/remote broker.
+
 ## [0.18.2] - 2026-09-30
 
 ### Process-scoped Kafka readiness (G49)

@@ -41,6 +41,7 @@ func TestEveryDeclaredConstantIsRegistered(t *testing.T) {
 		CodeSpecSyntax, CodeSpecForbiddenLambda, CodeSpecLoadFailed, CodeSpecRecipeNotFound,
 		CodeHealthcheckTimeout, CodeLaunchFailed, CodeDockerUnavailable, CodeTraceHostNotRegistered,
 		CodeFaultNotFilterable, CodePortInUse, CodeServiceExitedBeforeReady,
+		CodeKafkaWaitTimeout, CodeKafkaWaitAmbiguous, CodeKafkaWaitUnsupported, CodeKafkaReceiptStale,
 	}
 	registered := map[Code]bool{}
 	for _, c := range AllCodes() {

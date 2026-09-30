@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faultbox/Faultbox/internal/protocol"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.starlark.net/starlark"
 )
 
 // The helper startup/fetch gates are test controls, not SUT launch machinery.
@@ -166,6 +166,7 @@ type kafkaManagedHelper struct {
 
 func startKafkaManagedHelper(t *testing.T, ctx context.Context, rt *Runtime, service, group, addr string, block bool) *kafkaManagedHelper {
 	t.Helper()
+	rt.services[service] = &ServiceDef{Name: service}
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -279,16 +280,27 @@ bus=kafka.broker("bus", interface=interface("main","kafka",%d),topics={"events":
 			if readyA.Fields["source_instance"] == readyB.Fields["source_instance"] || readyB.Fields["source_instance"] != assignedB.Fields["source_instance"] {
 				t.Fatal("process instance identity changed or conflated")
 			}
-			kafka, _ := protocol.Get("kafka")
-			result, err := kafka.ExecuteStep(ctx, addr, "publish", map[string]any{"topic": "events", "data": "first-real-record"})
-			if err != nil || !result.Success {
-				t.Fatalf("publish: %+v %v", result, err)
+			thread := &starlark.Thread{Name: "test"}
+			thread.SetLocal("faultbox.context", ctx)
+			ref := &InterfaceRef{Service: rt.services["bus"], Interface: rt.services["bus"].Interfaces["main"], runtime: rt}
+			for _, service := range []string{"consumer-a", "consumer-b"} {
+				_, err := rt.executeStep(thread, ref, "wait_ready", nil, []starlark.Tuple{{starlark.String("topics"), starlark.NewList([]starlark.Value{starlark.String("events")})}, {starlark.String("service"), starlark.String(service)}})
+				if err != nil {
+					t.Fatalf("public readiness for %s: %v", service, err)
+				}
+			}
+			receipt, err := rt.executeStep(thread, ref, "publish", nil, []starlark.Tuple{{starlark.String("topic"), starlark.String("events")}, {starlark.String("data"), starlark.String("first-real-record")}})
+			if err != nil || !receipt.(*Response).Ok {
+				t.Fatalf("publish: %v %v", receipt, err)
 			}
 			for _, item := range []struct {
 				group, service string
 				ready          Event
 				child          *kafkaManagedHelper
 			}{{"group-a", "consumer-a", readyA, a}, {"group-b", "consumer-b", readyB, b}} {
+				if _, err := rt.executeStep(thread, ref, "wait_committed", starlark.Tuple{receipt}, []starlark.Tuple{{starlark.String("service"), starlark.String(item.service)}}); err != nil {
+					t.Fatalf("public commit barrier for %s: %v", item.service, err)
+				}
 				commit := waitEvent("mock.kafka.commit", item.group, item.service)
 				if commit.Service != "bus" || commit.Fields["offset"] != "1" || commit.Fields["source_pid"] != item.ready.Fields["source_pid"] || commit.Fields["source_instance"] != item.ready.Fields["source_instance"] {
 					t.Fatalf("commit ownership mismatch: %+v", commit)

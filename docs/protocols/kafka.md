@@ -274,6 +274,51 @@ each test gets a fresh Kafka with empty topics.
 
 ## Event Sources
 
+### Consumer barriers
+
+`wait_ready` and `wait_committed` are blocking steps for **observed Kafka mocks**.
+They raise a coded error on timeout, cancellation, ambiguous selectors or stale
+receipts; an ignored failed response cannot accidentally pass the test.
+
+<!-- executable:kafka-barriers -->
+```python
+def verify_delivery(bus):
+    bus.main.wait_ready(topics=["orders"], group="orders-worker", timeout="5s")
+    receipt = bus.main.publish(topic="orders", data="first")
+    committed = bus.main.wait_committed(receipt, group="orders-worker", timeout="5s")
+    assert_true(committed.data["committed"])
+```
+
+The consumer must already be running and subscribed. `wait_ready` requires an
+acknowledged Fetch for every currently assigned partition of the requested topics
+in the selected consumer set; each requested topic must have an assignment.
+It does not assert that one service owns every partition of the whole topic.
+Empty assignments never pass. Rebalances invalidate old readiness.
+
+For managed consumers, use `service=worker` (or its name); add `group=` if that
+service belongs to several groups. The process must have provable ownership.
+With no service selector, `group=` also supports unowned external consumers when
+the existing unique-client attribution is unambiguous. `wait_ready` returns a
+Response whose `.data["positions"]` contains the selected assignment evidence.
+
+Pass the original successful **publish Response**, not `receipt.data`, into
+`wait_committed`. It is bound to the test, broker incarnation and consumer
+assignment at publication. A wrong process, an old test's offset or an assignment
+change cannot satisfy the gate. A commit acknowledgement can arrive before the
+producer acknowledgement: that is valid and does not require event-order retries.
+The required committed offset is strictly greater than the receipt's offset.
+
+**Committed does not mean processed.** Services that commit before handling a
+record still need a business assertion against storage or another observable
+result. This step never claims business completion. Real/remote brokers without
+mock wire observation are currently rejected explicitly.
+
+If Metadata reports an absent topic, the mock emits `mock.kafka.topic_missing`
+with the topic, client and known source identity. Repeated identical misses are
+coalesced until successful metadata is seen. Declare expected topics in `topics=`;
+a consumer subscription does not guarantee topic auto-creation even though the
+mock permits it. A barrier timeout includes observed missing-topic evidence.
+
 ### Mock consumer-group readiness
 
 Built-in Kafka mocks emit the following `mock.kafka.*` events. These describe

@@ -20,7 +20,7 @@ type kafkaProtocol struct{}
 func (p *kafkaProtocol) Name() string { return "kafka" }
 
 func (p *kafkaProtocol) Methods() []string {
-	return []string{"publish", "consume", "consume_many"}
+	return []string{"publish", "consume", "consume_many", "wait_ready", "wait_committed"}
 }
 
 // kafkaReadyTopic is a sentinel topic used to verify broker readiness for produce.

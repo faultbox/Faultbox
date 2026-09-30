@@ -29,6 +29,7 @@ type kafkaObserver struct {
 	connections   *connowner.Tracker
 	sourceActive  func(connowner.Source) bool
 	ambiguous     map[kafkaClientPartition]bool
+	missingTopics map[string]bool
 }
 type kafkaObservedListener struct {
 	net.Listener
@@ -241,6 +242,28 @@ func (o *kafkaObserver) topic(name string, id [16]byte) string {
 func (o *kafkaObserver) observe(p kafkaPending, response kmsg.Response) {
 	o.observeGroup(p, response)
 	switch r := response.(type) {
+	case *kmsg.MetadataResponse:
+		for _, topic := range r.Topics {
+			if topic.Topic == nil {
+				continue
+			}
+			key := p.source.Instance + "\x00" + p.client + "\x00" + *topic.Topic
+			o.mu.Lock()
+			if o.missingTopics == nil {
+				o.missingTopics = make(map[string]bool)
+			}
+			emitMissing := topic.ErrorCode == 3 && !o.missingTopics[key]
+			if topic.ErrorCode == 3 {
+				o.missingTopics[key] = true
+			} else if topic.ErrorCode == 0 {
+				delete(o.missingTopics, key)
+			}
+			o.mu.Unlock()
+			if emitMissing {
+				emitWith(o.emit, "kafka.topic_missing", sourceFields(map[string]string{"topic": *topic.Topic, "client_id": p.client, "error_code": "3", "hint": "Declare this topic in the mock topics= configuration; a consumer subscription does not guarantee auto-creation."}, p.source))
+			}
+		}
+
 	case *kmsg.ProduceResponse:
 		req := p.req.(*kmsg.ProduceRequest)
 		for _, t := range r.Topics {

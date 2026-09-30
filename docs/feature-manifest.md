@@ -107,6 +107,13 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 | `halt(reason="")` + halted outcome (RFC-043 §5.3) | 2 | `internal/star/halt_test.go` (sentinel, reason, kwarg/arity rejection, top-level rejection, setup rejection, RunTest path) | 🟢 | New SuiteResult.Halted counter + bundle.Summary.Halted + HTML "halted" outcome (grey pill, distinct from pass/fail/inconclusive) |
 | `assume(predicate)` + `test(assume=)` (RFC-043 §5.4) | 2 | `internal/star/assume_test.go` (top-level true/false, lambda choices inspection, type/arity rejection, per-test halt + pass, predicate raise → "error", per-leaf choices visibility, sandbox AST denylist rejections) | 🟢 | rc2: per-test predicates see the current leaf's axis assignment at body entry (body-time choose() calls included). Predicate Starlark errors map to `Result="error"`. §8.7 AST denylist enforced at spec load for lambda predicates (named `def`s slip past — same monitor-sandbox limitation). Plan-walker-time pruning + cost guard are follow-ups. |
 
+### Onboarding and consumer barriers — Supported
+
+| Feature | Tier | Mechanism | Status | Notes |
+|---|---|---|---|---|
+| Read-only `faultbox doctor` | 2 | `internal/doctor/doctor_test.go`, `cmd/faultbox/doctor_test.go` | 🟢 | Capability selection, bounded subprocesses, Lima version mismatch and CLI JSON. VM provisioning remains a documented optional profile. |
+| Native Kafka mock barriers | 2 | `internal/star/kafka_wait_test.go`, `kafka_process_linux_test.go`, `internal/protocol/kafka_missing_topic_test.go` | 🟢 | Exact documentation example, two real managed consumers through direct/proxy connections, stale receipts/rebalances and absent-topic evidence. |
+
 ### Repeatable harness execution — Supported (v0.18.2)
 
 | Feature | Tier | Mechanism | Status | Notes |
@@ -172,7 +179,7 @@ Everything here needs `determinism(runtime = "gvisor")` and is Linux-only.
 ## Summary counts
 
 - Critical (Tier 1): 23 rows, **23 green**.
-- Supported (Tier 2): 63 rows, **44 green**.
+- Supported (Tier 2): 65 rows, **46 green**.
 - Experimental (Tier 3): 7 rows, **0 green**.
 
 PR #64 (proxy teardown, closes #57 + #61) + PR #62 (openat matching,

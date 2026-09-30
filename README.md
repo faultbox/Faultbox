@@ -156,6 +156,9 @@ Or install a specific version:
 FAULTBOX_VERSION=0.1.0 curl -fsSL https://faultbox.io/install.sh | sh
 ```
 
+For macOS execution, follow the [Linux runner quickstart](docs/guides/macos.md).
+Use `faultbox doctor` to diagnose prerequisites before running a new stand.
+
 ### Build from source
 
 Requirements: Go 1.24+, Linux kernel 5.6+ (macOS via [Lima](https://lima-vm.io/))
