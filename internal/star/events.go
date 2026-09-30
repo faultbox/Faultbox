@@ -31,10 +31,11 @@ type Subscriber struct {
 
 // EventLog is a thread-safe, append-only ordered event log with vector clocks.
 type EventLog struct {
-	mu     sync.RWMutex
-	events []Event
-	seq    int64
-	clocks map[string]map[string]int64 // per-service vector clocks
+	mu         sync.RWMutex
+	events     []Event
+	generation uint64
+	seq        int64
+	clocks     map[string]map[string]int64 // per-service vector clocks
 
 	// Secondary indexes for O(log N) event lookups (RFC-041 §8.5).
 	// byType and byService map to slices of indices into events[].
@@ -227,6 +228,7 @@ func (l *EventLog) Reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.events = nil
+	l.generation++
 	l.seq = 0
 	l.clocks = make(map[string]map[string]int64)
 	l.byType = make(map[string][]int)

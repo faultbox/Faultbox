@@ -3530,6 +3530,33 @@ fault_scenario("no_stale_cache_after_failure",
 )
 ```
 
+### Kafka consumer barriers (v0.19.0)
+
+Observed Kafka mocks expose two blocking interface steps:
+
+```python
+bus.main.wait_ready(topics=["orders"], service=worker, group="orders-worker", timeout="10s")
+receipt = bus.main.publish(topic="orders", data=payload)
+bus.main.wait_committed(receipt, service=worker, group="orders-worker", timeout="10s")
+```
+
+Provide `service=` (a declared service or its name), `group=`, or both. Readiness
+requires an acknowledged Fetch for every currently assigned partition of the
+requested topics in the selected consumer set; every requested topic must have
+an assignment. Multiple matching groups require an explicit group selector.
+`wait_ready` returns a Response with `.data["positions"]` containing the evidence.
+
+`wait_committed` takes the original successful publish Response and requires an
+acknowledged offset strictly beyond that record. It pins the test, broker
+incarnation and assignment observed before publication, rejecting stale receipts
+and assignment changes. It returns `.data["committed"]` on success. **A commit
+is not proof of business processing** when the service commits before handling.
+
+Timeouts, cancellation, ambiguity and stale evidence raise coded errors. These
+steps require an observed mock; unobserved real/remote brokers are rejected.
+See the [Kafka reference](protocols/kafka.md#consumer-barriers) for the executable
+example, source-identity rules and missing-topic diagnostics.
+
 ### Verifying Kafka message integrity
 
 Use event sources (`observe=`) to track produced and consumed messages,

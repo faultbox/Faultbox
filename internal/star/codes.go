@@ -46,6 +46,10 @@ const (
 	CodeSpecRecipeNotFound  Code = "SPEC_RECIPE_NOT_FOUND"
 
 	// Infrastructure failures — everything that needs a run.
+	CodeKafkaWaitTimeout       Code = "KAFKA_WAIT_TIMEOUT"
+	CodeKafkaWaitAmbiguous     Code = "KAFKA_WAIT_AMBIGUOUS"
+	CodeKafkaWaitUnsupported   Code = "KAFKA_WAIT_UNSUPPORTED"
+	CodeKafkaReceiptStale      Code = "KAFKA_RECEIPT_STALE"
 	CodeHealthcheckTimeout     Code = "HEALTHCHECK_TIMEOUT"
 	CodeLaunchFailed           Code = "LAUNCH_FAILED"
 	CodeDockerUnavailable      Code = "DOCKER_UNAVAILABLE"
@@ -59,6 +63,10 @@ const (
 // defeats the purpose of having codes at all. TestEveryCodeHasASuggestion
 // enforces this — the enforcement is the test, not reviewer diligence.
 var suggestions = map[Code]string{
+	CodeKafkaWaitTimeout:     "Inspect the last missing assignment/Fetch/commit evidence. Declare topics, check the intended consumer, and use its own group/process selector.",
+	CodeKafkaWaitAmbiguous:   "Select the intended group and service explicitly; shared client IDs do not identify consumers.",
+	CodeKafkaWaitUnsupported: "These barriers require an observed Kafka mock. Wait for current consumer readiness before publishing, then pass the publish Response to wait_committed.",
+	CodeKafkaReceiptStale:    "Receipts belong to one test and broker incarnation. Establish current readiness and publish again after restart or rebalance.",
 	CodeSpecSyntax: "The spec is not valid Starlark. Note the dialect differs from Python: " +
 		"no while loops at top level, no list comprehensions with multiple for clauses, " +
 		"and positional arguments cannot follow keyword arguments. See docs/starlark-dialect.md.",

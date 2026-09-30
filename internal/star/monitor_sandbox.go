@@ -56,9 +56,11 @@ var monitorSandboxDenylist = map[string]string{
 	"monitor":    "registering a new monitor from inside a monitor is not supported",
 
 	// Body-blocking primitives (PR 5) — would deadlock the event-log subscriber.
-	"await_stable": "await_* primitives block the test body and cannot be called from a monitor",
-	"await_event":  "await_* primitives block the test body and cannot be called from a monitor",
-	"sleep":        "sleep() blocks the event-log subscriber and cannot be called from a monitor",
+	"wait_ready":     "Kafka waits cannot block an event subscriber",
+	"wait_committed": "Kafka waits cannot block an event subscriber",
+	"await_stable":   "await_* primitives block the test body and cannot be called from a monitor",
+	"await_event":    "await_* primitives block the test body and cannot be called from a monitor",
+	"sleep":          "sleep() blocks the event-log subscriber and cannot be called from a monitor",
 
 	// Determinism / trace family — config or runtime-mutating.
 	"determinism": "determinism() is a spec-load declaration",

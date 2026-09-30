@@ -52,7 +52,7 @@ func main() {
 }
 
 // version is set via -ldflags at build time.
-var version = "0.18.1"
+var version = "0.19.0"
 
 func run() int {
 	args := os.Args[1:]
@@ -96,6 +96,8 @@ func run() int {
 	// which verifies pinned digests.
 	case "check":
 		return checkCmd(args[1:])
+	case "doctor":
+		return doctorCmd(args[1:])
 	case "setup-trace":
 		return setupTraceCmd(args[1:])
 	case "self-update":
@@ -1586,6 +1588,8 @@ class interface_ref:
     def get(self, *, key: str) -> 'response': ...
     def publish(self, *, topic: str = ..., subject: str = ..., data: str = ...) -> 'response': ...
     def consume(self, *, topic: str, group: str = ...) -> 'response': ...
+    def wait_ready(self, *, topics: list, service = ..., group: str = ..., timeout: str = "10s") -> 'response': ...
+    def wait_committed(self, receipt: 'response', *, service = ..., group: str = ..., timeout: str = "10s") -> 'response': ...
     def consume_many(self, *, topic: str, max_records: int = 100, timeout: str = "5s", idle_timeout: str = "250ms", group: str = ..., descriptors: str = ..., message: str = ...) -> 'response': ...
     def call(self, *, method: str, body: str = "{}") -> 'response': ...
 
@@ -1908,6 +1912,7 @@ func printUsage() {
   faultbox init [flags] <binary>             Generate starter .star file
   faultbox setup-trace [flags]               Register the host for watch() (once, as root)
   faultbox diff <trace1> <trace2>            Compare normalized traces
+  faultbox doctor [--docker] [--lima NAME]    Check execution prerequisites
   faultbox self-update                       Update to the latest version
   faultbox mcp                               Start MCP server (for LLM agents)
   faultbox recipes list                      List embedded stdlib recipes

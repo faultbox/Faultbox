@@ -935,6 +935,30 @@ faultbox run --debug --fault "openat=ENOENT:50%" ./my-service
 
 ---
 
+### `faultbox doctor`
+
+Read-only checks for the selected execution environment. Run without flags on
+Linux for native service prerequisites. Add only the modes your spec needs:
+
+```sh
+faultbox doctor --format=json
+faultbox doctor --docker
+sudo faultbox doctor --packet
+faultbox doctor --trace
+faultbox doctor --lima=faultbox
+```
+
+Checks report stable `code`, `status` (`ok`, `warn`, `error`), `message` and
+`remedy` fields. Exit 0 means requested prerequisites pass (warnings may remain),
+1 means invalid CLI arguments, and 2 means a failed check. Commands are bounded
+and no environment changes are made. Kernel support does not prove all launch
+permissions; a representative smoke spec remains necessary.
+
+`--lima=NAME` delegates to that existing guest's `doctor`, compares version labels
+and returns its checks with `LIMA_` prefixes. It does not start the guest or use
+sudo; inspect privileged modes inside the guest as the user that will run them.
+See the [macOS runner quickstart](guides/macos.md).
+
 ### `faultbox self-update`
 
 Update the faultbox binary to the latest release.

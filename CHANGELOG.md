@@ -10,6 +10,28 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-30
+
+### Added
+
+- Read-only `faultbox doctor` reports native Linux, Docker/shim, packet-fault,
+  filesystem-observation and optional Lima host/guest prerequisites in text/JSON.
+  A minimal macOS runtime profile includes Docker without language toolchains.
+- Kafka mock `wait_ready` and `wait_committed` replace hand-written polling.
+  They enforce current assignments, process identity, acknowledged offsets and
+  test/broker-scoped publish receipts. Timeout/ambiguity/stale evidence raise
+  coded errors. A commit is explicitly not a business-processing guarantee.
+- Kafka mocks diagnose missing-topic metadata responses without repeating every
+  poll. The documented barrier helper runs against a real consumer in tests.
+
+### Migration
+
+- Pass the original `publish()` Response to `wait_committed`, not `.data` or a
+  reconstructed offset. Establish readiness before publishing and repeat after
+  an assignment change. Existing low-level events and polling remain available.
+- Barriers currently require an observed Kafka mock; they do not pretend to
+  inspect consumer processes attached to an unobserved real/remote broker.
+
 ## [0.18.2] - 2026-09-30
 
 ### Process-scoped Kafka readiness (G49)
@@ -3596,7 +3618,8 @@ artifact.
   refuses (forward-compat safety); `faultbox_version` drift warns and
   proceeds; `faultbox replay` refuses major-version drift.
 
-[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.18.2...HEAD
+[Unreleased]: https://github.com/faultbox/Faultbox/compare/release-0.19.0...HEAD
+[0.19.0]: https://github.com/faultbox/Faultbox/compare/release-0.18.2...release-0.19.0
 [0.18.2]: https://github.com/faultbox/Faultbox/compare/release-0.18.1...release-0.18.2
 [0.18.1]: https://github.com/faultbox/Faultbox/compare/release-0.18.0...release-0.18.1
 [0.18.0]: https://github.com/faultbox/Faultbox/compare/release-0.17.0...release-0.18.0

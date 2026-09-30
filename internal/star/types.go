@@ -417,12 +417,13 @@ func (m *StepMethod) CallInternal(thread *starlark.Thread, args starlark.Tuple, 
 // ---------------------------------------------------------------------------
 
 type Response struct {
-	Headers    map[string][]string
-	Status     int
-	Body       string
-	DurationMs int64
-	Ok         bool
-	Error      string
+	kafkaReceipt *kafkaReceipt
+	Headers      map[string][]string
+	Status       int
+	Body         string
+	DurationMs   int64
+	Ok           bool
+	Error        string
 
 	// RFC-055 client provenance. Empty on responses produced by step
 	// methods; populated when the call came from a client(), so an

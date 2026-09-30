@@ -172,3 +172,9 @@ make lima-run CMD="docker version"
 | Run tests | `faultbox test first-test.star` | `make lima-run CMD="faultbox test first-test.star"` |
 | Run faultbox | `faultbox run ...` | `make lima-run CMD="faultbox run ..."` |
 | Container tests | `sudo faultbox test ...` | `make lima-run CMD="sudo faultbox test ..."` |
+
+## Diagnose a local runner
+
+Use `faultbox doctor` for read-only prerequisite checks. On macOS, follow the
+[supported Lima quickstart](../../guides/macos.md), including Docker installation
+and host/guest version checks. Language toolchains are optional project choices.

@@ -3,6 +3,7 @@ package star
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -4794,6 +4795,16 @@ func errorBodyForTrace(statusCode int, body string) (string, bool) {
 
 // executeStep runs an HTTP or TCP step against a running service.
 func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, method string, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if ref.Interface.Protocol == "kafka" && (method == "wait_ready" || method == "wait_committed") {
+		return rt.executeKafkaWait(thread, ref, method, args, kwargs)
+	}
+	var receipt *kafkaReceipt
+	if ref.Interface.Protocol == "kafka" && method == "publish" && ref.Service.IsMock() {
+		generation, seq := rt.events.kafkaScope()
+		_, started := rt.kafkaHistory(ref)
+		receipt = &kafkaReceipt{log: rt.events, generation: generation, broker: ref.Service.Name, iface: ref.Interface.Name, started: started, after: seq}
+	}
+
 	addr := proxyTargetAddr(ref.Service, ref.Interface)
 
 	targetSvc := ref.Service.Name
@@ -4930,13 +4941,19 @@ func (rt *Runtime) executeStep(thread *starlark.Thread, ref *InterfaceRef, metho
 		return nil, fmt.Errorf("tcp send failed: %s", stepResult.Error)
 	}
 
+	if receipt != nil && stepResult.Success {
+		if err := json.Unmarshal([]byte(stepResult.Body), receipt); err != nil || receipt.started == 0 {
+			receipt = nil
+		}
+	}
 	return &Response{
-		Status:     stepResult.StatusCode,
-		Body:       stepResult.Body,
-		Headers:    stepResult.Headers,
-		DurationMs: stepResult.DurationMs,
-		Ok:         stepResult.Success,
-		Error:      stepResult.Error,
+		kafkaReceipt: receipt,
+		Status:       stepResult.StatusCode,
+		Body:         stepResult.Body,
+		Headers:      stepResult.Headers,
+		DurationMs:   stepResult.DurationMs,
+		Ok:           stepResult.Success,
+		Error:        stepResult.Error,
 	}, nil
 }
 
