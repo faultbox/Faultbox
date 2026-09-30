@@ -131,7 +131,9 @@ func (p *grpcProxy) Start(ctx context.Context, target string) (string, error) {
 	}
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(transportCreds),
-		grpc.WithDefaultCallOptions(grpc.ForceCodec(grpcRawCodec{})),
+		// Payloads are protobuf wire bytes even though our local codec is opaque.
+		// Declare proto so typed upstreams never select our private raw codec.
+		grpc.WithDefaultCallOptions(grpc.ForceCodec(grpcRawCodec{}), grpc.CallContentSubtype("proto")),
 	)
 	if err != nil {
 		ln.Close()

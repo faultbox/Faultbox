@@ -2,94 +2,206 @@ package protocol
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
-	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-func init() {
-	Register(&grpcProtocol{})
-}
+func init() { Register(&grpcProtocol{}) }
 
 type grpcProtocol struct{}
 
-func (p *grpcProtocol) Name() string { return "grpc" }
-
-func (p *grpcProtocol) Methods() []string {
-	return []string{"call"}
-}
-
+func (p *grpcProtocol) Name() string      { return "grpc" }
+func (p *grpcProtocol) Methods() []string { return []string{"call"} }
 func (p *grpcProtocol) Healthcheck(ctx context.Context, addr string, timeout time.Duration) error {
 	return TCPHealthcheck(ctx, ParseAddr(addr).HostPort, timeout)
 }
 
+// ExecuteStep invokes a unary RPC. A descriptor set enables JSON/protobuf
+// conversion without server reflection. Calls without descriptors preserve the
+// original opaque-byte behavior; body_base64 makes that mode binary-safe.
 func (p *grpcProtocol) ExecuteStep(ctx context.Context, addr, method string, kwargs map[string]any) (*StepResult, error) {
 	if method != "call" {
 		return nil, fmt.Errorf("unsupported grpc method %q (supported: call)", method)
 	}
-
-	rpcMethod := getStringKwarg(kwargs, "method", "")
-	if rpcMethod == "" {
-		return nil, fmt.Errorf("grpc.call requires method= argument (e.g., '/package.Service/Method')")
+	rpcMethod, ok := kwargs["method"].(string)
+	if !ok || !strings.HasPrefix(rpcMethod, "/") || len(strings.Split(rpcMethod, "/")) != 3 || strings.Contains(rpcMethod, "//") || strings.HasSuffix(rpcMethod, "/") {
+		return nil, fmt.Errorf("grpc.call requires method='/package.Service/Method'")
 	}
-	body := getStringKwarg(kwargs, "body", "{}")
-
+	descriptors := ""
+	if value, present := kwargs["descriptors"]; present {
+		descriptors, ok = value.(string)
+		if !ok || descriptors == "" {
+			return nil, fmt.Errorf("grpc.call descriptors must be a non-empty path string")
+		}
+	}
 	start := time.Now()
+	if value, present := kwargs["timeout"]; present {
+		timeoutString, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("grpc.call timeout must be a duration string")
+		}
+		timeout, err := time.ParseDuration(timeoutString)
+		if err != nil || timeout <= 0 {
+			return nil, fmt.Errorf("grpc.call timeout must be a positive duration")
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	if value, present := kwargs["metadata"]; present {
+		md, err := grpcStepMetadata(value)
+		if err != nil {
+			return nil, err
+		}
+		existing, _ := metadata.FromOutgoingContext(ctx)
+		ctx = metadata.NewOutgoingContext(ctx, metadata.Join(existing, md))
+	}
 
-	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	var request, response any
+	var decode func() ([]byte, error)
+	var options []grpc.CallOption
+	if descriptors != "" {
+		if _, present := kwargs["body_base64"]; present {
+			return nil, fmt.Errorf("grpc.call body_base64 cannot be combined with descriptors")
+		}
+		files, err := LoadDescriptorSet(descriptors)
+		if err != nil {
+			return nil, err
+		}
+		input, output, err := ResolveMethod(files, rpcMethod)
+		if err != nil {
+			return nil, err
+		}
+		descriptorName := protoreflect.FullName(strings.ReplaceAll(strings.TrimPrefix(rpcMethod, "/"), "/", "."))
+		desc, err := files.FindDescriptorByName(descriptorName)
+		if err != nil {
+			return nil, err
+		}
+		rpc := desc.(protoreflect.MethodDescriptor)
+		if rpc.IsStreamingClient() || rpc.IsStreamingServer() {
+			return nil, fmt.Errorf("grpc.call supports unary methods only: %s", rpcMethod)
+		}
+		body := []byte("{}")
+		if value, present := kwargs["body"]; present {
+			switch v := value.(type) {
+			case string:
+				body = []byte(v)
+			case map[string]any:
+				body, err = json.Marshal(v)
+				if err != nil {
+					return nil, fmt.Errorf("grpc.call encode body: %w", err)
+				}
+			default:
+				return nil, fmt.Errorf("grpc.call typed body must be a dict or JSON string, got %T", value)
+			}
+		}
+		req, resp := dynamicpb.NewMessage(input), dynamicpb.NewMessage(output)
+		if err := (protojson.UnmarshalOptions{Resolver: typesResolver{files: files}}).Unmarshal(body, req); err != nil {
+			return nil, fmt.Errorf("grpc.call encode %s as %s: %w", rpcMethod, input.FullName(), enrichProtoFieldError(err, input))
+		}
+		request, response = req, resp
+		decode = func() ([]byte, error) {
+			return (protojson.MarshalOptions{UseProtoNames: true, EmitDefaultValues: true, Resolver: typesResolver{files: files}}).Marshal(resp)
+		}
+	} else {
+		var req []byte
+		var resp []byte
+		if value, present := kwargs["body_base64"]; present {
+			if _, present := kwargs["body"]; present {
+				return nil, fmt.Errorf("grpc.call accepts either body or body_base64, not both")
+			}
+			encoded, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("grpc.call body_base64 must be a string")
+			}
+			var err error
+			req, err = base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return nil, fmt.Errorf("grpc.call body_base64: %w", err)
+			}
+		} else if value, present := kwargs["body"]; present {
+			body, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("grpc.call dict body requires descriptors; raw body must be a string")
+			}
+			// Preserve legacy empty-request shorthand.
+			if body != "{}" {
+				req = []byte(body)
+			}
+		}
+		request, response = req, &resp
+		options = append(options, grpc.ForceCodec(rawBytesCodec{}), grpc.CallContentSubtype("proto"))
+		decode = func() ([]byte, error) {
+			return json.Marshal(map[string]any{"method": rpcMethod, "raw": string(resp), "raw_base64": base64.StdEncoding.EncodeToString(resp)})
+		}
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return &StepResult{
-			Success:    false,
-			Error:      fmt.Sprintf("connect: %v", err),
-			DurationMs: time.Since(start).Milliseconds(),
-		}, nil
+		return nil, fmt.Errorf("grpc.call connect: %w", err)
 	}
 	defer conn.Close()
-
-	// Use reflection to discover the service and method descriptors.
-	refClient := grpc_reflection_v1alpha.NewServerReflectionClient(conn)
-	stream, err := refClient.ServerReflectionInfo(ctx)
-	if err != nil {
-		// Fallback: raw invoke without reflection (for services without reflection).
-		return p.rawInvoke(ctx, conn, rpcMethod, body, start)
+	var headers metadata.MD
+	options = append(options, grpc.Header(&headers))
+	invokeErr := conn.Invoke(ctx, rpcMethod, request, response, options...)
+	result := &StepResult{Success: invokeErr == nil, StatusCode: int(status.Code(invokeErr)), Headers: headers, DurationMs: time.Since(start).Milliseconds()}
+	if invokeErr != nil {
+		result.Error = invokeErr.Error()
+		return result, nil
 	}
-	defer stream.CloseSend()
-
-	// Try to resolve the method via reflection for proper marshaling.
-	// On failure, fall back to raw invoke.
-	_ = stream
-	return p.rawInvoke(ctx, conn, rpcMethod, body, start)
+	body, err := decode()
+	if err != nil {
+		return nil, fmt.Errorf("grpc.call decode %s response: %w", rpcMethod, err)
+	}
+	result.Body = string(body)
+	return result, nil
 }
 
-// rawBytesCodec passes payloads through untouched.
-//
-// grpc-go's default codec requires a proto.Message, so handing it a
-// []byte failed at the client before a single byte reached the wire:
-//
-//	rpc error: code = Internal desc = grpc: error while marshaling:
-//	proto: failed to marshal, message is []uint8, want proto.Message
-//
-// which meant `grpc.call()` could not complete a round trip against any
-// real server. Unit tests did not catch it because they never dialled one
-// — the gap the protocol audit exists to close.
-//
-// Forcing this codec makes the request and response opaque bytes. It is
-// deliberately not a full descriptor-based invoke: a JSON body is still
-// sent verbatim rather than marshalled into protobuf, so `body=` only
-// works for a method whose request is empty (the common health / ping
-// shape) or when the caller supplies real wire bytes. Resolving
-// descriptors via reflection and going through dynamicpb is the complete
-// answer and is a larger piece of work.
+func grpcStepMetadata(value any) (metadata.MD, error) {
+	values, ok := value.(map[string]any)
+	if !ok {
+		if stringsMap, supported := value.(map[string]string); supported {
+			values = make(map[string]any, len(stringsMap))
+			for key, value := range stringsMap {
+				values[key] = value
+			}
+		} else {
+			return nil, fmt.Errorf("grpc.call metadata must be a dict of strings or string lists")
+		}
+	}
+	md := metadata.MD{}
+	for key, value := range values {
+		switch v := value.(type) {
+		case string:
+			md.Append(key, v)
+		case []string:
+			md.Append(key, v...)
+		case []any:
+			for _, item := range v {
+				s, ok := item.(string)
+				if !ok {
+					return nil, fmt.Errorf("grpc.call metadata[%q] must contain strings", key)
+				}
+				md.Append(key, s)
+			}
+		default:
+			return nil, fmt.Errorf("grpc.call metadata[%q] must be a string or string list", key)
+		}
+	}
+	return md, nil
+}
+
+// rawBytesCodec preserves opaque protobuf bytes for legacy calls.
 type rawBytesCodec struct{}
 
 func (rawBytesCodec) Name() string { return "faultbox-raw-bytes" }
@@ -116,41 +228,3 @@ func (rawBytesCodec) Unmarshal(data []byte, v any) error {
 	*out = append((*out)[:0], data...)
 	return nil
 }
-
-// rawInvoke calls a gRPC method using raw bytes (works without proto descriptors).
-func (p *grpcProtocol) rawInvoke(ctx context.Context, conn *grpc.ClientConn, method, body string, start time.Time) (*StepResult, error) {
-	var reqBytes []byte
-	if body != "{}" && body != "" {
-		// Sent verbatim — see rawBytesCodec on what that does and does
-		// not support.
-		reqBytes = []byte(body)
-	}
-
-	var respBytes []byte
-	err := conn.Invoke(ctx, method, reqBytes, &respBytes, grpc.ForceCodec(rawBytesCodec{}))
-	if err != nil {
-		return &StepResult{
-			Success:    false,
-			Error:      err.Error(),
-			DurationMs: time.Since(start).Milliseconds(),
-		}, nil
-	}
-
-	respJSON, _ := json.Marshal(map[string]any{
-		"method": method,
-		"raw":    string(respBytes),
-	})
-	return &StepResult{
-		Body:       string(respJSON),
-		Success:    true,
-		DurationMs: time.Since(start).Milliseconds(),
-	}, nil
-}
-
-// Ensure imports are used (these will be needed for full reflection-based invoke).
-var (
-	_               = protojson.MarshalOptions{}
-	_ proto.Message = (*dynamicpb.Message)(nil)
-	_               = protodesc.NewFile
-	_               = (*descriptorpb.FileDescriptorProto)(nil)
-)

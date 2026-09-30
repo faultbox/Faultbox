@@ -18,10 +18,14 @@ import (
 // commit must never look successful in the trace. Listener wrapping also
 // keeps Kafka's advertised endpoints on the mock's proxy when present.
 type kafkaObserver struct {
-	emit      MockEmitter
-	advertise func() string
-	mu        sync.Mutex
-	topics    map[[16]byte]string
+	emit          MockEmitter
+	advertise     func() string
+	mu            sync.Mutex
+	topics        map[[16]byte]string
+	sequence      uint64
+	groups        map[string]*kafkaObservedGroup
+	fetchSessions map[int32]map[kafkaTopicPartition]kafkaSessionPosition
+	ambiguous     map[kafkaClientPartition]bool
 }
 type kafkaObservedListener struct {
 	net.Listener
@@ -37,8 +41,10 @@ func (l *kafkaObservedListener) Accept() (net.Conn, error) {
 }
 
 type kafkaPending struct {
-	req    kmsg.Request
-	client string
+	req       kmsg.Request
+	client    string
+	sequence  uint64
+	positions []kafkaFetchPosition
 }
 type kafkaObservedConn struct {
 	net.Conn
@@ -79,7 +85,7 @@ func (c *kafkaObservedConn) Read(b []byte) (int, error) {
 			return nil
 		}
 		key := int16(binary.BigEndian.Uint16(frame))
-		if key != 0 && key != 1 && key != 3 && key != 8 && key != 10 {
+		if key != 0 && key != 1 && key != 3 && key != 8 && key != 10 && key != 11 && key != 12 && key != 13 && key != 14 {
 			return nil
 		}
 		req, corr, client, err := kafkawire.DecodeRequest(frame)
@@ -90,12 +96,13 @@ func (c *kafkaObservedConn) Read(b []byte) (int, error) {
 			emitWith(c.observer.emit, "kafka.produce_unacknowledged", map[string]string{"client_id": client})
 			return nil
 		}
+		pending := c.observer.request(req, client)
 		c.pendingMu.Lock()
 		defer c.pendingMu.Unlock()
 		if len(c.pending) >= 1024 {
 			return fmt.Errorf("too many pending Kafka requests")
 		}
-		c.pending[corr] = kafkaPending{req, client}
+		c.pending[corr] = pending
 		return nil
 	})
 	if parseErr != nil {
@@ -210,6 +217,7 @@ func (o *kafkaObserver) topic(name string, id [16]byte) string {
 }
 
 func (o *kafkaObserver) observe(p kafkaPending, response kmsg.Response) {
+	o.observeGroup(p, response)
 	switch r := response.(type) {
 	case *kmsg.ProduceResponse:
 		req := p.req.(*kmsg.ProduceRequest)

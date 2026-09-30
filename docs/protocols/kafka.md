@@ -274,6 +274,85 @@ each test gets a fresh Kafka with empty topics.
 
 ## Event Sources
 
+### Mock consumer-group readiness
+
+Built-in Kafka mocks emit the following `mock.kafka.*` events. These describe
+acknowledged **classic consumer-group protocol** exchanges (JoinGroup / SyncGroup /
+Fetch), including Kafka-go, Sarama and the default franz-go group protocol.
+
+| Event suffix | Evidence |
+|---|---|
+| `group_join` | Successful JoinGroup: `group`, `member_id`, `client_id`, `generation`, `epoch` |
+| `assign` | Successful SyncGroup, one event per assigned `topic` / `partition`; adds `assignment` |
+| `group_sync` | Completed SyncGroup, including empty assignments; adds `assignment`, `partitions` count |
+| `fetch_position` | Successful Fetch at concrete `offset`, including empty responses; carries `client_id`, `topic`, `partition`, `request_sequence` |
+| `group_ready` | Current assignment's first accepted Fetch position; adds `offset`, `attribution="unique_client_id"`, `position_source="fetch"` |
+| `group_rebalance` | Prior readiness invalidated: a join was requested, a heartbeat failed, or a member left; adds `reason` and advances `epoch` |
+| `group_leave` | Acknowledged departure of `member_id` |
+| `group_ready_ambiguous` | Position cannot be attributed because multiple current assignments share the same client ID, topic and partition |
+
+All numeric fields in these events are strings; convert with `int()`. `epoch`
+and `assignment` are monotonic observation tokens scoped to this mock instance,
+not Kafka offsets. A `group_rebalance` event is an invalidation signal and does
+not claim that the requested rebalance succeeded.
+
+**Wait for `group_ready` before publishing the first test record.** An assignment
+alone is too early: a consumer with reset-to-latest may resolve the end offset
+later and skip records published in between. Readiness waits for a concrete
+successful Fetch, after offset reset, even when the topic is empty. No warm-up
+record, committed offset or SUT log is needed. Incremental Fetch sessions retain
+the acknowledged partition positions across empty responses.
+
+Readiness is emitted per assigned partition, once per assignment. Reject stale
+readiness after a rebalance; do not use an `any()` over all historical ready
+events. For example, this predicate checks partition zero of a single topic:
+
+```python
+def consumer_positioned(group, topic, partition=0):
+    history = events(service=bus.name, where=lambda e:
+        e.type.startswith("mock.kafka.") and e.fields.get("group") == group)
+    epoch = max([int(e.fields.get("epoch", "0")) for e in history] or [0])
+    current = [e for e in history if int(e.fields.get("epoch", "0")) == epoch]
+    generation = max([int(e.fields.get("generation", "0")) for e in current] or [0])
+    current = [e for e in current if int(e.fields.get("generation", "0")) == generation]
+    for ready in current:
+        if ready.type != "mock.kafka.group_ready":
+            continue
+        f = ready.fields
+        if f.get("topic") != topic or int(f.get("partition", "-1")) != partition:
+            continue
+        syncs = [int(e.fields["assignment"]) for e in current
+                 if e.type == "mock.kafka.group_sync"
+                 and e.fields.get("member_id") == f["member_id"]]
+        if syncs and int(f["assignment"]) == max(syncs):
+            return True
+    return False
+
+# In the test body, before its first publish:
+for _ in range(100):
+    if consumer_positioned("courier-group", "orders"):
+        break
+    sleep("100ms")
+assert_true(consumer_positioned("courier-group", "orders"), "consumer not positioned")
+bus.main.publish(topic="orders", data=payload)
+```
+
+For a multi-partition topic, check every partition the test may publish to.
+Readiness is a startup barrier, not a continuous liveness or processing guarantee.
+Use acknowledged commits past the published offset as a processing gate **only
+if the SUT commits after processing**; Kafka also allows committing earlier.
+
+Classic Fetch contains no group or member ID. Faultbox therefore attributes a
+position only when `(client_id, topic, partition)` identifies exactly one current
+assignment, both when the request arrives and when its response is acknowledged.
+Clients may share IDs on disjoint partitions/topics. Configure distinct consumer
+client IDs when assignments overlap across groups; ambiguity suppresses readiness
+and produces `group_ready_ambiguous`, rather than guessing from a TCP connection.
+A manually assigned reader must also use a distinct client ID from a grouped
+consumer of the same partitions. Raw `fetch_position` evidence remains available.
+The mock observes wire exchanges; it does not independently announce silent
+session expiry, nor support the KIP-848 consumer-group protocol in these events.
+
 ### Topic observer
 
 > **Not yet callable from Starlark.** `topic()` is a Go event-source
