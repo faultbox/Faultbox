@@ -111,6 +111,8 @@ Protocol-level fault proxy rewrites wire-level responses. Critical because this 
 
 | Feature | Tier | Mechanism | Status | Notes |
 |---|---|---|---|---|
+| Exact test-list selection | 2 | `internal/star/test_selection_test.go`, `cmd/faultbox/test_selection_test.go` | 🟢 | Validated before startup; preserves normal order, seeds and leaves. |
+| Kafka readiness failure diagnostics | 2 | `internal/protocol/kafka_diagnostics_test.go`, `internal/star/kafka_diagnostics_test.go`, `kafka_process_linux_test.go` | 🟢 | Stale/pre-rebalance, pending, closed and errored Fetch evidence; does not fabricate readiness. |
 | Read-only `faultbox doctor` | 2 | `internal/doctor/doctor_test.go`, `cmd/faultbox/doctor_test.go` | 🟢 | Capability selection, bounded subprocesses, Lima version mismatch and CLI JSON. VM provisioning remains a documented optional profile. |
 | Native Kafka mock barriers | 2 | `internal/star/kafka_wait_test.go`, `kafka_process_linux_test.go`, `internal/protocol/kafka_missing_topic_test.go` | 🟢 | Exact documentation example, two real managed consumers through direct/proxy connections, stale receipts/rebalances and absent-topic evidence. |
 
@@ -179,7 +181,7 @@ Everything here needs `determinism(runtime = "gvisor")` and is Linux-only.
 ## Summary counts
 
 - Critical (Tier 1): 23 rows, **23 green**.
-- Supported (Tier 2): 65 rows, **46 green**.
+- Supported (Tier 2): 67 rows, **48 green**.
 - Experimental (Tier 3): 7 rows, **0 green**.
 
 PR #64 (proxy teardown, closes #57 + #61) + PR #62 (openat matching,

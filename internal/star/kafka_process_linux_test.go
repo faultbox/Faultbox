@@ -260,6 +260,18 @@ bus=kafka.broker("bus", interface=interface("main","kafka",%d),topics={"events":
 				t.Fatalf("B never blocked its first Fetch: %s", b.output.String())
 			}
 			readyA := waitEvent("mock.kafka.group_ready", "group-a", "consumer-a")
+			barrierThread := &starlark.Thread{Name: "test"}
+			barrierThread.SetLocal("faultbox.context", ctx)
+			blockedRef := &InterfaceRef{Service: rt.services["bus"], Interface: rt.services["bus"].Interfaces["main"], runtime: rt}
+			_, blockedErr := rt.executeStep(barrierThread, blockedRef, "wait_ready", nil, []starlark.Tuple{{starlark.String("topics"), starlark.NewList([]starlark.Value{starlark.String("events")})}, {starlark.String("service"), starlark.String("consumer-b")}, {starlark.String("timeout"), starlark.String("30ms")}})
+			if blockedErr == nil {
+				t.Fatal("consumer without Fetch became ready")
+			}
+			snapshots := rt.events.EventsByType("mock.kafka.readiness_diagnostic")
+			if len(snapshots) == 0 || snapshots[len(snapshots)-1].Fields["state"] != "no_fetch_observed" || snapshots[len(snapshots)-1].Fields["source_service"] != "consumer-b" {
+				t.Fatalf("missing blocked-consumer diagnostic: %v", snapshots)
+			}
+
 			for _, event := range rt.events.Events() {
 				if event.Type == "mock.kafka.group_ready" && event.Fields["group"] == "group-b" {
 					t.Fatalf("A's Fetch incorrectly readied B before B sent any Fetch: %+v", event)

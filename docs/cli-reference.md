@@ -1227,3 +1227,17 @@ grep SECCOMP /boot/config-$(uname -r)
 ```
 
 On macOS, use the Lima VM — seccomp is not available natively.
+
+## Exact test lists
+
+Use `faultbox test spec.star --tests-from failed-tests.txt --seed 42` for a
+machine-generated rerun list. Each non-empty line is one **exact discovered test
+name**, such as `test_order_timeout`. Full-line `#` comments, CRLF, a leading BOM
+and duplicate names are accepted; duplicates execute once. An empty list,
+unreadable file or any unknown name fails before service startup.
+
+This mode cannot be combined with `--test`. It does not expand shorthand, globs,
+regex or collapsed matrix groups; use the concrete names from `--dry-run` or the
+bundle's test results. File order does not reorder execution: the normal discovered
+order, per-test seeds and plan-leaf enumeration are preserved. `--dry-run` validates
+and displays the same selection. Existing `--test` modes remain available.

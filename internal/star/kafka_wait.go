@@ -294,6 +294,7 @@ func (rt *Runtime) executeKafkaWait(thread *starlark.Thread, ref *InterfaceRef, 
 	reason := "waiting for current assignment"
 	for {
 		if ctx.Err() != nil {
+			rt.recordKafkaDiagnostics(ref.Service.Name, ref.Interface.Name, group, service, "wait_timeout", topics)
 			return nil, codedf(CodeKafkaWaitTimeout, "%s for service=%q group=%q topics=%v: %s (%v)", method, service, group, topics, reason, ctx.Err())
 		}
 		currentGen, _ := rt.events.kafkaScope()

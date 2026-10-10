@@ -147,6 +147,7 @@ func (rt *Runtime) buildMockSpec(svcName, ifaceName string, svc *ServiceDef) (pr
 	}
 	if svc.Interfaces[ifaceName].Protocol == "kafka" {
 		out.KafkaConnections = rt.connections
+		out.KafkaReadiness = rt.kafkaSnapshotRegistration(svcName, ifaceName)
 		out.KafkaAdvertise = func() string {
 			addr := rt.proxyMgr.GetProxyAddr(svcName, ifaceName)
 			if addr == "" {

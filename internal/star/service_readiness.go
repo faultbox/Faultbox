@@ -152,7 +152,7 @@ func checkFixedServicePorts(svc *ServiceDef) error {
 					continue
 				}
 				if errors.Is(err, syscall.EADDRINUSE) {
-					return codedf(CodePortInUse, "service %q fixed host port %d is already in use: %w", svc.Name, port, err)
+					return coded(CodePortInUse, &portConflict{service: svc.Name, network: transport, host: binding.host, port: port, cause: err})
 				}
 				return fmt.Errorf("check service %q fixed host port %d: %w", svc.Name, port, err)
 			}

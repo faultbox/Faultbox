@@ -209,6 +209,7 @@ func testCmd(args []string) int {
 	logLevel := slog.LevelInfo
 	var configPath, specPath, outputPath, shivizPath, normalizePath, testFilter string
 	var starFile string
+	var testsFrom string
 	var runs int
 	var seed int64 = -1 // -1 = not set
 	showFilter := "all" // common output filter: "all", "fail"
@@ -263,6 +264,19 @@ func testCmd(args []string) int {
 			normalizePath = strings.TrimPrefix(args[0], "--normalize=")
 		case args[0] == "--normalize" && len(args) > 1:
 			normalizePath = args[1]
+			args = args[1:]
+		case strings.HasPrefix(args[0], "--tests-from="):
+			testsFrom = strings.TrimPrefix(args[0], "--tests-from=")
+			if testsFrom == "" {
+				fmt.Fprintln(os.Stderr, "--tests-from requires a file path")
+				return 1
+			}
+		case args[0] == "--tests-from" && len(args) > 1:
+			testsFrom = args[1]
+			if testsFrom == "" {
+				fmt.Fprintln(os.Stderr, "--tests-from requires a file path")
+				return 1
+			}
 			args = args[1:]
 		case strings.HasPrefix(args[0], "--test="):
 			testFilter = strings.TrimPrefix(args[0], "--test=")
@@ -346,6 +360,20 @@ func testCmd(args []string) int {
 		}
 	}
 
+	var exactTests []string
+	if testsFrom != "" {
+		if starFile == "" || testFilter != "" {
+			fmt.Fprintln(os.Stderr, "--tests-from requires a Starlark spec and cannot be combined with --test")
+			return 1
+		}
+		var err error
+		exactTests, err = readTestList(testsFrom)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+
 	if starFile != "" {
 		// RFC-025 C3: resolve and persist the run seed. Explicit --seed
 		// always wins; otherwise we reuse the cached value from
@@ -375,6 +403,7 @@ func testCmd(args []string) int {
 			runs = 100
 		}
 		rcfg := star.RunConfig{
+			Tests:             exactTests,
 			Filter:            testFilter,
 			Seed:              seedPtr,
 			Runs:              runs,
@@ -417,9 +446,13 @@ func testStarCmd(starFile string, rcfg star.RunConfig, outputPath, shivizPath, n
 		return 1
 	}
 
-	// Dry-run mode: validate, discover tests, print info, exit.
+	tests, selectionErr := rt.SelectedTests(rcfg)
+	if selectionErr != nil {
+		fmt.Fprintln(os.Stderr, selectionErr)
+		return 1
+	}
+	// Dry-run mode: validate the same selection that RunAll will execute.
 	if dryRun {
-		tests := rt.DiscoverTests()
 		fmt.Printf("Dry-run: loaded %s\n", starFile)
 		fmt.Printf("Services: %d\n", len(rt.Services()))
 		for _, svc := range rt.Services() {
@@ -1931,6 +1964,7 @@ Run flags:
   --env KEY=VALUE        Set environment variable for the target
 
 Test flags:
+  --tests-from <file>      Exact test names, one per line; exclusive with --test
   --test <pattern>         Run only matching tests. Accepts:
                              · exact name         --test=test_health
                              · short form         --test=health

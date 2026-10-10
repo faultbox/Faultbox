@@ -233,6 +233,10 @@ type CrashInfo struct {
 
 // Runtime is the Starlark execution environment.
 type Runtime struct {
+	kafkaSnapshotMu sync.Mutex
+	kafkaSnapshots  map[string]*kafkaSnapshotSource
+	processOriginMu sync.Mutex
+	processOrigins  map[int]processOrigin
 	connections     *connowner.Tracker
 	processCleanups map[string]func()
 	shutdownFailed  atomic.Bool
@@ -942,12 +946,13 @@ func (rt *Runtime) bundleSpecKey(absPath string) string {
 
 // RunConfig controls test execution parameters.
 type RunConfig struct {
-	Filter      string  // run only matching test (empty = all)
-	Seed        *uint64 // explicit seed (nil = auto-increment from 0)
-	Runs        int     // number of runs per test (0 or 1 = single run)
-	FailOnly    bool    // only keep failing test results
-	VirtualTime bool    // enable virtual time (skip fault delays)
-	ExploreMode string  // "all" (exhaustive), "sample" (random), or "" (off)
+	Tests       []string // non-nil: exact discovered test names (mutually exclusive with Filter)
+	Filter      string   // run only matching test (empty = all)
+	Seed        *uint64  // explicit seed (nil = auto-increment from 0)
+	Runs        int      // number of runs per test (0 or 1 = single run)
+	FailOnly    bool     // only keep failing test results
+	VirtualTime bool     // enable virtual time (skip fault delays)
+	ExploreMode string   // "all" (exhaustive), "sample" (random), or "" (off)
 	// StrictDeterminism overrides the spec's determinism(strict=...) for the
 	// duration of the run (RFC-040 §8.3). nil = follow the spec; non-nil
 	// pointer = override. Set by --strict-determinism / =false on the CLI.
@@ -1024,7 +1029,10 @@ func (rt *Runtime) Close() {
 // RunAll executes all (or filtered) test functions.
 func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, error) {
 	start := time.Now()
-	tests := rt.DiscoverTests()
+	tests, err := rt.SelectedTests(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	// CLI override of spec-level determinism(strict=...). Single point of
 	// application — the override stays in force for the whole suite.
@@ -1039,16 +1047,6 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 		Tests: make([]TestResult, 0, len(tests)*runs),
 	}
 
-	// Collapsed fault_matrix names ("test_matrix_<scenario>") — lets
-	// --test select a whole cell group by the name `faultbox plan`
-	// prints (F-6a, v0.13.0 eval).
-	matrixBases := make(map[string]bool)
-	for _, fs := range rt.faultScenarios {
-		if fs.Matrix != nil {
-			matrixBases["test_matrix_"+fs.Matrix.ScenarioName] = true
-		}
-	}
-
 	// Auto-calculate permutation count for --explore=all without --runs.
 	autoExplore := cfg.ExploreMode == "all" && cfg.Runs <= 0
 
@@ -1060,9 +1058,6 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 	cancelled := func() bool { return ctx.Err() != nil || rt.shutdownFailed.Load() }
 
 	for _, name := range tests {
-		if cfg.Filter != "" && !matchTestFilter(name, cfg.Filter, matrixBases) {
-			continue
-		}
 		suite.Matched++
 		if cancelled() {
 			suite.Aborted++
@@ -1214,7 +1209,7 @@ func (rt *Runtime) RunAll(ctx context.Context, cfg RunConfig) (*SuiteResult, err
 	// Tests slice. The CLI turns Matched == 0 into a non-zero exit so a
 	// filter typo can't read as "suite green" in CI (F-6b).
 	if cfg.Filter != "" && suite.Matched == 0 {
-		available := strings.Join(tests, ", ")
+		available := strings.Join(rt.DiscoverTests(), ", ")
 		fmt.Fprintf(os.Stderr, "ERROR: no test matched filter %q (available: %s)\n", cfg.Filter, available)
 	}
 
@@ -1873,6 +1868,9 @@ func (rt *Runtime) runTestImpl(ctx context.Context, name string) TestResult {
 	// still live and "stopped" is unambiguous.
 	supervisorErr := rt.supervisorFailure()
 
+	if cause == TerminationTimeout || (err != nil && !errors.Is(err, ErrHalt)) {
+		rt.recordKafkaDiagnostics("", "", "", "", "test_failed", nil)
+	}
 	// Stop services.
 	rt.stopServices()
 
@@ -2251,7 +2249,7 @@ func (rt *Runtime) startServices(ctx context.Context) error {
 		}
 
 		if err := checkFixedServicePorts(svc); err != nil {
-			return err
+			return rt.explainPortConflict(err)
 		}
 
 		var err error
@@ -2875,7 +2873,8 @@ func (rt *Runtime) makeSyscallCallback(svcName string) func(engine.SyscallEvent)
 func (rt *Runtime) launchSession(ctx context.Context, svcName string, svc *ServiceDef, sessCfg engine.SessionConfig) error {
 	svcLog := rt.log.With(slog.String("service", svcName))
 	if !svc.IsContainer() {
-		sessCfg.OnProcessStart = func(pid int) (func(), error) { return rt.registerProcess(svcName, pid) }
+		testName := rt.currentTestName
+		sessCfg.OnProcessStart = func(pid int) (func(), error) { return rt.registerProcessForTest(svcName, pid, testName) }
 	}
 	session, err := engine.NewSession(sessCfg, svcLog)
 	if err != nil {

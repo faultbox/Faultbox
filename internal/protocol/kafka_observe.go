@@ -19,17 +19,18 @@ import (
 // commit must never look successful in the trace. Listener wrapping also
 // keeps Kafka's advertised endpoints on the mock's proxy when present.
 type kafkaObserver struct {
-	emit          MockEmitter
-	advertise     func() string
-	mu            sync.Mutex
-	topics        map[[16]byte]string
-	sequence      uint64
-	groups        map[string]*kafkaObservedGroup
-	fetchSessions map[kafkaFetchSessionKey]map[kafkaTopicPartition]kafkaSessionPosition
-	connections   *connowner.Tracker
-	sourceActive  func(connowner.Source) bool
-	ambiguous     map[kafkaClientPartition]bool
-	missingTopics map[string]bool
+	emit             MockEmitter
+	advertise        func() string
+	mu               sync.Mutex
+	topics           map[[16]byte]string
+	sequence         uint64
+	groups           map[string]*kafkaObservedGroup
+	fetchSessions    map[kafkaFetchSessionKey]map[kafkaTopicPartition]kafkaSessionPosition
+	connections      *connowner.Tracker
+	sourceActive     func(connowner.Source) bool
+	ambiguous        map[kafkaClientPartition]bool
+	missingTopics    map[string]bool
+	fetchDiagnostics map[kafkaClientPartition]*kafkaFetchDiagnostic
 }
 type kafkaObservedListener struct {
 	net.Listener
@@ -66,6 +67,11 @@ type kafkaObservedConn struct {
 }
 
 func (c *kafkaObservedConn) Close() error {
+	c.pendingMu.Lock()
+	for _, p := range c.pending {
+		c.observer.fetchClosed(p)
+	}
+	c.pendingMu.Unlock()
 	if c.owner != nil {
 		c.owner.Close()
 	}
@@ -146,6 +152,12 @@ func (c *kafkaObservedConn) Write(b []byte) (int, error) {
 		pending, ok := c.pending[corr]
 		delete(c.pending, corr)
 		c.pendingMu.Unlock()
+		observed := false
+		defer func() {
+			if ok && !observed {
+				c.observer.fetchUnanswered(pending, "response_not_observed")
+			}
+		}()
 		var response kmsg.Response
 		if ok {
 			response = pending.req.ResponseKind()
@@ -186,6 +198,7 @@ func (c *kafkaObservedConn) Write(b []byte) (int, error) {
 		}
 		if ok {
 			c.observer.observe(pending, response)
+			observed = true
 		}
 		return nil
 	})
