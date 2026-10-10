@@ -120,6 +120,19 @@ func (o *kafkaObserver) readinessSnapshot() []map[string]string {
 						state = d.reason
 					}
 				}
+				// A transient process lookup miss is not proof of no traffic.
+				// Keep unowned exchanges separate from this member's proven
+				// source, but expose them as a possible attribution gap.
+				if m.source.Known() {
+					own := o.fetchDiagnostics[kafkaClientPartition{m.client, m.source.Instance, part}]
+					unowned := o.fetchDiagnostics[kafkaClientPartition{m.client, "", part}]
+					if unowned != nil && (own == nil || unowned.request > own.request) {
+						f["unattributed_request_sequence"] = fmt.Sprint(unowned.request)
+						f["unattributed_request_state"] = unowned.requestState
+						f["unattributed_response_disposition"] = unowned.reason
+						state = "ownership_unresolved"
+					}
+				}
 				if ready {
 					state = "ready"
 				}

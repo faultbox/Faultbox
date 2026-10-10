@@ -344,6 +344,9 @@ and time, response error code (when a response exists), and disposition:
 | `position_not_acknowledged` / `no_matching_assignment_at_request` | Response/request lacks the evidence required to position the current member |
 | `source_inactive` | Previously attributed process incarnation is no longer active |
 
+Unattributed exchanges are exposed separately as `unattributed_*` fields; they
+do not become the managed member's own request or prove readiness.
+
 Classic Fetch has no member/group ID: diagnostics are scoped by process instance,
 client ID and partition and explain that scope. They do not assert that the client
 or kfake is stalled, create records, change readiness or automatically retry.

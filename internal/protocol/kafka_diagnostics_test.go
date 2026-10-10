@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"github.com/faultbox/Faultbox/internal/connowner"
 	"github.com/twmb/franz-go/pkg/kmsg"
 	"testing"
 )
@@ -62,4 +63,19 @@ func TestKafkaDiagnosticsExplainStaleFetchWithoutReadyingNewAssignment(t *testin
 	state("fetch_error")
 	reply(fetch(), 0)
 	state("ready")
+}
+
+func TestKafkaDiagnosticsSeparatesUnattributedFetch(t *testing.T) {
+	source := connowner.Source{Service: "worker", Instance: "managed", PID: 7}
+	o := &kafkaObserver{groups: map[string]*kafkaObservedGroup{"g": {generation: 1, epoch: 1, members: map[string]*kafkaObservedMember{"m": {client: "shared", source: source, assignment: 2, partitions: map[kafkaTopicPartition]bool{{"events", 0}: false}}}}}, sequence: 2}
+	req := kmsg.NewPtrFetchRequest()
+	req.Topics = []kmsg.FetchRequestTopic{{Topic: "events", Partitions: []kmsg.FetchRequestTopicPartition{{Partition: 0, FetchOffset: 0}}}}
+	p := o.request(req, "shared") // process lookup unknown; never borrow member identity
+	reply := kmsg.NewPtrFetchResponse()
+	reply.Topics = []kmsg.FetchResponseTopic{{Topic: "events", Partitions: []kmsg.FetchResponseTopicPartition{{Partition: 0}}}}
+	o.observe(p, reply)
+	rows := o.readinessSnapshot()
+	if len(rows) != 1 || rows[0]["state"] != "ownership_unresolved" || rows[0]["ready"] != "false" || rows[0]["unattributed_request_sequence"] != "3" || rows[0]["last_request_sequence"] != "" {
+		t.Fatalf("unowned fetch was hidden or attributed: %v", rows)
+	}
 }
