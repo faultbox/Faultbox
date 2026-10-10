@@ -2,6 +2,7 @@ package star
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -55,7 +56,10 @@ func (rt *Runtime) stopOneService(name string, rs *runningSession) {
 	if rs != nil && rs.done != nil {
 		rt.shutdownPhase(name, "wait_exit", func(ctx context.Context) error {
 			select {
-			case <-rs.done:
+			case result := <-rs.done:
+				if result != nil && errors.Is(result.Error, engine.ErrProcessWait) {
+					return result.Error
+				}
 				return nil
 			case <-ctx.Done():
 				return ctx.Err()
@@ -69,6 +73,9 @@ func (rt *Runtime) stopOneService(name string, rs *runningSession) {
 
 	if mgr := rt.proxyMgr; mgr != nil {
 		rt.shutdownPhase(name, "proxy_stop", func(context.Context) error { mgr.StopService(name); return nil })
+	}
+	if svc := rt.services[name]; svc != nil && !svc.IsRemote() && rs != nil && len(fixedHostPorts(svc)) > 0 {
+		rt.shutdownPhase(name, "ports_released", func(ctx context.Context) error { return rt.waitServicePortsReleased(ctx, svc) })
 	}
 }
 

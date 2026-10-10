@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/faultbox/Faultbox/internal/connowner"
 
@@ -19,6 +20,7 @@ type kafkaObservedGroup struct {
 	members    map[string]*kafkaObservedMember
 }
 type kafkaObservedMember struct {
+	assignedAt time.Time
 	client     string
 	source     connowner.Source
 	assignment uint64
@@ -132,6 +134,7 @@ func (o *kafkaObserver) request(req kmsg.Request, client string, sources ...conn
 			}
 			p.positions = append(p.positions, pos)
 		}
+		o.fetchRequested(p)
 
 	}
 	o.mu.Unlock()
@@ -178,7 +181,7 @@ func (o *kafkaObserver) observeGroup(p kafkaPending, response kmsg.Response) {
 		if r.ErrorCode == 0 && req.Generation == g.generation && p.sequence >= g.epoch && (g.members[req.MemberID] == nil || g.members[req.MemberID].assignment <= p.sequence) {
 			var assignment kmsg.ConsumerMemberAssignment
 			if err := assignment.ReadFrom(r.MemberAssignment); err == nil {
-				m := &kafkaObservedMember{client: p.client, source: p.source, assignment: p.sequence, partitions: make(map[kafkaTopicPartition]bool)}
+				m := &kafkaObservedMember{assignedAt: time.Now(), client: p.client, source: p.source, assignment: p.sequence, partitions: make(map[kafkaTopicPartition]bool)}
 				g.members[req.MemberID] = m
 				for _, t := range assignment.Topics {
 					for _, part := range t.Partitions {
@@ -237,10 +240,14 @@ func (o *kafkaObserver) observeGroup(p kafkaPending, response kmsg.Response) {
 func (o *kafkaObserver) observeFetch(p kafkaPending, r *kmsg.FetchResponse) []kafkaGroupEvent {
 	req := p.req.(*kmsg.FetchRequest)
 	if r.ErrorCode != 0 {
+		for _, pos := range p.positions {
+			o.fetchResponded(p, pos, r.ErrorCode, "fetch_error")
+		}
 		delete(o.fetchSessions, p.sessionKey(req.SessionID))
 		return nil
 	}
 	statuses := make(map[kafkaTopicPartition]bool)
+	codes := make(map[kafkaTopicPartition]int16)
 	for _, t := range r.Topics {
 		name := t.Topic
 		if name == "" {
@@ -248,17 +255,24 @@ func (o *kafkaObserver) observeFetch(p kafkaPending, r *kmsg.FetchResponse) []ka
 		}
 		for _, part := range t.Partitions {
 			statuses[kafkaTopicPartition{name, part.Partition}] = part.ErrorCode == 0
+			codes[kafkaTopicPartition{name, part.Partition}] = part.ErrorCode
 		}
 	}
 	session := make(map[kafkaTopicPartition]kafkaSessionPosition)
 	var events []kafkaGroupEvent
 	for _, pos := range p.positions {
+		reason := func(why string) { o.fetchResponded(p, pos, codes[pos.kafkaTopicPartition], why) }
 		accepted, found := statuses[pos.kafkaTopicPartition]
 		if !found {
 			accepted = pos.accepted && req.SessionID > 0 && req.SessionEpoch > 0
 		}
 		session[pos.kafkaTopicPartition] = kafkaSessionPosition{pos.offset, accepted}
 		if !accepted {
+			if codes[pos.kafkaTopicPartition] != 0 {
+				reason("fetch_error")
+			} else {
+				reason("position_not_acknowledged")
+			}
 			continue
 		}
 		events = append(events, kafkaGroupEvent{"kafka.fetch_position", map[string]string{"client_id": p.client, "topic": pos.topic, "partition": fmt.Sprint(pos.partition), "offset": fmt.Sprint(pos.offset), "request_sequence": fmt.Sprint(p.sequence)}})
@@ -272,6 +286,7 @@ func (o *kafkaObserver) observeFetch(p kafkaPending, r *kmsg.FetchResponse) []ka
 		}
 		key := kafkaClientPartition{p.client, p.source.Instance, pos.kafkaTopicPartition}
 		if len(pos.refs) > 1 || matches > 1 {
+			reason("ambiguous_assignment")
 			if !o.ambiguous[key] {
 				if o.ambiguous == nil {
 					o.ambiguous = make(map[kafkaClientPartition]bool)
@@ -283,26 +298,32 @@ func (o *kafkaObserver) observeFetch(p kafkaPending, r *kmsg.FetchResponse) []ka
 		}
 		delete(o.ambiguous, key)
 		if len(pos.refs) != 1 || matches != 1 {
+			reason("no_matching_assignment_at_request")
 			continue
 		}
 		ref := pos.refs[0]
 		g := o.groups[ref.group]
 		if g == nil || g.epoch != ref.epoch || g.generation != ref.generation {
+			reason("stale_epoch_or_generation")
 			continue
 		}
 		m := g.members[ref.member]
 		if m == nil || m.assignment != ref.assignment || m.source != ref.source || !o.matchesSource(m, p.client, p.source) {
+			reason("stale_assignment_or_source")
 			continue
 		}
 		// A transient ownership lookup miss is not permission to borrow a
 		// managed member's Fetch. Fallback is only for wholly unowned clients.
 		if p.source.Known() != m.source.Known() {
+			reason("ownership_unresolved")
 			events = append(events, kafkaGroupEvent{"kafka.group_attribution_unavailable", map[string]string{"group": ref.group, "member_id": ref.member, "client_id": p.client, "topic": pos.topic, "partition": fmt.Sprint(pos.partition), "reason": "assignment and Fetch do not both have matching proven process ownership"}})
 			continue
 		}
 		if ready, ok := m.partitions[pos.kafkaTopicPartition]; !ok || ready {
+			reason("already_ready_or_unassigned")
 			continue
 		}
+		reason("ready")
 		m.partitions[pos.kafkaTopicPartition] = true
 		f := groupFields(ref.group, ref.member, p.client, g)
 		f["topic"], f["partition"], f["offset"], f["assignment"] = pos.topic, fmt.Sprint(pos.partition), fmt.Sprint(pos.offset), fmt.Sprint(ref.assignment)

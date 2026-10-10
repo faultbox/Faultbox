@@ -201,6 +201,7 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 	// a recycled PID. Older kernels fall back to Kill while watching waitDone.
 	waitDone := make(chan struct{})
 	terminationDone := make(chan struct{})
+	var childMu sync.Mutex // serialize reaping with numeric-PID fallback signalling
 	pidfd, pidfdErr := unix.PidfdOpen(childPid, 0)
 	if pidfdErr != nil {
 		pidfd = -1
@@ -216,6 +217,13 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 		case <-ctx.Done():
 		}
 		signal := func(sig unix.Signal) {
+			childMu.Lock()
+			defer childMu.Unlock()
+			select {
+			case <-waitDone:
+				return
+			default:
+			}
 			if pidfd >= 0 {
 				_ = unix.PidfdSendSignal(pidfd, sig, nil, 0)
 			} else {
@@ -242,35 +250,37 @@ func (s *Session) launch(ctx context.Context) (*Result, error) {
 		}
 	}()
 
-	// Wait for the child process.
-	exitCode := 0
+	// A zombie *leader thread* does not mean the thread group exited.
+	// Only wait4's terminal child status authorizes cleanup and the next test.
+	exitCode := -1
 	var waitErr error
 	go func() {
-		defer close(waitDone)
-		statusPath := fmt.Sprintf("/proc/%d/status", childPid)
 		for {
-			data, err := os.ReadFile(statusPath)
-			if os.IsNotExist(err) {
-				break
+			childMu.Lock()
+			var ws unix.WaitStatus
+			wpid, err := unix.Wait4(childPid, &ws, unix.WNOHANG, nil)
+			if err == unix.EINTR {
+				childMu.Unlock()
+				continue
 			}
-			if err == nil {
-				if strings.Contains(string(data), "State:\tZ") {
-					break
+			if err != nil {
+				waitErr = fmt.Errorf("%w: wait4(%d): %w", ErrProcessWait, childPid, err)
+				close(waitDone)
+				childMu.Unlock()
+				return
+			}
+			if wpid == childPid && (ws.Exited() || ws.Signaled()) {
+				if ws.Exited() {
+					exitCode = ws.ExitStatus()
+				} else {
+					exitCode = 128 + int(ws.Signal())
 				}
+				close(waitDone)
+				childMu.Unlock()
+				return
 			}
+			childMu.Unlock()
 			time.Sleep(5 * time.Millisecond)
-		}
-		var ws unix.WaitStatus
-		wpid, err := unix.Wait4(childPid, &ws, unix.WNOHANG, nil)
-		if err == nil && wpid > 0 {
-			if ws.Exited() {
-				exitCode = ws.ExitStatus()
-			} else if ws.Signaled() {
-				exitCode = 128 + int(ws.Signal())
-			}
-		}
-		if err != nil && err != unix.ECHILD {
-			waitErr = err
 		}
 	}()
 

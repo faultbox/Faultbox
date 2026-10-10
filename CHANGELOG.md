@@ -10,6 +10,24 @@ Per-release "What's new" pages live on the site at
 
 ## [Unreleased]
 
+### Fixed
+
+- Native Linux sessions no longer report exit0 when only the leader thread has
+  exited and other threads still own listeners. Terminal `wait4` status now
+  controls completion. Unconfirmed process exit or unreleased local service
+  ports poison the runtime, preventing cascades into later tests (G50).
+- `PORT_IN_USE` includes bounded best-effort listener ownership, with PID/start
+  identity and known originating service/test; argv and environment are excluded.
+  Foreign listeners are never killed and no automatic test retry is introduced.
+
+### Added
+
+- Failure-only Kafka readiness snapshots explain pending, errored, closed and
+  pre-rebalance Fetch exchanges without relaxing readiness (G51 diagnostics).
+- `faultbox test --tests-from <file>` selects exact test names before any service
+  starts; unknown/empty lists fail, duplicates collapse and normal execution
+  order, seeds and plan leaves remain unchanged (G56).
+
 ## [0.19.0] - 2026-09-30
 
 ### Added

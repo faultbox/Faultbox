@@ -16,6 +16,9 @@ import (
 	"github.com/faultbox/Faultbox/internal/seccomp"
 )
 
+// ErrProcessWait means process termination was not confirmed; do not reuse the runtime.
+var ErrProcessWait = errors.New("process exit status unavailable")
+
 // State represents the lifecycle of a session.
 type State string
 

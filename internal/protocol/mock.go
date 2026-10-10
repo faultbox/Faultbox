@@ -46,6 +46,8 @@ type MockSpec struct {
 	// fetch connections using registered process instances. Nil keeps external
 	// clients on conservative, unique-client-ID attribution.
 	KafkaConnections *connowner.Tracker
+	// KafkaReadiness registers a read-only observer snapshot; nil unregisters it.
+	KafkaReadiness func(func() []map[string]string)
 
 	// Descriptors, when non-nil, signals that responses on this mock should
 	// be wire-encoded using the types in this registry rather than as

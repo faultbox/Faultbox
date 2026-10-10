@@ -319,6 +319,38 @@ coalesced until successful metadata is seen. Declare expected topics in `topics=
 a consumer subscription does not guarantee topic auto-creation even though the
 mock permits it. A barrier timeout includes observed missing-topic evidence.
 
+### Readiness failure diagnostics
+
+Before failed/timeout test-body cleanup, Kafka mocks emit
+`mock.kafka.readiness_diagnostic` for currently unready members/partitions.
+Native `wait_ready`/`wait_committed` timeouts also capture the selected snapshot.
+Legacy custom gates that call `fail()` benefit from the failure snapshot too.
+Successful runs do not acquire a per-Fetch diagnostic event stream.
+
+The snapshot records group/member, generation, epoch, assignment and its age,
+known source identity, topic/partition, latest observed request/response sequence
+and time, response error code (when a response exists), and disposition:
+
+| `state` | Evidence, not a guessed root cause |
+|---|---|
+| `awaiting_assignment` | Current group state has no partition assignment |
+| `no_fetch_observed` | No Fetch position was observed for this client/source/partition |
+| `no_fetch_for_current_assignment` | Latest Fetch predates the current assignment/epoch |
+| `awaiting_fetch_response` | Latest observed request has no observed response yet |
+| `fetch_connection_closed` / `response_not_observed` | The pending connection closed, or response observation/delivery did not complete |
+| `fetch_error` | Broker returned an error; the numeric code is included |
+| `stale_epoch_or_generation` / `stale_assignment_or_source` | A successful position cannot prove readiness for the current assignment |
+| `ambiguous_assignment` / `ownership_unresolved` | Attribution is insufficient to pick the intended consumer |
+| `position_not_acknowledged` / `no_matching_assignment_at_request` | Response/request lacks the evidence required to position the current member |
+| `source_inactive` | Previously attributed process incarnation is no longer active |
+
+Classic Fetch has no member/group ID: diagnostics are scoped by process instance,
+client ID and partition and explain that scope. They do not assert that the client
+or kfake is stalled, create records, change readiness or automatically retry.
+For example, a response to request59 after epoch88/assignment94 does **not** ready
+assignment94. `fetch_position` continues to mean an acknowledged position, not a
+complete log of requests. Raw records/request payloads are not added by this feature.
+
 ### Mock consumer-group readiness
 
 Built-in Kafka mocks emit the following `mock.kafka.*` events. These describe
